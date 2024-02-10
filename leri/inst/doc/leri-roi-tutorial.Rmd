@@ -1,0 +1,151 @@
+---
+title: "Get LERI data over a region of interest and save a GeoTIFF"
+author: "Maxwell B. Joseph"
+date: "`r Sys.Date()`"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Get LERI data over a region of interest and save a GeoTIFF}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+NOT_CRAN <- identical(tolower(Sys.getenv("NOT_CRAN")), "true")
+
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>", 
+  fig.width = 8, 
+  fig.height = 5, 
+  purl = NOT_CRAN,
+  eval = NOT_CRAN
+)
+```
+
+The leri R package provides easy access to the Landscape Evaporative Response
+Index (LERI) data - an experimental drought monitoring and early warning 
+guidance tool produced by the National Oceanic and Atmospheric Administration.
+
+The LERI product is available from the year 2000 to present at a 1 km spatial
+resolution over the continental United States, at the following timescales:
+
+- 1, 3, 7, and 12 month
+- 8 day accumulated or non-accumulated from April - October
+
+More information on the LERI product is available on the 
+[NOAA LERI homepage](https://www.esrl.noaa.gov/psd/leri/).
+
+This vignette covers a common use case acquiring data over a region of interest
+defined by a shapefile, masking the LERI data to that region, and saving 
+GeoTIFF files containing data for the region of interest.
+
+
+## Defining a region of interest
+
+By default, the leri package returns data for the continental United States, 
+southern parks of Canada, and northern parts of Mexico. 
+But, you may only be interested in a region of interest, as defined by a 
+shapefile. 
+Here, you will load a shapefile for the state of North Carolina that is 
+distributed by default with the [sf](https://cran.r-project.org/package=sf)
+package. 
+
+```{r load-roi-shapefile}
+library(sf)
+library(raster)
+library(viridis)
+library(leri)
+roi <- st_read(system.file("shape/nc.shp", package="sf"))
+```
+
+If you are using a different shapefile, replace
+`system.file("shape/nc.shp", package="sf")` with its file path, e.g., 
+`st_read("path/to/file.shp")`.
+
+The `roi` object contains multiple columns of data, and a `geometry` column
+that contains spatial information on the region of interest, which in this 
+case consists of multiple counties. 
+
+```{r print-roi-shapefile}
+roi
+```
+
+Because you don't necessarily care about each county, but rather you want the
+entire state (including all counties) you can use a spatial union to join data
+from all counties:
+
+```{r}
+roi <- st_union(roi)
+roi
+```
+
+
+
+## Acquiring LERI data
+
+To acquire LERI data, you can use the `get_leri()` function. 
+You will fetch the 8 day accumulated timescale data for the week of August
+13, 2018:
+
+```{r get-data}
+leri_raster <- get_leri(date = "2018-08-13", product = "8 day ac")
+```
+
+The `leri_raster` object is a `RasterLayer`, and you can see
+information on the spatial extent, resolution, and coordinate reference 
+system by printing the object: 
+
+```{r inspect-leri}
+leri_raster
+```
+
+Plot the data with a custom color palette to see what the data look like:
+
+```{r plot-leri-conus}
+plot(leri_raster, col = cividis(255))
+```
+
+
+
+## Masking to the region of interest
+
+Now you want to subset or mask the LERI data to the region of interest. 
+First, you need to ensure that the raster data and the polygon for the region 
+of interest have the same coordinate reference system. 
+
+```{r reproject-to-same-crs}
+roi_reprojected <- st_transform(roi, crs = projection(leri_raster))
+```
+
+Now, graphically verify that they align as expected: 
+
+```{r plot-leri-with-shp}
+plot(leri_raster, col = cividis(255))
+plot(roi_reprojected, add = TRUE)
+```
+
+Now, you can crop the LERI data to match extents with the region of interest, 
+then mask the raster set all values outside of the region of interest to `NA`. 
+Because the raster package requires sp objects, rather than sf objects, you
+will coerce our roi to a sp object first. 
+
+```{r mask-leri}
+roi_sp <- as(roi_reprojected, 'Spatial')
+cropped_leri <- crop(leri_raster, roi_sp)
+masked_leri <- mask(cropped_leri, roi_sp)
+```
+
+You can plot the masked raster along with the ROI to confirm:
+
+```{r}
+plot(masked_leri, col = cividis(255))
+plot(roi_sp, add = TRUE)
+```
+
+## Saving GeoTIFF output
+
+To write a GeoTIFF file of our `masked_leri` object, you can use `writeRaster`:
+
+```{r write-tif, eval = FALSE}
+writeRaster(masked_leri, 'leri-over-roi.tif')
+```
