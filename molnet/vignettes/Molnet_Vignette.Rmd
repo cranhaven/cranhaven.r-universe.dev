@@ -1,0 +1,341 @@
+---
+title: "Pipeline for Improving Network Integration Algorithms for Cancer Drug Predictions"
+author: "Julian Hugo, Spoorthi Kashyap, Nataniel Mueller, Justus Zeinert"
+date: "`r Sys.Date()`"
+output: 
+  rmarkdown::html_vignette: 
+    toc: true 
+vignette: >
+  %\VignetteIndexEntry{Pipeline for Improving Network Integration Algorithms for Cancer Drug Predictions}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+## Requirements
+
+Requirements of the package will be installed when loading the library.
+The package requirements/dependencies are included in the 
+`DESCRIPTION` file of the package. The complete source code can be accessed through
+\url{github.com/molnet}.
+
+
+```{r setup, message=FALSE}
+library(molnet)
+```
+
+Since the pipeline partly uses a Python script for computing the \link{interaction_score}
+the `molnet/inst/requirements.txt` found in the molnet repository
+can be used via pip install or using the `install_python_dependencies()` 
+function: 
+
+```{r, echo=TRUE, warning=FALSE, eval=FALSE}
+molnet::install_python_dependencies()
+```
+
+The package also supports installation with conda except for one dependency (Ray) which has to be
+installed with pip or the function above.
+
+## Functionality of Pipeline
+
+
+The main purpose of the pipeline is to easily and efficiently generate, reduce,
+and, combine molecular networks from different patient groups to compute a 
+differential drug interaction score based on drug targets. This allows for improved
+predictions of the effect of cancer drugs on patient groups with different characteristics. The following exemplary pipeline use case showcases the usage of molecular breast cancer data with ER+ (Estrogen receptor-positive) being group 1 and ER- (Estrogen receptor-negative) being group 2
+patient samples. The sample data is included within the package.
+
+![Pipeline Overview](pipeline_overview.png){width=100%}
+[image created with biorender.com]
+
+## Getting Started
+
+The breast cancer data by Krug et al., 2020 used for this tutorial is already preprocessed
+and only includes samples with tumor purity >0.5 and known ER status. Metabolite data was sampled randomly to generate distributions similar to those reported e.g. in (Terunuma et al., 2014).
+Krug et al., 2020 published data from the Clinical Proteomic Tumor Analysis Consortium (CPTAC).
+The dataset contains
+observations from:
+
+* 78 ER+ samples
+* 34 ER- samples
+
+|   |Number of genes|Preprocessing|Identifier|
+|---|---|---|---|
+|mRNA|13915|RNA expression quantified,log2-transformed FPKM values, NAs set to -11 ,  non-reduced mRNA dataset with all 13195 genes|Ncbi ID, Gene name|
+|Protein|5809 (ER+) 5845 (ER-)|Normalized, standardized|Gene name, Ncbi RefSeq ID, String|
+|Phosphoprotein|10272 (ER+) 11318 (ER-)|Normalized, remove phosphosites with >50% NAs|Gene name, Ncbi RefSeq ID|
+|Metabolite| 275 from 33 (ER+) 34 (ER-)  samples|metabolites with >50% NAs|Pubchem, Metabolon ID|
+
+### Load data
+
+First you load the preprocessed data. This data is included in the package and does not need to be
+manually loaded but can be directly accessed once `library(molnet)` is called.
+
+```{r Load data}
+data("mrna_data")
+data("protein_data")
+data("phosphoprotein_data")
+data("metabolite_data")
+data("metabolite_protein_interaction")
+```
+
+### Transform to required input format
+
+Then you can use formatting functions to bring the data into the required input format:
+
+* make_layer() # Creates individual molecular layers from raw data and unique identifiers
+* make_connection() # Specifiy connection between two individual layers
+* make_drug_target() # Formats drug target interactions
+
+In the beginning individual layer objects are created using \link{make_layer}. The user supplies
+data stratified over two groups and identifiers as shown in the code chunk below. The identifiers
+need to be in the same order as the components in the data. Additionally, the layer is named by the `name` argument.
+All individual layers are passed
+in a single list. Naming of the columns in the respective identifier data frames need to be
+consistent i.e. if the mRNA layer and the protein layers should be connected both need to contain
+a column with the same identifier name. In this example mRNA and Proteins both contain `gene_name`.
+The data frame `drug_gene_interactions` should contain identifiers with consistent column names as well as drug
+names and IDs.
+
+```{r}
+head(protein_data$group1$identifiers)
+head(mrna_data$group1$identifiers)
+```
+
+
+For computational reasons we use a subset of 100 genes for this vignette. Below we create individual layers.
+
+
+```{r Create layers}
+number_of_genes <- 100 # set for subsetting
+
+# Create individual layers
+mrna_layer <- make_layer(name="mrna",
+                         data_group1=mrna_data$group1$data[,1:number_of_genes],
+                         data_group2=mrna_data$group2$data[,1:number_of_genes],
+                         identifier_group1=data.frame(gene_name=mrna_data$group1$identifiers[1:number_of_genes,]),
+                         identifier_group2=data.frame(gene_name=mrna_data$group2$identifiers[1:number_of_genes,])
+                         )
+
+protein_layer <- make_layer(name="protein",
+                         data_group1=protein_data$group1$data[,1:number_of_genes],
+                         data_group2=protein_data$group2$data[,1:number_of_genes],
+                         identifier_group1=protein_data$group1$identifiers[1:number_of_genes,],
+                         identifier_group2=protein_data$group2$identifiers[1:number_of_genes,]
+                         )
+```
+
+```{r echo=FALSE}
+
+
+phosphoprotein_layer <- make_layer(name="phosphoprotein",
+                         data_group1=phosphoprotein_data$group1$data[,1:number_of_genes],
+                         data_group2=phosphoprotein_data$group2$data[,1:number_of_genes],
+                         identifier_group1=phosphoprotein_data$group1$identifiers[1:number_of_genes,],
+                         identifier_group2=phosphoprotein_data$group2$identifiers[1:number_of_genes,]
+                         )
+
+metabolite_layer <- make_layer(name="metabolite",
+                         data_group1=metabolite_data$group1$data[,1:number_of_genes],
+                         data_group2=metabolite_data$group2$data[,1:number_of_genes],
+                         identifier_group1=metabolite_data$group1$identifiers[1:number_of_genes,],
+                         identifier_group2=metabolite_data$group2$identifiers[1:number_of_genes,]
+                         )
+```
+
+The pipeline requires a list containing all individual layers. Below we are creating the list.
+
+```{r Make layers list}
+layers <- list(
+  mrna_layer,
+  protein_layer,
+  phosphoprotein_layer,
+  metabolite_layer
+)
+```
+
+Then you need to supply the inter-layer connections. 
+`From` and `to` need to match with a name in the previously created `layers` by \link{make_layer}.
+The established connection will result in an undirected graph.
+It is possible to create connections based on mutual identifiers present in both connected layers or based on an interaction table
+supplied that you need to supply.
+In case connections are matched on identifiers `connect_on` specifies the shared identifier and the edge weight is passed to `weight`. The default weight is 1. In case connections are established using an interaction table it has to be passed to `connect_on` and `weight` specifies the name of the
+column in the interaction table which is used as edge weight.
+
+```{r Inter-layer connections}
+inter_layer_connections = list(
+  make_connection(from = 'mrna', to = 'protein', connect_on = 'gene_name', weight = 1),
+  make_connection(from = 'protein', to = 'phosphoprotein', connect_on = 'gene_name', weight = 1),
+  make_connection(from = 'protein', to = 'metabolite', connect_on = metabolite_protein_interaction, weight = 'combined_score')
+)
+```
+
+For running the pipeline `drug-target interactions` are required. The
+the function \link{make_drug_target} generates the required format.
+The argument `interaction_table` maps drugs to targets. The argument `match_on` specifies the
+column of the `interaction_table` used to match drugs to targets.
+
+```{r Make drug-target interaction}
+drug_target_interaction <- make_drug_target(target_molecules='protein',
+                                            interaction_table=drug_gene_interactions,
+                                            match_on='gene_name')
+```
+
+When the input layers, connection and drug targets are created they are checked automatically
+for validity. The function below checks for a variety of possible input formatting errors.
+
+```{r}
+return_errors(check_input(layers = layers, inter_layer_connections = inter_layer_connections, drug_target_interaction = drug_target_interaction))
+```
+
+
+## Running the complete pipeline
+
+The pipeline can be run as a whole or in individual steps.
+To set global pipeline options the `settings` list needs to be created using the `molnet_settings` function.
+This function contains default parameters that can be modified as shown in the code chunk below.
+Please be aware of the python executable used the pipeline part implemented in python and the dependencies installed (i.e. python/python3).
+The intermediate pipeline output is deactivated for this example (see below) but especially for large data files
+consider turning it on (the default). Specify the location of files with the `saving_path` parameter. If not specified all files will only be written to a temporary directory. You can save individual graphs, combined graphs, drug targets and correlation matrices for individual graphs.
+Combined graphs without annotations and interaction score graphs are always saved as part of the handover between R and Python.
+For a detailed explanation of the possible settings please refer to the function documentation `?molnet_settings()`.
+
+```{r Settings}
+settings <- molnet_settings(
+  handling_missing_data = list(
+    default = "pairwise.complete.obs",
+    mrna = "all.obs"
+  ),
+  save_individual_graphs = FALSE,
+  save_combined_graphs = FALSE,
+  save_drug_targets = FALSE,
+  python_executable = "python3"
+)
+# disable multi-threading for example run; 
+# not recommended for actual data processing
+WGCNA::disableWGCNAThreads()
+
+```
+
+To run the whole pipeline from beginning-to-end the `start_pipeline` function
+should be used.
+
+```{r Run pipeline, eval=FALSE}
+start_pipeline(layers, inter_layer_connections, drug_target_interaction, settings)
+```
+
+## Running the individual pipeline steps
+
+The pipeline can also be used modular. Modules refer to the different steps:
+
+<ol>
+<li>Generate individual graphs</li>
+<li>Generate combined graphs</li>
+<li>Filter for drug targets</li>
+<li>Calculate interaction score</li>
+<li>Calculate differential score</li>
+<li>Calculate drug response score</li>
+</ol>
+
+![Pipeline BPMN.](pipeline_bpmn.png){width=100%}
+[image created with biorender.com]
+
+### Step 1: Generate individual graphs
+
+In step one individual graphs are generated by specifying the layers as described above. A list of layers and the settings list are passed. In this step edges are established based on correlation computation and reduced by the specified reduction method. Reduction
+can be done based on significance of the correlation (`p_value`) or WGCNA::pickHardThreshold (or our alternative implementation that has less overhead).
+
+```{r Individual Graphs, message=FALSE, results='hide'}
+individual_graphs <- generate_individual_graphs(layers = layers, settings = settings)
+```
+
+### Step 2: Combine Graphs
+
+In this step individual graphs are combined to a single combined graph per group based on the inter-layer connections. The function
+creates the disjunct union of the individual graphs and adds inter-layer edges with the specified weight.
+
+```{r Combine Graphs}
+combined_graphs <- generate_combined_graphs(individual_graphs[["graphs"]], individual_graphs[["annotations"]], inter_layer_connections, settings)
+```
+
+
+### Step 3: Filtering for drug targets
+
+In this step filtering of the drug-targets takes place. The function finds node IDs in the combined graph that are
+targeted by the drugs and maps drugs to their target nodes. Additionally, edgelists are returned containing the incident edges of drug target nodes that have to be considered in interaction score calculation.
+
+
+```{r Drug Targets}
+drug_targets <- determine_drug_targets(combined_graphs[["graphs"]], combined_graphs[["annotations"]], drug_target_interaction, settings)
+```
+
+
+### Step 4: Calculate interaction score
+
+In this step, the previously computed combined graph containing the iGraph object/annotations is used in combination with the drug target edge list to calculate an interaction score. The interaction score is computed with python. The function writes the input data (combined graphs for both groups and
+lists of edges adjacent to drug targets for both groups) to files and calls
+a python script for calculating the score.
+Output files written by the python script are two graphs in .gml format containing the interaction score as weight.
+These are loaded and returned in a named list.
+
+
+ATTENTION: Data exchange via files is mandatory and takes long for large data. Interaction
+score computation is slow because it involves finding all
+simple paths up to a certain length between source and target node of the
+drug target edges. Don't set `max_path_length` in settings to a large value and only consider
+this step if your graphs have up to approximately 2 million edges.
+Computation is initiated by `calculate_interaction_score`. The
+python script is parallelized using Ray. Use the setting `int_score_mode` for sequential computation.
+Refer to the Ray documentation
+if you encounter problems with running the python script in parallel.
+
+```{r Calculate interaction score, eval = FALSE}
+interaction_score_graphs <- interaction_score(combined_graphs[["graphs"]], drug_target_edgelists=drug_targets[["edgelist"]], settings=settings)
+```
+
+
+### Step 5: Calculate differential score
+
+In this step the absolute difference of interaction scores between
+the two groups is computed. A single differential graph with the `differential_score` as only edge
+attribute is returned.
+
+```{r Calculate differential score}
+data("interaction_score_graphs_vignette")
+differential_score_graph <- differential_score(interaction_score_graphs_vignette)
+```
+
+### Step 6: Calculate drug response score
+
+In the last step the differential drug response score is calculated based on the `differential_score_graph`. The score of a drug is the median of all differential edge scores adjacent to one of its target nodes. For drugs that
+do not have a target `NA` is returned.
+
+```{r Drug response}
+drug_response_score <- get_drug_response_score(differential_score_graph,
+                                               drug_targets[["targets"]],
+                                               drug_target_interaction$interaction_table)
+```
+
+The head of the results is shown below. The drug response score is an indirect measure of how
+the strength of connectivity differs between the groups for the drug targets of the particular drug. It indicates
+which drugs could be interesting in the application of stratified medicine.
+
+```{r Result Output}
+head(dplyr::filter(drug_response_score, !is.na(drug_response_score)))
+```
+
+## References
+
+The mRNA, proteomics and phosphoproteomics data used in this vignette stems from Krug et. al, 2020, which contains data from the Clinical Proteomic Tumor Analysis Consortium (CPTAC). Full citation:
+
+* Krug, Karsten et al. “Proteogenomic Landscape of Breast Cancer Tumorigenesis and Targeted Therapy.” Cell vol. 183,5 (2020): 1436-1456.e31. \doi{doi:10.1016/j.cell.2020.10.036}
+
+Metabolite data was sampled randomly to generate distributions similar to those reported previously (e.g., in Terunuma et al., 2014).
+
+* Terunuma, Atsushi et al. “MYC-driven accumulation of 2-hydroxyglutarate is associated with breast cancer prognosis.” The Journal of clinical investigation vol. 124,1 (2014): 398-412. \doi{doi:10.1172/JCI71180}
