@@ -1,0 +1,82 @@
+#' @title
+#' Test proposed by Zhang et al. (2023)
+#' @description
+#' Zhang et al. (2023)'s test for testing equality of two-sample high-dimensional mean vectors without assuming that two covariance matrices are the same.
+#' @usage tsbf_zzz2023(y1, y2, cutoff)
+#' @param y1 The data matrix (p by n1) from the first population. Each column represents a \eqn{p}-dimensional sample.
+#' @param y2 The data matrix (p by n2) from the first population. Each column represents a \eqn{p}-dimensional sample.
+#' @param cutoff An empirical criterion for applying the adjustment coefficient
+#' @details
+#' Suppose we have two independent high-dimensional samples:
+#' \deqn{
+#' \boldsymbol{y}_{i1},\ldots,\boldsymbol{y}_{in_i}, \;\operatorname{are \; i.i.d. \; with}\; \operatorname{E}(\boldsymbol{y}_{i1})=\boldsymbol{\mu}_i,\; \operatorname{Cov}(\boldsymbol{y}_{i1})=\boldsymbol{\Sigma}_i,i=1,2.
+#' }
+#' The primary object is to test
+#' \deqn{H_{0}: \boldsymbol{\mu}_1 = \boldsymbol{\mu}_2\; \operatorname{versus}\; H_{1}: \boldsymbol{\mu}_1 \neq \boldsymbol{\mu}_2.}
+#' Zhang et al.(2023) proposed the following test statistic:
+#' \deqn{T_{ZZZ}=\frac{n_1 n_2}{np}(\bar{\boldsymbol{y}}_1-\bar{\boldsymbol{y}}_2)^{\top} \hat{\boldsymbol{D}}_n^{-1}(\bar{\boldsymbol{y}}_1-\bar{\boldsymbol{y}}_2),}
+#' where \eqn{\bar{\boldsymbol{y}}_{i},i=1,2} are the sample mean vectors, and \eqn{\hat{\boldsymbol{D}}_n=\operatorname{diag}(\hat{\boldsymbol{\Sigma}}_1/n+\hat{\boldsymbol{\Sigma}}_2/n)} with \eqn{n=n_1+n_2}.
+
+#' They showed that under the null hypothesis, \eqn{T_{ZZZ}} and a chi-squared-type mixture have the same limiting distribution.
+#'
+#' @references
+#' \insertRef{zhang2023two}{NRAHDLTP}
+#'
+#' @return A  (list) object of  \code{S3} class \code{htest}  containing the following elements:
+#' \describe{
+#' \item{p.value}{the p-value of the test proposed by Zhang et al. (2023)'s test.}
+#' \item{statistic}{the test statistic proposed by Zhang et al. (2023)'s test.}
+#' \item{df}{estimated approximate degrees of freedom of Zhang et al. (2023)'s test.}
+#' \item{cpn}{the adjustment coefficient used in Zhang et al. (2023)'s test.}
+#' }
+#'
+#' @examples
+#' set.seed(1234)
+#' n1 <- 20
+#' n2 <- 30
+#' p <- 50
+#' mu1 <- t(t(rep(0, p)))
+#' mu2 <- mu1
+#' rho1 <- 0.1
+#' rho2 <- 0.2
+#' a1 <- 1
+#' a2 <- 2
+#' w1 <- (-2 * sqrt(a1 * (1 - rho1)) + sqrt(4 * a1 * (1 - rho1) + 4 * p * a1 * rho1)) / (2 * p)
+#' x1 <- w1 + sqrt(a1 * (1 - rho1))
+#' Gamma1 <- matrix(rep(w1, p * p), nrow = p)
+#' diag(Gamma1) <- rep(x1, p)
+#' w2 <- (-2 * sqrt(a2 * (1 - rho2)) + sqrt(4 * a2 * (1 - rho2) + 4 * p * a2 * rho2)) / (2 * p)
+#' x2 <- w2 + sqrt(a2 * (1 - rho2))
+#' Gamma2 <- matrix(rep(w2, p * p), nrow = p)
+#' diag(Gamma2) <- rep(x2, p)
+
+#' Z1 <- matrix(rnorm(n1*p,mean = 0,sd = 1), p, n1)
+#' Z2 <- matrix(rnorm(n2*p,mean = 0,sd = 1), p, n2)
+#' y1 <- Gamma1 %*% Z1 + mu1%*%(rep(1,n1))
+#' y2 <- Gamma2 %*% Z2 + mu2%*%(rep(1,n2))
+#' tsbf_zzz2023(y1,y2,cutoff=1.2)
+#' @export
+tsbf_zzz2023 <- function(y1, y2, cutoff) {
+  if (nrow(y1) != nrow(y2)) {
+    stop("y1 and y2 must have same dimension!")
+  } else {
+    stats <- tsbf_zzz2023_cpp(y1, y2)
+    stat <- stats[1]
+    dhat <- stats[2]
+    cpn <- stats[3]
+    ### SI test
+    if (cpn <= cutoff) {
+      d <- dhat / cpn
+      pvalue <- 1 - pchisq(d * stat, d)
+    } else {
+      d <- dhat
+      pvalue <- 1 - pchisq(d * stat, d)
+    }
+  }
+  names(stat) <- "statistic"
+  names(d) <- "df"
+  names(cpn) <- "cpn"
+  res <- list(statistic = stat, p.value = pvalue, parameters = c(d, cpn))
+  class(res) <- "htest"
+  return(res)
+}
