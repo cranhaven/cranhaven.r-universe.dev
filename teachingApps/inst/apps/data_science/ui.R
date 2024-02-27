@@ -1,0 +1,17 @@
+ui = fluidPage(theme = add_theme(getShinyOption('theme')), 
+               add_css(),
+               
+mainPanel(width = 12,
+   tabsetPanel(type = 'pills',
+     tabPanel('Data Analysis',           
+              visNetworkOutput("stats",height = "600px")),
+     tabPanel('Programming',             
+              visNetworkOutput("coding",height = "600px")),
+     tabPanel('Data Munging',            
+              visNetworkOutput("munging",height = "600px")),
+     tabPanel('Reproducible Research',   
+              visNetworkOutput("reproduce",height = "600px")),
+     tabPanel('Web Development',         
+              visNetworkOutput("webdev",height = "600px")),
+     tabPanel('This Course',             
+              visNetworkOutput("stat687",height = "600px")))))
