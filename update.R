@@ -115,8 +115,9 @@ for (kk in seq_len(nrow(cranhaven))) {
   status <- attr(output, "status")
   if (!is.null(status)) {
     print(status)
-    print(res)
+    print(output)
     failed <- c(failed, pkg)
+    stop("Failed")
     next
   }
 
