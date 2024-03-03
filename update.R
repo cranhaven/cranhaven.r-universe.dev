@@ -39,6 +39,7 @@ message("Number of CRANhaven packages to remove: ", length(pkgs))
 
 ## Clone to package subfolders, if not already done
 pkgs <- setdiff(cranhaven$package, dir())
+pkgs <- NULL  ## FIXME
 message("Number of CRANhaven packages to add: ", length(pkgs))
 failed <- c()
 for (pkg in pkgs) {
@@ -56,6 +57,7 @@ for (pkg in pkgs) {
 }
 
 pkgs <- cranhaven$package
+pkgs <- NULL  ## FIXME
 repo <- "https://cranhaven.r-universe.org"
 for (pkg in pkgs) {
   field <- "Additional_repositories"
@@ -80,11 +82,11 @@ if (length(failed) > 0) {
 }
 
 ## Assert that all packages where cloned
-stopifnot(identical(sort(cranhaven$package), sort(dir())))
+##stopifnot(identical(sort(cranhaven$package), sort(dir())))
 setwd("..")
 
 ## Write packages.json for R-universe 
-#cranhaven$url <- with(cranhaven, file.path("https://github.com/cranhaven", package))
-cranhaven$subdir <- with(cranhaven, file.path("packages", package))
+cranhaven$url <- with(cranhaven, file.path("https://github.com/cran", package))
+#cranhaven$subdir <- with(cranhaven, file.path("packages", package))
 jsonlite::write_json(cranhaven, "packages.json", pretty = TRUE)
 message("packages.json written")
