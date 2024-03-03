@@ -39,7 +39,6 @@ message("Number of CRANhaven packages to remove: ", length(pkgs))
 
 ## Clone to package subfolders, if not already done
 pkgs <- setdiff(cranhaven$package, dir())
-pkgs <- cranhaven$package
 message("Number of CRANhaven packages to add: ", length(pkgs))
 failed <- c()
 for (pkg in pkgs) {
@@ -56,6 +55,26 @@ for (pkg in pkgs) {
   }
 }
 
+pkgs <- cranhaven$package
+repo <- "https://cranhaven.r-universe.org"
+for (pkg in pkgs) {
+  field <- "Additional_repositories"
+  file <- file.path(pkg, "DESCRIPTION")
+  desc <- read.dcf(file)
+  if (field %in% colnames(desc)) {
+    repos <- desc[,field]
+    if (!grepl(repo, repos)) {
+      repos <- paste(c(repos, repo), collapse = ",\n")
+      desc[,field] <- repos
+    }
+  } else {
+    repos <- matrix(repo, ncol = 1L)
+    colnames(repos) <- field
+    desc <- cbind(desc, repos)
+  }
+  write.dcf(desc, file = file)
+}
+
 if (length(failed) > 0) {
   stop(sprintf("Failed to clone %d package(s): %s", length(failed), paste(sQuote(failed), collapse = ", ")))
 }
@@ -65,7 +84,7 @@ stopifnot(identical(sort(cranhaven$package), sort(dir())))
 setwd("..")
 
 ## Write packages.json for R-universe 
-cranhaven$url <- with(cranhaven, file.path("https://github.com/cranhaven", package))
+#cranhaven$url <- with(cranhaven, file.path("https://github.com/cranhaven", package))
 cranhaven$subdir <- with(cranhaven, file.path("packages", package))
 jsonlite::write_json(cranhaven, "packages.json", pretty = TRUE)
 message("packages.json written")
