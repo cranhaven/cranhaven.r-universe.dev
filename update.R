@@ -34,9 +34,14 @@ message("Checkout main branch")
 res <- system2("git", args = c("checkout", "main"))
 
 message("Listing all package branches")
+system2("git", args = c("branch", "--list"))
+message("Listing all package branches")
+system2("git", args = c("branch", "--list", shQuote('package/*')))
+message("Listing all package branches")
 branches <- system2("git", args = c("branch", "--list", shQuote('package/*')), stdout = TRUE, stderr = TRUE)
+print(branches)
 branches <- sub("^[* ]+", "", branches)
-message(sprintf("Branched: [n=%d] %s", length(branches), paste(branches, collapse = ", ")))
+message(sprintf("Branches: [n=%d] %s", length(branches), paste(branches, collapse = ", ")))
 
 failed <- c()
 for (kk in seq_len(nrow(cranhaven))) {
