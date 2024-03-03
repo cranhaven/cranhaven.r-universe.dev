@@ -35,7 +35,6 @@ res <- system2("git", args = c("checkout", "main"))
 
 message("Listing all package branches")
 branches <- system2("git", args = c("branch", "--all", "--list", shQuote('*/package/*')), stdout = TRUE, stderr = TRUE)
-print(branches)
 branches <- sub("^[* ]+.*package/", "package/", branches)
 message(sprintf("Branches: [n=%d] %s", length(branches), paste(branches, collapse = ", ")))
 
