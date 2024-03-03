@@ -98,7 +98,7 @@ setwd("..")
 
 ## Write packages.json for R-universe 
 #cranhaven$url <- with(cranhaven, file.path("https://github.com/cran", package))
-cranhaven$url <- "https://github.com/cranhaven"
+cranhaven$url <- "https://github.com/cranhaven/cranhaven.r-universe.dev"
 cranhaven$subdir <- with(cranhaven, file.path("packages", package))
 jsonlite::write_json(cranhaven, "packages.json", pretty = TRUE)
 message("packages.json written")
