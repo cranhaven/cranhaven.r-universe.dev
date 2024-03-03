@@ -55,8 +55,9 @@ of this repository, where R-universe can find them.
 
 ## Details
 
-This repository is updated [once an
-hour](https://github.com/CRANhaven/cranhaven.r-universe.dev/blob/39e18676ac68916e8e4514b6852a24f7e25777ca/.github/workflows/update.yml#L7-L8). It
+This repository is
+[updated](https://github.com/r-universe/cranhaven/actions) [once an
+hour](https://github.com/CRANhaven/cranhaven.r-universe.dev/blob/main/.github/workflows/update.yml). It
 queries
 [CRANberries](https://dirk.eddelbuettel.com/cranberries/cran/removed/)
 for recently archived packages, ignores the ones that have been
