@@ -42,6 +42,17 @@ from this repository. This gives R users, developers, and
 reverse-dependency maintainers some extra leeway.
 
 
+## Known Limitations
+
+Some of the CRANhaven packages fail to build only because they depend
+on aother archived CRAN package. Even if those are available on
+CRANhaven, they are not found by the R-universe builder when other
+CRANhaven packages are build. To fix this, we need to add CRANhaven as
+an alternative repository for those packages. This can be done by
+cloning them from <https://github.com/cran> and add them as subfolders
+of this repository, where R-universe can find them.
+
+
 ## Details
 
 This repository is updated [once an
@@ -50,5 +61,8 @@ queries
 [CRANberries](https://dirk.eddelbuettel.com/cranberries/cran/removed/)
 for recently archived packages, ignores the ones that have been
 archived for more than four weeks, or that have since be unarchived on
-CRAN.
+CRAN. The source for the packages built on the CRANhaven R-universe is
+<https://github.com/cran>.
+
+
 
