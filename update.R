@@ -39,16 +39,21 @@ message("Number of CRANhaven packages to remove: ", length(pkgs))
 
 ## Clone to package subfolders, if not already done
 pkgs <- setdiff(cranhaven$package, dir())
+pkgs <- cranhaven$package
 message("Number of CRANhaven packages to add: ", length(pkgs))
 failed <- c()
 for (pkg in pkgs) {
   message("Cloning package ", sQuote(pkg))
+  pp <- file.path(pkg, ".git")
   url <- paste0("https://github.com/cran/", pkg)
   res <- system2("git", args = c("clone", "--depth=1", url))
   if (res != 0) failed <- c(failed, pkg)
   unlink(file.path(pkg, ".git"), recursive = TRUE, force = TRUE)
   res <- system2("git", args = c("add", pkg))
-  if (res != 0) failed <- c(failed, pkg)
+  if (res != 0) {
+    unlink(pkg, recursive = TRUE, force = TRUE)
+    failed <- c(failed, pkg)
+  }
 }
 
 if (length(failed) > 0) {
