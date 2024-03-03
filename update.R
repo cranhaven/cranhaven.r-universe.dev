@@ -39,7 +39,6 @@ message("Number of CRANhaven packages to remove: ", length(pkgs))
 
 ## Clone to package subfolders, if not already done
 pkgs <- setdiff(cranhaven$package, dir())
-pkgs <- NULL  ## FIXME
 message("Number of CRANhaven packages to add: ", length(pkgs))
 failed <- c()
 for (pkg in pkgs) {
@@ -56,13 +55,17 @@ for (pkg in pkgs) {
   }
 }
 
+if (length(failed) > 0) {
+  stop(sprintf("Failed to clone %d package(s): %s", length(failed), paste(sQuote(failed), collapse = ", ")))
+}
+
 pkgs <- cranhaven$package
-pkgs <- NULL  ## FIXME
 repo <- "https://cranhaven.r-universe.org"
+failed <- c()
 for (pkg in pkgs) {
   field <- "Additional_repositories"
   file <- file.path(pkg, "DESCRIPTION")
-  desc <- read.dcf(file)
+  desc <- desc0 <- read.dcf(file)
   if (field %in% colnames(desc)) {
     repos <- desc[,field]
     if (!grepl(repo, repos)) {
@@ -74,15 +77,23 @@ for (pkg in pkgs) {
     colnames(repos) <- field
     desc <- cbind(desc, repos)
   }
-  write.dcf(desc, file = file)
+  if (!identical(desc, desc0)) {
+    write.dcf(desc, file = file)
+    when <- subset(cranhaven, package = pkg)$archived_on
+    when <- format(when, format = "%F %T %z")
+    env <- paste0(c("GIT_AUTHOR_DATE=", "GIT_COMMITTER_DATE="), shQuote(when))
+    msg <- sprintf("Add %s to CRANhaven", pkg)
+    res <- system2("git", args = c("commit", pkg, "-m", msg), env = env)
+    if (res != 0) failed <- c(failed, pkg)
+  }
 }
 
 if (length(failed) > 0) {
-  stop(sprintf("Failed to clone %d package(s): %s", length(failed), paste(sQuote(failed), collapse = ", ")))
+  stop(sprintf("Failed to commit %d package(s): %s", length(failed), paste(sQuote(failed), collapse = ", ")))
 }
 
 ## Assert that all packages where cloned
-##stopifnot(identical(sort(cranhaven$package), sort(dir())))
+stopifnot(identical(sort(cranhaven$package), sort(dir())))
 setwd("..")
 
 ## Write packages.json for R-universe 
