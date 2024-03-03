@@ -44,7 +44,9 @@ reverse-dependency maintainers some extra leeway.
 
 ## Details
 
-This repository is updated ones an hour. It queries
+This repository is updated [once an
+hour](https://github.com/CRANhaven/cranhaven.r-universe.dev/blob/39e18676ac68916e8e4514b6852a24f7e25777ca/.github/workflows/update.yml#L7-L8). It
+queries
 [CRANberries](https://dirk.eddelbuettel.com/cranberries/cran/removed/)
 for recently archived packages, ignores the ones that have been
 archived for more than four weeks, or that have since be unarchived on
