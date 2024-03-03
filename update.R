@@ -21,7 +21,7 @@ cran_pkgs <- unname(available.packages(repos = "https://cloud.r-project.org")[, 
 cranhaven <- data.frame(package = pkgs, on_cran = (pkgs %in% cran_pkgs), archived_on = timestamps, url = "https://github.com/cranhaven/cranhaven.r-universe.dev", branch = file.path("package", pkgs), subdir = pkgs)
 cranhaven <- subset(cranhaven, archived_on >= Sys.time() - 4*7*24*3600)
 cranhaven <- cranhaven[order(cranhaven$package), ]
-cranhaven <- cranhaven[1:12,]
+cranhaven <- cranhaven[1:13,]
 cranhaven_all <- cranhaven
 message("Number of CRAN packages archived during the last four weeks: ", nrow(cranhaven_all))
 
