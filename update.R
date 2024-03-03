@@ -18,7 +18,7 @@ timestamps <- strptime(dates, format = "%a, %d %b %Y %H:%M:%S", tz = tz)
 cran_pkgs <- unname(available.packages(repos = "https://cloud.r-project.org")[, "Package"])
 
 ## Packages archived within the last four weeks should be on CRANhaven
-cranhaven <- data.frame(package = pkgs, on_cran = (pkgs %in% cran_pkgs), archived_on = timestamps, url = "https://github.com/cranhaven/cranhaven.r-universe.dev", branch = file.path("package", pkgs))
+cranhaven <- data.frame(package = pkgs, on_cran = (pkgs %in% cran_pkgs), archived_on = timestamps, url = "https://github.com/cranhaven/cranhaven.r-universe.dev", branch = file.path("package", pkgs), subdir = pkgs)
 cranhaven <- subset(cranhaven, archived_on >= Sys.time() - 4*7*24*3600)
 cranhaven <- cranhaven[order(cranhaven$package), ]
 cranhaven <- cranhaven[1:10,]
