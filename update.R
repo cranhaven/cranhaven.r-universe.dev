@@ -14,55 +14,79 @@ tz <- tzs[1]
 stopifnot(all(tz == tzs))
 timestamps <- strptime(dates, format = "%a, %d %b %Y %H:%M:%S", tz = tz)
 
+## Get current CRAN packages
+cran_pkgs <- unname(available.packages(repos = "https://cloud.r-project.org")[, "Package"])
+
 ## Packages archived within the last four weeks should be on CRANhaven
-cranhaven <- data.frame(package = pkgs, archived_on = timestamps)
+cranhaven <- data.frame(package = pkgs, on_cran = (pkgs %in% cran_pkgs), archived_on = timestamps, url = "https://github.com/cranhaven/cranhaven.r-universe.dev", branch = file.path("package", pkgs))
 cranhaven <- subset(cranhaven, archived_on >= Sys.time() - 4*7*24*3600)
 cranhaven <- cranhaven[order(cranhaven$package), ]
-message("Number of CRAN packages archived during the last four weeks: ", nrow(cranhaven))
+cranhaven <- cranhaven[1:10,]
+cranhaven_all <- cranhaven
+message("Number of CRAN packages archived during the last four weeks: ", nrow(cranhaven_all))
 
-## Make sure they haven't been reintroduced on CRAN
-cran_pkgs <- unname(available.packages(repos = "https://cloud.r-project.org")[, "Package"])
-message("Number of CRAN packages: ", length(cran_pkgs))
-cranhaven <- subset(cranhaven, !package %in% cran_pkgs)
-stopifnot(!any(duplicated(cranhaven$package)))
-message("Number of CRANhaven packages: ", nrow(cranhaven))
+cranhaven <- subset(cranhaven_all, !on_cran)
+rownames(cranhaven) <- NULL
+message("Number of CRAN packages archived during the last four weeks that are still not on CRAN: ", nrow(cranhaven))
 
-## Update package subfolders
-path <- "packages"
-if (!utils::file_test("-d", path)) dir.create(path)
-setwd(path)
+## Returns status = 128 if no such branches exist, which is okay
+message("Checkout main branch")
+res <- system2("git", args = c("checkout", "main"))
 
-## Drop package folders for packages no longer on CRANhaven
-pkgs <- setdiff(dir(), cranhaven$package)
-unlink(pkgs, recursive = TRUE, force = TRUE)
-message("Number of CRANhaven packages to remove: ", length(pkgs))
+message("Listing all package branches")
+branches <- system2("git", args = c("branch", "--list", shQuote('package/*')), stdout = TRUE, stderr = TRUE)
+branches <- sub("^[* ]+", "", branches)
+message(sprintf("Branched: [n=%d] %s", length(branches), paste(branches, collapse = ", ")))
 
-## Clone to package subfolders, if not already done
-pkgs <- setdiff(cranhaven$package, dir())
-message("Number of CRANhaven packages to add: ", length(pkgs))
 failed <- c()
-for (pkg in pkgs) {
-  message("Cloning package ", sQuote(pkg))
-  pp <- file.path(pkg, ".git")
+for (kk in seq_len(nrow(cranhaven))) {
+  entry <- cranhaven[kk, ]
+  pkg <- entry$package
+  message(sprintf("%d/%d Package %s", kk, nrow(cranhaven), sQuote(pkg)))
+  
+  branch <- entry$branch
+  message(" - Branch: ", branch)
+
+  ## Already done?
+  if (branch %in% branches) next
+
+  message(" - Checkout main branch")
+  res <- system2("git", args = c("checkout", "main"))
+
+  ## Create empty package branch?
+  message(" - Create branch")
+  output <- system2("git", args = c("checkout", "--orphan", branch), stdout = TRUE, stderr = TRUE)
+  status <- attr(output, "status")
+  if (!is.null(status)) {
+    failed <- c(failed, pkg)
+    next
+  }
+
+  message(" - Erase branch")
+  res <- system2("git", args = c("rm", "-rf", "."))
+  if (res != 0) {
+    failed <- c(failed, pkg)
+    next
+  }
+
+  message(" - Clone package")
   url <- paste0("https://github.com/cran/", pkg)
-  res <- system2("git", args = c("clone", "--depth=1", url))
-  if (res != 0) failed <- c(failed, pkg)
+  res <- system2("git", args = c("clone", "--depth=1", url, pkg))
+  if (res != 0) {
+    failed <- c(failed, pkg)
+    next
+  }
+  
+  message(" - Prune package")
   unlink(file.path(pkg, ".git"), recursive = TRUE, force = TRUE)
   res <- system2("git", args = c("add", pkg))
   if (res != 0) {
-    unlink(pkg, recursive = TRUE, force = TRUE)
     failed <- c(failed, pkg)
+    next
   }
-}
 
-if (length(failed) > 0) {
-  stop(sprintf("Failed to clone %d package(s): %s", length(failed), paste(sQuote(failed), collapse = ", ")))
-}
-
-pkgs <- cranhaven$package
-repo <- "https://cranhaven.r-universe.org"
-failed <- c()
-for (pkg in pkgs) {
+  message(" - Update Additional_repositories")
+  repo <- entry$url
   field <- "Additional_repositories"
   file <- file.path(pkg, "DESCRIPTION")
   desc <- desc0 <- read.dcf(file)
@@ -77,28 +101,43 @@ for (pkg in pkgs) {
     colnames(repos) <- field
     desc <- cbind(desc, repos)
   }
+  
   if (!identical(desc, desc0)) {
     write.dcf(desc, file = file)
-    when <- subset(cranhaven, package == pkg)$archived_on
-    when <- format(when, format = "%F %T %z")
-    env <- paste0(c("GIT_AUTHOR_DATE=", "GIT_COMMITTER_DATE="), shQuote(when))
-    msg <- sprintf("Add %s to CRANhaven, because archived on %s", pkg, when)
-    res <- system2("git", args = c("commit", pkg, "-m", shQuote(msg)), env = env)
-    if (res != 0) failed <- c(failed, pkg)
   }
-}
+  
+  message(" - Commit package")
+  when <- entry$archived_on
+  when <- format(when, format = "%F %T %z")
+  env <- paste0(c("GIT_AUTHOR_DATE=", "GIT_COMMITTER_DATE="), shQuote(when))
+  msg <- sprintf("Add %s to CRANhaven, because archived on %s", pkg, when)
+  output <- system2("git", args = c("commit", "-a", "-m", shQuote(msg)), env = env, stdout = TRUE, stderr = TRUE)
+  status <- attr(output, "status")
+  if (!is.null(status)) {
+    print(status)
+    print(res)
+    failed <- c(failed, pkg)
+    next
+  }
+
+  message(" - Push branch")
+  res <- system2("git", args = c("push", "--set-upstream", "origin", branch))
+  if (res != 0) {
+    failed <- c(failed, pkg)
+    next
+  }
+
+  message("-- Checkout main branch")
+  res <- system2("git", args = c("checkout", "main"))
+} ## for (kk in ...) 
 
 if (length(failed) > 0) {
-  stop(sprintf("Failed to commit %d package(s): %s", length(failed), paste(sQuote(failed), collapse = ", ")))
+  stop(sprintf("Failed to create branches for %d package(s): %s", length(failed), paste(sQuote(failed), collapse = ", ")))
 }
 
 ## Assert that all packages where cloned
-stopifnot(identical(sort(cranhaven$package), sort(dir())))
-setwd("..")
+#stopifnot(identical(sort(cranhaven$package), sort(dir())))
 
 ## Write packages.json for R-universe 
-#cranhaven$url <- with(cranhaven, file.path("https://github.com/cran", package))
-cranhaven$url <- "https://github.com/cranhaven/cranhaven.r-universe.dev"
-cranhaven$subdir <- with(cranhaven, file.path("packages", package))
 jsonlite::write_json(cranhaven, "packages.json", pretty = TRUE)
 message("packages.json written")
