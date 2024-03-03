@@ -97,7 +97,7 @@ stopifnot(identical(sort(cranhaven$package), sort(dir())))
 setwd("..")
 
 ## Write packages.json for R-universe 
-cranhaven$url <- with(cranhaven, file.path("https://github.com/cran", package))
-#cranhaven$subdir <- with(cranhaven, file.path("packages", package))
+#cranhaven$url <- with(cranhaven, file.path("https://github.com/cran", package))
+cranhaven$subdir <- with(cranhaven, file.path("packages", package))
 jsonlite::write_json(cranhaven, "packages.json", pretty = TRUE)
 message("packages.json written")
