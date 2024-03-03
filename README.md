@@ -44,13 +44,11 @@ reverse-dependency maintainers some extra leeway.
 
 ## Known Limitations
 
-Some of the CRANhaven packages fail to build only because they depend
-on aother archived CRAN package. Even if those are available on
-CRANhaven, they are not found by the R-universe builder when other
-CRANhaven packages are build. To fix this, we need to add CRANhaven as
-an alternative repository for those packages. This can be done by
-cloning them from <https://github.com/cran> and add them as subfolders
-of this repository, where R-universe can find them.
+Some of the CRANhaven packages fail to build temporarily only because
+they depend on another archived CRAN package, which still has not been
+built on CRANhaven. This will normally resolve itself after a few
+hours; R-universe re-synchronize once an hour and it might require a
+few rounds for all packages to be built.
 
 
 ## Details
