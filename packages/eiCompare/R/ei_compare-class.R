@@ -1,1 +1,0 @@
-setClass("ei_compare", representation(data = "data.frame", groups = "character"))
