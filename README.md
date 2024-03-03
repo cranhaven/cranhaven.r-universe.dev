@@ -2,17 +2,13 @@
 
 # CRANhaven - Repository for Recently Archived CRAN Packages
 
-_WARNING: This is non-functional mockup to illustrate an idea. For
-this to become a reality the framework for monitoring CRAN for
-packages being archived and unarchived needs to be implemented._
-
-This R package repository hosts packages that were recently archived
-on CRAN. Those packages can be installed using:
+The **CRANhaven** R package repository available on
+[R-universe](https://cranhaven.r-universe.dev) hosts packages that
+were recently archived on CRAN. Those packages can be installed using:
 
 ```r
 install.packages("somepkg", repos = c("https://cranhaven.r-universe.dev", "https://cloud.r-project.org"))
 ```
-
 
 ## Motivation
 
@@ -41,8 +37,11 @@ from this repository. This gives R users, developers, and
 reverse-dependency maintainers some extra leeway.
 
 
-## References
+## Details
 
-* R-universe: <https://cranhaven.r-universe.dev>
-* GitHub build: https://github.com/r-universe/cranhaven
-* GitHub configuration: <https://github.com/CRANhaven/cranhaven.r-universe.dev>
+This repository is updated ones an hour. It queries
+[CRANberries](https://dirk.eddelbuettel.com/cranberries/cran/removed/)
+for recently archived packages, ignores the ones that have been
+archived for more than four weeks, or that have since be unarchived on
+CRAN.
+
