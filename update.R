@@ -79,11 +79,11 @@ for (pkg in pkgs) {
   }
   if (!identical(desc, desc0)) {
     write.dcf(desc, file = file)
-    when <- subset(cranhaven, package = pkg)$archived_on
+    when <- subset(cranhaven, package == pkg)$archived_on
     when <- format(when, format = "%F %T %z")
     env <- paste0(c("GIT_AUTHOR_DATE=", "GIT_COMMITTER_DATE="), shQuote(when))
-    msg <- sprintf("Add %s to CRANhaven", pkg)
-    res <- system2("git", args = c("commit", pkg, "-m", msg), env = env)
+    msg <- sprintf("Add %s to CRANhaven, because archived on %s", pkg, when)
+    res <- system2("git", args = c("commit", pkg, "-m", shQuote(msg)), env = env)
     if (res != 0) failed <- c(failed, pkg)
   }
 }
