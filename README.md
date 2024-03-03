@@ -1,3 +1,5 @@
+[![CRAN synchronization](https://github.com/CRANhaven/cranhaven.r-universe.dev/actions/workflows/update.yml/badge.svg)](https://github.com/CRANhaven/cranhaven.r-universe.dev/actions/workflows/update.yml)
+
 # CRANhaven - Repository for Recently Archived CRAN Packages
 
 _WARNING: This is non-functional mockup to illustrate an idea. For
