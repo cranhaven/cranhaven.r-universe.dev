@@ -13,7 +13,7 @@ The **CRANhaven** R package repository available on
 were recently archived on CRAN. Those packages can be installed using:
 
 ```r
-install.packages("somepkg", repos = c("https://cranhaven.r-universe.dev", "https://cloud.r-project.org"))
+install.packages("somepkg", repos = c(getOption("repos", "https://cloud.r-project.org"), "https://cranhaven.r-universe.dev"))
 ```
 
 Packages remains on CRANhaven for up to four weeks, or until they are
