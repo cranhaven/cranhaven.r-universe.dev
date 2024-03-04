@@ -93,12 +93,12 @@ for (kk in seq_len(nrow(cranhaven))) {
   desc <- desc0 <- read.dcf(file)
   if (field %in% colnames(desc)) {
     repos <- desc[,field]
-    if (!grepl(repo, repos)) {
+    if (!grepl(runiverse_repo, repos)) {
       repos <- paste(c(repos, runiverse_repo), collapse = ",\n")
       desc[,field] <- repos
     }
   } else {
-    repos <- matrix(repo, ncol = 1L)
+    repos <- matrix(runiverse_repo, ncol = 1L)
     colnames(repos) <- field
     desc <- cbind(desc, repos)
   }
