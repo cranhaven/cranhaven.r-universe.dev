@@ -1,3 +1,4 @@
+[![CRANhaven number of packages](https://cranhaven.r-universe.dev/badges/:total)](https://cranhaven.r-universe.dev/)
 [![CRAN synchronization](https://github.com/CRANhaven/cranhaven.r-universe.dev/actions/workflows/update.yml/badge.svg)](https://github.com/CRANhaven/cranhaven.r-universe.dev/actions/workflows/update.yml)
 
 # CRANhaven - Repository for Recently Archived CRAN Packages
