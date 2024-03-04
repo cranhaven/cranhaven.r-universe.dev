@@ -140,6 +140,28 @@ if (length(failed) > 0) {
 ## Assert that all packages where cloned
 #stopifnot(identical(sort(cranhaven$package), sort(dir())))
 
-## Write packages.json for R-universe 
-jsonlite::write_json(cranhaven, "packages.json", pretty = TRUE)
-message("packages.json written")
+## Identify diff
+pkgs <- cranhaven$package
+pkgs_prev <- vapply(jsonlite::read_json("packages.json"), FUN = function(x) x$package, FUN.VALUE = NA_character_)
+diff <- list(added = setdiff(pkgs, pkgs_prev), removed = setdiff(pkgs_prev, pkgs))
+
+if (sum(lengths(diff)) > 0) {
+  msg <- "CRANhaven updates:"
+  for (what in names(diff)) {
+    if (length(diff[[what]]) > 0) {
+      msg <- c(msg, sprintf("%s %s.", tools::toTitleCase(what), paste(sQuote(diff[[what]]), collapse = ", ")))
+    }
+  }
+  msg <- paste(msg, collapse = " ")
+  message(msg)
+
+  ## Write packages.json for R-universe 
+  jsonlite::write_json(cranhaven, "packages.json", pretty = TRUE)
+  message("packages.json written")
+
+  message("Commit packages.json updates")
+  system2("git", args = c("commit", "-a", "-m", shQuote(msg)))
+} else {
+  message("Nothing changed")
+}
+
