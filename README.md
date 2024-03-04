@@ -15,6 +15,10 @@ were recently archived on CRAN. Those packages can be installed using:
 install.packages("somepkg", repos = c("https://cranhaven.r-universe.dev", "https://cloud.r-project.org"))
 ```
 
+Packages remains on CRANhaven for up to four weeks, or until they are
+unarchived on CRAN.
+
+
 ## Motivation
 
 Sometimes a package gets archived only because the maintainer did not
