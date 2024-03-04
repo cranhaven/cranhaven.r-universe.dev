@@ -143,7 +143,7 @@ if (length(failed) > 0) {
 ## Identify diff
 pkgs <- cranhaven$package
 pkgs_prev <- vapply(jsonlite::read_json("packages.json"), FUN = function(x) x$package, FUN.VALUE = NA_character_)
-diff <- list(added = setdiff(pkgs, pkgs_prev), removed = setdiff(pkgs_prev, pkgs))
+diff <- list(add = setdiff(pkgs, pkgs_prev), remove = setdiff(pkgs_prev, pkgs))
 
 if (sum(lengths(diff)) > 0) {
   msg <- "CRANhaven updates:"
@@ -161,6 +161,9 @@ if (sum(lengths(diff)) > 0) {
 
   message("Commit packages.json updates")
   system2("git", args = c("commit", "-a", "-m", shQuote(msg)))
+
+  message("Push updates")
+  system2("git", args = c("push"))
 } else {
   message("Nothing changed")
 }
