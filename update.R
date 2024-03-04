@@ -17,8 +17,11 @@ timestamps <- strptime(dates, format = "%a, %d %b %Y %H:%M:%S", tz = tz)
 ## Get current CRAN packages
 cran_pkgs <- unname(available.packages(repos = "https://cloud.r-project.org")[, "Package"])
 
+github_repo <- "https://github.com/cranhaven/cranhaven.r-universe.dev"
+runiverse_repo <- "https://cranhaven.r-universe.dev"
+
 ## Packages archived within the last four weeks should be on CRANhaven
-cranhaven <- data.frame(package = pkgs, on_cran = (pkgs %in% cran_pkgs), archived_on = timestamps, url = "https://github.com/cranhaven/cranhaven.r-universe.dev", branch = file.path("package", pkgs), subdir = pkgs)
+cranhaven <- data.frame(package = pkgs, on_cran = (pkgs %in% cran_pkgs), archived_on = timestamps, url = github_repo, branch = file.path("package", pkgs), subdir = pkgs)
 cranhaven <- subset(cranhaven, archived_on >= Sys.time() - 4*7*24*3600)
 cranhaven <- cranhaven[order(cranhaven$package), ]
 cranhaven_all <- cranhaven
@@ -85,14 +88,13 @@ for (kk in seq_len(nrow(cranhaven))) {
   }
 
   message(" - Update Additional_repositories")
-  repo <- entry$url
   field <- "Additional_repositories"
   file <- file.path(pkg, "DESCRIPTION")
   desc <- desc0 <- read.dcf(file)
   if (field %in% colnames(desc)) {
     repos <- desc[,field]
     if (!grepl(repo, repos)) {
-      repos <- paste(c(repos, repo), collapse = ",\n")
+      repos <- paste(c(repos, runiverse_repo), collapse = ",\n")
       desc[,field] <- repos
     }
   } else {
