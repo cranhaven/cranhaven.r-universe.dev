@@ -8,9 +8,9 @@ some more leeway to packages that get archived on CRAN. If it turns
 out to be a not-so-good idea, it will be removed again._
 
 
-The **CRANhaven** R package repository available on
-[R-universe](https://cranhaven.r-universe.dev) hosts packages that
-were recently archived on CRAN. Those packages can be installed using:
+The **[CRANhaven]** R package
+repository, available on R-universe, hosts packages that were recently
+archived on CRAN. Those packages can be installed using:
 
 ```r
 install.packages("somepkg", repos = c(getOption("repos", "https://cloud.r-project.org"), "https://cranhaven.r-universe.dev"))
@@ -68,5 +68,8 @@ archived for more than four weeks, or that have since be unarchived on
 CRAN. The source for the packages built on the CRANhaven R-universe is
 <https://github.com/cran>.
 
+The "Commit" datestamps seen on [CRANhaven] show the dates (±1 day)
+when the packages were archived on CRAN.
 
 
+[CRANhaven]: https://cranhaven.r-universe.dev
