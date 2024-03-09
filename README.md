@@ -13,7 +13,8 @@ hosts packages that were recently archived on CRAN. Those packages can
 be installed using:
 
 ```r
-install.packages("somepkg", repos = c(getOption("repos", "https://cloud.r-project.org"), "https://cranhaven.r-universe.dev"))
+options(repos = c(getOption("repos"), "https://cranhaven.r-universe.dev"))
+install.packages("somepkg")
 ```
 
 Packages remain on CRANhaven for up to five weeks, or until they are
