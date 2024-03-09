@@ -3,20 +3,20 @@
 
 # CRANhaven - Repository for Recently Archived CRAN Packages
 
-_WARNING: This is a proof of concept to explore the idea of giving
-some more leeway to packages that get archived on CRAN. If it turns
-out to be a not-so-good idea, it will be removed again._
+_WARNING: This is work under development! Please do _not_ rely on it
+for production and do _not_ add CRANhaven to `Additional_repositories`
+of your package._
 
 
-The **[CRANhaven]** R package
-repository, available on R-universe, hosts packages that were recently
-archived on CRAN. Those packages can be installed using:
+The **[CRANhaven]** R package repository, available on R-universe,
+hosts packages that were recently archived on CRAN. Those packages can
+be installed using:
 
 ```r
 install.packages("somepkg", repos = c(getOption("repos", "https://cloud.r-project.org"), "https://cranhaven.r-universe.dev"))
 ```
 
-Packages remains on CRANhaven for up to four weeks, or until they are
+Packages remain on CRANhaven for up to five weeks, or until they are
 unarchived on CRAN.
 
 
@@ -42,7 +42,7 @@ The purpose of this R package repository is to give archived CRAN
 packages a second chance. As soon as the package is archived on CRAN,
 it is added to this repository. If the packages is fixed and
 "unarchived" on CRAN, it is removed from this repository. If the
-package is not unarchived on CRAN within four weeks, it is removed
+package is not unarchived on CRAN within five weeks, it is removed
 from this repository. This gives R users, developers, and
 reverse-dependency maintainers some extra leeway.
 
@@ -58,18 +58,8 @@ few rounds for all packages to be built.
 
 ## Details
 
-This repository is
-[updated](https://github.com/r-universe/cranhaven/actions) [once an
-hour](https://github.com/CRANhaven/cranhaven.r-universe.dev/blob/main/.github/workflows/update.yml). It
-queries
-[CRANberries](https://dirk.eddelbuettel.com/cranberries/cran/removed/)
-for recently archived packages, ignores the ones that have been
-archived for more than four weeks, or that have since be unarchived on
-CRAN. The source for the packages built on the CRANhaven R-universe is
-<https://github.com/cran>.
-
 The "Commit" datestamps seen on [CRANhaven] show the dates (±1 day)
 when the packages were archived on CRAN.
 
 
-[CRANhaven]: https://cranhaven.r-universe.dev
+[CRANhaven]: https://www.cranhaven.org/

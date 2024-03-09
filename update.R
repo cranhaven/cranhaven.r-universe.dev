@@ -20,16 +20,16 @@ cran_pkgs <- unname(available.packages(repos = "https://cloud.r-project.org")[, 
 github_repo <- "https://github.com/cranhaven/cranhaven.r-universe.dev"
 runiverse_repo <- "https://cranhaven.r-universe.dev"
 
-## Packages archived within the last four weeks should be on CRANhaven
+## Packages archived within the last five weeks should be on CRANhaven
 cranhaven <- data.frame(package = pkgs, on_cran = (pkgs %in% cran_pkgs), archived_on = timestamps, url = github_repo, branch = file.path("package", pkgs), subdir = pkgs)
-cranhaven <- subset(cranhaven, archived_on >= Sys.time() - 4*7*24*3600)
+cranhaven <- subset(cranhaven, archived_on >= Sys.time() - 5*7*24*3600)
 cranhaven <- cranhaven[order(cranhaven$package), ]
 cranhaven_all <- cranhaven
-message("Number of CRAN packages archived during the last four weeks: ", nrow(cranhaven_all))
+message("Number of CRAN packages archived during the last five weeks: ", nrow(cranhaven_all))
 
 cranhaven <- subset(cranhaven_all, !on_cran)
 rownames(cranhaven) <- NULL
-message("Number of CRAN packages archived during the last four weeks that are still not on CRAN: ", nrow(cranhaven))
+message("Number of CRAN packages archived during the last five weeks that are still not on CRAN: ", nrow(cranhaven))
 
 ## Returns status = 128 if no such branches exist, which is okay
 message("Checkout main branch")
@@ -167,4 +167,3 @@ if (sum(lengths(diff)) > 0) {
 } else {
   message("Nothing changed")
 }
-
