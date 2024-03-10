@@ -1,0 +1,6 @@
+.onAttach <- function(libname, pkgname) {
+  # ...
+  packageStartupMessage("Welcome to konya package!\nThis is an unofficial R package for Konya Municipality Open Data Portal.\nFor more information, you can visit https://acikveri.konya.bel.tr/")
+
+  # ...
+}
