@@ -143,7 +143,11 @@ if (length(failed) > 0) {
 ## Identify diff
 pkgs <- cranhaven$package
 pkgs_prev <- vapply(jsonlite::read_json("packages.json"), FUN = function(x) x$package, FUN.VALUE = NA_character_)
-diff <- list(add = setdiff(pkgs, pkgs_prev), remove = setdiff(pkgs_prev, pkgs))
+diff <- list(
+  archived   = setdiff(pkgs, pkgs_prev),
+  unarchived = intersect(setdiff(pkgs_prev, pkgs), cran_pkgs),
+  expired    = setdiff(setdiff(pkgs_prev, pkgs), cran_pkgs)
+)
 
 if (sum(lengths(diff)) > 0) {
   msg <- "CRANhaven updates:"
