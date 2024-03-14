@@ -17,6 +17,10 @@ timestamps <- strptime(dates, format = "%a, %d %b %Y %H:%M:%S", tz = tz)
 ## Get current CRAN packages
 cran_pkgs <- unname(available.packages(repos = "https://cloud.r-project.org")[, "Package"])
 
+## Get current CRAN packages
+cran_archived <- tools:::CRAN_archive_db()
+cran_archived_pkgs <- names(cran_archived)
+
 github_repo <- "https://github.com/cranhaven/cranhaven.r-universe.dev"
 runiverse_repo <- "https://cranhaven.r-universe.dev"
 
@@ -144,7 +148,8 @@ if (length(failed) > 0) {
 pkgs <- cranhaven$package
 pkgs_prev <- vapply(jsonlite::read_json("packages.json"), FUN = function(x) x$package, FUN.VALUE = NA_character_)
 diff <- list(
-  archived   = setdiff(pkgs, pkgs_prev),
+  removed    = setdiff(pkgs, cran_archived_pkgs),
+  archived   = setdiff(setdiff(pkgs, pkgs_prev), setdiff(pkgs, cran_archived_pkgs)),
   unarchived = intersect(setdiff(pkgs_prev, pkgs), cran_pkgs),
   expired    = setdiff(setdiff(pkgs_prev, pkgs), cran_pkgs)
 )
