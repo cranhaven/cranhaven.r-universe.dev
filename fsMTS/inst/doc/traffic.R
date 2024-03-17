@@ -1,0 +1,87 @@
+## ----global_options, include=FALSE--------------------------------------------
+knitr::opts_chunk$set(fig.width=6, fig.height=6)
+
+## ----load_libraries, warning=FALSE, message=FALSE-----------------------------
+require(fsMTS)
+require(plot.matrix)
+require(svMisc)
+require(MTS)
+
+## ----load_data----------------------------------------------------------------
+data(traffic)
+data <- scale(traffic$data[,-1])
+max.lag <- 3
+show.progress = F
+
+## ----fsOwnlags----------------------------------------------------------------
+mIndep<-fsMTS(data, max.lag=max.lag, method="ownlags",show.progress=show.progress)
+plot(mIndep, col=rev(heat.colors(10)), key=NULL, 
+     main="Only own lags")
+
+## ----fsCCF--------------------------------------------------------------------
+mCCF<-fsMTS(data, max.lag=max.lag, method="CCF",show.progress=show.progress)
+plot(mCCF, col=rev(heat.colors(10)), key=NULL, 
+     main="Cross-correlations")
+
+## ----fsDistance---------------------------------------------------------------
+mDistance<-fsMTS(data, max.lag=max.lag, method="distance", shortest = traffic$shortest, step = 5,show.progress=show.progress)
+plot(mDistance, col=rev(heat.colors(10)), key=NULL, 
+     main="Distance-based feature selection")
+
+## ----fsGLASSO-----------------------------------------------------------------
+mGLASSO.global<-fsMTS(data, max.lag=max.lag,method="GLASSO", rho = 0.1,show.progress=show.progress, localized = FALSE)
+plot(mGLASSO.global, col=rev(heat.colors(10)), key=NULL, 
+     main="Graphical LASSO-based feature selection")
+
+## ----fsLARS-------------------------------------------------------------------
+mLARS<-fsMTS(data, max.lag=max.lag,method="LARS",show.progress=show.progress)
+plot(mLARS, col=rev(heat.colors(10)), key=NULL, 
+     main="Least angle  regression-based feature selection")
+
+## ----fsRF---------------------------------------------------------------------
+mRF.global<-fsMTS(data, max.lag=max.lag,method="RF",show.progress=show.progress, localized = FALSE)
+plot(mRF.global, col=rev(heat.colors(10)), key=NULL, 
+     main="Random forest-based (global) feature selection")
+
+## ----fsMI---------------------------------------------------------------------
+mMI.global<-fsMTS(data, max.lag=max.lag,method="MI",show.progress=show.progress, localized= FALSE)
+plot(mMI.global, col=rev(heat.colors(10)), key=NULL, 
+     main="Mutual information-based (global) feature selection")
+
+## ----fsPSC--------------------------------------------------------------------
+mPSC<-fsMTS(data, max.lag=max.lag,method="PSC",show.progress=show.progress)
+plot(mPSC, col=rev(heat.colors(10)), key=NULL, 
+     main="PSC-based feature selection")
+
+## ----fsEnsemble---------------------------------------------------------------
+mlist <- list(Independent = mIndep,
+              Distance = mDistance,
+              CCF = mCCF,
+              GLASSO.global = mGLASSO.global,
+              LARS = mLARS,
+              RF.global = mRF.global,
+              MI.global = mMI.global,
+              PSC=mPSC)
+
+th<-0.1
+mE1 <- fsEnsemble(mlist, threshold = th, method="ranking")
+plot(mE1, col=rev(heat.colors(10)), key=NULL, 
+     main="Ensemble feature selection  using Ranking")
+mlist[["EnsembleRank"]] <- mE1
+
+
+mE2 <- fsEnsemble(mlist, threshold = th, method="majority")
+plot(mE2, col=rev(heat.colors(10)), key=NULL, 
+     main="Ensemble feature selection  using Majority Voting")
+mlist[["EnsembleMajV"]] <- mE2
+
+## ----comparison, fig.width=9, fig.height=9------------------------------------
+msimilarity <- fsSimilarityMatrix(mlist, threshold=th, method="Kuncheva")
+plot(msimilarity, digits=2, col=rev(heat.colors(ncol(msimilarity))), key=NULL,
+     main="Pairwise comparison of feature sets", cex.axis=0.7)
+
+## ----predict------------------------------------------------------------------
+model <- VAR(data, p=max.lag, include.mean = F, fixed = mE2)
+print(model$coef)
+VARpred(model,1)
+
