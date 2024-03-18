@@ -232,6 +232,7 @@ diff <- list(
   unarchived = intersect(setdiff(pkgs_prev, pkgs), cran_pkgs),
   expired    = setdiff(setdiff(pkgs_prev, pkgs), cran_pkgs)
 )
+str(diff)
 
 if (sum(lengths(diff)) > 0) {
   msg <- "CRANhaven updates:"
