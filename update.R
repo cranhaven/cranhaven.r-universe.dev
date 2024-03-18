@@ -252,7 +252,7 @@ if (sum(lengths(diff)) > 0) {
   call_git("commit", "-a", "-m", shQuote(msg))
 
   message("Push updates")
-  calL_git("push")
+  call_git("push")
 } else {
   message("Nothing changed")
 }
