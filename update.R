@@ -40,6 +40,69 @@ read_cranberries_removed <- local({
 
 
 #' @export
+cran_events <- local({
+  data <- NULL
+  function(url = "https://cran.r-project.org/src/contrib/PACKAGES.in") {
+    if (!is.null(data)) return(data)
+
+    con <- url(url)
+    db <- read.dcf(con)
+    db <- as.data.frame(db)
+    
+    ## Assert assumption about one entry per package
+    stopifnot(!any(duplicated(db$Package)))
+
+    names <- colnames(db)
+    names <- tolower(names)
+    names <- gsub("-", "_", names)
+    colnames(db) <- names
+
+    db_active <- subset(db, !is.na(x_cran_comment))
+    db_legacy <- subset(db,  is.na(x_cran_comment))
+
+    ## Extract date and type of event
+    ## Note: Be forgiving for typos like "2016-07-1"
+    pattern <- ".*([[:digit:]]{4,4}-[[:digit:]]{1,2}-[[:digit:]]{1,2}).*"
+    dates <- rep(as.Date(NA_integer_), times = nrow(db_active))
+    idxs <- grep(pattern, db_active$x_cran_comment)
+    values <- sub(pattern, "\\1", db_active$x_cran_comment[idxs])
+    values <- as.Date(values)
+    dates[idxs] <- values
+    db_active$x_cran_comment_date <- dates
+
+    pattern <- "^([Uu]narchived?|[Aa]rchived?|[Rr]enamed?|[Oo]rphaned?|[Rr]eplaced?|[Rr]emoved?)"
+    events <- gsub("[[:blank:]:].*", "", db_active$x_cran_comment)
+    events <- tolower(events)
+    events[events == "archive"] <- "archived"
+    events[!events %in% c("archived", "orphaned", "removed", "renamed", "replaced")] <- NA_character_
+    db_active$x_cran_comment_event <- events
+
+    reasons <- rep(NA_character_, times = nrow(db_active))
+    idxs <- which(!is.na(events))
+    values <- gsub("^.* on [[:digit:]-]+[[:blank:]]*(|,|;|:|as|at)([[:blank:]]+|[.])", "", db_active$x_cran_comment[idxs])
+    values <- sub("[[:blank:]]+<[^>@]+@[^>@]+>", "", values)
+    values <- gsub("[[:blank:]]+", " ", values)
+    values <- gsub("[\n]+", " ", values)
+    values <- gsub("(^[[:blank:]]+|[[:blank:].]+$)", "", values)
+    values <- gsub(". , ", ", ", values, fixed = TRUE)
+    reasons[idxs] <- values
+    db_active$x_cran_comment_reason <- reasons
+
+    db_legacy$x_cran_comment_date <- as.Date(NA_integer_)
+    db_legacy$x_cran_comment_event <- NA_character_
+    db_legacy$x_cran_comment_reason <- NA_character_
+
+    db <- rbind(db_legacy, db_active)
+    cols <- c("package", "x_cran_comment_date", "x_cran_comment_event", "x_cran_comment_reason", "x_cran_comment", "x_cran_history", "replaced_by", "additional_repositories", "maintainer", "license_restricts_use", "systemrequirements", "lazydatacompression", "license_is_foss", "os_type", "url")
+    db <- db[, cols]
+    db <- db[order(db$x_cran_comment_date, decreasing = TRUE), ]
+    
+    data <<- db
+  }
+})
+
+
+#' @export
 cran_current <- local({
   data <- NULL
   function() {
