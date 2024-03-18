@@ -1,25 +1,42 @@
 dryrun <- FALSE
 
 #' @export
-read_cranberries_removed <- function(rss = "https://dirk.eddelbuettel.com/cranberries/cran/removed/index.rss") {
-  ## Find archived packages and when they were archived
-  bfr <- readLines(rss)
+read_cranberries_removed <- local({
+  data <- NULL
+  
+  function(rss = "https://dirk.eddelbuettel.com/cranberries/cran/removed/index.rss") {
+    if (!is.null(data)) return(data)
+    
+    ## Find archived packages and when they were archived
+    bfr <- readLines(rss)
+  
+    pattern <- ".*<title>Package ([^ ]+) .*<[/]title>.*"
+    pkgs <- grep(pattern, bfr, value = TRUE)
+    pkgs <- sub(pattern, "\\1", pkgs)
+    pattern <- ".*<pubDate>([^<]+)<[/]pubDate>.*"
+    dates <- grep(pattern, bfr, value = TRUE)
+    dates <- sub(pattern, "\\1", dates)
+    stopifnot(length(pkgs) == length(dates))
+  
+    tzs <- sub(".* ([[:alpha:]]+)$", "\\1", dates)
+    tz <- tzs[1]
+    stopifnot(all(tz == tzs))
+    timestamps <- strptime(dates, format = "%a, %d %b %Y %H:%M:%S", tz = tz)
+  
+    db <- data.frame(package = pkgs, archived_on = timestamps)
 
-  pattern <- ".*<title>Package ([^ ]+) .*<[/]title>.*"
-  pkgs <- grep(pattern, bfr, value = TRUE)
-  pkgs <- sub(pattern, "\\1", pkgs)
-  pattern <- ".*<pubDate>([^<]+)<[/]pubDate>.*"
-  dates <- grep(pattern, bfr, value = TRUE)
-  dates <- sub(pattern, "\\1", dates)
-  stopifnot(length(pkgs) == length(dates))
+    ## Drop old duplicates
+    db <- db[order(db$archived_on, decreasing = TRUE), ]
+    db <- subset(db, !duplicated(db$package))
 
-  tzs <- sub(".* ([[:alpha:]]+)$", "\\1", dates)
-  tz <- tzs[1]
-  stopifnot(all(tz == tzs))
-  timestamps <- strptime(dates, format = "%a, %d %b %Y %H:%M:%S", tz = tz)
+    ## Sanity check
+    stopifnot(!any(duplicated(db$package)))
 
-  data.frame(package = pkgs, archived_on = timestamps)
-} ## read_cranberries_removed()
+    data <<- db
+    
+    data
+  }
+}) ## read_cranberries_removed()
 
 
 #' @export
@@ -70,20 +87,7 @@ call_git <- function(cmd = c("add", "branch", "checkout", "clone", "commit", "pu
 
 
 ## Find archived packages and when they were archived
-bfr <- readLines("https://dirk.eddelbuettel.com/cranberries/cran/removed/index.rss")
-
-pattern <- ".*<title>Package ([^ ]+) .*<[/]title>.*"
-pkgs <- grep(pattern, bfr, value = TRUE)
-pkgs <- sub(pattern, "\\1", pkgs)
-pattern <- ".*<pubDate>([^<]+)<[/]pubDate>.*"
-dates <- grep(pattern, bfr, value = TRUE)
-dates <- sub(pattern, "\\1", dates)
-stopifnot(length(pkgs) == length(dates))
-
-tzs <- sub(".* ([[:alpha:]]+)$", "\\1", dates)
-tz <- tzs[1]
-stopifnot(all(tz == tzs))
-timestamps <- strptime(dates, format = "%a, %d %b %Y %H:%M:%S", tz = tz)
+removed <- read_cranberries_removed()
 
 ## Get current CRAN packages
 cran_pkgs <- unname(available.packages(repos = "https://cloud.r-project.org")[, "Package"])
@@ -96,7 +100,7 @@ github_repo <- "https://github.com/cranhaven/cranhaven.r-universe.dev"
 runiverse_repo <- "https://cranhaven.r-universe.dev"
 
 ## Packages archived within the last five weeks should be on CRANhaven
-cranhaven <- data.frame(package = pkgs, on_cran = (pkgs %in% cran_pkgs), archived_on = timestamps, url = github_repo, branch = file.path("package", pkgs), subdir = pkgs)
+cranhaven <- data.frame(package = removed$package, on_cran = (removed$package %in% cran_pkgs), archived_on = removed$archived_on, url = github_repo, branch = file.path("package", removed$package), subdir = removed$package)
 cranhaven <- subset(cranhaven, archived_on >= Sys.time() - 5*7*24*3600)
 cranhaven <- cranhaven[order(cranhaven$package), ]
 cranhaven_all <- cranhaven
@@ -105,6 +109,7 @@ message("Number of CRAN packages archived during the last five weeks: ", nrow(cr
 cranhaven <- subset(cranhaven_all, !on_cran)
 rownames(cranhaven) <- NULL
 message("Number of CRAN packages archived during the last five weeks that are still not on CRAN: ", nrow(cranhaven))
+stopifnot(!any(duplicated(cranhaven$package)))
 
 ## Returns status = 128 if no such branches exist, which is okay
 message("Checkout main branch")
