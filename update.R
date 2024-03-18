@@ -1,3 +1,74 @@
+dryrun <- FALSE
+
+#' @export
+read_cranberries_removed <- function(rss = "https://dirk.eddelbuettel.com/cranberries/cran/removed/index.rss") {
+  ## Find archived packages and when they were archived
+  bfr <- readLines(rss)
+
+  pattern <- ".*<title>Package ([^ ]+) .*<[/]title>.*"
+  pkgs <- grep(pattern, bfr, value = TRUE)
+  pkgs <- sub(pattern, "\\1", pkgs)
+  pattern <- ".*<pubDate>([^<]+)<[/]pubDate>.*"
+  dates <- grep(pattern, bfr, value = TRUE)
+  dates <- sub(pattern, "\\1", dates)
+  stopifnot(length(pkgs) == length(dates))
+
+  tzs <- sub(".* ([[:alpha:]]+)$", "\\1", dates)
+  tz <- tzs[1]
+  stopifnot(all(tz == tzs))
+  timestamps <- strptime(dates, format = "%a, %d %b %Y %H:%M:%S", tz = tz)
+
+  data.frame(package = pkgs, archived_on = timestamps)
+} ## read_cranberries_removed()
+
+
+#' @export
+cran_current <- local({
+  data <- NULL
+  function() {
+    if (!is.null(data)) return(data)
+    db <- tools:::CRAN_current_db()
+    tarballs <- rownames(db)
+    pkgs <- gsub("_.*", "", tarballs)
+    data <<- cbind(data.frame(package = pkgs, tarball = tarball), db)
+  }
+})
+
+#' @export
+cran_archived <- local({
+  data <- NULL
+  function() {
+    if (!is.null(data)) return(data)
+    data <<- tools:::CRAN_archive_db()
+  }
+})
+
+#' @importFrom jsonlite read_json
+#' @export
+cranhaven_pkgs <- local({
+  ## Manual imports for now
+  read_json <- jsonlite::read_json
+  
+  data <- NULL
+  
+  function(url = "https://raw.githubusercontent.com/cranhaven/cranhaven.r-universe.dev/main/packages.json") {
+    if (!is.null(data)) return(data)
+    data <<- read_json(url)
+    data
+  }
+})
+
+
+#' @export
+call_git <- function(cmd = c("add", "branch", "checkout", "clone", "commit", "push", "rm"), ..., env = character(), stdout = FALSE, stderr = FALSE) {
+  cmd <- match.arg(cmd)
+  if (dryrun) return(0L)
+  args <- c(cmd, ...)
+  res <- system2("git", args = args, env = env, stdout = stdout, stderr = stderr)
+  res
+}
+
+
 ## Find archived packages and when they were archived
 bfr <- readLines("https://dirk.eddelbuettel.com/cranberries/cran/removed/index.rss")
 
@@ -37,10 +108,10 @@ message("Number of CRAN packages archived during the last five weeks that are st
 
 ## Returns status = 128 if no such branches exist, which is okay
 message("Checkout main branch")
-res <- system2("git", args = c("checkout", "main"))
+res <- call_git("checkout", args = "main")
 
 message("Listing all package branches")
-branches <- system2("git", args = c("branch", "--all", "--list", shQuote('*/package/*')), stdout = TRUE, stderr = TRUE)
+branches <- call_git("branch", c("--all", "--list", shQuote('*/package/*')), stdout = TRUE, stderr = TRUE)
 branches <- sub("^[* ]+.*package/", "package/", branches)
 message(sprintf("Branches: [n=%d] %s", length(branches), paste(branches, collapse = ", ")))
 
@@ -57,11 +128,11 @@ for (kk in seq_len(nrow(cranhaven))) {
   if (branch %in% branches) next
 
   message(" - Checkout main branch")
-  res <- system2("git", args = c("checkout", "main"))
+  res <- call_git("checkout", "main")
 
   ## Create empty package branch?
   message(" - Create branch")
-  output <- system2("git", args = c("checkout", "--orphan", branch), stdout = TRUE, stderr = TRUE)
+  output <- call_git("checkout", "--orphan", branch, stdout = TRUE, stderr = TRUE)
   status <- attr(output, "status")
   if (!is.null(status)) {
     failed <- c(failed, pkg)
@@ -69,7 +140,7 @@ for (kk in seq_len(nrow(cranhaven))) {
   }
 
   message(" - Erase branch")
-  res <- system2("git", args = c("rm", "-rf", "."))
+  res <- call_git("rm", "-rf", ".")
   if (res != 0) {
     failed <- c(failed, pkg)
     next
@@ -77,7 +148,7 @@ for (kk in seq_len(nrow(cranhaven))) {
 
   message(" - Clone package")
   url <- paste0("https://github.com/cran/", pkg)
-  res <- system2("git", args = c("clone", "--depth=1", url, pkg))
+  res <- call_git("clone", "--depth=1", url, pkg)
   if (res != 0) {
     failed <- c(failed, pkg)
     next
@@ -85,30 +156,32 @@ for (kk in seq_len(nrow(cranhaven))) {
   
   message(" - Prune package")
   unlink(file.path(pkg, ".git"), recursive = TRUE, force = TRUE)
-  res <- system2("git", args = c("add", pkg))
+  res <- call_git("add", pkg)
   if (res != 0) {
     failed <- c(failed, pkg)
     next
   }
 
   message(" - Update Additional_repositories")
-  field <- "Additional_repositories"
-  file <- file.path(pkg, "DESCRIPTION")
-  desc <- desc0 <- read.dcf(file)
-  if (field %in% colnames(desc)) {
-    repos <- desc[,field]
-    if (!grepl(runiverse_repo, repos)) {
-      repos <- paste(c(repos, runiverse_repo), collapse = ",\n")
-      desc[,field] <- repos
+  if (!dryrun) {
+    field <- "Additional_repositories"
+    file <- file.path(pkg, "DESCRIPTION")
+    desc <- desc0 <- read.dcf(file)
+    if (field %in% colnames(desc)) {
+      repos <- desc[,field]
+      if (!grepl(runiverse_repo, repos)) {
+        repos <- paste(c(repos, runiverse_repo), collapse = ",\n")
+        desc[,field] <- repos
+      }
+    } else {
+      repos <- matrix(runiverse_repo, ncol = 1L)
+      colnames(repos) <- field
+      desc <- cbind(desc, repos)
     }
-  } else {
-    repos <- matrix(runiverse_repo, ncol = 1L)
-    colnames(repos) <- field
-    desc <- cbind(desc, repos)
-  }
-  
-  if (!identical(desc, desc0)) {
-    write.dcf(desc, file = file)
+    
+    if (!identical(desc, desc0)) {
+      write.dcf(desc, file = file)
+    }
   }
   
   message(" - Commit package")
@@ -116,7 +189,7 @@ for (kk in seq_len(nrow(cranhaven))) {
   when <- format(when, format = "%F %T %z")
   env <- paste0(c("GIT_AUTHOR_DATE=", "GIT_COMMITTER_DATE="), shQuote(when))
   msg <- sprintf("Add %s to CRANhaven, because archived on %s", pkg, when)
-  output <- system2("git", args = c("commit", "-a", "-m", shQuote(msg)), env = env, stdout = TRUE, stderr = TRUE)
+  output <- call_git("commit", "-a", "-m", shQuote(msg), env = env, stdout = TRUE, stderr = TRUE)
   status <- attr(output, "status")
   if (!is.null(status)) {
     print(status)
@@ -127,14 +200,14 @@ for (kk in seq_len(nrow(cranhaven))) {
   }
 
   message(" - Push branch")
-  res <- system2("git", args = c("push", "--set-upstream", "origin", branch))
+  res <- call_git("push", "--set-upstream", "origin", branch)
   if (res != 0) {
     failed <- c(failed, pkg)
     next
   }
 
   message("-- Checkout main branch")
-  res <- system2("git", args = c("checkout", "main"))
+  res <- call_git("checkout", "main")
 } ## for (kk in ...) 
 
 if (length(failed) > 0) {
@@ -146,7 +219,7 @@ if (length(failed) > 0) {
 
 ## Identify diff
 pkgs <- cranhaven$package
-pkgs_prev <- vapply(jsonlite::read_json("packages.json"), FUN = function(x) x$package, FUN.VALUE = NA_character_)
+pkgs_prev <- vapply(cranhaven_pkgs(), FUN = function(x) x$package, FUN.VALUE = NA_character_)
 pkgs_removed <- setdiff(setdiff(pkgs, pkgs_prev), cran_archived_pkgs)
 diff <- list(
   removed    = pkgs_removed,
@@ -170,10 +243,10 @@ if (sum(lengths(diff)) > 0) {
   message("packages.json written")
 
   message("Commit packages.json updates")
-  system2("git", args = c("commit", "-a", "-m", shQuote(msg)))
+  call_git("commit", "-a", "-m", shQuote(msg))
 
   message("Push updates")
-  system2("git", args = c("push"))
+  calL_git("push")
 } else {
   message("Nothing changed")
 }
