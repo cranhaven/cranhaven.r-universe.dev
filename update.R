@@ -150,22 +150,31 @@ call_git <- function(cmd = c("add", "branch", "checkout", "clone", "commit", "pu
 
 
 ## Find archived packages and when they were archived
+message("Querying CRANberries removed")
 removed <- read_cranberries_removed()
 
 ## Get current CRAN packages
+message("Querying CRAN for available packages")
 cran_pkgs <- unname(available.packages(repos = "https://cloud.r-project.org")[, "Package"])
 
 ## Get current CRAN packages
+message("Querying CRAN for archived packages")
 cran_archived <- tools:::CRAN_archive_db()
 cran_archived_pkgs <- names(cran_archived)
 
 github_repo <- "https://github.com/cranhaven/cranhaven.r-universe.dev"
 runiverse_repo <- "https://cranhaven.r-universe.dev"
 
+message("Querying CRAN for package events")
+events <- cran_events()
+events <- subset(events, package %in% removed$package)
+events <- events[, c("package", "x_cran_comment_date", "x_cran_comment_event", "x_cran_comment_reason", "x_cran_history")]
+
 ## Packages archived within the last five weeks should be on CRANhaven
 cranhaven <- data.frame(package = removed$package, on_cran = (removed$package %in% cran_pkgs), archived_on = removed$archived_on, url = github_repo, branch = file.path("package", removed$package), subdir = removed$package)
 cranhaven <- subset(cranhaven, archived_on >= Sys.time() - 5*7*24*3600)
 cranhaven <- cranhaven[order(cranhaven$package), ]
+cranhaven <- merge(cranhaven, events, by = "package")
 cranhaven_all <- cranhaven
 message("Number of CRAN packages archived during the last five weeks: ", nrow(cranhaven_all))
 
@@ -307,7 +316,7 @@ if (sum(lengths(diff)) > 0) {
   msg <- paste(msg, collapse = " ")
   message(msg)
 
-  ## Write packages.json for R-universe 
+  ## Write packages.json for R-universe
   jsonlite::write_json(cranhaven, "packages.json", pretty = TRUE)
   message("packages.json written")
 
