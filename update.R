@@ -80,6 +80,7 @@ cran_events <- local({
     reasons <- rep(NA_character_, times = nrow(db_active))
     idxs <- which(!is.na(events))
     values <- gsub("^.* on [[:digit:]-]+[[:blank:]]*(|,|;|:|as|at)([[:blank:]]+|[.])", "", db_active$x_cran_comment[idxs])
+    ## Anonymize email addresses
     values <- sub("[[:blank:]]+<[^>@]+@[^>@]+>", "", values)
     values <- gsub("[[:blank:]]+", " ", values)
     values <- gsub("[\n]+", " ", values)
@@ -93,6 +94,12 @@ cran_events <- local({
     db_legacy$x_cran_comment_reason <- NA_character_
 
     db <- rbind(db_legacy, db_active)
+
+    ## Anonymize email addresses
+    values <- db$x_cran_history
+    values <- sub("[[:blank:]]+<[^>@]+@[^>@]+>", "", values)
+    db$x_cran_history <- values
+
     cols <- c("package", "x_cran_comment_date", "x_cran_comment_event", "x_cran_comment_reason", "x_cran_comment", "x_cran_history", "replaced_by", "additional_repositories", "maintainer", "license_restricts_use", "systemrequirements", "lazydatacompression", "license_is_foss", "os_type", "url")
     db <- db[, cols]
     db <- db[order(db$x_cran_comment_date, decreasing = TRUE), ]
