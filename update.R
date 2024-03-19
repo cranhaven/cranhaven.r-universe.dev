@@ -317,7 +317,7 @@ diff <- list(
 str(diff)
 
 if (sum(lengths(diff)) > 0) {
-  msg <- "CRANhaven updates:"
+  msg <- "CRAN updates:"
   for (what in names(diff)) {
     if (length(diff[[what]]) > 0) {
       msg <- c(msg, sprintf("%s %s.", tools::toTitleCase(what), paste(sQuote(diff[[what]]), collapse = ", ")))
