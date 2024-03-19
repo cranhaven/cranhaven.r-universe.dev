@@ -85,6 +85,7 @@ cran_events <- local({
     values <- gsub("[[:blank:]]+", " ", values)
     values <- gsub("[\n]+", " ", values)
     values <- gsub("(^[[:blank:]]+|[[:blank:].]+$)", "", values)
+    values <- gsub("[.] , ([A-Z])", ". \\1", values)
     values <- gsub(". , ", ", ", values, fixed = TRUE)
     reasons[idxs] <- values
     db_active$x_cran_comment_reason <- reasons
@@ -313,7 +314,7 @@ diff <- list(
 )
 str(diff)
 
-if (sum(lengths(diff)) > 0) {
+if (TRUE || sum(lengths(diff)) > 0) {
   msg <- "CRANhaven updates:"
   for (what in names(diff)) {
     if (length(diff[[what]]) > 0) {
