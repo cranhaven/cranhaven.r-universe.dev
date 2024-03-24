@@ -160,6 +160,34 @@ cranhaven_pkgs <- local({
 })
 
 
+cran_pkg_description <- local({
+  db <- list()
+  function(pkg) {
+    desc <- db[[pkg]]
+    if (!is.null(desc)) return(desc)
+    url <- sprintf("https://raw.githubusercontent.com/cran/%s/master/DESCRIPTION", pkg)
+    desc <- tryCatch(read.dcf(url(url)), error = function(ex) list())
+    db[[pkg]] <<- desc
+    desc
+  }
+})
+
+
+cran_pkg_annotations <- function(pkgs) {
+  desc <- lapply(pkgs, FUN = cran_pkg_description)
+  desc <- lapply(desc, FUN = function(d) {
+    res <- data.frame(Package = NA_character_, URL = NA_character_, BugReports = NA_character_)
+    names <- intersect(colnames(d), names(res))    
+    for (name in names) res[[name]] <- d[, name]
+    res
+  })
+  desc <- do.call(rbind, desc)
+  colnames(desc) <- tolower(colnames(desc))
+  colnames(desc)[2:3] <- paste0("package_", colnames(desc)[2:3])
+  desc
+}
+
+
 #' @export
 call_git <- function(cmd = c("add", "branch", "checkout", "clone", "commit", "push", "rm"), ..., env = character(), stdout = FALSE, stderr = FALSE) {
   cmd <- match.arg(cmd)
@@ -314,6 +342,10 @@ if (length(failed) > 0) {
 
 ## Assert that all packages where cloned
 #stopifnot(identical(sort(cranhaven$package), sort(dir())))
+
+message("Querying CRAN package descriptions")
+annotations <- cran_pkg_annotations(cranhaven$package)
+cranhaven <- merge(cranhaven, annotations, by = "package")
 
 ## Identify diff
 pkgs <- cranhaven$package
