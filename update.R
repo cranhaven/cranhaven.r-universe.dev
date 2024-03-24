@@ -327,7 +327,7 @@ diff <- list(
 )
 str(diff)
 
-if (TRUE || sum(lengths(diff)) > 0) {
+if (sum(lengths(diff)) > 0) {
   msg <- "CRAN updates:"
   for (what in names(diff)) {
     if (length(diff[[what]]) > 0) {
