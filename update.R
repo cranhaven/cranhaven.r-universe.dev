@@ -1,6 +1,16 @@
 dryrun <- FALSE
 
 #' @export
+capitalize <- function(x) {
+  vapply(x, FUN.VALUE = NA_character_, FUN = function(s) {
+    if (is.na(s) || nchar(s) == 0) return(s)
+    first <- substr(s, start = 1L, stop = 1L)
+    tail <- substr(s, start = 2L, stop = nchar(s))
+    paste0(toupper(first), tail)
+  })
+}
+
+#' @export
 read_cranberries_removed <- local({
   data <- NULL
   
@@ -89,6 +99,7 @@ cran_events <- local({
     values <- gsub(". , ", ", ", values)
     values <- gsub("^for ", "", values)
     values <- gsub("^the maintainer's ", "maintainer's ", values, fixed = TRUE)
+    values <- capitalize(values)
     reasons[idxs] <- values
     db_active$x_cran_comment_reason <- reasons
 
@@ -316,7 +327,7 @@ diff <- list(
 )
 str(diff)
 
-if (sum(lengths(diff)) > 0) {
+if (TRUE || sum(lengths(diff)) > 0) {
   msg <- "CRAN updates:"
   for (what in names(diff)) {
     if (length(diff[[what]]) > 0) {
