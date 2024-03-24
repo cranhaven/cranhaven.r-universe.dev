@@ -1,0 +1,42 @@
+Gini_CTR_BS <-
+function(y,w=rep(1,length(y)))
+{
+dataset<-cbind(y,w)
+ord_y<-order(y)
+dataset_ord<-dataset[ord_y,]
+y<-dataset_ord[,1]
+w<-dataset_ord[,2]
+N<-sum(w)
+yw<-y*w
+C_i<-cumsum(w)
+num_1<-sum(yw*C_i)
+num_2<-sum(yw)
+num_3<-sum(yw*w)
+G_num<-(2/N^2)*num_1-(1/N)*num_2-(1/N^2)*num_3
+VectYMin<-function(yw)
+{
+yw<-sort(yw)
+cumsum(yw)
+step_Y<-cumsum(yw)<0
+VectYMin<-yw[step_Y]
+VectYMin
+}
+Y_neg<-VectYMin(yw)
+k_y<-length(Y_neg)
+k1_y<-k_y+1
+y_k1<-y[k1_y]
+C_i_k<-C_i[1:k_y]
+y_y<-y[c(1:k_y)]
+yw_k<-yw[c(1:k_y)]
+w_k<-w[c(1:k_y)]
+m_y<-(sum(yw)/N)
+den_1<-sum(yw_k*C_i_k)
+den_2<-sum(yw_k)
+den_3<-((den_2/y_k1)-2*sum(w_k))
+den_4<-sum(yw_k*w_k)
+G_BS_den<-m_y+(2/N^2)*den_1+(1/N^2)*den_2*den_3-(1/N^2)*den_4
+if (m_y<=0) {G_BS_den<-G_num} else {G_BS_den}; 
+if (k_y==0) {G_BS_den<-m_y} else {G_BS_den}
+G_CTR_BS<-G_num/G_BS_den
+list(GINI_CTR_BS=G_CTR_BS)
+}
