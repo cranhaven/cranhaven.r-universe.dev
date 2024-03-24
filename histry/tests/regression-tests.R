@@ -1,0 +1,6 @@
+library(histry)
+stopifnot(inherits(get("evaluate_call", asNamespace("evaluate")), "functionWithTrace"))
+evaltracer(FALSE)
+stopifnot(!inherits(get("evaluate_call", asNamespace("evaluate")),"functionWithTrace"))
+evaltracer(TRUE)
+stopifnot(inherits(get("evaluate_call", asNamespace("evaluate")), "functionWithTrace"))
