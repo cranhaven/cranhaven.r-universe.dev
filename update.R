@@ -182,8 +182,8 @@ cran_pkg_annotations <- function(pkgs) {
     res
   })
   desc <- do.call(rbind, desc)
-  desc$Maintainer <- sub("[[:space:]]*<.*", "", desc$Maintainer)
-  desc$Maintainer <- gsub("(^\"|\"$)", "", desc$Maintainer)
+#  desc$Maintainer <- sub("[[:space:]]*<.*", "", desc$Maintainer)
+#  desc$Maintainer <- gsub("(^\"|\"$)", "", desc$Maintainer)
   colnames(desc) <- tolower(colnames(desc))
   colnames(desc)[2:3] <- paste0("package_", colnames(desc)[2:3])
   desc
