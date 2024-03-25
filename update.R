@@ -176,12 +176,14 @@ cran_pkg_description <- local({
 cran_pkg_annotations <- function(pkgs) {
   desc <- lapply(pkgs, FUN = cran_pkg_description)
   desc <- lapply(desc, FUN = function(d) {
-    res <- data.frame(Package = NA_character_, URL = NA_character_, BugReports = NA_character_)
+    res <- data.frame(Package = NA_character_, URL = NA_character_, BugReports = NA_character_, Maintainer = NA_character_)
     names <- intersect(colnames(d), names(res))    
     for (name in names) res[[name]] <- d[, name]
     res
   })
   desc <- do.call(rbind, desc)
+  desc$Maintainer <- sub("[[:space:]]*<.*", "", desc$Maintainer)
+  desc$Maintainer <- gsub("(^\"|\"$)", "", desc$Maintainer)
   colnames(desc) <- tolower(colnames(desc))
   colnames(desc)[2:3] <- paste0("package_", colnames(desc)[2:3])
   desc
