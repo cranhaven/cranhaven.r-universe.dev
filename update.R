@@ -8,7 +8,7 @@ capitalize <- function(x) {
     tail <- substr(s, start = 2L, stop = nchar(s))
     paste0(toupper(first), tail)
   })
-}
+} ## capitalize()
 
 #' @export
 read_cranberries_removed <- local({
@@ -120,7 +120,7 @@ cran_events <- local({
     
     data <<- db
   }
-})
+}) ## cran_events()
 
 
 #' @export
@@ -133,7 +133,8 @@ cran_current <- local({
     pkgs <- gsub("_.*", "", tarballs)
     data <<- cbind(data.frame(package = pkgs, tarball = tarball), db)
   }
-})
+}) ## cran_current()
+
 
 #' @export
 cran_archived <- local({
@@ -142,7 +143,8 @@ cran_archived <- local({
     if (!is.null(data)) return(data)
     data <<- tools:::CRAN_archive_db()
   }
-})
+}) ## cran_archived()
+
 
 #' @importFrom jsonlite read_json
 #' @export
@@ -157,7 +159,7 @@ cranhaven_pkgs <- local({
     data <<- read_json(url)
     data
   }
-})
+}) ## cranhaven_pkgs()
 
 
 cran_pkg_description <- local({
@@ -170,7 +172,7 @@ cran_pkg_description <- local({
     db[[pkg]] <<- desc
     desc
   }
-})
+}) ## cran_pkg_description()
 
 
 cran_pkg_annotations <- function(pkgs) {
@@ -187,7 +189,7 @@ cran_pkg_annotations <- function(pkgs) {
   colnames(desc) <- tolower(colnames(desc))
   colnames(desc)[2:3] <- paste0("package_", colnames(desc)[2:3])
   desc
-}
+} ## cran_pkg_annotations()
 
 
 #' @export
@@ -197,189 +199,226 @@ call_git <- function(cmd = c("add", "branch", "checkout", "clone", "commit", "pu
   args <- c(cmd, ...)
   res <- system2("git", args = args, env = env, stdout = stdout, stderr = stderr)
   res
-}
+} ## call_git()
 
 
-## Find archived packages and when they were archived
-message("Querying CRANberries removed")
-removed <- read_cranberries_removed()
-
-## Get current CRAN packages
-message("Querying CRAN for available packages")
-cran_pkgs <- unname(available.packages(repos = "https://cloud.r-project.org")[, "Package"])
-
-## Get current CRAN packages
-message("Querying CRAN for archived packages")
-cran_archived <- tools:::CRAN_archive_db()
-cran_archived_pkgs <- names(cran_archived)
-
-github_repo <- "https://github.com/cranhaven/cranhaven.r-universe.dev"
-runiverse_repo <- "https://cranhaven.r-universe.dev"
-
-message("Querying CRAN for package events")
-events <- cran_events()
-events <- subset(events, package %in% removed$package)
-events <- events[, c("package", "x_cran_comment_date", "x_cran_comment_event", "x_cran_comment_reason", "x_cran_history")]
-
-## Packages archived within the last five weeks should be on CRANhaven
-cranhaven <- data.frame(package = removed$package, on_cran = (removed$package %in% cran_pkgs), archived_on = removed$archived_on, url = github_repo, branch = file.path("package", removed$package), subdir = removed$package)
-cranhaven <- subset(cranhaven, archived_on >= Sys.time() - 5*7*24*3600)
-cranhaven <- cranhaven[order(cranhaven$package), ]
-cranhaven <- merge(cranhaven, events, by = "package")
-cranhaven_all <- cranhaven
-message("Number of CRAN packages archived during the last five weeks: ", nrow(cranhaven_all))
-
-cranhaven <- subset(cranhaven_all, !on_cran)
-rownames(cranhaven) <- NULL
-message("Number of CRAN packages archived during the last five weeks that are still not on CRAN: ", nrow(cranhaven))
-stopifnot(!any(duplicated(cranhaven$package)))
-
-## Returns status = 128 if no such branches exist, which is okay
-message("Checkout main branch")
-res <- call_git("checkout", args = "main")
-
-message("Listing all package branches")
-branches <- call_git("branch", c("--all", "--list", shQuote('*/package/*')), stdout = TRUE, stderr = TRUE)
-branches <- sub("^[* ]+.*package/", "package/", branches)
-message(sprintf("Branches: [n=%d] %s", length(branches), paste(branches, collapse = ", ")))
-
-failed <- c()
-for (kk in seq_len(nrow(cranhaven))) {
-  entry <- cranhaven[kk, ]
-  pkg <- entry$package
-  message(sprintf("%d/%d Package %s", kk, nrow(cranhaven), sQuote(pkg)))
+main <- function() {
+  ## Find archived packages and when they were archived
+  message("Querying CRANberries removed")
+  removed <- read_cranberries_removed()
   
-  branch <- entry$branch
-  message(" - Branch: ", branch)
-
-  ## Already done?
-  if (branch %in% branches) next
-
-  message(" - Checkout main branch")
-  res <- call_git("checkout", "main")
-
-  ## Create empty package branch?
-  message(" - Create branch")
-  output <- call_git("checkout", "--orphan", branch, stdout = TRUE, stderr = TRUE)
-  status <- attr(output, "status")
-  if (!is.null(status)) {
-    failed <- c(failed, pkg)
-    next
-  }
-
-  message(" - Erase branch")
-  res <- call_git("rm", "-rf", ".")
-  if (res != 0) {
-    failed <- c(failed, pkg)
-    next
-  }
-
-  message(" - Clone package")
-  url <- paste0("https://github.com/cran/", pkg)
-  res <- call_git("clone", "--depth=1", url, pkg)
-  if (res != 0) {
-    failed <- c(failed, pkg)
-    next
-  }
+  ## Get current CRAN packages
+  message("Querying CRAN for available packages")
+  cran_pkgs <- unname(available.packages(repos = "https://cloud.r-project.org")[, "Package"])
   
-  message(" - Prune package")
-  unlink(file.path(pkg, ".git"), recursive = TRUE, force = TRUE)
-  res <- call_git("add", pkg)
-  if (res != 0) {
-    failed <- c(failed, pkg)
-    next
-  }
+  ## Get archived CRAN packages
+  message("Querying CRAN for archived packages")
+  cran_archived <- tools:::CRAN_archive_db()
+  cran_archived_pkgs <- names(cran_archived)
+  
+  github_repo <- "https://github.com/cranhaven/cranhaven.r-universe.dev"
+  runiverse_repo <- "https://cranhaven.r-universe.dev"
+  
+  message("Querying CRAN for package events")
+  events <- cran_events()
+  events <- subset(events, package %in% removed$package)
+  events <- events[, c("package", "x_cran_comment_date", "x_cran_comment_event", "x_cran_comment_reason", "x_cran_history")]
+  
+  ## Packages archived within the last five weeks should be on CRANhaven
+  cranhaven <- data.frame(package = removed$package, on_cran = (removed$package %in% cran_pkgs), archived_on = removed$archived_on, url = github_repo, branch = file.path("package", removed$package), subdir = removed$package)
+  cranhaven <- subset(cranhaven, archived_on >= Sys.time() - 5*7*24*3600)
+  cranhaven <- cranhaven[order(cranhaven$package), ]
+  cranhaven <- merge(cranhaven, events, by = "package")
+  cranhaven_all <- cranhaven
+  message("Number of CRAN packages archived during the last five weeks: ", nrow(cranhaven_all))
+  
+  cranhaven <- subset(cranhaven_all, !on_cran)
+  rownames(cranhaven) <- NULL
+  message("Number of CRAN packages archived during the last five weeks that are still not on CRAN: ", nrow(cranhaven))
+  stopifnot(!any(duplicated(cranhaven$package)))
+  
+  ## Returns status = 128 if no such branches exist, which is okay
+  message("Checkout main branch")
+  res <- call_git("checkout", args = "main")
+  
+  message("Listing all local or remote package branches")
+  branches <- call_git("branch", c("--all", "--list", shQuote('*/package/*')), stdout = TRUE, stderr = TRUE)
+  branches <- sub("^[* ]+.*package/", "package/", branches)
+  message(sprintf("Branches: [n=%d] %s", length(branches), paste(branches, collapse = ", ")))
 
-  message(" - Update Additional_repositories")
-  if (!dryrun) {
-    field <- "Additional_repositories"
-    file <- file.path(pkg, "DESCRIPTION")
-    desc <- desc0 <- read.dcf(file)
-    if (field %in% colnames(desc)) {
-      repos <- desc[,field]
-      if (!grepl(runiverse_repo, repos)) {
-        repos <- paste(c(repos, runiverse_repo), collapse = ",\n")
-        desc[,field] <- repos
-      }
-    } else {
-      repos <- matrix(runiverse_repo, ncol = 1L)
-      colnames(repos) <- field
-      desc <- cbind(desc, repos)
+  message("Adding newly archived packages")
+  pkgs <- setdiff(cranhaven$package, basename(branches))
+  message(sprintf(" - packages to add: [n=%d] %s", length(pkgs), paste(pkgs, collapse = ", ")))
+  failed <- c()
+  for (kk in seq_along(pkgs)) {
+    pkg <- pkgs[kk]
+    message(sprintf("%d/%d Package %s", kk, length(pkgs), sQuote(pkg)))
+    ee <- match(pkg, cranhaven$package)
+    entry <- cranhaven[ee, ]
+    stopifnot(entry$package == pkg)
+    
+    branch <- entry$branch
+    message(" - Branch: ", branch)
+  
+    message(" - Checkout main branch")
+    res <- call_git("checkout", "main")
+  
+    ## Create empty package branch?
+    message(" - Create branch")
+    output <- call_git("checkout", "--orphan", branch, stdout = TRUE, stderr = TRUE)
+    status <- attr(output, "status")
+    if (!is.null(status)) {
+      failed <- c(failed, pkg)
+      next
+    }
+  
+    message(" - Erase branch")
+    res <- call_git("rm", "-rf", ".")
+    if (res != 0) {
+      failed <- c(failed, pkg)
+      next
+    }
+  
+    message(" - Clone package")
+    url <- paste0("https://github.com/cran/", pkg)
+    res <- call_git("clone", "--depth=1", url, pkg)
+    if (res != 0) {
+      failed <- c(failed, pkg)
+      next
     }
     
-    if (!identical(desc, desc0)) {
-      write.dcf(desc, file = file)
+    message(" - Prune package")
+    unlink(file.path(pkg, ".git"), recursive = TRUE, force = TRUE)
+    res <- call_git("add", pkg)
+    if (res != 0) {
+      failed <- c(failed, pkg)
+      next
     }
-  }
   
-  message(" - Commit package")
-  when <- entry$archived_on
-  when <- format(when, format = "%F %T %z")
-  env <- paste0(c("GIT_AUTHOR_DATE=", "GIT_COMMITTER_DATE="), shQuote(when))
-  msg <- sprintf("Add %s to CRANhaven, because archived on %s", pkg, when)
-  output <- call_git("commit", "-a", "-m", shQuote(msg), env = env, stdout = TRUE, stderr = TRUE)
-  status <- attr(output, "status")
-  if (!is.null(status)) {
-    print(status)
-    print(output)
-    failed <- c(failed, pkg)
-    stop("Failed")
-    next
-  }
-
-  message(" - Push branch")
-  res <- call_git("push", "--set-upstream", "origin", branch)
-  if (res != 0) {
-    failed <- c(failed, pkg)
-    next
-  }
-
-  message("-- Checkout main branch")
-  res <- call_git("checkout", "main")
-} ## for (kk in ...) 
-
-if (length(failed) > 0) {
-  stop(sprintf("Failed to create branches for %d package(s): %s", length(failed), paste(sQuote(failed), collapse = ", ")))
-}
-
-## Assert that all packages where cloned
-#stopifnot(identical(sort(cranhaven$package), sort(dir())))
-
-message("Querying CRAN package descriptions")
-annotations <- cran_pkg_annotations(cranhaven$package)
-cranhaven <- merge(cranhaven, annotations, by = "package")
-
-## Identify diff
-pkgs <- cranhaven$package
-pkgs_prev <- vapply(cranhaven_pkgs(), FUN = function(x) x$package, FUN.VALUE = NA_character_)
-pkgs_removed <- setdiff(setdiff(pkgs, pkgs_prev), cran_archived_pkgs)
-diff <- list(
-  removed    = pkgs_removed,
-  archived   = setdiff(setdiff(pkgs, pkgs_prev), pkgs_removed),
-  unarchived = intersect(setdiff(pkgs_prev, pkgs), cran_pkgs),
-  expired    = setdiff(setdiff(pkgs_prev, pkgs), cran_pkgs)
-)
-str(diff)
-
-if (sum(lengths(diff)) > 0) {
-  msg <- "CRAN updates:"
-  for (what in names(diff)) {
-    if (length(diff[[what]]) > 0) {
-      msg <- c(msg, sprintf("%s %s.", tools::toTitleCase(what), paste(sQuote(diff[[what]]), collapse = ", ")))
+    message(" - Update Additional_repositories")
+    if (!dryrun) {
+      field <- "Additional_repositories"
+      file <- file.path(pkg, "DESCRIPTION")
+      desc <- desc0 <- read.dcf(file)
+      if (field %in% colnames(desc)) {
+        repos <- desc[,field]
+        if (!grepl(runiverse_repo, repos)) {
+          repos <- paste(c(repos, runiverse_repo), collapse = ",\n")
+          desc[,field] <- repos
+        }
+      } else {
+        repos <- matrix(runiverse_repo, ncol = 1L)
+        colnames(repos) <- field
+        desc <- cbind(desc, repos)
+      }
+      
+      if (!identical(desc, desc0)) {
+        write.dcf(desc, file = file)
+      }
     }
+    
+    message(" - Commit package")
+    when <- entry$archived_on
+    when <- format(when, format = "%F %T %z")
+    env <- paste0(c("GIT_AUTHOR_DATE=", "GIT_COMMITTER_DATE="), shQuote(when))
+    msg <- sprintf("Add %s to CRANhaven, because archived on %s", pkg, when)
+    output <- call_git("commit", "-a", "-m", shQuote(msg), env = env, stdout = TRUE, stderr = TRUE)
+    status <- attr(output, "status")
+    if (!is.null(status)) {
+      print(status)
+      print(output)
+      failed <- c(failed, pkg)
+      stop("Failed")
+      next
+    }
+  
+    message(" - Push branch")
+    res <- call_git("push", "--set-upstream", "origin", branch)
+    if (res != 0) {
+      failed <- c(failed, pkg)
+      next
+    }
+  
+    message("-- Checkout main branch")
+    res <- call_git("checkout", "main")
+  } ## for (kk in ...) 
+  
+  if (length(failed) > 0) {
+    stop(sprintf("Failed to create branches for %d package(s): %s", length(failed), paste(sQuote(failed), collapse = ", ")))
   }
-  msg <- paste(msg, collapse = " ")
-  message(msg)
 
-  ## Write packages.json for R-universe
-  jsonlite::write_json(cranhaven, "packages.json", pretty = TRUE)
-  message("packages.json written")
 
-  message("Commit packages.json updates")
-  call_git("commit", "-a", "-m", shQuote(msg))
+  message("Removing expired and unarchived packages")
+  pkgs <- setdiff(basename(branches), cranhaven$package)
+  message(sprintf(" - packages to remove: [n=%d] %s", length(pkgs), paste(pkgs, collapse = ", ")))
+  message(" - Checkout main branch")
+  res <- call_git("checkout", "main")
+  failed <- c()
+  for (kk in seq_along(pkgs)) {
+    pkg <- pkgs[kk]
+    message(sprintf("%d/%d Package %s", kk, length(pkgs), sQuote(pkg)))
+    bb <- match(pkg, basename(branches))
+    branch <- branches[bb]
+    message(" - Branch: ", branch)
+  
+    message(" - Delete remote branch")
+    res <- call_git("push", "origin", "--delete", branch)
+    if (res != 0) {
+      message(" - failed")
+      failed <- c(failed, pkg)
+    }
+    
+    message(" - Delete local branch")
+    res <- call_git("branch", "-D", branch)
+    if (res != 0) {
+      message(" - failed")
+      failed <- c(failed, pkg)
+    }
+  } ## for (kk in ...) 
+    
+  if (length(failed) > 0) {
+    failed <- unique(failed)
+    warning(sprintf("Failed to delete branches for %d package(s): %s", length(failed), paste(sQuote(failed), collapse = ", ")), immediate. = TRUE)
+  }
 
-  message("Push updates")
-  call_git("push")
-} else {
-  message("Nothing changed")
-}
+  message("Querying CRAN package descriptions")
+  annotations <- cran_pkg_annotations(cranhaven$package)
+  cranhaven <- merge(cranhaven, annotations, by = "package")
+  
+  ## Identify diff
+  pkgs <- cranhaven$package
+  pkgs_prev <- vapply(cranhaven_pkgs(), FUN = function(x) x$package, FUN.VALUE = NA_character_)
+  pkgs_removed <- setdiff(setdiff(pkgs, pkgs_prev), cran_archived_pkgs)
+  diff <- list(
+    removed    = pkgs_removed,
+    archived   = setdiff(setdiff(pkgs, pkgs_prev), pkgs_removed),
+    unarchived = intersect(setdiff(pkgs_prev, pkgs), cran_pkgs),
+    expired    = setdiff(setdiff(pkgs_prev, pkgs), cran_pkgs)
+  )
+  str(diff)
+  
+  if (sum(lengths(diff)) > 0) {
+    msg <- "CRAN updates:"
+    for (what in names(diff)) {
+      if (length(diff[[what]]) > 0) {
+        msg <- c(msg, sprintf("%s %s.", tools::toTitleCase(what), paste(sQuote(diff[[what]]), collapse = ", ")))
+      }
+    }
+    msg <- paste(msg, collapse = " ")
+    message(msg)
+  
+    ## Write packages.json for R-universe
+    jsonlite::write_json(cranhaven, "packages.json", pretty = TRUE)
+    message("packages.json written")
+  
+    message("Commit packages.json updates")
+    call_git("commit", "-a", "-m", shQuote(msg))
+  
+    message("Push updates")
+    call_git("push")
+  } else {
+    message("Nothing changed")
+  }
+} ## main()
+
+main()
