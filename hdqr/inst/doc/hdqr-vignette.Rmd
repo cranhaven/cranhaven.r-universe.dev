@@ -1,0 +1,165 @@
+---
+title: Getting started with hdqr
+author: An introductory tutorial with examples
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Getting started with hdqr}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+This package provides tools for fitting elastic net penalized quantile regression.
+
+The strengths and improvements that this package offers relative to other quantile regression packages are as follows:
+
+* Compiled Fortran code significantly speeds up the elastic net penalized quantile regression estimation process.
+
+* Solve the elastic net penalized quantile regression using generalized coordinate descent algorithm.
+
+* Active-set and warm-start strategies implemented to compute the solution path as \lambda_1 varies.
+
+For this getting-started vignette, first, we will randomly generate `x`, an input matrix of 
+predictors of dimension $n\times p$ and a response variable 'y'.
+
+```{r}
+library(hdqr)
+set.seed(315)
+n <- 100
+p <- 400
+x <- matrix(data = rnorm(n * p, mean = 0, sd = 1), nrow = n, ncol = p)
+beta_star <- c(c(2, 1.5, 0.8, 1, 1.75, 0.75, 0.3), rep(0, (p - 7)))
+eps <- rnorm(n, mean = 0, sd = 1)
+y <- x %*% beta_star + eps
+```
+Then the elastic net penalized quantile regression model is formulated as:
+
+$$
+ \min_{\beta\in\mathbb{R}^{p},b_0\in\mathbb{R}}
+ \frac{1}{n}
+  \sum_{i=1}^{n}\rho_{\tau}(y_{i}-b_0-x_i^{\top}\beta)
+ + \lambda_1\cdot|pf_1\circ\beta|_1 +
+     0.5*\lambda_2\cdot|\beta|^2,
+  \qquad (*).
+$$
+where \eqn{\rho_{\tau}}{\rho_{\tau}} is the quantile or check loss function,
+and the penalty is a combination of weighted L1 and L2 penalties. 
+The \eqn{\circ}{•} represents the Hadamard product.
+
+## `hdqr()`
+Given an input matrix `x`, a quantile level `tau`, and a response vector `y`,
+the elastic net penalized quantile regression model is estimated for a sequence of penalty
+parameter values. The other main arguments the users might supply are:
+
+* `lambda`: a user-supplied `lambda` sequence for L1 penalty. Ideally a decreasing sequence 
+to utilize warm-start optimization. The sequence is sorted in decreasing order if not already.
+
+* `nlambda`: number of `lambda` values, default is 100.
+
+* `lambda.factor`: The factor for calculating the minimal \code{lambda} value, defined as 
+\code{min(lambda)} = \code{lambda.factor} * \code{max(lambda)}. Here, \code{max(lambda)} is 
+the smallest \code{lambda} that results in all coefficients being zero (except intercept). 
+Defaults to 0.05 if \eqn{n < p}, and 0.001 if \eqn{n > p}. A very low \code{lambda.factor} 
+may result in a saturated model. Does not apply if a \code{lambda} sequence is supplied.
+
+* `is_exact`: Logical indicating if the solution should be exact (TRUE) or approximate (FALSE). 
+Default is FALSE.
+
+* `lam2`: Regularization parameter for L2 penalty. A single value is used for each fitting process.
+
+* `pf`: L1 penalty factor of length \eqn{p} used for the adaptive LASSO or adaptive elastic net. 
+Separate L1 penalty weights can be applied to each coefficient to allow different L1 shrinkage.
+Can be 0 for some variables (but not all), which imposes no shrinkage, and results in that variable 
+always being included in the model. Default is 1 for all variables (and implicitly infinity for 
+variables in the \code{exclude} list).
+
+* `exclude`: Indices of predictors excluded from the model, treated as having infinite penalty. 
+Defaults to none.
+
+* `dfmax`: Maximum number of variables in the model, particularly useful when \eqn{p} is large.
+Default is \eqn{p+1}.
+
+* `pmax`: The maximum number of non-zero coefficients ever allowed in the solution path. 
+Each coefficient is counted only once irrespective of its status across different models. 
+Default is \code{min(dfmax*1.2, p)}.
+
+* `standardize`: Logical flag indicating whether variables should be standardized before fitting.
+Coefficients are returned on the original scale. Default is TRUE.
+
+* `eps`: Convergence criterion.
+
+* `maxit`: Maximum number of iterations.
+
+* `sigma`: Augmented Lagrangian parameter for quadratic terms, must be positive. Default is 0.05.
+
+* `hval`: The smoothing parameter for the smoothed check loss. Default is 0.125.
+
+```{r}
+lambda <- 10^(seq(1, -4, length.out=30))
+lam2 <- 0.01
+tau <- 0.5
+fit <- hdqr(x, y, lambda=lambda, lam2=lam2, tau=tau)
+```
+
+## `cv.hdqr()`
+
+This function performs k-fold cross-validation (cv) for the `hdqr()` model. It takes the same
+arguments `x`, `y`, `tau`, `lambda`, which are specified above, with additional
+argument `nfolds` and `foldid` for the error measure. 
+
+```{r}
+cv.fit <- cv.hdqr(x, y, lambda=lambda, tau=tau)
+```
+
+## `nc.hdqr()`
+
+This function fits the penalized quantile regression model using nonconvex penalties 
+such as SCAD or MCP. It allows for flexible control over the regularization parameters and 
+offers advanced options for initializing and optimizing the fit. It takes the same arguments `x`, `y`,`lambda`, `lam2`, which are specified above.The other main arguments the users might supply are:
+
+* `pen`: Specifies the type of nonconvex penalty: "SCAD" or "MCP".
+
+* `aval`: The parameter value for the SCAD or MCP penalty. Default is 3.7 for SCAD and 2 for MCP.
+
+* `ini_beta`: Optional initial coefficients to start the fitting process.
+
+* `lla_step`: Number of Local Linear Approximation (LLA) steps. Default is 3.
+
+```{r}
+nc.fit <- nc.hdqr(x=x, y=y, tau=tau, lambda=lambda, lam2=lam2, pen="scad")
+```
+
+## `cv.nc.hdqr()`
+
+This function onducts k-fold cross-validation for the `nc.hdqr()` function. It takes the same 
+arguments as the `cv.hdqr()` function.
+
+```{r}
+cv.nc.fit <- cv.nc.hdqr(y=y, x=x, tau=tau, lambda=lambda, lam2=lam2, pen="scad")
+```
+
+### Methods
+
+A number of S3 methods are provided for `hdqr`, `cv.hdqr`, `nc.hdqr` and `cv.nc.hdqr` objects. 
+
+* `coef()` and `predict()` return a matrix of coefficients and predictions $\hat{y}$ given a matrix `x` at each lambda respectively. The optional `s` argument may provide a specific value of $\lambda$ (not necessarily
+part of the original sequence), or, in the case of `cv.hdqr` object or `cv.nc.hdqr`, a string specifying either `"lambda.min"` or `"lambda.1se"`.
+
+
+```{r}
+coefs <- coef(fit, s = fit$lambda[3:5])
+preds <- predict(fit, newx = tail(x), s = fit$lambda[3:5])
+cv.coefs <- coef(cv.fit, s = c(0.02, 0.03))
+cv.preds <- predict(cv.fit, newx = x[50:60, ], s = "lambda.min")
+nc.coefs <- coef(nc.fit, s = nc.fit$lambda[3:5])
+nc.preds <- predict(nc.fit, newx = tail(x), s = fit$lambda[3:5])
+cv.nc.coefs <- coef(cv.nc.fit, s = c(0.02, 0.03))
+cv.nc.preds <- predict(cv.nc.fit, newx = x[50:60, ], s = "lambda.min")
+```
+
