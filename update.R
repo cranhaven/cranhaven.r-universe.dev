@@ -38,7 +38,7 @@ read_cranberries_removed <- local({
     ## Drop old duplicates
     db <- db[order(db$archived_on, decreasing = TRUE), ]
     db <- subset(db, !duplicated(db$package))
-
+    
     ## Sanity check
     stopifnot(!any(duplicated(db$package)))
 
@@ -58,9 +58,23 @@ cran_events <- local({
     con <- url(url)
     db <- read.dcf(con)
     db <- as.data.frame(db)
-    
+
     ## Assert assumption about one entry per package
-    stopifnot(!any(duplicated(db$Package)))
+    dups <- db$Package[duplicated(db$Package)]
+    if (length(dups) > 0) {
+      warning(sprintf("Detected duplicated package entries in %s: [n=%d] %s", url, length(dups), paste(sQuote(dups), collapse = ", ")))
+      for (pkg in dups) {
+        idxs <- which(db$Package == pkg)
+        db_pkg <- lapply(db[idxs,], function(x) {
+          x <- unique(na.omit(x))
+          if (length(x) == 0) x <- NA_character_
+          x
+        })
+        db[idxs[1], ] <- db_pkg
+        db <- db[-idxs[-1], ]
+      }
+      stopifnot(!any(duplicated(db$Package)))
+    }
 
     names <- colnames(db)
     names <- tolower(names)
