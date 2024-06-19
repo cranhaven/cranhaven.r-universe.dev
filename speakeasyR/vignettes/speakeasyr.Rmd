@@ -1,0 +1,194 @@
+---
+title: "speakeasyR"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{speakeasyR}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+```{r load-Matrix}
+library(Matrix)
+```
+
+The SpeakEasy 2: Champagne (SE2) community detection algorithm groups together graph nodes into communities based on their connectivity. The detection algorithm works on weighted or unweighted graphs and directed or undirected graphs.
+
+This __speakeasyR__ package provides a convenient way to run the SE2 algorithm in R using the `cluster()` function. The `cluster()` function accepts graphs in the form of adjacency matrices (both base R matrices and __Matrix__ sparse matrices), __igraph__ graphs, or anything that can be coerced into an adjacency matrix using an `as.matrix()` generic function.
+
+## A simple example
+
+Before getting started, we will create a wrapper function that returns a randomly generated __igraph__ graph with clear community structure. This function accepts number of nodes, number of communities (or types), and a mixing parameter. The graph starts as a regular block adjacency matrix---where each community is fully connected within the community and has no edges leaving the community. It then uses the mixing parameter (`mu`) to determine what proportion of intracommunity edges should be rewired to connect nodes between communities, the larger the mixing parameter, the weaker the community structure.
+
+```{r mixing-param}
+igraph_from_mixing_param <- function(n_nodes, n_types, mu) {
+  pref <- matrix(mu, n_types, n_types)
+  diag(pref) <- 1 - mu
+  igraph::sample_pref(n_nodes, types = n_types, pref.matrix = pref)
+}
+```
+
+With this function, a small, easy to cluster graph can be created.
+
+```{r small-graph}
+g <- igraph_from_mixing_param(n_nodes=50, n_types=5, mu=0.1)
+```
+
+The graph can be clustered by calling `cluster`:
+
+```{r simple-cluster}
+memb <- speakeasyR::cluster(g, seed = 222, max_threads = 2)
+```
+
+The membership vector returned contains the community ids for each vector, such that `memb[vid]` is the community id of vertex `vid`. The seed argument is given to ensure reproducible results.
+
+The graph can be visualized using a heatmap to display the edges. To view the detected communities, the nodes need to be reordered to group members of the same community together. For this the `order_nodes()` function is used.
+
+```{r ordering}
+ordering <- speakeasyR::order_nodes(g, memb)
+adj <- as(g[], "matrix")[ordering, ordering]
+color <- rainbow(length(unique(memb)))[memb[ordering]]
+heatmap(adj, scale = "none", Rowv = NA, Colv = NA, RowSideColors = color)
+```
+
+The graph is converted to an adjacency matrix to simplify indexing and working with `heatmap()`. The color bar shows which nodes each community encompasses.
+
+## A slightly harder example
+
+SE2 can easily recover the community structure of a graph with little crosstalk between communities, but how about in a larger graph with more mixing?
+
+Using the same wrapper function as before, we can generate and cluster a tougher graph:
+
+```{r tougher}
+g <- igraph_from_mixing_param(n_nodes = 1000, n_types = 10, mu = 0.4)
+memb <- speakeasyR::cluster(g, seed = 222, max_threads = 2)
+ordering <- speakeasyR::order_nodes(g, memb)
+adj <- as(g[], "matrix")[ordering, ordering]
+color <- rainbow(length(unique(memb)))[memb[ordering]]
+heatmap(adj, scale = "none", Rowv = NA, Colv = NA, RowSideColors = color)
+```
+
+Even with 40% of each community's edges rewired to other communities, the original membership is still closely recovered.
+
+## Tweaking the algorithm
+
+Out of the box, SE2 should work well. But one of the main goals of SE2 is to ensure consistent results. Some more challenging graphs may need extra runs to get past the variance and converge on a stable community structure.
+
+SE2 works by running the same core clustering algorithm multiple times independently, starting with different initial guesses, and then looking for stable patterns across runs to come to conclusions about community structure. By default it performs 10 `independent_runs`, in many cases this is more than enough, but if multiple calls to `cluster()` return significantly different membership vectors, it's worth increasing the number of runs by setting the `independent_runs` parameter to a larger value. The `target_partitions` and `discard_transient` parameters may also help produce a more robust result.
+
+Each independent run tracks multiple possible partitions throughout the run. The run ends when it has found `target_partitions` number of partitions. In cases where there isn't a clear structure to converge on, increasing this parameter can provide more examples of where the nodes naturally group.
+
+If the graph is particularly noisy, it may take a longer time to find useful communities. The `discard_transient` allows you to adjust how many partitions to discard before the run starts tracking partitions. By discarding a higher number of initial partitions, you give SE2 more time to generate a sound foundation, giving less influence to earlier, weaker communities structures in determining the final membership vector.
+
+## Other options
+
+SE2 also has a few options that don't impact how it clusters the graph. These are `seed`, `verbose`, and `max_threads`. The `seed` parameter was mentioned above and sets the seed of the RNG used by SE2. While SE2 uses a random number generator (RNG) different from R's, the default value of the seed is generated using R's RNG. Because of this it's possible to ensure reproducible results over multiple SE2 calls by setting the R RNG seed instead of setting the `cluster()` parameter.
+
+Setting `verbose` to `TRUE` will cause SE2 to print some information about clustering while it runs. This can be used to ensure SE2 identifies the graph as expected but is more useful to give information about the status of clustering during longer runs. Lastly, `max_threads` provides the maximum number of threads to run in parallel. SE2, can run each independent run in a separate thread, each of which can be run on separate processing cores. By default, SE2 will use as many threads as cores available but this can be reduced if desired.
+
+## Cell type clustering: a real world example
+
+Using publicly available single-cell RNA sequencing (scRNAseq) data, we can test out SE2 on a real world example and attempt to cluster individual cells into cell types based on the similarity of their gene expression.
+
+We will use the `scRNAseq` package to obtain a clean data set:
+
+```{r obtaining-data}
+expression <- scRNAseq::FletcherOlfactoryData()
+counts <- SummarizedExperiment::assay(expression, "counts")
+cell_types <- expression$cluster_id
+```
+
+The `cell_types` above are the published cell types identified through a non-graph based classification method. It's important to note that there is no "correct" answer to this classification problem, so differences in results does not imply one method is incorrect.
+
+Since single-cell data is noisy due to the small amounts of gene expression on an individual cell level and hard to correct for differences in cell size, the `counts` must be filtered and normalized before continuing. We start by removing any genes that are expressed too little across the data set:
+
+```{r filtering}
+indices <- rowSums(counts > 0) > 10
+counts <- counts[indices, ]
+```
+
+Any genes that have recorded counts in less than 10 cells are discarded. We then use a simple normalization technique, shifted logarithm on the counts matrix:
+
+```{r normalization}
+target <- median(colSums(counts))
+size_factors <- colSums(counts) / target
+counts_norm <- log(t(t(counts) / size_factors + 1))
+```
+
+Lastly, to further reduce noise, we use PCA to create 50 composite features made by combining the gene expression from different sets of genes:
+
+```{r pca}
+counts_norm <- t(prcomp(t(counts_norm), scale. = FALSE)$x)[1:50, ]
+```
+
+Now that we have preprocessed the data, it's possible to convert it to a similarity based graph. We will use the 50 PCA components to determine how similar the gene expression between each of the cells are and use this to create a k-nearest neighbors (kNN) graph. That is a directed graph where each cell has `k` unweighted edges leaving it going to the `k` most similar cells. Luckily, the __speakeasyR__ package provides a function to create this graph:
+
+```{r knn-graph}
+adj <- speakeasyR::knn_graph(counts_norm, 10)
+```
+
+This graph can be passed to SE2 and visualized using a heatmap as before:
+
+```{r celltypes}
+memb <- speakeasyR::cluster(adj, verbose = TRUE, seed = 222, max_threads = 2)
+ordering <- speakeasyR::order_nodes(adj, memb)
+```
+
+The kNN graph is initially in a sparse matrix form, this is converted to a base `matrix` type to make it easier to reorder the nodes.
+
+```{r display-cells}
+  adj <- as.matrix(as(adj, "dMatrix"))
+  row_colors <- rainbow(length(unique(cell_types)))[cell_types[ordering]]
+  col_colors <- rainbow(length(unique(memb)))[memb[ordering]]
+  heatmap(
+    adj[ordering, ordering],
+    Colv = NA, Rowv = NA,
+    labRow = NA, labCol = NA,
+    RowSideColors = row_colors, ColSideColors = col_colors,
+    xlab = "SE2 Cluster", ylab = "Cell Type",
+    scale = "none"
+  )
+```
+
+Here the color bar on the x-axis shows the communities based on SE2 while the y-axis color bar displays the communities the publication found. Ordering is based on the SE2 results so there is some mixing of the previous cell types communities but not of SE2 in the visual.
+
+## Hierarchical clustering
+
+Real networks often have hierarchical structures, within a friend clique there can be smaller groups of closer friendships, or in the publication landscape, collaboration is likely to be common between members of the same lab but there can also be collaboration at a higher scale between labs and between universities or even fields.
+
+SE2 provides subclustering where the individual communities of the initial clustering will in turn be clustered into smaller communities. This behavior can be turned on by setting the `subclusters` to parameter to a value greater than 1. (The `min_clust` parameter determines the smallest community to consider for subclustering, if a community has fewer than `min_clust` nodes, it will not be subclustered further.)
+
+We can use this subclustering feature to cluster the cell types in the previous example into subtypes.
+
+```{r subclust}
+memb <- speakeasyR::cluster(
+  adj, subcluster = 2, verbose = TRUE, seed = 222, max_threads = 2
+)
+ordering <- speakeasyR::order_nodes(adj, memb)
+```
+
+`memb` is now a matrix with one row per level of subclustering instead of a vector. Similarly, there are two sets of order indices in `ordering`, one in row 1 and the second in row 2. The `order_nodes()` function recursively orders nodes by community. So each community in the previous level is reordered rather than completely reordering all nodes based only on the second level of clustering. This leaves some remnants of previous levels' ordering in the resulting heatmaps.
+
+``` {r viewsubtypes}
+level <- 2
+level_order <- ordering[level, ]
+level_memb <- memb[level, level_order]
+row_colors <- rainbow(length(unique(cell_types)))[cell_types[level_order]]
+col_colors <- rainbow(length(unique(level_memb)))[level_memb]
+heatmap(
+  adj[level_order, level_order],
+  Colv = NA, Rowv = NA,
+  labRow = NA, labCol = NA,
+  RowSideColors = row_colors, ColSideColors = col_colors,
+  xlab = "SE2 Cluster", ylab = "Cell Type",
+  scale = "none", main = paste0("Level ", level, "structure")
+)
+```
+
+Here the original communities have been further broken down into groups of cells that are particularly similar within cell types. When comparing this heatmap to the previous heatmap, notice some of the communities at level 1 combine multiple of the publication's communities but at level 2, they are separated out into distinct cell types.
