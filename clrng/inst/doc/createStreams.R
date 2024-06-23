@@ -1,0 +1,40 @@
+## ----packages, results='hide', message=FALSE----------------------------------
+library("clrng")
+
+## ----streams, eval=TRUE-------------------------------------------------------
+if (detectGPUs()) {
+  setContext(grep("gpu", listContexts()$device_type)[1])
+    ## check gpu information
+    currentDevice()
+    
+    ## create 4 streams on CPU as R matrix (with package's default initial seed)
+    streamsonCpu <- createStreamsCpu(n=4)
+    
+    ## Important: streams are of type integer in R
+    typeof(streamsonCpu) 
+    
+    ## Attention: when converting streams from CPU to GPU, 
+    ## should set type = "integer", or leave it as default `NULL' as below
+    t(as.matrix(vclMatrix(streamsonCpu)))
+    t(as.matrix(2*vclMatrix(streamsonCpu)))
+    t(as.matrix(2*vclMatrix(streamsonCpu, type="integer"))) 
+    
+    type = c('float','double')[1+gpuR::deviceHasDouble()]
+    ## setting streams as "double" or other type can cause problems, see the following 
+    t(as.matrix(2*vclMatrix(streamsonCpu, type=type))) 
+    t(as.matrix(vclMatrix(2*streamsonCpu)))
+    
+    ## continue to create 6 streams on GPU
+    streamsonGpu <- createStreamsGpu(n=6)
+    t(as.matrix(streamsonGpu))
+    
+    ## save the created streams as .rds object on CPU 
+    saveRDS(as.matrix(createStreamsCpu(n = 4)), "myStreams.rds")
+    
+    ## load saved streams
+    streams_saved <- vclMatrix(readRDS("myStreams.rds"))
+
+} else {
+   message("No GPU detected. Skipping GPU-dependent code.")
+}
+

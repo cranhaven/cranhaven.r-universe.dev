@@ -1,0 +1,100 @@
+## ----packages, results='hide', message=FALSE----------------------------------
+library('clrng')
+
+## ----unif, eval=TRUE----------------------------------------------------------
+if (detectGPUs()) {
+
+  setContext(grep("gpu", listContexts()$device_type)[1])
+  ## show all the available platforms
+  gpuR::listContexts()[,'platform']
+  
+  ## set the context and show the device we are using
+  setContext(grep("gpu", listContexts()$device_type)[1])
+  currentDevice()
+  
+  ## set the initial seed of the package/first stream
+  setBaseCreator(rep(12235,6))
+  
+  ## check the size of work items and GPU precision type at the moment
+  getOption('clrng.Nglobal')
+  getOption('clrng.type')
+  
+  ## create default number of streams on GPU
+  myStreamsGpu = clrng::createStreamsGpu()
+  ## show its dimention
+  dim(myStreamsGpu)
+  ## create 10 uniform random numbers using the streams and show detailed backend code
+  as.vector(clrng::runifGpu(10, myStreamsGpu, verbose=2))
+  
+  # generating a 100 x 100 matrix of random uniforms
+  b<-clrng::runifGpu(c(100,100), myStreamsGpu)
+  bvector<-as.vector(as.matrix(b))
+  
+  # plot the histogram of the uniform random numbers
+  hist(bvector, breaks=40)
+  # check its quantiles
+  quantile(bvector)
+
+  } else {
+  message("No GPU detected. Skipping GPU-dependent code.")
+}
+
+## ----rnormGpu-----------------------------------------------------------------
+if (detectGPUs()) {
+  
+  setContext(grep("gpu", listContexts()$device_type)[1])
+  ## configure the size of work items
+  options(clrng.Nglobal = c(128,64))
+  
+  ## create default (here is 128*64) number of streams on GPU
+  myStreamsGpu = clrng::createStreamsGpu()
+  ## check its dimension
+  dim(myStreamsGpu)
+  
+  ## generate a vector of 10 random normal numbers on GPU, and print out the kernel code
+  as.vector(clrng::rnormGpu(10, myStreamsGpu, verbose=2))
+  ## generate a 4x4 matrix of random normal numbers on GPU, still using the ctreated streams
+  as.matrix(clrng::rnormGpu(c(4, 4), myStreamsGpu))
+  
+  ## create many new streams and generate a 1024x512 matrix of normal random numbers, with specified Nglobal
+  streamsGpu2 <- createStreamsGpu(n =512*128)
+  a<-clrng::rnormGpu(c(1024,512), streams=streamsGpu2, Nglobal=c(512,128))
+  
+  ## see the histogram of the produced normal random numbers
+  avector<-as.vector(as.matrix(a))
+  hist(avector,breaks=40)
+  
+  # do a Q-Q plot with quantiles computed on GPU by clrng package
+  clrng::qqnormGpu(avector)
+  # can also do the Q-Q plot calculation on CPU by stats::qqnorm
+  stats::qqnorm(avector)
+
+} else {
+  message("No GPU detected. Skipping GPU-dependent code.")
+}
+
+
+## ----exp----------------------------------------------------------------------
+if (detectGPUs()) {
+    ## generate a 200x100 matrix of exponential random numbers of mean = 1, 
+    ## using the supplied streams, and specify the size of Nglobal to be equal to the number of strams 
+    b<-clrng::rexpGpu(c(200,100), rate=1, streams = myStreamsGpu, Nglobal=c(64,16))
+    
+    # convert GPU matrix to an R vector on CPU, plot its histogram
+    bGpu<-as.vector(as.matrix(b))
+    hist(bGpu, freq=TRUE, breaks=40)
+    
+    # generate on CPU a vector of exponential random numbers of mean = 1, plot its histogram
+    bCpu <- stats::rexp(20000, rate=1)
+    hist(bCpu, freq=TRUE, breaks = 40)
+    
+    # compare the two sequence of random exponential numbers by looking at their distribution quantiles
+    quantile(bGpu)
+    quantile(bCpu)
+
+    
+   } else {
+  message("No GPU detected. Skipping GPU-dependent code.")
+}
+
+
