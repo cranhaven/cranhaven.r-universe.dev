@@ -1,0 +1,110 @@
+---
+title: "Introduction to the autocart package"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Introduction to the autocart package}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+The autocart package is a version of the classification and regression tree algorithm, but adapted to explicitly consider measures of spatial autocorrelation inside the splitting itself. The autocart package will be of most use for ecological datasets that cover a global spatial process that can't be assumed to act the same at every local scale.
+
+To get started, load the library into R.
+
+```{r message = FALSE, warning = FALSE}
+library(autocart)
+```
+
+## Example dataset preparation
+
+```{r dataset}
+# Load the example snow dataset provided by the autocart package
+snow <- read.csv(system.file("extdata", "ut2017_snow.csv", package = "autocart"))
+```
+
+The provided snow dataset contains measures of ground snow load at a variety of sites located in Utah. The response value "yr50" contains the ground snow load value, and a variety of other predictor variables are provided at each of the locations.
+
+```{r}
+head(snow)
+```
+
+There are a couple NA values in this dataset. If we pass in a dataset with a lot of missing information, it will be hard for autocart to make good splits in the absence of information. For this vignette, we will choose to remove all the rows that contain any sort of missing observations.
+
+```{r}
+snow <- na.omit(snow)
+```
+
+Let's split the data into 85% training data and 15% test data. We will create a model with the training data and then try to predict the response value in the test dataset.
+
+```{r}
+# Extract the response vector in the regression tree
+response <- as.matrix(snow$yr50)
+
+# Create a dataframe for the predictors used in the model
+predictors <- data.frame(snow$LONGITUDE, snow$LATITUDE, snow$ELEVATION, snow$YRS, snow$HUC,
+                         snow$TD, snow$FFP, snow$MCMT, snow$MWMT, snow$PPTWT, snow$RH, snow$MAT)
+
+# Create the matrix of locations so that autocart knows where our observations are located
+locations <- as.matrix(cbind(snow$LONGITUDE, snow$LATITUDE))
+
+# Split the data into 85% training data and 15% test data
+numtraining <- round(0.85 * nrow(snow))
+training_index <- rep(FALSE, nrow(snow))
+training_index[1:numtraining] <- TRUE
+training_index <- sample(training_index)
+
+train_response <- response[training_index]
+test_response <- response[!training_index]
+train_predictors <- predictors[training_index, ]
+test_predictors <- predictors[!training_index, ]
+train_locations <- locations[training_index, ]
+test_locations <- locations[!training_index, ]
+```
+
+## Training a model
+
+One crucial parameter we pass into autocart is the "alpha" parameter. Inside of the splitting function, we consider both a measure of reduction of variance, as well as a statistic of spatial autocorrelation. We can choose to weight each of the measures different. The alpha value that we pass into the autocart function says how much the splitting function will weight the statistic of spatial autocorrelation (either Moran's I or Geary's C). If we set alpha to 1, then we will only consider autocorrelation in the splitting. If we set alpha to 0, then autocart will function the same as a normal regression tree. For this example, let's set alpha to be 0.60 to give most of the influence to the spatial autocorrelation.
+
+```{r}
+alpha <- 0.60
+```
+
+Another parameter we can weight is "beta", which ranges from a scale of 0 to 1. This controls the shape of the regions that are formed. If beta is near 1, then the shapes will be very close together and compact. If beta is 0, then this shape will not be considered in the splitting. If beta is something around 0.20, then small shapes will be encouraged, but another dominant term may take over.
+
+```{r}
+beta <- 0.20
+```
+
+Although the alpha and beta parameters control most of the splitting done by autocart, the user may require a bit more control. The "autocartControl" object was developed for this specifically in mind. There are a variety of parameters that the user can set that autocart will use when making the splits. As an example, let's use inverse distance squared instead of inverse distance when calculating Moran's I in the splitting function.
+
+```{r}
+my_control <- autocartControl(distpower = 2)
+```
+
+Finally, we can create our model!
+
+```{r}
+snow_model <- autocart(train_response, train_predictors, train_locations, alpha, beta, my_control)
+```
+
+The autocart function returns an S3 object of type "autocart". We can use the "predictAutocart" function to use the object to make predictions for the testing dataset.
+
+```{r}
+test_predictions <- predictAutocart(snow_model, test_predictors) 
+```
+
+We can see how well we did by getting the root mean squared error.
+
+```{r}
+residuals <- test_response - test_predictions
+
+# RMSE
+sqrt(mean(residuals^2))
+```
