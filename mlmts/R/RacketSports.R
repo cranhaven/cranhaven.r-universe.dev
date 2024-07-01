@@ -1,0 +1,26 @@
+#'
+#' @title RacketSports
+#' @description Multivariate time series (MTS) collected from university students playing badminton or squash while wearing a
+#' smartwatch. The watch recorded the x, y, z coordinates for both a gyroscope and an accelerometer to an android phone.
+#' @usage data(RacketSports)
+#' @format A \code{list} with two elements, which are:
+#' \describe{
+#' \item{\code{data}}{A list with 303 MTS.}
+#' \item{\code{classes}}{A numeric vector indicating the corresponding classes associated with the elements in \code{data}.}
+#' }
+#' @details Each element in \code{data} is a matrix formed by 30 rows (time points) indicating time recordings over an interval of 3 seconds
+#' and 6 columns (variables) indicating gyroscope or accelerometer and the corresponding coordinate. The first 151 elements correspond to the
+#' training set, whereas the last 152 elements correspond to the test set. The numeric vector \code{classes} is formed by integers from 1 to 4,
+#' indicating that there are 4 different classes in the database. Each class is associated with a sport and stroke a particular player is making.
+#' For more information, see \insertCite{bagnall2018uea;textual}{mlmts}.
+#' @references{
+#'
+#'   \insertRef{bagnall2018uea}{mlmts}
+#'
+#'   \insertRef{ruiz2021great}{mlmts}
+#'
+#'   \insertRef{bagnallweb}{mlmts}
+#'
+#' }
+"RacketSports"
+

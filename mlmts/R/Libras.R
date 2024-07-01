@@ -1,0 +1,26 @@
+#'
+#' @title Libras
+#' @description Multivariate time series (MTS) indicating hand movement concerning the official brazilian sign language from 4 different people,
+#' during 2 sessions.
+#' @usage data(Libras)
+#' @format A \code{list} with two elements, which are:
+#' \describe{
+#' \item{\code{data}}{A list with 360 MTS.}
+#' \item{\code{classes}}{A numeric vector indicating the corresponding classes associated with the elements in \code{data}.}
+#' }
+#' @details Each element in \code{data} is a matrix formed by 45 rows (time points) indicating time points in video recordings and 2 columns
+#' (variables) indicating video sessions. The first 180 elements correspond to the training set, whereas the last 180 elements
+#' correspond to the test set. The numeric vector \code{classes} is formed by integers from 1 to 15, indicating that there are 15
+#' different classes in the database. Each class is associated with a hand movement type.
+#' For more information, see \insertCite{bagnall2018uea;textual}{mlmts}.
+#' @references{
+#'
+#'   \insertRef{bagnall2018uea}{mlmts}
+#'
+#'   \insertRef{ruiz2021great}{mlmts}
+#'
+#'   \insertRef{bagnallweb}{mlmts}
+#'
+#' }
+"Libras"
+
