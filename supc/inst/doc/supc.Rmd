@@ -1,0 +1,426 @@
+---
+title: "Self-Updating Process Clustering"
+output: 
+  rmarkdown::html_vignette:
+    number_sections: yes
+    toc: yes
+    mathjax: default
+    pandoc_args: --include-in-header=header.xml
+bibliography: supc.bib
+author: Wush Wu and Shang-Ying Shiu
+vignette: >
+  %\VignetteIndexEntry{supc}
+  %\VignetteEngine{knitr::rmarkdown}
+  \usepackage[utf8]{inputenc}
+---
+
+```{r setup, include = FALSE}
+library(knitr)
+library(rmarkdown)
+show.obj <- function(obj) {
+  paste(trimws(deparse(obj)), collapse = " ")
+}
+.quote <- "`"
+quoted.string <- function(str) {
+  sprintf("%s%s%s", .quote, str, .quote)
+}
+opts_chunk$set(fig.width = 8, fig.height = 5)
+```
+
+# Overview
+
+This package implements the self-updating process clustering algorithm proposed by @Shiu2016supc . This document shows how to reproduce the examples and figures in the paper.
+
+The SUP is a distance-based method for clustering. The idea of this algorithm is similar to gravitational attraction: every sample gravitates towards one another. 
+The algorithm mimics the process of gravitational attraction iteratively that eventually merges the samples into clusters on the sample space. 
+During the iterations, all samples continue moving until the system becomes stable.
+
+We can view this algorithm as standing from the viewpoint of data points to simulate the process how data points move and perform self-clustering. 
+Therefore, this algorithm is named Self-Updating Process(SUP). 
+The user can tune the algorithm by changing the updating rule, which allows for both time-varying and time-invariant operators.
+
+The paper shows that SUP is particularly competitive for:
+
+- Data with noise
+- Data with a large number of clusters
+- Unbalanced data
+
+# Installation
+
+To install the package from CRAN:
+
+```r
+install.packages("supc")
+```
+
+To build the package from source, the Windows user requires [Rtools](https://CRAN.R-project.org/bin/windows/Rtools/) and the Mac OS X user requires [gfortran](https://CRAN.R-project.org/bin/macosx/tools/).
+
+To get the current development version from github:
+
+```r
+# install.packages('remotes')
+remotes::install_github("wush978/supc")
+```
+
+# Algorithm
+
+## Notation
+
+- $x_1^{(0)}, ..., x_N^{(0)} \in \mathbb{R}^{p}$ are the data to be clustered.
+- $f_t$ is a function which measures the influence between two data point at the $t$-th iteration.
+- $\left\lVert \cdot \right\lVert_p$ is the $L_p$ norm.
+
+## Truncated exponential decay function
+
+Shiu and Chen (2016) showed that a sufficient condition to ensure the convergence of the updating process is that $f_t$ is positive and decreasing with respect to distance (PDD). 
+The truncated exponential decay function and the q-Gaussian function are mostly used by the authors. 
+This package only implements $f_t$ to be the truncated exponential decay function as presented in the paper.
+
+At the $t$-th iteration, the truncated exponential decay function $f_t$ is:
+
+$$\begin{equation} f_t(x_i^{(t)}, x_j^{(t)}) = \left\{ \begin{array}{lc}
+exp\left(\cfrac{-\left\lVert x_i^{(t)} - x_j^{(t)} \right\lVert_2}{T(t)}\right) & \text{if } \left\lVert x_i^{(t)} - x_j^{(t)} \right\lVert_2 \leq r \\ 
+0 & \text{if } \left\lVert x_i^{(t)} - x_j^{(t)} \right\lVert_2 > r
+\end{array} \right. \label{eq:influence} \end{equation}$$
+
+## Self-Updating Process
+
+The SUP updates the data points via:
+
+$$\begin{equation} x_i^{(t+1)} = \sum_{j=1}^N{\frac{f_t(x_i^{(t)}, x_j^{(t)})}{\sum_{k=1}^N{f_t(x_i^{(t)}, x_k^{(t)})}} x_j^{(t)}} \label{eq:sup} \end{equation}$$
+
+The iteration stops after convergence. We compare the $L_{\infty}$ distance (i.e. $max_{1 \leq i \leq N} {\left| x_i^{(t)} - x_i^{(t + 1)} \right|}$) with `tolerance`. If the $L_{\infty}$ distance is less than `tolerance`, then the computation stops and returns $x_1^{(t)}, ..., x_N^{(t)}$.
+
+## Clustering
+
+After retrieving $x_1^{(t)}, ..., x_N^{(t)}$ from SUP, we compute the connected components of the graph:
+
+$$(V, E) = \left(\{1, 2, ..., N\}, \left\{ (i,j) | \left\lVert x_i^{(t)} - x_j^{(t)} \right\rVert_2 < tolerance \right\}\right).$$
+
+Each connected component is a cluster.
+
+# Usage
+
+The function `supc1` in this package implements the SUP clustering. 
+
+## Data
+
+The argument `x` should be a matrix in which the rows represent the samples and the columns represent the variables.
+
+## Parameters
+
+As shown in $\eqref{eq:influence}$, SUP requires the following two parameters:
+
+- $r$ determines the truncation of the influential function $f_t$.
+- $T(t)$ controls the speed of the convergence.
+
+### Control the parameter $r$
+
+`supc1` provides two options for users to control the parameter $r$.
+
+The user can directly supply the value of $r$. If `r` is given as a vector, then `supc1` will compute
+clustering results using each of the values provided in the numeric vector `r`. In such a case, `supc1`
+will return a `supclist` which contains `supc` objects for each value in `r`.
+
+Instead of the value of $r$, the user can choose to supply the quantile of the pairwise distance between
+samples. In this case, the user should provide `rp`, which is a value between 0 and 1. `supc1` will compute
+the pairwise distances between all samples in the data to obtain the $r$ value according to the given `rp`
+value. If `rp` is a vector, `supc1` will return a `supclist`, which contains `supc` objects for each value in 
+`rp`.
+
+If neither `r` nor `rp` is provided, then `supc1` will use `r quoted.string(sprintf("rp = %s", show.obj(supc:::.rp.default)))` as the default.
+
+### Control the parameter $T(t)$
+
+`supc1` has parameter `t` to control $T(t)$, which can be either static or dynamic temperature.
+
+By default, the package uses $T(t) = \frac{r}{5}$ and $T(t) = \frac{r}{20} + t \times \frac{r}{50}$ for `static` and `dynamic` 
+temperature, respectively, which are the temperatures used in the paper. In details, if a character value specified as `t = "static"`,
+`supc1` will set `t` as `function(r) {function(t) {r/5}}`, where `r` is the input value for parameter `r`. In this case,
+the temperature is kept as a constant of $\frac{r}{5}$ at each iteration. If a character value specified as `t = "dynamic"`, `supc1`
+will set `t` as `function(r)｛function(t) {r/20 + t * (r/50)}}`. In this case, the initial temperature is $\frac{r}{20}$, and the
+temperature gradually increases by $\frac{r}{50}$ after each iteration.
+
+The package also allows user-specified temperature functions. If `t` is set as a numeric value, then `supc1` uses this value as the 
+static temperature throughout iterations. If `t` is set as a function, then `supc1` will uses the value `t(i)` as the temperature at 
+each of the $i$-th iteration.
+
+The user can use different temperatures $T(t)$ with different $r$ values by setting `t` as a list of function. Then `supc1` will calculate
+the clustering result for each pair of $T(t)$ and $r$.
+
+## Utility
+
+This package allows the user to choose the implementation of computing distances. Currently, `stats::dist`, `amap::Dist` and `gputools::gpuDist` are included. The user could choose the best fitted one according to the data. There is also a c++ implementation of the main algorithm which costs about 50% time compared to the implementation in R.
+
+### Computation of the distance
+
+The user can use `dist.mode` to select the package to compute the pairwise distances between samples. 
+Specifying `dist.mode("stats")`, `dist.mode("amap")` will select `stats::dist`, `amap::Dist` to compute the pairwise distance matrix, respectively. 
+Moreover, the user can register function for computing the pairwise distance. 
+For example, one can use GPU to compute the distance via `dist.mode("gputools", function(x) gputools::gpuDist(x, method = "euclidean", p = 2.0))` after installing the package `gputools` from github.
+It is recommended to compare the computation time of `stats::dist(x)`, `amap::Dist(x)` or other functions before selecting the function.
+The default function to compute the pairwise distances is `stats::dist`.
+
+For example, on my machine whose CPU is `Intel(R) Core(TM) i7-4820K CPU @ 3.70GHz` and GPU is `NVIDIA Corporation GK107GL [Quadro K2000]`, the computation time of different function is:
+
+```{r computation-time, eval = FALSE, echo = FALSE}
+get.x <- function(m, n) {
+  matrix(rnorm(m * n), m, n)
+}
+dist.time <- lapply(list(stats::dist, function(x) amap::Dist(x, nbproc = 8), gputools::gpuDist), function(.dist) {
+  outer(floor(10^seq(2, 3, by = 0.5)), floor(10^seq(1, 3, by = 0.5)), Vectorize(function(a, b) {
+    set.seed(1)
+    X <- get.x(a, b)
+    cat(sprintf("%d,%d\n", a, b))
+    mean(sapply(1:10, function(i) system.time(.dist(X))[3]))
+  }))
+})
+```
+
+```{r computation-time-result, echo = FALSE, warning = FALSE, error = FALSE}
+dist.time <- list(structure(c(0, 0.000999999999839929, 0.00959999999986394, 
+0.000399999999899592, 0.00270000000000437, 0.0268000000000939, 
+0.00100000000002183, 0.00889999999999418, 0.106199999999899, 
+0.00300000000006548, 0.0375999999999294, 0.795100000000002, 0.0112999999999374, 
+0.191300000000047, 4.82540000000017), .Dim = c(3L, 5L)), structure(c(0.00180000000000291, 
+0.00480000000015934, 0.022899999999936, 0.0024000000000342, 0.00780000000004293, 
+0.0545000000000073, 0.00329999999985375, 0.02270000000035, 0.152599999999711, 
+0.00759999999991123, 0.0563999999998487, 0.547500000000036, 0.0213999999999942, 
+0.202700000000277, 2.1983000000002), .Dim = c(3L, 5L)), structure(c(0.00160000000005311, 
+0.00650000000014188, 0.0901999999999134, 0.00140000000019427, 
+0.00670000000009168, 0.0805000000000291, 0.00200000000004366, 
+0.00779999999986103, 0.0997000000001208, 0.00200000000004366, 
+0.0124000000001615, 0.140099999999984, 0.00420000000003711, 0.0291999999998552, 
+0.332999999999993), .Dim = c(3L, 5L)))
+
+
+local({
+  dist.time <- lapply(dist.time, `+`, 1e-5)
+  .x <- seq(1, 3, by = 0.5)
+  .ymap <- function(y) log(y, 10)
+  .y.max <- max(.ymap(unlist(dist.time)))
+  .y.min <- min(.ymap(unlist(dist.time)))
+  .y <- seq(floor(.y.min / 0.5) * 0.5, ceiling(.y.max / 0.5) * 0.5, by = 0.5)
+  # animation::saveGIF(lapply(1:3, function(j) {
+  if (interactive()) dev.off()
+  layout(matrix(c(
+    1,2,3,4,
+    5,5,5,5
+  ), byrow = TRUE, ncol = 4), heights = c(0.9, 0.1), widths = c(0.1, 0.3, 0.3, 0.3))
+  par(mar = c(5.1, 4.1, 4.1, 0))
+  plot(1, type = "n", axes=FALSE, xlab="", ylab="computation time (seconds)", ylim = c(.y.min, .y.max))
+  axis(2, .y[seq_along(.y) %% 2 == 1], labels = do.call(what = expression, lapply(.y, function(.) substitute(10^y, list(y = .))))[seq_along(.y) %% 2 == 1])
+  lapply(1:3, function(j) {
+    par(mar = c(5.1, 0.1, 4.1, 0.1))
+    plot(.x, rep(1, length(.x)), type = 'n', ylim = c(.y.min, .y.max), xlab = "number of variables", 
+         #ylab = "computation time (seconds)", 
+         xaxt = 'n', yaxt = 'n', bty = 'n')
+    axis(1, .x, labels = expression(10^1, 10^1.5, 10^2, 10^2.5, 10^3))
+    # axis(2, .y[seq_along(.y) %% 2 == 1], labels = do.call(what = expression, lapply(.y, function(.) substitute(10^y, list(y = .))))[seq_along(.y) %% 2 == 1])
+    lapply(1:3, function(i) {
+      lines(.x, .ymap(dist.time[[i]][j,]), lty = i)
+      points(.x, .ymap(dist.time[[i]][j,]), pch = i)
+    })
+    # title(main = "Comparing speed of computing distance")
+    mtext(sprintf("#samples:\n%d", floor(10^seq(2, 3, by = 0.5)[j])), side = 3)
+  }) #, movie.name = "dist.gif", interval = 3)
+  par(mar = rep(0, 4))
+  plot(1, type = "n", axes=FALSE, xlab="", ylab="")
+  legend("top", c("stats::dist", "amap::Dist", "gputools::gpuDist"), lty = 1:3, pch = 1:3, inset = 0, box.lty = 0)
+})
+```
+
+The results show that `stats::dist` is the best choice if the distance matrix is small. `gputools::gpuDist` outperforms the others if the distance matrix is larger. If there is no GPU, `amap::Dist` might be a better choice for larger distance matrices.
+
+### Using implementation in `R` or in `C++`
+
+This package provides both s in R and in C+++ for better maintenance. The `C++` program runs faster when the number of samples is larger. 
+Without specifying, the `supc1` will use the implementation in `C++` as default. If `implementation = "R"` is specified, then `supc1`
+will use the implementation in `R`.
+
+### Verbose
+
+Using `supc1` with `verbose = TRUE`, the program will show the $L_{\infty}$ distance between each iteration on the screen in real-time, so that 
+the user can monitor the iterations to check if the program is still running or dead.
+
+## Example
+
+Here we use the following simulated data to demonstrate the use of this package.
+
+### Data
+
+The data of nine small groups is generated. Each group has five normally distributed data points.
+
+```{r}
+set.seed(1)
+mu <- list(
+  x = c(0, 2, 1, 6, 8, 7, 3, 5, 4),
+  y = c(0, 0, 1, 0, 0, 1, 3, 3, 4)
+)
+X <- lapply(1:5, function(i) {
+  cbind(rnorm(9, mu$x, 1/5), rnorm(9, mu$y, 1/5))
+})
+X <- do.call(rbind, X)
+```
+
+In addition, 20 points representing noise data points are generated to locate 2 units outside from each group center.
+
+```{r}
+n <- nrow(X)
+X <- rbind(X, matrix(0, 20, 2))
+k <- 1
+while(k <= 20) {
+  tmp <- c(13*runif(1)-2.5, 8*runif(1)-2.5)
+  y1 <- mu$x - tmp[1]
+  y2 <- mu$y - tmp[2]
+  y <- sqrt(y1^2+y2^2)
+  if (min(y)> 2){
+    X[k+n,] <- tmp
+    k <- k+1
+  }
+}
+```
+
+The generated data is presented in the following graph, in which noise data points are shown by gray color.
+
+```{r}
+plot(X, col="#999999")
+points(X[1:n,])
+```
+
+### Clustering
+
+The frequency polygon of the pairwise distance may provide useful guideline for the selection of parameter value `r`. Section 2.4.1 in @Shiu2016supc suggests to use the sharp valleys of the frequency polygon. The user can directly compute the frequency polygon via: 
+
+```{r}
+library(supc)
+freq.poly(X, breaks = 50)
+```
+
+The user can also control the number of bins by specifying the argument breaks. Please see `?hist` for details.
+
+The object returned by `freq.poly` is the same as the object returned by the `hist` function. In this example, `X.freq$mids` is the vector of x-axis and `X.freq$count` is the vector of y-axis of the frequency plot.
+The user can use these two vectors to identify the exact locations of the valleys of the polygon.
+
+After examing the data, there are sharp valleys at 0.9, 1.7, 2.1, 2.3, and more.
+
+```{r}
+X.freq <- freq.poly(X, breaks = 50)
+abline(v = c(0.9, 1.7, 2.1, 2.5), lty = 2)
+```
+
+For demonstration, the following computes clustering result by SUP using `supc::supc1` with `r quoted.string("r = 1.7")` and `t = "static"` (that is $T = r/5$).
+
+```{r}
+library(supc)
+X.supc <- supc1(X, r = 1.7, t = "static", implementation = "R")
+```
+
+The returned object has class "supc" which contains:
+
+```{r}
+str(X.supc)
+```
+
+- `x`, the input data.
+- `d0`, the distance matrix of the data.
+- `r`, the value of $r$.
+- `t`, the function of $T(t)$.
+- `cluster`, the cluster label of each sample.
+- `centers`, the center of each cluster.
+- `size`, the size of each cluster.
+
+#### Cluster
+
+We could retrieve the cluster ID of the samples via:
+
+```{r}
+X.supc$cluster
+```
+
+This vector represents the IDs of the resulting clusters of each sample. For example, the first sample, i.e. `X[1,]`, is clustered into cluster ID `X.supc$cluster[1]`.
+
+#### Centers
+
+The centers of the resulting clusters are stored in `X.supc$centers`, which are the converged locations of data points after iterations:
+
+```{r}
+X.supc$centers
+```
+
+Each row represents the center of the corresponding cluster ID. For example, the center of the first cluster is `X.supc$centers[1,]`.
+
+#### Size
+
+The size of each cluster is stored in `X.supc$size`:
+
+```{r}
+X.supc$size
+```
+
+The cluster IDs are ordered by cluster size. 
+
+Note that this clustering result shows that SUP identified `r length(X.supc$size)` clusters. The three major clusters are consisted of data points from nine normally distributed groups. The rest `r length(X.supc$size) - 3` clusters are identified to be consisted of noise data points.
+
+### `supclist`
+
+To compute clustering results by multiple parameters, the user can directly pass a vector to the corresponding parameters `r`, `rp`, or `t`.
+
+For demonstration, the following uses `r quoted.string("r = c(0.9, 1.7, 2.5)")` according to the approximate locations of sharp values in the frequency polygon of pairwise distances.
+
+```{r}
+X.supcs <- supc1(X, r = c(0.9, 1.7, 2.5), t = "dynamic", implementation = "R")
+```
+
+The supc1 will compute the results of all given r values and t values. In this case, the X.supcs is a `supclist` object. The user can retrieve all cluster IDs via:
+
+```{r}
+X.supcs$cluster
+```
+
+The following graphs show clustering results using different `r` values. The IDs of the clusters each sample is clustered into is plotted in the graph. The major clusters are marked by blue circles. Note that the size of the major clusters increases with `r` value.
+
+The results show that the use of `r quoted.string("r = 0.9")` produces `r length(X.supcs[[1]]$size)` clusters, including nine major clusters and `r length(X.supcs[[1]]$size) - 9` tiny clusters that can be identified as noise. The use of `r quoted.string("r = 1.7")` produces `r length(X.supcs[[2]]$size)` clusters, including three major clusters and `r length(X.supcs[[2]]$size) - 3` tiny clusters that can be identified as noise. When the influential range `r` is set as large as 2.5, `r length(X.supcs[[3]]$size)` clusters are identified. The three major clusters consist of mixed data from both the normally distributed data points and the noise data points.
+
+```{r, echo = FALSE}
+layout(matrix(1:4, 2, 2, byrow = TRUE))
+par(mar = rep(2.1, 4))
+plot(X, col="#999999", main = "Sample Data", xaxt = "n", yaxt = "n")
+points(X[1:n,])
+for(i in 1:3) {
+  ids <- paste(X.supcs[[i]]$cluster)
+  plot(X, type = "n", main = sprintf("r = %0.1f", X.supcs[[i]]$r), xaxt = "n", yaxt = "n")
+  text(X, labels = ids, col = "#999999")
+  text(X[1:n,], labels = ids[1:n])
+  target.ids <- sort(unique(head(ids, n)))
+  for(id in target.ids) {
+    X.target <- X[ids == id,]
+    center <- apply(X.target, 2, mean)
+    r <- max(apply(X.target, 1, function(x) sqrt(sum((x - center)^2))))
+    if (r < 0.5) r <- r + 0.2
+    theta <- seq(0, 2 * pi, length.out = 1000)
+    polygon(cbind(center[1] + r * cos(theta), center[2] + r * sin(theta)), lwd = 2, border = "blue")
+  }
+}
+```
+
+### Heatmap
+
+The user can use heatmaps to further understand the structure of the data and the patterns within each cluster.
+
+The following graphs show the heatmaps of the data using clustering results with different `r` values.
+
+```{r}
+plot(X.supcs[[1]], type = "heatmap", major.size = 2)
+```
+
+After specifying `type = "heatmap"`, the `plot` function will draw the corresponding heatmap of the given `supc` object.
+The samples will be ordered by the cluster IDs. The dashed lines split the samples into different clusters and the cluster size is annotated above the figure. For those clusters whose size is smaller than the parameter `major.size`, the dashed lines will be omitted.
+
+The user could pass additional parameters to the underlying `image` function. For example:
+
+```{r}
+plot(X.supcs[[2]], type = "heatmap", col = cm.colors(24), major.size = 5)
+```
+
+# References
