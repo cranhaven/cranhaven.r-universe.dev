@@ -1,0 +1,15 @@
+#' Line-scan data of HEK-293 cells expressing Venus (EYFP) dimers
+#'
+#' This data set consists on a raster line scan performed over HEK-293 cells expressing dimers of the fluorescent protein Venus, also known as SEYFP-F46L.
+#' The scan line is 64 pixels long, and the scanning direction is from the cytoplasm to the nucleus, across the nuclear envelope.
+#' A pixel size of 50 nm was used, as well as a pixel dwell time of 12.5 us and a line scan time of 1.925 ms.
+#' Fluorescence excitation was provided by a 488 nm laser at 0.1% power.
+#' Fluorescence intensity data was collected using the photon-counting mode in an Olympus FV1000 Upright BX61WI confocal microscope.
+#'
+#' @docType data
+#' @keywords datasets
+#' @name V2
+#' @usage data(V2)
+#' @format A matrix with 64 rows and 25000 columns
+#' @details To analyze this data set with FCSlib, import by typing: readFileTiff("V2.tif")[,,1]
+NULL
