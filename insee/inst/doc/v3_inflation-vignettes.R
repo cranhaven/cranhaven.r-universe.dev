@@ -1,0 +1,64 @@
+## ----setup,echo=FALSE, include=FALSE------------------------------------------
+# setup chunk
+NOT_CRAN <- identical(tolower(Sys.getenv("NOT_CRAN")),"true")
+knitr::opts_chunk$set(purl = NOT_CRAN)
+library(insee)
+library(tidyverse)
+
+embed_png <- function(path, dpi = NULL) {
+  meta <- attr(png::readPNG(path, native = TRUE, info = TRUE), "info")
+  if (!is.null(dpi)) meta$dpi <- rep(dpi, 2)
+  knitr::asis_output(paste0(
+    "<img src='", path, "'",
+    " width=", round(meta$dim[1] / (meta$dpi[1] / 96)),
+    " height=", round(meta$dim[2] / (meta$dpi[2] / 96)),
+    " />"
+  ))}
+
+## ---- echo = FALSE------------------------------------------------------------
+embed_png("inflation.png")
+
+## ----message=FALSE, warning=FALSE, include=FALSE------------------------------
+library(kableExtra)
+library(magrittr)
+library(htmltools)
+library(prettydoc)
+
+## ----message = FALSE, warning=FALSE, eval = FALSE-----------------------------
+#  # please download the Github version
+#  # devtools::install_github("InseeFr/R-Insee-Data")
+#  library(tidyverse)
+#  library(lubridate)
+#  library(insee)
+#  
+#  
+#  df_idbank_list_selected =
+#    get_idbank_list("IPC-2015") %>% #Inflation dataset
+#    filter(FREQ == "M") %>% # monthly
+#    filter(str_detect(COICOP2016, "^[0-9]{2}$")) %>% # coicop aggregation level
+#    filter(NATURE == "INDICE") %>% # index
+#    filter(MENAGES_IPC == "ENSEMBLE") %>% # all kinds of household
+#    filter(REF_AREA == "FE") %>% # all France including overseas departements
+#    add_insee_title()
+#  
+#  list_idbank = df_idbank_list_selected %>% pull(idbank)
+#  
+#  data =
+#    get_insee_idbank(list_idbank, startPeriod = "2015-01") %>%
+#    add_insee_metadata()
+#  
+#  data_plot = data %>%
+#    mutate(month = month(DATE)) %>%
+#    arrange(DATE) %>%
+#    filter(COICOP2016 != "12") %>%
+#    group_by(COICOP2016_label_en, month) %>%
+#    mutate(growth = 100 * (OBS_VALUE / dplyr::lag(OBS_VALUE) - 1))
+#  
+#  ggplot(data_plot, aes(x = DATE, y = growth)) +
+#    geom_col() +
+#    facet_wrap(~COICOP2016_label_en, scales = "free", labeller = label_wrap_gen(22)) +
+#    ggtitle("French inflation, by product category, year-on-year") +
+#    labs(subtitle = sprintf("Last updated : %s", data_plot$TIME_PERIOD[nrow(data_plot)]))
+#  
+#  
+

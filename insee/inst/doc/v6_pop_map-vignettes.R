@@ -1,0 +1,130 @@
+## ----setup,echo=FALSE, include=FALSE------------------------------------------
+# setup chunk
+NOT_CRAN <- identical(tolower(Sys.getenv("NOT_CRAN")),"true")
+knitr::opts_chunk$set(purl = NOT_CRAN)
+library(insee)
+library(tidyverse)
+
+embed_png <- function(path, dpi = NULL) {
+  meta <- attr(png::readPNG(path, native = TRUE, info = TRUE), "info")
+  if (!is.null(dpi)) meta$dpi <- rep(dpi, 2)
+  knitr::asis_output(paste0(
+    "<img src='", path, "'",
+    " width=", round(meta$dim[1] / (meta$dpi[1] / 96)),
+    " height=", round(meta$dim[2] / (meta$dpi[2] / 96)),
+    " />"
+  ))}
+
+## ----message=FALSE, warning=FALSE, include=FALSE------------------------------
+library(kableExtra)
+library(magrittr)
+library(htmltools)
+library(prettydoc)
+
+## ---- echo = FALSE------------------------------------------------------------
+embed_png("pop_map.png")
+
+## ----message=FALSE, warning=FALSE,eval=FALSE----------------------------------
+#  library(insee)
+#  library(tidyverse)
+#  
+#  library(raster)
+#  library(rgdal)
+#  library(geosphere)
+#  library(broom)
+#  library(viridis)
+#  library(mapproj)
+#  
+#  dataset_list = get_dataset_list()
+#  
+#  list_idbank =
+#    get_idbank_list("TCRED-ESTIMATIONS-POPULATION") %>%
+#    filter(AGE == "00-") %>% #all ages
+#    filter(SEXE == 0) %>% #men and women
+#    filter(str_detect(REF_AREA, "^D")) %>% #select only departements
+#    add_insee_title()
+#  
+#  list_idbank_selected = list_idbank %>% pull(idbank)
+#  
+#  # get population data by departement
+#  pop = get_insee_idbank(list_idbank_selected)
+#  
+#  #get departements' geographical limits
+#  FranceMap <- raster::getData(name = "GADM", country = "FRA", level = 2)
+#  
+#  # extract the population by departement in 2020
+#  pop_plot = pop %>%
+#    group_by(TITLE_EN) %>%
+#    filter(DATE == "2020-01-01") %>%
+#    mutate(dptm = gsub("D", "", REF_AREA)) %>%
+#    filter(dptm %in% FranceMap@data$CC_2) %>%
+#    mutate(dptm = factor(dptm, levels = FranceMap@data$CC_2)) %>%
+#    arrange(dptm) %>%
+#    mutate(id = dptm)
+#  
+#  vec_pop = pop_plot %>% pull(OBS_VALUE)
+#  
+#  # add population data to the departement object map
+#  FranceMap@data$pop = vec_pop
+#  
+#  get_area = function(long, lat){
+#    area = areaPolygon(data.frame(long = long, lat = lat)) / 1000000
+#    return(data.frame(area = area))
+#  }
+#  
+#  # extract the departements' limits from the spatial object and compute the surface
+#  FranceMap_tidy_area <-
+#    broom::tidy(FranceMap) %>%
+#    group_by(id) %>%
+#    group_modify(~get_area(long = .x$long, lat = .x$lat))
+#  
+#  FranceMap_tidy <-
+#    broom::tidy(FranceMap) %>%
+#    left_join(FranceMap_tidy_area)
+#  
+#  # mapping table
+#  dptm_df = data.frame(dptm = FranceMap@data$CC_2,
+#                       dptm_name = FranceMap@data$NAME_2,
+#                       pop = FranceMap@data$pop,
+#                       id = rownames(FranceMap@data))
+#  
+#  FranceMap_tidy_final_all =
+#    FranceMap_tidy %>%
+#    left_join(dptm_df, by = "id") %>%
+#    mutate(pop_density = pop/area) %>%
+#    mutate(density_range = case_when(pop_density < 40 ~ "< 40",
+#                                     pop_density >= 40 & pop_density < 50 ~ "[40, 50]",
+#                                     pop_density >= 50 & pop_density < 70 ~ "[50, 70]",
+#                                     pop_density >= 70 & pop_density < 100 ~ "[70, 100]",
+#                                     pop_density >= 100 & pop_density < 120 ~ "[100, 120]",
+#                                     pop_density >= 120 & pop_density < 160 ~ "[120, 160]",
+#                                     pop_density >= 160 & pop_density < 200 ~ "[160, 200]",
+#                                     pop_density >= 200 & pop_density < 240 ~ "[200, 240]",
+#                                     pop_density >= 240 & pop_density < 260 ~ "[240, 260]",
+#                                     pop_density >= 260 & pop_density < 410 ~ "[260, 410]",
+#                                     pop_density >= 410 & pop_density < 600 ~ "[410, 600]",
+#                                     pop_density >= 600 & pop_density < 1000 ~ "[600, 1000]",
+#                                     pop_density >= 1000 & pop_density < 5000 ~ "[1000, 5000]",
+#                                     pop_density >= 5000 & pop_density < 10000 ~ "[5000, 10000]",
+#                                     pop_density >= 20000 ~ ">= 20000"
+#    )) %>%
+#    mutate(`people per square kilometer` = factor(density_range,
+#                                                  levels = c("< 40","[40, 50]", "[50, 70]","[70, 100]",
+#                                                             "[100, 120]", "[120, 160]", "[160, 200]",
+#                                                             "[200, 240]", "[240, 260]", "[260, 410]",
+#                                                             "[410, 600]",  "[600, 1000]", "[1000, 5000]",
+#                                                             "[5000, 10000]", ">= 20000")))
+#  
+#  ggplot(data = FranceMap_tidy_final_all,
+#         aes(fill = `people per square kilometer`, x = long, y = lat, group = group) ,
+#         size = 0, alpha = 0.9) +
+#    geom_polygon() +
+#    geom_path(colour = "white") +
+#    coord_map() +
+#    theme_void() +
+#    scale_fill_viridis(discrete = T) +
+#    ggtitle("Distribution of the population within French territory in 2020") +
+#    labs(subtitle = "the density displayed here is an approximation, it should not be considered as an official statistics")
+#  
+#  
+
