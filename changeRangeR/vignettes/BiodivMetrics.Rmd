@@ -1,0 +1,299 @@
+---
+title: "Biodiversity Metrics"
+author: "P Galante, A Paz"
+date: "updated 12 October 2023"
+output:
+  pdf_document: default
+  html_document: default
+vignette: >
+  %\VignetteIndexEntry{changeRangeR Biodiversity Metrics}
+  %\VignetteEncoding{UTF-8}
+  %\VignetteEngine{knitr::rmarkdown} 
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = F)
+```
+
+To aid conservation planning and decision-making, for example by understanding species’ representativeness and complementarity across conservation areas, we can combine species’ range estimates across multiple species groups to calculate community-level metrics of conservation interest that reflect different dimensions of biological diversity such as species richness, spatial and temporal turnover, endemism, and phylogenetic diversity. We provide an example below to calculate these metrics for a dataset of Colombian primates (Henao-Díaz et al. 2020) using the 'changeRangeR' package. For information on single species range change metrics, see the single-species [vignette](https://wallaceecomod.github.io/changeRangeR/singleSpeciesMetrics.html).
+
+# Biodiversity metrics
+Using multiple species for landscape-level species metrics
+
+Load packages that will be useful for these analyses
+```{r, results='hide'}
+library(raster)
+library(picante)
+library(phylobase)
+library(sf)
+library(dplyr)
+library(changeRangeR)
+library(ape)
+```
+
+## Species Richness
+
+Here we measure species richness as the number of species predicted to be present in each pixel. 
+
+### Load and manage spatial data
+Loading the SDM data and ensuring the names match the phylogeny, and removing some resolved species. NOTE: For calculating species richness, named rasters are not strictly necessary.
+
+Data are from: Henao-Díaz, F. et al. (2020). Atlas de la biodiversidad de Colombia. Primates. Instituto de Investigación de Recursos Biológicos Alexander von Humboldt. Bogotá D. C., Colombia. 51 pp.
+
+```{r}
+# Load binary maps/SDMs
+primRas <- raster::stack(list.files(path = paste0(system.file(package="changeRangeR"), "/extdata/DemoData/SDM/colPrimates_binary"), pattern = "\\.tif$", full.names = T))
+# Because of species' name resolutions in the phylogeny we use here, we need to rename some of the species in this rasterStack
+names(primRas) <- gsub("*_veg_coarse", "", names(primRas))
+# Drop models that are resolved into one group; Cebus_albifrons
+primRas <- dropLayer(primRas, c("Cebus_versicolor", "Cebus_leucocephalus", "Cebus_malitiosus", "Cebus_albifrons"))
+oldnames <- names(primRas)
+namesToChange <- c("Cebus_all_albifrons", "Cheracebus_lugens", "Cheracebus_medemi", "Lagothrix_lagothricha", "Leontocebus_fuscus", "Plecturocebus_caquetensis", "Plecturocebus_discolor", "Plecturocebus_ornatus", "Saimiri_cassiquiarensis")
+newNames <- c("Cebus_albifrons", "Callicebus_lugens", "Callicebus_medemi", "Lagothrix_lagotricha", "Leontocebus_fuscicollis", "Callicebus_caquetensis", "Callicebus_discolor", "Callicebus_ornatus", "Saimiri_sciureus")
+oldnames[oldnames %in% namesToChange] <- newNames
+names(primRas) <- oldnames
+```
+ 
+Calculate species richness by summing the raster values 
+```{r}
+SR <- sum(primRas, na.rm = T)
+plot(SR)
+```
+
+## Phylogenetic diversity
+Phylogenetic diversity can be calculated from binary range-maps, or as here, thresholded SDMs. We combine these maps with phylogenetic trees to calculate this measure of diversity. Here, we calculate phylogenetic diversity as the sum of branch lengths using Faith's PD (Faith, 1992). 
+
+It is important to note that species-experts can edit binary SDMs, such as is done in the R package [*maskRangeR*](https://wallaceecomod.github.io/maskRangeR/) to add or remove areas.
+
+### Load and manage spatial data
+Loading the SDM data and ensuring the names match the phylogeny
+```{r}
+# Load binary maps/SDMs
+primRas <- stack(list.files(path = paste0(system.file(package="changeRangeR"), "/extdata/DemoData/SDM/colPrimates_binary"), pattern = "\\.tif$", full.names = T))
+# Because of species' name resolutions in the phylogeny we use here, we need to rename some of the species in this rasterStack
+names(primRas) <- gsub("*_veg_coarse", "", names(primRas))
+# Drop models that are resolved into one group; Cebus_albifrons
+primRas <- dropLayer(primRas, c("Cebus_versicolor", "Cebus_leucocephalus", "Cebus_malitiosus", "Cebus_albifrons"))
+oldnames <- names(primRas)
+namesToChange <- c("Cebus_all_albifrons", "Cheracebus_lugens", "Cheracebus_medemi", "Lagothrix_lagothricha", "Leontocebus_fuscus", "Plecturocebus_caquetensis", "Plecturocebus_discolor", "Plecturocebus_ornatus", "Saimiri_cassiquiarensis")
+newNames <- c("Cebus_albifrons", "Callicebus_lugens", "Callicebus_medemi", "Lagothrix_lagotricha", "Leontocebus_fuscicollis", "Callicebus_caquetensis", "Callicebus_discolor", "Callicebus_ornatus", "Saimiri_sciureus")
+oldnames[oldnames %in% namesToChange] <- newNames
+names(primRas) <- oldnames
+```
+
+To save time in this vignette, let's crop down the primate rasters to a much smaller extent
+```{r}
+e <- extent(c(-75, -70, 0, 2.5))
+primRas <- crop(primRas, e)
+```
+
+### Load phylogenetic tree
+
+```{r}
+primTree <- read.nexus(paste0(system.file(package="changeRangeR"), "/extdata/DemoData/phyloTree/output.nex"))
+```
+
+Convert NA values to 0
+```{r}
+# set all cells that have NA values to 0
+for (i in 1:nlayers(primRas)){
+  primRas[[i]][is.na(primRas[[i]])] <- 0
+}
+```
+
+Convert the rasterStack to a data.frame
+```{r}
+# convert raster to dataframe
+commDat <- as.data.frame(primRas)
+# remove rows that are NA
+commDat <- na.omit(commDat)
+row.names(commDat) <- 1:nrow(commDat)
+```
+
+Calculate phylogenetic diversity, here using the 500th tree as an example
+```{r}
+user_phylogeny <- primTree[1]$tree_6532
+phydiv <- pd(samp = commDat, tree = user_phylogeny, include.root = TRUE)
+```
+
+Add the phylogenetic diversity pixel values to the community data data.frame
+```{r}
+commDat$pd <- phydiv$PD
+```
+
+To create a raster of phylogenetic diversity, start with an empty raster. Add the primate raster values from the primRas rasterstack to get a single raster showing every pixel for which we have a PD value.
+```{r}
+pd_ras <- sum(primRas, na.rm=T)
+pd_ras[!is.na(pd_ras)] <- commDat$pd
+pd_ras[pd_ras == 0] <- NA
+plot(pd_ras)
+```
+
+## Phylogenetic endemism
+Phylogenetic endemism combines phylogenetic trees with spatial data. PE is calculated by dividing each branch length over the total number of locations where the species that descend from that branch are found (Rosauer et al., 2009).
+
+Here, we can calculate PE from a function written by, and hosted by Dan Rosauer on [Github](https://github.com/DanRosauer/phylospatial)
+
+To begin, load and manage the spatial data to make sure the names match those in the phylogeny
+```{r}
+# Load binary maps/SDMs
+primRas <- stack(list.files(path = paste0(system.file(package="changeRangeR"), "/extdata/DemoData/SDM/colPrimates_binary"), pattern = "\\.tif$", full.names = T))
+# Because of species' name resolutions in the phylogeny we use here, we need to rename some of the species in this rasterStack
+names(primRas) <- gsub("*_veg_coarse", "", names(primRas))
+# Drop models that are resolved into one group; Cebus_albifrons
+primRas <- dropLayer(primRas, c("Cebus_versicolor", "Cebus_leucocephalus", "Cebus_malitiosus", "Cebus_albifrons"))
+oldnames <- names(primRas)
+namesToChange <- c("Cebus_all_albifrons", "Cheracebus_lugens", "Cheracebus_medemi", "Lagothrix_lagothricha", "Leontocebus_fuscus", "Plecturocebus_caquetensis", "Plecturocebus_discolor", "Plecturocebus_ornatus", "Saimiri_cassiquiarensis")
+newNames <- c("Cebus_albifrons", "Callicebus_lugens", "Callicebus_medemi", "Lagothrix_lagotricha", "Leontocebus_fuscicollis", "Callicebus_caquetensis", "Callicebus_discolor", "Callicebus_ornatus", "Saimiri_sciureus")
+oldnames[oldnames %in% namesToChange] <- newNames
+names(primRas) <- oldnames
+```
+
+As before, let's crop the rasters for processing speed.
+```{r}
+e <- extent(c(-75, -70, 0, 2.5))
+primRas <- crop(primRas, e)
+```
+
+Load in the phylogenetic trees
+```{r}
+primTree <- read.nexus(paste0(system.file(package="changeRangeR"), "/extdata/DemoData/phyloTree/output.nex"))
+```
+
+The function, provided, on github, by Dan Rosauer (https://github.com/DanRosauer/phylospatial) as defined in: 
+
+Rosauer, D.F., Blom, M.P.K., Bourke, G., Catalano, S., Donnellan, S., Gillespie, G., Mulder, E., Oliver, P.M., Potter, S., Pratt, R.C. and Rabosky, D.L., 2016. Phylogeography, hotspots and conservation priorities: an example from the Top End of Australia. Biological Conservation, 204, pp.83-93.
+
+
+Prepare the raster data
+```{r}
+## Convert the binary primate SDMs to a point data.frame, removing the X and Y data. 
+Allxy <- rasterToPoints(primRas)
+sites <- as.data.frame(Allxy[,1:ncol(Allxy)])
+## Change all NA values to 0
+sites[is.na(sites)] <- 0
+```
+
+Calculate PE
+
+```{r}
+pEprimates <- calc_PE(phylo.tree = primTree[[1]], sites_x_tips = sites, presence = "presence")
+```
+
+Next, transform the pixel-wise PE values back into a raster
+```{r}
+## cbind the pixel centroids with PE values and convert to a raster
+PExyz <- cbind(Allxy[,1:2], pEprimates$PE)
+PE.ras <- rasterFromXYZ(PExyz)
+PE.ras[PE.ras == 0] <- NA
+plot(PE.ras)
+```
+
+## Species Endemism
+
+Here, species endemism is defined as a value for each cell equal to the number of species found in that cell divided by the total number of cells in which they are found
+
+Load and manage spatial data
+```{r}
+# Load binary maps/SDMs
+primRas <- stack(list.files(path = paste0(system.file(package="changeRangeR"), "/extdata/DemoData/SDM/colPrimates_binary"), pattern = "\\.tif$", full.names = T))
+# Because of species' name resolutions in the phylogeny we use here, we need to rename some of the species in this rasterStack
+names(primRas) <- gsub("*_veg_coarse", "", names(primRas))
+# Drop models that are resolved into one group; Cebus_albifrons
+primRas <- dropLayer(primRas, c("Cebus_versicolor", "Cebus_leucocephalus", "Cebus_malitiosus", "Cebus_albifrons"))
+oldnames <- names(primRas)
+namesToChange <- c("Cebus_all_albifrons", "Cheracebus_lugens", "Cheracebus_medemi", "Lagothrix_lagothricha", "Leontocebus_fuscus", "Plecturocebus_caquetensis", "Plecturocebus_discolor", "Plecturocebus_ornatus", "Saimiri_cassiquiarensis")
+newNames <- c("Cebus_albifrons", "Callicebus_lugens", "Callicebus_medemi", "Lagothrix_lagotricha", "Leontocebus_fuscicollis", "Callicebus_caquetensis", "Callicebus_discolor", "Callicebus_ornatus", "Saimiri_sciureus")
+oldnames[oldnames %in% namesToChange] <- newNames
+names(primRas) <- oldnames
+```
+
+Again, let's crop the rasters for processing speed.
+```{r}
+e <- extent(c(-75, -70, 0, 2.5))
+primRas <- crop(primRas, e)
+```
+
+Calculate species endemism
+```{r}
+sp.End <- SpeciesEndemism(primRas)
+plot(sp.End)
+```
+
+## Complementarity
+
+It is often useful to spatially quantify biodiversity data to assess geographically where patterns exist. For example, to find or compare areas that contain more than 50% of species richness, thresholding a raster by a statistical value can be important.
+
+Loading the SDM data and ensuring the names match the phylogeny
+```{r}
+# Load binary maps/SDMs
+primRas <- stack(list.files(path = paste0(system.file(package="changeRangeR"), "/extdata/DemoData/SDM/colPrimates_binary"), pattern = "\\.tif$", full.names = T))
+# Because of species' name resolutions in the phylogeny we use here, we need to rename some of the species in this rasterStack
+names(primRas) <- gsub("*_veg_coarse", "", names(primRas))
+# Drop models that are resolved into one group; Cebus_albifrons
+primRas <- dropLayer(primRas, c("Cebus_versicolor", "Cebus_leucocephalus", "Cebus_malitiosus", "Cebus_albifrons"))
+oldnames <- names(primRas)
+namesToChange <- c("Cebus_all_albifrons", "Cheracebus_lugens", "Cheracebus_medemi", "Lagothrix_lagothricha", "Leontocebus_fuscus", "Plecturocebus_caquetensis", "Plecturocebus_discolor", "Plecturocebus_ornatus", "Saimiri_cassiquiarensis")
+newNames <- c("Cebus_albifrons", "Callicebus_lugens", "Callicebus_medemi", "Lagothrix_lagotricha", "Leontocebus_fuscicollis", "Callicebus_caquetensis", "Callicebus_discolor", "Callicebus_ornatus", "Saimiri_sciureus")
+oldnames[oldnames %in% namesToChange] <- newNames
+names(primRas) <- oldnames
+```
+
+Calculate species richness again and convert zeros to NA
+```{r}
+SR <- sum(primRas, na.rm = T)
+SR[SR == 0] <- NA
+```
+
+Calculate the raster value at the 50th percentile
+```{r}
+thresholdValue <- quantile(SR, probs = 0.5)
+```
+
+Threshold the raster by the chosen value and plot
+```{r}
+SR[SR < thresholdValue] <- NA
+plot(SR)
+```
+
+Users can then calculate the overlap of this new raster with a shapefile. For example, a user can find the proportion of 50% of species richness that is protected.
+
+Load protected areas in Colombia and calculate the ratio of overlap
+```{r}
+PAs <- readRDS(file.path(system.file(package="changeRangeR"), "extdata/DemoData/shapefiles", "WDPA_COL_olinguito_simp.rds"))
+# View the fields
+colnames(PAs)
+# Pick the field you are interested in
+field <- "DESIG_ENG"
+category <- "All"
+ratio.Overlap <- ratioOverlap(r = SR, shp = PAs, field = field, category = category, subfield = FALSE)
+print(ratio.Overlap)
+```
+
+Users can also find the amount of species richness is currently protected.
+
+Calculate species richness again and convert zeros to NA
+```{r}
+SR <- sum(primRas, na.rm = T)
+SR[SR == 0] <- NA
+```
+
+Load protected areas in Colombia and calculate what percentage of species richness is currently protected.
+```{r}
+PAs <- readRDS(file.path(system.file(package="changeRangeR"), "extdata/DemoData/shapefiles", "WDPA_COL_olinguito_simp.rds"))
+# View the fields
+colnames(PAs)
+# Pick the field you are interested in
+field <- "DESIG_ENG"
+category <- "All"
+# Mask species richness by protected areas to find richness within protected areas
+rmask <- raster::mask(SR, PAs)
+# Take a look
+plot(SR)
+plot(PAs, add = T)
+
+comp <- complementarity(ras1 = SR, ras1mask = rmask)
+print(comp)
+```
