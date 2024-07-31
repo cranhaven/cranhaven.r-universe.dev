@@ -1,0 +1,46 @@
+#' Laboratory Detection Limits
+#'
+#' @description Analytical method detection limits of selected radionuclides based on laboratory procedures.
+#'
+#' @format A data frame with columns:
+#'   \describe{
+#'     \item{`parm_nm`}{Long parameter name,
+#'       such as "Strontium-90, water, unfiltered, picocuries per liter".}
+#'     \item{`pcode`}{U.S. Geological Survey 5-digit parameter code used to identify the constituent measured,
+#'       see [`parameters`] dataset for details. For example, the parameter code for Tritium is "07000".}
+#'     \item{`lab_det_lim_va`}{Laboratory detection limit concentration.}
+#'     \item{`min_dt`}{Date that the detection limit went into effect.}
+#'     \item{`reference`}{Source of detection limit.
+#'       Reference citations are as follows:
+#'         "Bartholomay and others (2003, table 9)",
+#'         "Bartholomay and others (2014, table D1)",
+#'         "Bartholomay and others (2021, table 4.1)", and
+#'         "Bodnar and Percival (1982)"}
+#'   }
+#'
+#' @source Idaho National Laboratory Project Office
+#'
+#' @references Bartholomay, R.C., Knobel, L.L., and Rousseau, J.P., 2003,
+#'   Field methods and quality-assurance plan for quality-of-water activities,
+#'   U.S. Geological Survey, Idaho National Engineering and Environmental Laboratory, Idaho:
+#'   U.S. Geological Survey Open-File Report 03--42 (DOE/ID--22182), 45 p.
+#'   \doi{10.3133/ofr0342}.
+#' @references Bartholomay, R.C., Maimer, N.V., and Wehnke, A.J., 2014,
+#'   Field methods and quality-assurance plan for water-quality activities and
+#'   water-level measurements, U.S. Geological Survey, Idaho National Laboratory, Idaho:
+#'   U.S. Geological Survey Open-File Report 2014--1146 (DOE/ID--22230), 64 p.
+#'   <https://pubs.usgs.gov/of/2014/1146/>.
+#' @references Bartholomay, R.C., Maimer, N.V., Wehnke, A.J., and Helmuth, S.L., 2021,
+#'   Field methods, quality-assurance, and data management plan for water-quality activities
+#'   and water-level measurements, Idaho National Laboratory, Idaho:
+#'   U.S. Geological Survey Open-File Report 2021--1004, 76 p.,
+#'   \doi{10.3133/ofr20211004}.
+#' @references Bodnar, L.Z., and Percival, D.R., eds., 1982,
+#'   Analytical Chemistry Branch procedures manual---Radiological and Environmental Sciences Laboratory:
+#'   U.S. Department of Energy Report IDO--12096 \[variously paged\].
+#'
+#' @keywords datasets
+#'
+#' @examples
+#' str(dl)
+"dl"

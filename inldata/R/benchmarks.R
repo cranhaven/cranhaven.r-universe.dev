@@ -1,0 +1,54 @@
+#' Benchmark Concentrations
+#'
+#' @description Water-quality benchmark concentrations of selected
+#'   radionuclides, organic compounds, and chemical constituents.
+#'   These benchmarks include the United States Environmental Protection Agency (EPA) Maximum Contaminant Levels
+#'   ([MCLs](https://www.epa.gov/ground-water-and-drinking-water/national-primary-drinking-water-regulations)),
+#'   Human Health Benchmarks for Pesticides
+#'   ([HHBPs](https://www.epa.gov/sdwa/human-health-benchmarks)), and
+#'   U.S. Geological Survey (USGS) Health-Based Screening Levels
+#'   ([HBSLs](https://water.usgs.gov/water-resources/hbsl/)).
+#'
+#' @format A data frame with columns:
+#'   \describe{
+#'     \item{`parm_nm`}{Long parameter name,
+#'       such as "Strontium-90, water, unfiltered, picocuries per liter".}
+#'     \item{`pcode`}{U.S. Geological Survey 5-digit parameter code used to identify the constituent measured,
+#'       see [`parameters`] dataset for details. For example, the parameter code for Tritium is "07000".}
+#'     \item{`mcl`}{Maximum Contaminant Levels (MCLs),
+#'       a standard set by the EPA for drinking water quality.
+#'       An MCL is the legal threshold limit on the amount of a substance that is allowed
+#'       in public water systems under the Safe Drinking Water Act.}
+#'     \item{`hhbp_noncancer`}{EPA Chronic Noncancer HHBPs.}
+#'     \item{`hhbp_cancer_min`}{EPA Carcinogenic HHBPs for a
+#'       one-in-one million cancer risk.}
+#'     \item{`hhbp_cancer_max`}{EPA Carcinogenic HHBPs for a
+#'       one-in-ten thousand cancer risk.}
+#'     \item{`hbsl_noncancer`}{USGS Noncancer HBSLs.}
+#'     \item{`hbsl_cancer_min`}{USGS Cancer HBSLs for a
+#'       one-in-one million cancer risk.}
+#'     \item{`hbsl_cancer_max`}{USGS Cancer HBSLs for a
+#'       one-in-ten thousand cancer risk.}
+#'     \item{`remark`}{Benchmark remarks that provide additional information about some MCLs, HHBPs, and HBSLs.}
+#'   }
+#'
+#' @source Many of the water-quality benchmarks were accessed from the
+#'   U.S. Geological Survey Health-Based Screening Levels database,
+#'   accessed on April 4, 2023, from <https://water.usgs.gov/water-resources/hbsl/>.
+#'   Benchmarks for total Trihalomethanes, Tritium, and Strontium-90 were
+#'   provided by the U.S. Environmental Protection Agency (2015).
+#'   Note that MCL benchmark values reported in millirem per year were
+#'   substituted with a 50 picocuries per liter screening level.
+#'
+#' @references U.S. Environmental Protection Agency, 2015,
+#'   Protection of environment---Code of Federal Regulations 40,
+#'   Part 141, Subpart G, National Primary Drinking Water Regulations,
+#'   Maximum Contaminant Levels and Maximum Residual Disinfectant Levels:
+#'   Washington, D.C., Office of the Federal Register,
+#'   National Archives and Records Administration.
+#'
+#' @keywords datasets
+#'
+#' @examples
+#' str(benchmarks)
+"benchmarks"
