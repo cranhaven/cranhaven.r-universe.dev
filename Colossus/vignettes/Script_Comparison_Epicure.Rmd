@@ -1,0 +1,129 @@
+---
+title: "Script comparisons with 32-bit Epicure"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Script Comparison Epicure}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+```{r setup}
+library(Colossus)
+library(data.table)
+library(parallel)
+```
+
+## Introduction to Colossus
+
+Colossus was developed in the context of radiation epidemiologists wanting to use new methods and more data. At the time of development, 32-bit Epicure was a popular software for running radiation epidemiological analysis. This vignette was written with that in mind to help any transitioning users see how the two are similar and different, in addition to providing guidance for converting between the two. The script provided will discuss both Colossus-specific differences as well as general R capabilities that differ from Epicure.
+
+### Example Epicure Analysis
+The following peanuts script was used as part of validation efforts for Colossus. The script runs three regressions. A linear excess relative risk model, a log-linear hazard ratio model for dose overall, and a log-linear hazard ratio model for categorical bins of dose.
+
+The script starts by loading the dataset. In this example we assume there is a file called "EX_DOSE.csv" in the local directory.
+
+```
+RECORDS 4100000 @
+WSOPT VARMAX 30 @
+USETXT EX_DOSE.csv @
+INPUT @
+```
+
+Next the script sets the interval start column, interval end column, and designates which columns have multiple levels.
+
+```
+ENTRY age_entry @
+EXIT age_exit @
+EVENT nonCLL @
+
+levels SES_CAT YOB_CAT sexm dose_cat @
+```
+
+Past this point the script specifies which columns belong to each subterm and term number. In this case the model has a linear element in the second term. The script additionally sets the convergence options. In this case the maximum iterations are set to 100 and the convergence criteria is set to 1e-9. The regression is also set to print deviance and parameter estimate each iteration, and to print the final estimates and covariance after the regression concludes.
+
+```
+LOGLINEAR 0 SES_CAT YOB_CAT sexm @
+LINEAR 1 cumulative_dose @
+
+FITOPT P V ITER 100 CONV -9 @
+```
+
+Finally the regression is run and results are printed to the console.
+
+```
+FIT @
+```
+
+Past this point the same general process is followed for the two hazard ratio regressions. The model definition is reset, the subterm/term description is set, and the regression is run.
+
+```
+NOMODEL @
+
+LOGLINEAR 0 SES_CAT YOB_CAT sexm cumulative_dose @
+
+FIT @
+
+NOMODEL @
+
+LOGLINEAR 0 SES_CAT YOB_CAT sexm dose_cat @
+
+FIT @
+
+NOMODEL @
+```
+### Colossus Script
+
+For the most part, the same steps are performed in Colossus. The script starts off by reading the input file. The only difference is that R does not require memory to be set aside prior to reading the file.
+
+```{r, eval=FALSE}
+df_Dose   <- fread("EX_DOSE.csv")
+```
+
+The next step defines covariates with levels and assigns the interval/event column information. The main difference is that Colossus currently does not automatically split factored columns. So the first several lines transform the dataset to include factored columns, and later on the user has to list all of the factored columns.
+
+```{r, eval=FALSE}
+col_list <- c("SES_CAT","YOB_CAT","dose_cat")
+val <- factorize(df_Dose,col_list)
+df_Dose <- val$df
+
+t0 <- "age_entry"
+t1 <- "age_exit"
+event <- "nonCLL"
+```
+
+Next the script defines the model and control information. Colossus stores the model information like columns in a table. So it expects lists of column names, subterm types, term numbers, etc. In this case the only non-default values are the column names and subterm types. The "control" variable serves a similar purpose as the "FITOPT" option in Epicure.
+
+```{r, eval=FALSE}
+
+# ERR
+names <- c('cumulative_dose',"SES_CAT_1", "SES_CAT_2", "YOB_CAT_1","YOB_CAT_2","YOB_CAT_3","YOB_CAT_4", "sexm")
+tform <- c("plin",rep('loglin',length(names)-1))
+control <- list("Ncores"=8, 'maxiter'=50, 'verbose'=F)
+```
+
+Finally the regression is run, and a list of the results is returned to a variable "e".
+
+```{r, eval=FALSE}
+e <- RunCoxRegression(df_Dose, t0, t1, event, names, tform=tform, control = control)
+```
+
+A similar process is run for the two hazard ratio regressions.
+
+```{r, eval=FALSE}
+# HR
+names <- c('cumulative_dose',"SES_CAT_1", "SES_CAT_2", "YOB_CAT_1","YOB_CAT_2","YOB_CAT_3","YOB_CAT_4", "sexm")
+tform <- rep('loglin',length(names))
+e <- RunCoxRegression(df_Dose, t0, t1, event, names, tform=tform, control = control)
+
+# Categorical
+names <- c('dose_cat_1','dose_cat_2','dose_cat_3','dose_cat_4','dose_cat_5','dose_cat_6', "SES_CAT_1", "SES_CAT_2", "YOB_CAT_1","YOB_CAT_2","YOB_CAT_3","YOB_CAT_4", "sexm")
+tform <- rep('loglin',length(names))
+e <- RunCoxRegression(df_Dose, t0, t1, event, names, tform=tform, control = control)
+```

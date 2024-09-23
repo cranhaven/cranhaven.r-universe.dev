@@ -1,0 +1,301 @@
+---
+title: "Alternative Regression Options"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Alternative Regression Options}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+```{r setup}
+library(Colossus)
+library(data.table)
+
+```
+## General Options
+
+Both Cox proportional hazards and Poisson model regressions have additional functions that can account for specific situations. There general situations are as follows:
+
+| Option | Description | Cox PH | Poisson |
+| :---------: | :----------: | :----------: | :-------: |
+| Stratification | In Cox PH, the stratification is applied in the risks groups to compare only like rows. In Poisson model regression the stratification is an additional term in the model to account for the effects of stratified covariates | x | x |
+| Simplified Model | For a multiplicative Log-Linear model, there are simplifications that can be made to the code. These give a faster version. | x |  |
+| Non-Derivative Calculation | If a single iteration is needed without derivatives, there is time and memory that can be saved | x | x |
+| Competing Risks | If there is a competing event, rows are weighted by an estimate of censoring rate to approximate a dataset without the effect of a competing event | x |  |
+| Joint Analysis | A Poisson method which allows a model to solve for multiple outcomes, by creating multiple copies of rows with multiple events and using a factor variable to add covariates for specific outcomes |  | x |
+| Distributed Initial Parameter Sets | The user provides distribution for each starting parameter, Colossus runs low iteration regressions at random points, and then a full run at the best guess | x | x |
+
+The following sections review the math behind the basic functions and how each option changes that.
+
+
+## Stratification
+
+### Cox Proportional Hazards
+
+In Cox Proportional Hazards, the Log-Likelihood is calculated by taking the ratio of the hazard ratio at each event to the sum of the hazard ratios of every other row at risk. This defines the risk group for every event time to be the intervals containing the event time. Intervals are assumed to be open on the left and closed on the right, and events are assumed to take place at the right end point. This gives the following common equation for the Log-Likelihood:
+
+<p class="text-center" style="background-color: aliceblue">
+$$
+\begin{aligned}
+    Ll = \prod_{i}^{n} \left( \frac{r_{i}}{\sum_{j: t_j \in R_i} r_j} \right)^{\delta_i}
+\end{aligned}
+$$
+</p>
+
+In which r denotes hazard ratios, the denominator is the sum of hazard ratios of intervals containing the event time, and each term is raised to the power of 1 if the interval has an event and 0 otherwise. Different tie methods modify the denominator based on how the order of events is assumed, but the general form still stands. The goal is to compare each event interval to intervals within a similar time span. Stratification adds in an additional condition. If the user stratifies over a covariate "F" then each risk group is split into subgroups with the same value of "F". So the goal becomes to compare event intervals to intervals with similar strata AND time. This is done to remove the influence of the stratification variables from the calculations.
+
+In code this is done by adding in an additional parameter for the stratification column and using a different function to call the regression.
+
+```{r, eval=FALSE}
+Strat_Col <- "e"
+e <- RunCoxRegression_STRATA(df, time1, time2, event, names, term_n, tform, keep_constant,
+                             a_n, modelform, fir, der_iden, control,Strat_Col)
+```
+
+### Poisson Regression
+
+Poisson model regression does not have risk groups to account for, but the theory is the same. To remove the influence of stratification covariate a new term is added to account for their effects. In Colossus, this is a Log-Linear term. So the following may be the model used without stratification:
+
+<p class="text-center" style="background-color: aliceblue">
+$$
+\begin{aligned}
+    R = \sum_i (x_i \cdot \beta_i)
+\end{aligned}
+$$
+</p>
+
+Then the stratified model may look like this:
+
+<p class="text-center" style="background-color: aliceblue">
+$$
+\begin{aligned}
+    R = (\sum_i (x_i \cdot \beta_i)) \times (1 + \exp{(\sum_j (x_j \cdot \beta_j))})
+\end{aligned}
+$$
+</p>
+
+Only results associated with the non-stratified parameters are returned by default. An average event rate is calculated for every strata level, which weights the calculated risks.
+
+In code this is done by adding in a list of stratification columns and using a different function to call the regression. Colossus combines the list of stratification columns into a single interaction, so it does not matter if the user provides a list or combines them themselves.
+
+```{r, eval=FALSE}
+Strat_Col <- c("e")
+e <-RunPoissonRegression_STRATA(df, pyr, event, names, term_n, tform, keep_constant,
+                                a_n, modelform, fir, der_iden, control,Strat_Col)
+```
+
+## Simplified Model
+
+The inclusion of linear subterms, additive models, and multiple terms means that default Colossus calculates and stores every derivative assuming that every value is needed. If the equation is log-linear with one term, then there are many simplifications that can be made. This option is designed to make those simplifications. In particular having only one subterm type means that the hazard ratios and their derivatives can be calculated directly, and the only subterm type being an exponential means that the logarithm of the hazard ratio in the Log-Likelihood calculation is simplified. In tests, using the simplified function was able to save approximately 40% time versus the full code being used.
+
+Assuming the same general parameters in the other vignettes, the code is as follows:
+
+```{r, eval=FALSE}
+e <- RunCoxRegression_Basic(df, time1, time2, event, names,
+                            keep_constant, a_n, der_iden, control)
+```
+
+## Non-Derivative Calculation
+
+Colossus uses Newton's method to perform the regression, which can become computationally complex as the number of terms and formula increases. So Colossus contains functions to calculate only the scores for a parameter set, and skip the intensive derivative calculations. These results could be used to perform a bisection method of regression or plot the dependence of score on parameter values. Colossus in the current state does not use these functions, but they are left for the user's convenience.
+
+The code is similar to previous examples:
+```{r, eval=FALSE}
+e <- RunCoxRegression_Single(df, time1, time2, event, names, term_n, tform,
+                             a_n, modelform, fir, control)
+
+e <- RunPoissonRegression_Single(df, pyr, event, names, term_n, tform,
+                                 a_n, modelform, fir, control)
+```
+
+## Competing Risks
+
+### Fine-Grey
+
+In Cox PH there is an assumption that every individual is recorded until they have an event or they are naturally censored, and the same censoring rates are assumed to apply to every individual. These are violated when there is a competing event occurring. In sensitivity analysis there are two extremes that can be tested. Either every person with a competing event is treated as having the event of interest instead, or they are assumed to never experience the event of interest. However there are methods to find a more realistic alternative. Colossus applies the Fine-Gray model for competing risks, which instead weights the contribution of competing event intervals in future intervals by the probability they would not have been censored.
+
+As previously established, the risk groups are formed to measure the probability that an individual survived up to the time and experienced the event of interest, given that they did not experience an event up to that time:
+
+
+<p class="text-center" style="background-color: aliceblue">
+$$
+\begin{aligned}
+    \lambda(t) = \lim_{\Delta t \to 0} \frac{(P(t \leq T \leq t + \Delta t)\text{ and }(k=1), T \geq t)}{\Delta t}
+\end{aligned}
+$$
+</p>
+
+The competing risks model adjusts this to be the probability that an individual survived up to the time and experienced the event of interest, given that they did not experience an event up to that time OR they survived up to a previous time and experienced an event:
+
+<p class="text-center" style="background-color: aliceblue">
+$$
+\begin{aligned}
+    \lambda(t) = \lim_{\Delta t \to 0} \frac{(P(t \leq T \leq t + \Delta t)\text{ and }(k=1), (T \geq t)\text{ or }((T < t)\text{ and }(k \neq 1)))}{\Delta t}
+\end{aligned}
+$$
+</p>
+
+This means that risks groups would contain both intervals actually at risk and intervals with competing events treated as if they were at risk. If we assume that no time-dependent covariates are being used, then all that remains is to weight the contribution of these competing events. The goal is to quantify the probability that an interval would have been uncensored at the new event time given that it was uncensored up to the competing event time. Colossus handles this by fitting a survival curve for censoring and using the ratio of surviving proportion to weight intervals.
+
+<p class="text-center" style="background-color: aliceblue">
+$$
+\begin{aligned}
+   W_i(j) = min \left(\frac{S(t_j)}{S(t_i)},1 \right)
+\end{aligned}
+$$
+</p>
+
+At any given event time, every competing event interval will have a right interval limit below the event time and every interval without events will have a right interval limit above the event time. So competing events will have a weighting below 1 and every other interval will have a weighting set to 1.
+
+In code, the call is similar to the standard function. The process for finding a weighting is included below. In this example we assume the event column, lung, to contain a 0 for no events, 1 for the primary event, and 2 for the competing event. A ID column is used to determine which individuals have events and which are censored.
+
+```{r, eval=FALSE}
+df$censor <- (df$lung==0) #censoring column made
+event <- "censor" #event type switched to censoring
+
+plot_options <- list("name"="run_2","verbose"=FALSE,"studyID"="studyID","age_unit"="years")
+#modified plotting function used to get censoring weights
+dft <- GetCensWeight(df, time1, time2, event, names, term_n, tform, keep_constant,
+                     a_n, modelform, fir, control, plot_options) #generates a survival curve
+t_ref <- dft$t
+surv_ref <- dft$surv
+t_c <- df$t1
+cens_weight <- approx(t_ref, surv_ref, t_c,rule=2)$y
+#the surviving proportions used as censoring weight
+event <- "lung" #event switched back
+
+e <- RunCoxRegression_CR(df, time1, time2, event, names, term_n, tform, keep_constant,
+                         a_n, modelform, fir, der_iden, control,cens_weight)
+```
+
+### Poisson Joint Analysis
+
+For a dataset with multiple outcomes there are often two ways that Poisson models are fit. Either multiple independent models are fit or the events are combined and one model is fit to several events. These methods limit models to be completely independent or identical. The true model may be a combination of shared terms and terms specific to each event, which cannot be modeled with these methods. To fit this type of model a joint analysis method (Cologne, 2019) is available in Colossus.
+
+Suppose one has a table of person-years, a covariate, and counts for two events. Assume we are fitting the event rate ($\lambda$) for each event and have reason to believe that the background rate ($\beta$) is the same for each event.
+
+ | Time | a | y | z |
+ | :--: | :--: | :--: | :--: |
+ | $t_1$  | $a_1$ | $y_1$ | $z_1$ |
+ | $t_2$  | $a_2$ | $y_2$ | $z_2$ |
+
+
+<p class="text-center" style="background-color: aliceblue">
+$$
+\begin{aligned}
+    \lambda_y(a) = \beta*\exp{(\mu_y*a)}\\
+    \lambda_z(a) = \beta*\exp{(\mu_z*a)}
+\end{aligned}
+$$
+</p>
+
+If one were to solve the equations separately the table would be split into two tables, each with one event column. The premise of a joint analysis is to write a model that can be applied to every event, including a factor covariate to select which event is being solved for. Then the split tables can be recombined and multiple events can be solved at once allowing for shared and event-specific parameters.
+
+ | Time | a | $\alpha_y$ | $\alpha_z$ | events |
+ | :--: | :--: | :--: | :--: | :--: |
+ | $t_1$  | $a_1$ | 1 | 0 | $y_1$ |
+ | $t_1$  | $a_1$ | 0 | 1 | $z_1$ |
+ | $t_2$  | $a_2$ | 1 | 0 | $y_2$ |
+ | $t_2$  | $a_2$ | 0 | 1 | $z_2$ |
+
+
+<p class="text-center" style="background-color: aliceblue">
+$$
+\begin{aligned}
+    \lambda(a,\alpha_y,\alpha_z) = \beta*\exp{(\mu_y*(a*\alpha_y) + \mu_z*(a*\alpha_z))}
+\end{aligned}
+$$
+</p>
+
+Colossus includes several functions which apply this method, a function that produces input for a joint analysis regression and functions which additionally run the regressions. The most general converts a table and lists of model parameters into the input for a regression.
+
+```{r, eval=TRUE}
+a <- c(0,0,0,1,1,1)
+b <- c(1,1,1,2,2,2)
+c <- c(0,1,2,2,1,0)
+d <- c(1,1,0,0,1,1)
+e <- c(0,1,1,1,0,0)
+df <- data.table('t0'=a,'t1'=b,'e0'=c,'e1'=d,'fac'=e)
+time1 <- "t0"
+time2 <- "t1"
+df$pyr <- df$t1 - df$t0
+pyr <- "pyr"
+events <- c('e0','e1')
+```
+Colossus generally accepts a series of vectors to describe the elements of model. For a joint analysis, Colossus instead expects lists. Each list is expected to contain vectors for shared elements and elements specific to each event. Colossus expects the list names to be either "shared" or the event column names.
+
+```{r, eval=TRUE}
+names_e0 <- c('fac')
+names_e1 <- c('fac')
+names_shared <- c('t0','t0')
+term_n_e0 <- c(0)
+term_n_e1 <- c(0)
+term_n_shared <- c(0,0)
+tform_e0 <- c("loglin")
+tform_e1 <- c("loglin")
+tform_shared <- c("quad_slope","loglin_top")
+keep_constant_e0 <- c(0)
+keep_constant_e1 <- c(0)
+keep_constant_shared <- c(0,0)
+a_n_e0 <- c(-0.1)
+a_n_e1 <- c(0.1)
+a_n_shared <- c(0.001, -0.02)
+name_list <- list('shared'=names_shared,'e0'=names_e0,'e1'=names_e1)
+term_n_list <- list('shared'=term_n_shared,'e0'=term_n_e0,'e1'=term_n_e1)
+tform_list <- list('shared'=tform_shared,'e0'=tform_e0,'e1'=tform_e1)
+keep_constant_list <- list('shared'=keep_constant_shared,
+                           'e0'=keep_constant_e0,'e1'=keep_constant_e1)
+a_n_list <- list('shared'=a_n_shared,'e0'=a_n_e0,'e1'=a_n_e1)
+```
+The function returns a list which contains the combined table and vectors.
+```{r, eval=TRUE}
+Joint_Multiple_Events(df, events, name_list, term_n_list,
+                      tform_list, keep_constant_list, a_n_list)
+```
+
+These results could be then used as input for any of the available regression functions. Colossus also includes a wrapper functions to directly call the Poisson model regression function. This method could applied to a Cox model assuming every event has the same baseline hazard. However this is not the intended use, so a wrapper function was not included.
+```{r, eval=TRUE}
+der_iden <- 0
+modelform <- "M"
+fir <- 0
+control <- list("ncores"=2,'lr' = 0.75,'maxiter' = 10,'halfmax' = 5,'epsilon' = 1e-3,
+   'dbeta_max' = 0.5,'deriv_epsilon' = 1e-3, 'abs_max'=1.0,'change_all'=TRUE,
+   'dose_abs_max'=100.0,'verbose'=FALSE, 'ties'='breslow','double_step'=1)
+guesses_control <- list("maxiter"=10,"guesses"=10,"lin_min"=0.001,"lin_max"=1,
+    "loglin_min"=-1,"loglin_max"=1, "lin_method"="uniform","loglin_method"="uniform",
+     strata=FALSE)
+Strat_Col <- 'f'
+RunPoissonRegression_Joint_Omnibus(df, pyr, events, name_list, term_n_list,
+                                        tform_list, keep_constant_list, a_n_list,
+                                        modelform, fir, der_iden, control,Strat_Col)
+```
+
+
+## Distributed starts
+
+The distributed start framework is built into both Cox proportional hazards and Poisson functions and allows the user to provide a list of multiple starting points. Regressions with 1 guess use the "maxiter" control option, while regressions with multiple guesses use the "maxiters" control option to pass a list of iterations per guess. By default Colossus runs each guess for 1 iteration, picks the best guess, and then runs the full number of iterations starting at the best guess. Advanced users can select a different number of iterations for each guess.
+
+
+```{r, eval=FALSE}
+
+a_n <- list(c(1,1,1),c(1,2,1),c(1,2,2),c(2,1,1))
+
+control$maxiter <- 5 # runs each (4) starts 1 iteration, and then runs the best 5 iterations
+control$maxiters <- c(1,1,1,1,5) # runs each (4) starts 1 iteration, and then runs the best 5 iterations
+control$maxiters <- c(5,5,5,5,5) # runs each (4) starts 5 iterations, and then runs the best 5 iterations
+
+e <- RunCoxRegression_Omnibus(df, time1, time2, event,
+                              names, term_n, tform, keep_constant,
+                              a_n, modelform,control=control)
+```
+
+
+
+
