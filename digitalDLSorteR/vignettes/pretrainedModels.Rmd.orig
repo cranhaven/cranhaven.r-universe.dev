@@ -1,0 +1,157 @@
+---
+title: "Using pre-trained context-specific deconvolution models"
+output: 
+  rmarkdown::html_vignette:
+    toc: true
+    toc_depth: 3
+    vignette: >
+      %\VignetteIndexEntry{Using pre-trained context-specific deconvolution models}
+      %\VignetteEngine{knitr::rmarkdown}
+      %\VignetteEncoding{UTF-8}
+bibliography: references.bib
+geometry: margin=3cm
+fontsize: 12pt
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE, dpi = 20, fig.width = 8, fig.height = 5.5, 
+  base.dir = ".", fig.path = "", fig.align = "center"
+)
+```
+
+**digitalDLSorteR** offers the possibility to use pre-trained context-specific deconvolution models included in the **digitalDLSorteRmodels** R package (<https://github.com/diegommcc/digitalDLSorteRmodels>) to deconvolute new bulk RNA-seq samples from the same biological environment. This is the simplest way to use **digitalDLSorteR** and only requires loading into R a raw bulk RNA-seq matrix with genes as rows (annotated as _SYMBOL_) and samples as columns, and selecting the desired model. This is done by the `deconvDDLSPretrained` function, which normalizes the new samples to counts per million (CPMs) by default, so this matrix must be provided as raw counts. Afterwards, estimated cell composition of each sample can be explored as a bar chart using the `barPlotCellTypes` function.
+
+<!-- ```{r workflow, fig.cap = "**Workflow to use pre-trained models**", echo = FALSE} -->
+<!-- knitr::include_graphics("workflow_pretrained_models.png") -->
+<!-- ``` -->
+
+<!-- ![(#fig:workflow) Workflow to use pre-trained models](workflow_pretrained_models.png) -->
+
+## Available models
+
+So far, available models only cover two possible biological environments: breast cancer and colorectal cancer. These models are able to accurately deconvolute new samples from the same environment as they have been trained on. 
+
+### Breast cancer models
+
+There are two deconvolution models for breast cancer samples that differ in the level of specificity. Both have been trained using data from @Chung2017 ([GSE75688](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE75688)).
+
+* `breast.chung.generic`: it considers 13 cell types, four of them being the intrinsic molecular subtypes of breast cancer (`ER+`, `HER2+`, `ER+/HER2+` and `TNBC`) and the rest immune and stromal cells (`Stromal`, `Monocyte`, `TCD4mem` (memory CD4+ T cells), `BGC` (germinal center B cells), `Bmem` (memory B cells), `DC` (dendritic cells), `Macrophage`, `TCD8` (CD8+ T cells) and `TCD4reg` (regulatory CD4+ T cells)).
+* `breast.chung.generic`: this model considers 7 cell types that are generic groups of the cell types considered by the specific version: B cells (`Bcell`), T CD4+ cells (`TcellCD4`), T CD8+ cells (`TcellCD8`), monocytes (`Monocyte`), dendritic cells (`DCs`), stromal cells (`Stromal`) and tumor cells (`Tumor`).
+
+### Colorectal cancer model
+
+`DDLS.colon.lee` considers the following 22 cell types: Anti-inflammatory_MFs (macrophages), B cells, CD4+ T cells, CD8+ T cells, ECs (endothelial cells), ECs_tumor, Enterocytes, Epithelial cells, Epithelial_cancer_cells, MFs_SPP1+, Mast cells, Myofibroblasts, NK cells, Pericytes, Plasma_cells, Pro-inflammatory_MFs, Regulatory T cells, Smooth muscle cells, Stromal cells, T follicular helper cells, cDC (conventional dendritic cells), gamma delta T cells.
+
+It has been generated using data from Lee, Hong, Etlioglu Cho et al., 2020 ([GSE132465](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE132465), [GSE132257](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE132257) and [GSE144735](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE144735)). The genes selected to train the model were defined by obtaining the intersection between the scRNA-seq dataset and bulk RNA-seq data from the The Cancer Genome Atlas (TCGA) project [@Koboldt2012; @Ciriello2015] and using the **digitalDLSorteR**'s default parameters.
+
+## Example using colorectal samples from the TCGA project
+
+The following code chunk shows an example using the `DDLS.colon.lee` model and data from TCGA loaded from `digitalDLSorteRdata`:
+
+```{r, message=FALSE}
+suppressMessages(library("digitalDLSorteR"))
+# to load pre-trained models
+if (!requireNamespace("digitalDLSorteRmodels", quietly = TRUE)) {
+  remotes::install_github("diegommcc/digitalDLSorteRmodels")
+}
+suppressMessages(library(digitalDLSorteRmodels))
+# data for examples
+if (!requireNamespace("digitalDLSorteRdata", quietly = TRUE)) {
+  remotes::install_github("diegommcc/digitalDLSorteRdata")
+}
+suppressMessages(library("digitalDLSorteRdata"))
+suppressMessages(library("dplyr"))
+suppressMessages(library("ggplot2"))
+```
+
+## Loading data
+
+```{r deconvolutingTCGA, message=FALSE}
+# loading model from digitalDLSorteRmodel and example data from digitalDLSorteRdata
+data("DDLS.colon.lee")
+data("TCGA.colon.se")
+```
+
+`DDLS.colon.lee` is a `DigitalDLSorterDNN` object containing the trained model as well as specific information about it, such as cell types considered, number of epochs used during training, etc. 
+
+```{r}
+DDLS.colon.lee
+```
+
+Here you can check the cell types considered by the model: 
+
+```{r}
+cell.types(DDLS.colon.lee) %>% paste0(collapse = " / ")
+```
+
+Now, we can use it to deconvolute `TCGA.colon.se` samples as follows:
+
+```{r, warning = FALSE}
+# deconvolution
+deconvResults <- deconvDDLSPretrained(
+  data = TCGA.colon.se,
+  model = DDLS.colon.lee,
+  normalize = TRUE
+)
+rownames(deconvResults) <- paste("Sample", seq(nrow(deconvResults)), sep = "_")
+head(deconvResults)
+```
+
+`deconvDDLSPretrained` returns a data frame with samples as rows ($k$) and cell types considered by the model as columns ($j$). Each entry corresponds to the proportion of cell type $k$ in sample $i$. To visually evaluate these results using a bar chart, you can use the `barplotCellTypes` function as follows:
+
+```{r resultsDeconvTCGA_pretrainedModels, fig.height=5, fig.width=12}
+barPlotCellTypes(
+  deconvResults, 
+  title = "Results of deconvolution of TCGA colon samples", rm.x.text = T
+)
+```
+
+Let's take 40 random samples just to improve the visualization: 
+
+```{r resultsDeconvTCGA_pretrainedModels_2, fig.height=5, fig.width=12}
+set.seed(123)
+barPlotCellTypes(
+  deconvResults[sample(1:nrow(deconvResults), size = 40), ], 
+  title = "Results of deconvolution of TCGA colon samples", rm.x.text = T
+)
+```
+
+Finally, `deconvDDLSPretrained` also offers two parameters in case you want to simplify the results by aggregating cell proportions of similar cell types: `simplify.set` and `simplify.majority`. For instance, we can summarize different CD4+ T cell subtypes into a unique label by using the `simplify.set` parameter as follows:
+
+```{r resultsDeconvTCGASimpl_pretrainedModels, warning = FALSE}
+# deconvolution
+deconvResultsSum <- deconvDDLSPretrained(
+  data = TCGA.colon.se,
+  model = DDLS.colon.lee,
+  normalize = TRUE,
+  simplify.set = list(
+    `CD4+ T cells` = c(
+      "CD4+ T cells", 
+      "T follicular helper cells", 
+      "gamma delta T cells", 
+      "Regulatory T cells"
+    )
+  )
+)
+rownames(deconvResultsSum) <- paste("Sample", seq(nrow(deconvResults)), sep = "_")
+set.seed(123)
+barPlotCellTypes(
+  deconvResultsSum[sample(1:nrow(deconvResultsSum), size = 40), ], 
+  title = "Results of deconvolution of TCGA colon samples", rm.x.text = T
+)
+```
+
+On the other hand, `simplify.majority` does not create new classes but sums the proportions to the most abundant cell type from those provided in each sample. See the documentation for more details.
+
+## Contribute with your own models
+
+You can make available our own models to other users. Just drop an email and we will make them available at the **digitalDLSorteRmodels** R package!
+
+## References
+
+<!-- ## Session info {.unnumbered} -->
+
+<!-- ```{r sessionInfo, echo=FALSE} -->
+<!-- sessionInfo() -->
+<!-- ``` -->
