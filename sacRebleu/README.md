@@ -1,0 +1,43 @@
+
+<!-- README.md is generated from README.Rmd. Please edit that file -->
+
+# sacRebleu
+
+<!-- badges: start -->
+<!-- badges: end -->
+
+The goal of sacRebleu is to provide a simple interface to the BLEU
+score, a metric for evaluating the quality of generated text. This
+package is inspired by the NLTK and sacrebleu implementations of the
+BLEU score, and is implemented in C++ for the R programming language.
+
+## Installation
+
+You can install the development version of sacRebleu from
+[GitHub](https://github.com/) with:
+
+### Linux and MacOS
+
+``` r
+# install.packages("devtools")
+devtools::install_github("LazerLambda/sacRebleu")
+```
+
+### Windows
+
+This package builds upon the [tok](https://github.com/mlverse/tok)
+package, which requires the Rust toolchain to be installed. To install
+the rustup, follow the instructions at
+[https://www.rust-lang.org/tools/install](https://rustup.rs/) and at
+[tok](https://github.com/mlverse/tok). After installing the Rust
+toolchain, you can install the development version of sacRebleu as
+described above.
+
+## Example
+
+``` r
+library(sacRebleu)
+cand_corpus <- list("This is good", "This is not good")
+ref_corpus <- list(list("Perfect outcome!", "Excellent!"), list("Not sufficient.", "Horrible."))
+bleu_corpus <- bleu_corpus(ref_corpus, cand_corpus)
+```
