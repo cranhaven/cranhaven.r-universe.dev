@@ -1,0 +1,90 @@
+## -----------------------------------------------------------------------------
+library(plantecowrap)
+
+## -----------------------------------------------------------------------------
+#Read in data from package
+data <- read.csv(system.file("extdata", "example_1.csv",
+                             package = "plantecowrap"),
+                 stringsAsFactors = FALSE)
+#Fit ACi curves
+fits <- fitacis2(data = data,
+                 varnames = list(ALEAF = "A",
+                                 Tleaf = "Tleaf",
+                                 Ci = "Ci",
+                                 PPFD = "PPFD",
+                                 Rd = "Rd",
+                                 Press = "Press"),
+                 group1 = "Treat",
+                 fitTPU = FALSE,
+                 fitmethod = "bilinear",
+                 gm25 = 10000, #Allows fitting on an ACi rather than ACc-basis
+                 Egm = 0)
+
+#Get ACi outputs
+outputs <- acisummary(data, group1 = "Treat", fits = fits)
+
+#Fit temperature response
+#Note that this will return NA warnings because it runs through
+#1000 sets of starting parameters for Vcmax and Jmax
+tresp <- fit_topt_VJ(outputs)
+
+#See parameters
+tresp[[2]]
+
+#See plot
+tresp[[3]]
+
+
+## -----------------------------------------------------------------------------
+#Read in data from package
+data2 <- read.csv(system.file("extdata", "example_2.csv",
+                             package = "plantecowrap"),
+                 stringsAsFactors = FALSE)
+#Fit ACi curves
+fits2 <- fitacis2(data = data2,
+                 varnames = list(ALEAF = "A",
+                                 Tleaf = "Tleaf",
+                                 Ci = "Ci",
+                                 PPFD = "PPFD",
+                                 Rd = "Rd",
+                                 Press = "Press"),
+                 group1 = "Grouping",
+                 fitTPU = FALSE,
+                 fitmethod = "bilinear",
+                 gm25 = 10000,
+                 Egm = 0)
+
+#Get ACi outputs
+outputs <- acisummary(data2, group1 = "Grouping", fits = fits2)
+#NOTE: if fitacis2 fails to fit a curve, some output elements will be "Failed"
+#and need to be removed before acisummary() is run
+
+#Split grouping variable
+outputs <- separate(outputs, col = "ID", into = c("Treat", "Block"), sep = "_")
+
+#Note that this will return NA warnings because it runs through
+#1000 sets of starting parameters for Vcmax and Jmax. Some of
+#these sets will not work and return the NA warning.
+tresps <- fit_topt_VJs(data = outputs,
+                       group = "Block")
+
+#Get parameters
+pars <- get_t_pars(tresps)
+
+#Get graphs
+graphs <- get_t_graphs(tresps)
+
+#Print graphs
+#To print to current working directory, set path = "./".
+print_graphs(graphs,
+             path = tempdir())
+
+#View parameters
+pars
+
+#View graphs
+#Note that the second graph is strange because A was simply multiplied by
+#2 for the sample dataset
+graphs[[1]]
+graphs[[2]]
+
