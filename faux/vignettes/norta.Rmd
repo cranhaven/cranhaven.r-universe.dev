@@ -1,0 +1,227 @@
+---
+title: "NORTA"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{NORTA}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  fig.width = 5,
+  fig.height = 5,
+  message = FALSE,
+  warning = FALSE,
+  collapse = TRUE,
+  comment = "#>",
+  out.width = "100%"
+)
+ggplot2::theme_set(ggplot2::theme_bw())
+set.seed(8675309)
+```
+
+```{r, warning=FALSE, message=FALSE}
+library(faux)
+library(ggplot2)
+library(ggExtra)
+library(patchwork)
+```
+
+NORTA stands for Normal to Anything. This procedure simulates correlated data from a normal distribution and converts it to any other distribution using quantile functions. The challenge is determining what correlation between normally distributed variables is equivalent to a specified correlation between non-normally distributed variables. 
+
+## rmulti
+
+The current implementation of `rmulti()` is experimental. It has six arguments:
+
+* `n` the number of samples required
+* `dist` A named vector of the distributions of each variable
+* `params` A list of lists of the arguments to pass to each distribution function
+* `r` the correlations among the variables (can be a single number, vars\*vars matrix, vars\*vars vector, or a vars\*(vars-1)/2 vector)
+* `empirical` logical. If true, params specify the sample parameters, not the population parameters 
+* `as.matrix` logical. If true, returns a matrix
+
+
+By default, it returns a data frame with 100 rows of two normally distributed values with means of 0, standard deviations of 1, and a correlation of 0.
+
+```{r}
+dat <- rmulti()
+
+get_params(dat)
+```
+
+The `n`, `r`, `empirical` and `as.matrix` arguments work the same as the do for `rnorm_multi()`.
+
+```{r}
+dat <- rmulti(n = 200, r = 0.5,
+              empirical = TRUE, 
+              as.matrix = FALSE)
+
+get_params(dat)
+```
+
+### Distributions and parameters
+
+You can set the distribution for each variable with the `dist` argument. The options are any distribution function in the {stats} package, such as "norm", "pois", "binom", and "unif", plus the "truncnorm" distribution from the {truncnorm} package and the "likert" distribution from {faux}. 
+
+Set the `params` argument to a named list with a vector of named arguments for the random generation function for each distribution. For example, use `?rpois` to find out what arguments the `rpois()` function needs to simulate values from a poisson distribution. Don't set `n` in `params`; it will be set by the `n`in the `rmulti()` function.
+
+```{r}
+dat <- rmulti(n = 1000, 
+              dist = c(uniform_var = "unif",
+                       poisson_var = "pois"),
+              params = list(uniform_var = c(min = 0, max = 100),
+                            poisson_var = c(lambda = 3)),
+              r = 0.5)
+
+get_params(dat)
+```
+
+```{r, echo = FALSE, fig.width = 10, fig.height = 10}
+p <- ggplot(dat, aes(uniform_var, poisson_var)) +
+  geom_point() +
+  geom_smooth()
+ggMarginal(p, type = "histogram")
+```
+
+You can also simulate more than two variables. Set the correlations using the upper right triangle or a correlation matrix (e.g., from a pilot dataset you're trying to simulate).
+
+```{r}
+dat <- rmulti(
+  n = 1000,
+  dist = c(N = "norm",
+           T = "truncnorm",
+           L = "likert"),
+  params = list(
+    N = list(mean = 100, sd = 10),
+    T = list(a = 1, b = 7, mean = 3.5, sd = 2.1),
+    L = list(prob = c(`much less` = .10, 
+                      `less`      = .20, 
+                      `equal`     = .35, 
+                      `more`      = .25, 
+                      `much more` = .10))
+  ),
+  r = c(-0.5, -0.6, 0.7)
+)
+
+# convert likert-scale variable to integer
+dat$L <- as.integer(dat$L)
+get_params(dat)
+```
+
+
+```{r, echo = FALSE}
+nt <- ggplot(dat, aes(N, T)) +
+  geom_point() +
+  geom_smooth(method = lm) +
+  labs(x = "Normal",
+       y = "Truncated Normal") +
+  scale_y_continuous(breaks = 1:7)
+ntm <- ggMarginal(nt, type = "histogram")
+
+nl <- ggplot(dat, aes(N, L)) +
+  geom_point() +
+  geom_smooth(method = lm) +
+  labs(x = "Normal",
+       y = "Likert")
+nlm <- ggMarginal(nl, type = "histogram")
+
+tl <- ggplot(dat, aes(T, L)) +
+  geom_point() +
+  geom_smooth(method = lm) +
+  labs(x = "Truncated Normal",
+       y = "Likert") +
+  scale_x_continuous(breaks = 1:7)
+tlm <- ggMarginal(tl, type = "histogram")
+
+wrap_elements(ntm) + 
+  plot_spacer() +
+  wrap_elements(nlm) +
+  wrap_elements(tlm)
+  
+```
+
+
+### Impossible correlations
+
+Not all correlations are possible for a given pair of distributions. At the extreme, it's obvious that a normal distribution and a uniform distribution can't be correlated 1.0, because they wouldn't be different distributions then.
+
+If you ask `rmulti()` for a correlation that is too high or low, you will get a message telling you the maximum and minimum correlations that can be generated.
+
+```{r, error = TRUE}
+dat <- rmulti(
+  dist = c(A = "binom", B = "pois", C = "norm"), 
+  params = list(A = list(size = 1, prob = 0.5),
+                B = list(lambda = 3),
+                C = list(mean = 100, sd = 10)),
+  r = c(0.8, 0.9, 0.5)
+)
+```
+
+
+## Helper functions
+
+I made a few helper functions for `rmulti()`. I'm not sure if they'll be useful to anyone else, but they're available.
+
+### fh_bounds
+
+Fréchet-Hoefding bounds are the limits to a correlation for a pair of distributions.
+
+```{r}
+fh_bounds(dist1 = "truncnorm",
+          dist2 = "beta",
+          params1 = list(a = 0, b = 10, mean = 5, sd = 3),
+          params2 = list(shape1 = 1, shape2 = 5))
+```
+
+### convert_r
+
+This gives the r-value you'd need to simulate for a pair of normally-distributed variables to achieve the target r-value after converting to the target distributions.
+
+```{r}
+adjusted_r <- convert_r(
+  target_r = 0.75,
+  dist1 = "truncnorm",
+  dist2 = "binom",
+  params1 = list(a = 0, b = 10, mean = 5, sd = 3),
+  params2 = list(size = 1, prob = 0.5)
+)
+
+adjusted_r
+```
+
+What the `rmulti()` function does is use this adjusted r to generate a multivariate normal distribution, then convert each variable to the target distribution.
+
+```{r}
+# simulate multivariate normal 
+dat <- rnorm_multi(n = 1000, 
+                   varnames = c("N1", "N2"), 
+                   r = adjusted_r, 
+                   empirical = TRUE)
+
+# convert to target distributions
+dat$T1 <- norm2trunc(dat$N1, 
+                     min = 0, max = 10, 
+                     mu = 5, sd = 3, 
+                     x_mu = 0, x_sd = 1)
+dat$B2 = norm2binom(dat$N2, 
+                    size = 1, prob = 0.5,
+                    mu = 0, sd = 1)
+
+# check
+get_params(dat)
+```
+
+Note that the correlation between T1 and B2 is unlikely to be **exactly** 0.75 unless the n is very large, especially for distributions that have very few unique values.
+
+```{r, echo = FALSE}
+p <- ggplot(dat, aes(T1, B2)) +
+  geom_point() +
+  geom_smooth(method = lm) +
+  labs(x = "Truncated Normal",
+       y = "Binomial") +
+  scale_y_continuous(breaks = 0:1)
+ggMarginal(p, type = "histogram")
+```
+
+
