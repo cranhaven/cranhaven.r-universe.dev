@@ -1,0 +1,47 @@
+forwardcurrency <-
+function(){
+  my.draw <- function(panel) {
+    
+    S <-as.numeric(panel$S)
+    r <-as.numeric(panel$r)
+    t <-as.numeric(panel$t)
+    
+    incometype <- panel$incometype
+    
+    
+    if (incometype == "Yield"){
+      income <-as.numeric(panel$income)
+      price =   exp((r-income)*t)*S
+    }
+    else{
+      income <- as.numeric(strsplit(as.character(panel$income),",")[[1]])
+      incometime <- as.numeric(strsplit(as.character(panel$incometime),",")[[1]])
+      price = (S-sum(income*exp(-r*incometime)))*exp(r*t)
+    }
+    
+    plot(1:20, 1:20, type="n", xlab="", ylab="",
+         axes=FALSE, frame = TRUE)
+    text(10, 10, paste("Price = ", round(price,3), sep=""),cex=1.5)
+    
+    panel
+  }
+  
+  my.redraw <- function(panel) {
+    rp.tkrreplot(panel, my.tkrplot)
+    panel
+  }
+  
+  my.panel <- rp.control(title = "Currency Forward")
+  rp.textentry(panel=my.panel,variable=S,labels="Spot:                        ",action=my.redraw,initval=100)
+  rp.textentry(panel=my.panel,variable=r,labels="Risk free:                 ",action=my.redraw,initval=0.05)
+  rp.textentry(panel=my.panel,variable=t,labels="Maturity:                 ",action=my.redraw,initval=0.5)
+  rp.textentry(panel=my.panel,variable=income,labels="Foreign Interest(s):",action=my.redraw,initval=0)
+  rp.textentry(panel=my.panel,variable=incometime,labels="Interest time(s):     ",action=my.redraw,initval=0)
+  rp.radiogroup(panel = my.panel, variable= incometype, vals = c("Yield","Cash"), 
+                action = my.redraw, title = "Type of Income")
+  rp.tkrplot(panel = my.panel, name = my.tkrplot, plotfun = my.draw)
+  
+  #rp.do(my.panel, my.draw)
+  
+  
+}
