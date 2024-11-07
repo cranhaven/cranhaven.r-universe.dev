@@ -1,0 +1,81 @@
+#' Distribution function for the Good distribution
+#'
+#' @description Distribution function for the Good distribution with parameters
+#' z and s.
+#'
+#' @usage pgood ( q , z , s , lower.tail = TRUE )
+#'
+#' @param q vector of non-negative integer quantiles.
+#' @param z vector of first parameter for the Good distribution.
+#' @param s vector of second parameter for the Good distribution.
+#' @param lower.tail logical; if TRUE (default), probabilities are \eqn{P(X \le x)}.
+#' Otherwise, \eqn{P(X > x)}.
+#'
+#' @return \code{pgood} returns the cumulative distribution function (cdf) for the Good
+#' distribution with parameters z and s. Parameter z should be within the interval \eqn{(0,1)},
+#' and parameter s in the reals. If q is non-integer, \code{pgood} returns the cdf
+#' of \code{floor(q)} with a warning. If q is negative, \code{pgood} returns \eqn{0} with a warning.
+#' \code{pgood} calls \code{dgood} from package \pkg{good}.
+#'
+#' @seealso
+#' See also \code{\link[copula]{polylog}} from \pkg{copula}, \code{\link[good]{dgood}},
+#' and \code{\link[good]{qgood}} and \code{\link[good]{rgood}} from \pkg{good}.
+#'
+#' @author
+#'  Jordi Tur, David Moriña, Pere Puig, Alejandra Cabaña, Argimiro Arratia,
+#'  Amanda Fernández-Fontelo
+#'
+#' @references
+#' Good, J. (1953). The  population  frequencies  of  species  and  the  estimation  of  population
+#' parameters. Biometrika, 40: 237–264.
+#'
+#' Zörnig, P. and Altmann, G. (1995). Unified representation of zipf distributions.
+#' Computational Statistics & Data Analysis, 19: 461–473.
+#'
+#' Kulasekera, K.B. and Tonkyn, D. (1992). A new distribution with applications to survival
+#' dispersal anddispersion. Communication in Statistics - Simulation and Computation,
+#' 21: 499–518.
+#'
+#' Doray, L.G. and Luong, A. (1997). Efficient estimators for the good family.
+#' Communications in Statistics - Simulation and Computation, 26: 1075–1088.
+#'
+#' Johnson, N.L., Kemp, A.W. and Kotz, S. Univariate Discrete Distributions.
+#' Wiley, Hoboken, 2005.
+#'
+#' Kemp. A.W. (2010). Families of power series distributions, with particular
+#' reference to the lerch family. Journal of Statistical Planning and Inference,
+#' 140:2255–2259.
+#'
+#' Wood, D.C. (1992). The Computation of Polylogarithms. Technical report. UKC,
+#' University of Kent, Canterbury, UK (KAR id:21052).
+#'
+#' @examples
+#' # if q < 0, pgood returns NaN with a warning
+#' pgood ( q = -3 , z = 0.6 , s = -3  )
+#'
+#' # if q is non-integer, pgood returns the cdf of floor(q) with a warning
+#' pgood ( q = 3.4 , z = 0.6 , s = -3 )
+#'
+#' # if z is not within 0 and 1, pgood returns returns NaN with a warning
+#' pgood ( q = 3.4 , z = c( -0.6 , 0.6) , s = -3 )
+#'
+#' pgood ( q = 0 : 2 , z = 0.6 , s = -3 )
+#' pgood ( q = 0 : 1 , z = c ( 0.6 , 0.9 ) , s = -3 )
+#' pgood ( q = 0 : 1 , z = c ( 0.6 , 0.9 ) , s = -3 , lower.tail = FALSE )
+#' pgood ( q = 0 : 2 , z = c ( 0.6 , 0.9 ) , s = c ( -3 , -4 , -5 ) )
+#'
+#' @export
+
+pgood <- function ( q , z , s , lower.tail = TRUE ) {
+  if ( sum ( q < 0 ) != 0 ) {
+    warning ( "q should be positive" ) }
+  if ( sum ( q %% 1 != 0 ) != 0) {
+    q2 <- q [ q %% 1 != 0 & q > 0 ]
+    if ( sum ( q2 > 0 ) != 0 ) {
+      warning ( paste ( paste ( "q should be integer: q = " , floor ( q2 ) , sep = "" ) , "is used instead" , sep = " " ) ) } }
+  if ( sum ( z <= 0 ) != 0 | sum ( z >= 1 ) != 0) {
+    warning ( "z should be within 0 and 1" ) }
+  res <- vector ( )
+  res <- apply ( suppressWarnings ( cbind ( q , z , s ) ) , 1 , function ( j ) if ( j [ 1 ] >= 0 & j [ 2 ] > 0 & j [ 2 ] < 1 ) sum ( dgood ( 0 : j [ 1 ] , j [ 2 ] , j [ 3 ] ) ) else NaN )
+  if ( lower.tail == FALSE ) res <- 1 - res
+  return ( res ) }

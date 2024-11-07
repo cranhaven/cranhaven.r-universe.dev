@@ -1,0 +1,108 @@
+#' Probability mass function for the Good distribution
+#'
+#' @description Probability mass function for the Good distribution with
+#' parameters z and s.
+#'
+#' @usage dgood ( x , z , s )
+#'
+#' @param x vector of non-negative integer quantiles.
+#' @param z vector of first parameter for the Good distribution.
+#' @param s vector of second parameter for the Good distribution.
+#'
+#' @details The Good distribution has the probability mass function (pmf):
+#' \deqn{P(X=x)=(1/F(z,s)) \cdot (z^{(x+1)}/(x+1)^s),}
+#' where \eqn{x = 0, 1, 2 \ldots}. Parameter z should be within the interval \eqn{(0,1)}, and parameter s in the reals.
+#' \eqn{F(z,s)} is the polylogarithm function:
+#' \deqn{F(z,s)=\sum_{i=1}^{\infty} z^n/n^s,}
+#' and acts in the pmf as the normalizing constant.
+#'
+#' If \eqn{F(z,s)} does not converge (e.g., for large negative values of the parameter s), the following
+#' approximation is used instead:
+#' \deqn{F(z,s)\approx \Gamma(1-s) \cdot (-\log(z))^{(s-1)},}
+#' and \code{dgood} returns approximated probabilities:
+#' \deqn{P(X=x) \approx \exp((x+1) \cdot \log(z) - s \cdot \log(x+1)-\log(\Gamma(1-s))-(s-1) \cdot \log(-\log(z))).}
+#'
+#' @return \code{dgood} gives the probability mass function for the Good distribution with
+#' parameters z and s. x should be a vector of non-negative integer quantiles. If x is
+#' non-integer and/or negative, \code{dgood} returns \eqn{0} with a warning. z and s can be vectors with values
+#' within the interval \eqn{(0,1)} and the reals respectively. If vector z has negative values and/or outside
+#' the interval \eqn{(0,1)}, \code{dgood} returns NaN with a warning.
+#'
+#' If function \code{polylog} from package \pkg{copula} returns Inf
+#' (e.g., for large negative values of parameter s), \code{dgood} uses the approximation
+#' described above for probabilities, and additionally returns an informative warning.
+#'
+#' @seealso
+#'  See also \code{\link[copula]{polylog}} from \pkg{copula}, \code{\link[good]{pgood}},
+#'  and \code{\link[good]{qgood}} and \code{\link[good]{rgood}} from \pkg{good}.
+#'
+#' @author
+#'  Jordi Tur, David Moriña, Pere Puig, Alejandra Cabaña, Argimiro Arratia,
+#'  Amanda Fernández-Fontelo
+#'
+#' @references
+#' Good, J. (1953). The  population  frequencies  of  species  and  the  estimation  of  population
+#' parameters. Biometrika, 40: 237–264.
+#'
+#' Zörnig, P. and Altmann, G. (1995). Unified representation of zipf distributions.
+#' Computational Statistics & Data Analysis, 19: 461–473.
+#'
+#' Kulasekera, K.B. and Tonkyn, D. (1992). A new distribution with applications to survival
+#' dispersal anddispersion. Communication in Statistics - Simulation and Computation,
+#' 21: 499–518.
+#'
+#' Doray, L.G. and Luong, A. (1997). Efficient estimators for the good family.
+#' Communications in Statistics - Simulation and Computation, 26: 1075–1088.
+#'
+#' Johnson, N.L., Kemp, A.W. and Kotz, S. Univariate Discrete Distributions.
+#' Wiley, Hoboken, 2005.
+#'
+#' Kemp. A.W. (2010). Families of power series distributions, with particular
+#' reference to the lerch family. Journal of Statistical Planning and Inference,
+#' 140:2255–2259.
+#'
+#' Wood, D.C. (1992). The Computation of Polylogarithms. Technical report. UKC,
+#' University of Kent, Canterbury, UK (KAR id:21052).
+#'
+#' @importFrom copula polylog
+#'
+#' @examples
+#' # if x is not a non-negative integer, dgood returns 0 with a warning
+#' dgood ( x = -3 , z = c ( 0.6 , 0.5 ) , s = -3 )
+#' dgood ( x = 4.5 , z = c ( 0.6 , 0.5 ) , s = -3 )
+#'
+#' # if z is not within 0 and 1, dgood returns NaN with a warning
+#' dgood ( x = 4 , z = c ( 0.6 , 0.5 , -0.9 ) , s = -3 )
+#'
+#' # if the approximation is used, dgood returns a warning
+#' dgood ( x = 330 : 331 , z = c ( 0.6 , 0.5 ) , s = -170 )
+#'
+#' dgood ( x = 4 , z = 0.6 , s = -3 )
+#' dgood ( x = 4 , z = c ( 0.6 , 0.5 ) , s = -3 )
+#' dgood ( x = 4 : 5 , z = c ( 0.6 , 0.5 ) , s = c ( -3 , -10 ) )
+#' dgood ( x = 4 : 6 , z = c ( 0.6 , 0.5 ) , s = c ( -3 , -10 ) )
+#' dgood ( x = 3 : 5 ,  z = c ( 0.6 , 0.5 , 0.9 , 0.4 ) , s = c ( -3 , -10 ) )
+#'
+#' @export
+
+dgood <- function ( x , z , s ) {
+  if ( sum ( z <= 0 | !z < 1 ) != 0 ) {
+    warning ( "z should be within 0 and 1" )
+  } else if ( sum ( x < 0 ) != 0){
+    warning ( "x should be positive" )
+  }
+    pr <- function ( x , z , s ) {
+    if ( sum ( z <= 0 | !z < 1 ) != 0 ) {
+      return ( NaN )
+    } else if ( sum ( x < 0 ) != 0){
+      return ( 0 )
+    } else if ( sum ( x %% 1 ) != 0 ) {
+      warning ( "x should be integer x = " , x )
+      return ( 0 )
+    } else {
+      return ( ( x + 1 ) * log ( z ) - s * log ( x + 1 ) ) } }
+  polyLog <- apply ( suppressWarnings ( cbind ( z , s ) ) , 1 , function ( j ) polylog ( j [ 1 ] , j [ 2 ] , n.sum = 10^3 ) )
+  if ( sum ( is.infinite ( polyLog ) ) != 0 ){
+    warning ( "approx. probs: polylog is not converging for s = " , s ) }
+  polyLog <- ifelse ( !is.infinite ( polyLog ) , - log ( polyLog ) , ( - lgamma ( 1 - s ) - ( s - 1 ) * log ( ( - log ( z ) ) ) ) )
+  return ( apply ( suppressWarnings ( cbind( x , z , s , polyLog ) ) , 1 , function ( j ) if ( j [ 1 ] >= 0  & j [ 1 ] %% 1 == 0 ) exp ( pr ( j [ 1 ] , j [ 2 ] , j [ 3 ] ) + j [ 4 ] ) else pr ( j [ 1 ] , j [ 2 ] , j [ 3 ] ) ) ) }
