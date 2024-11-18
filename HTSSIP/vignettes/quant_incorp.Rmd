@@ -1,0 +1,162 @@
+---
+title: "Quantifying isotope incorporation"
+author: "Nick Youngblut"
+date: "`r Sys.Date()`"
+output: 
+  rmarkdown::html_vignette:
+    toc: true
+vignette: >
+  %\VignetteIndexEntry{Quantifying isotope incorporation}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+***
+
+# Introduction
+
+There are two prevaling methods for using HTS-SIP data to estimate the amount of isotope that each OTU incorporated: 
+
+* q-SIP
+* delta_BD (a complementary analysis to HR-SIP)
+    * Note: delta_BD is formally written as: $\Delta\hat{BD}$ 
+
+In this vignette, we are going to show how to run both analyses and also compare the results a bit.
+
+# Dataset 
+
+First, let's load some packages including `HTSSIP`. 
+
+```{r, message=FALSE, warning=FALSE}
+library(dplyr)
+library(ggplot2)
+library(HTSSIP)
+```
+
+OK. We're going to be using 2 data files: 
+
+* HTS-SIP data (phyloseq format)
+* qPCR data (total 16S rRNA gene copies per gradient fraction)
+
+We'll be using the dataset that we simulated in the [HTSSIP_sim](./HTSSIP_sim.html) vignette.
+
+The phyloseq object is similar to the dataset in the other vignettes.
+
+```{r}
+# HTS-SIP data
+physeq_rep3
+```
+
+The associated qPCR data is a list of length = 2. 
+
+```{r}
+# qPCR data (list object)
+physeq_rep3_qPCR %>% names
+```
+
+For the analyses in this vignette, we only need the 'summary' table.
+
+```{r}
+# qPCR data (list object)
+physeq_rep3_qPCR_sum = physeq_rep3_qPCR$summary
+physeq_rep3_qPCR_sum %>% head(n=4)
+```
+
+# q-SIP
+
+OK. Let's quantify isotope incorporation witht the q-SIP method. 
+
+```{r}
+# transforming OTU counts
+physeq_rep3_t = OTU_qPCR_trans(physeq_rep3, physeq_rep3_qPCR_sum)
+
+# calculating atom fraction excess
+atomX = qSIP_atom_excess(physeq_rep3_t,
+                         control_expr='Treatment=="12C-Con"',
+                         treatment_rep='Replicate')
+atomX %>% names
+```
+
+The resulting list object contains 2 data.frames. We are interested in the 'A' table, which contains estimated BD shifts (Z) and atom fraction excess (A). 
+
+```{r}
+atomX$A %>% head(n=4)
+```
+
+Next, let's calculate bootstrap confidence intervales for the atom fraction excess estimations. 
+
+```{r}
+# calculating bootstrapped CI values
+df_atomX_boot = qSIP_bootstrap(atomX, n_boot=100)
+df_atomX_boot %>% head(n=4)
+```
+
+
+# delta_BD
+
+Now for delta_BD. The setup is easier because we are not using qPCR data, just relative abundances from 16S rRNA sequence data.
+
+```{r}
+df_dBD = delta_BD(physeq_rep3, control_expr='Treatment=="12C-Con"')
+df_dBD %>% head(n=4)
+```
+
+
+# Comparing results
+
+Let's plot the data and compare all of the results. First, let's join all of the data into one table for plotting. We'll also format it for plotting. 
+
+```{r}
+# checking & joining data 
+stopifnot(nrow(df_atomX_boot) == nrow(df_dBD))
+df_j = dplyr::inner_join(df_atomX_boot, df_dBD, c('OTU'='OTU'))
+stopifnot(nrow(df_atomX_boot) == nrow(df_j))
+
+# formatting data for plotting
+df_j = df_j %>%
+  dplyr::mutate(OTU = reorder(OTU, -delta_BD))
+```
+
+OK. Time to plot!
+
+```{r, fig.height=3, fig.width=7}
+# plotting BD shift (Z)
+ggplot(df_j, aes(OTU)) +
+  geom_point(aes(y=Z), color='blue') +
+  geom_point(aes(y=delta_BD), color='red') +
+  geom_hline(yintercept=0, linetype='dashed', alpha=0.5) +
+  labs(x='OTU', y='BD shift (Z)') +
+  theme_bw() +
+  theme(
+    axis.text.x = element_blank()
+  )
+```
+
+In the figure, red points are delta_BD and blue points are q-SIP. It's easy to see that delta_BD is a lot more variable than q-SIP. This is likely due to a high influence of compositional data artifacts on delta_BD versus q-SIP.
+
+Let's make a boxplot to show the difference in estimation variance between the two methods.
+
+```{r, fig.height=3, fig.width=3}
+# plotting BD shift (Z): boxplots
+
+## formatting the table
+df_j_g = df_j %>%
+  dplyr::select(OTU, Z, delta_BD) %>%
+  tidyr::gather(Method, BD_shift, Z, delta_BD) %>%
+  mutate(Method = ifelse(Method == 'Z', 'q-SIP', 'delta-BD'))
+
+## plotting 
+ggplot(df_j_g, aes(Method, BD_shift)) +
+  geom_boxplot() +
+  geom_hline(yintercept=0, linetype='dashed', alpha=0.5) +
+  labs(x='Method', y='BD shift (Z)') +
+  theme_bw() 
+```
+
+The boxplot helps to summarize how much more variance delta_BD produces versus q-SIP.
+
+# Session info
+
+```{r}
+sessionInfo()
+```

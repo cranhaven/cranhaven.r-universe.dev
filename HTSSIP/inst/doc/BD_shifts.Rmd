@@ -1,0 +1,224 @@
+---
+title: "BD shifts"
+author: "Nick Youngblut"
+date: "`r Sys.Date()`"
+output:
+  rmarkdown::html_vignette:
+    toc: true
+vignette: >
+  %\VignetteIndexEntry{BD shifts}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+***
+
+# Making BD shift plots
+
+**Note:** if you haven't checked out the [beta diversity ordinations](beta_diversity_ordinations.html) 
+vignette yet, I recommend looking at that one first. 
+
+## Introduction
+
+While the beta diversity ordinations of gradient fractions provides a nice
+overview of isotope incorporation at the whole-community level, it doesn't
+provide a good idea of the *magnitude* of this BD shift (ie., was there 
+a lot of isotope incorporation or a little for each labeled-treatment?).
+
+Let's assume that the gradient fraction communities of a labeled-treatment
+and its corresponding unlabled-control would be (approximately) the same at the same
+buoyant densities if no incorperation occured. If so, then the pairwise beta diversity between
+gradient fractions of the treatment vs control would (e.g., the beta diversity
+between the 13C & 12C communities at a BD of 1.75 g/ml^1) would be ~0 
+(no differentiation) across the BD range. However, if some taxa incorporated
+isotope in the labeled-treatment, then they would shift to heavier 
+buoyant densities, which would change the labeled-communities at the 
+buoyant densities where the taxa used to be if unlabeled and the 
+buoyant densities where the taxa have shifted to due to isotope incorporation. 
+
+In other words, if we make pairwise treatment-vs-control beta diversity calculations
+between gradient fraction communities, then we should see evidence of community-level
+BD shifts in the form of 'spikes' in beta diversity. 
+
+The only major issue with this approach is that the BD range of each gradient
+fraction varies from gradient to gradient. So, gradient fractions between gradients
+usually only partially overlap. To deal with this issue, we have taken the approach
+of weighting the beta diversity based on gradient fraction overlap. For instance,
+if 2 labeled-treatment fractions overlapped 1 control fraction by 40% and 60%,
+then the final beta diversity value would be the weighted average of 
+treatment fraction 1 (40% weight) and treatment fraction 2 (60% weight). 
+Note that this makes all beta diversity values (and their associated buoyant 
+densities) relative to the control. 
+
+The following analysis measures these community-wide BD shifts with the following:
+
+1. Splitting the dataset into pairwise comparisons between each labeled-treatment
+and its corresponding unlabeled control.
+1. The percent BD overlap of treatment gradient fractions relative to the control 
+are calculated. 
+1. For overlapping gradient fractions in each treatment-control comparison, 
+beta diversity is calculated between the gradient fraction communities. 
+1. The weighted mean beta diversity (weighted by % fraction overlap) is calculated.
+1. The resulting data.frame can then easily plotted with ggplot. 
+
+Moreover, a permutation test is conducted to identify "BD shift windows",
+which are regions of high beta-diversity that likley resulted from BD shifts
+of taxa in the treatment (and not in the unlabeled control). The method
+involves permuting OTU abundances (HTSSIP offers multiple permutation methods; 
+see `BD_shift()`), an re-calculating weighted beta-diversity values among
+overlapping fractions in the treatment versus the control. 
+
+## Dataset
+
+First, let's load some packages including `HTSSIP`. 
+
+```{r, message=FALSE, warning=FALSE}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(HTSSIP)
+```
+
+Also let's get an overview of the phyloseq object that we're going to use.
+
+```{r, message=FALSE, warning=FALSE}
+physeq_S2D2
+```
+
+
+## Subsetting the phyloseq object
+
+As with the [beta diversity ordinations](beta_diversity_ordinations.html), we are going to split up the dataset into individual labeled-treamtent + corresponding unlabeled-control comparisons. Treatment-control correspondence is based on the day from substrate addition. So, we have to parse the dataset by Substrate & Day.
+
+```{r phyloseq_subset}
+params = get_treatment_params(physeq_S2D2, c('Substrate', 'Day'))
+params = dplyr::filter(params, Substrate!='12C-Con')
+ex = "(Substrate=='12C-Con' & Day=='${Day}') | (Substrate=='${Substrate}' & Day == '${Day}')"
+physeq_S2D2_l = phyloseq_subset(physeq_S2D2, params, ex)
+physeq_S2D2_l
+```
+
+## Calculating BD shift 
+
+Now, let's just measure BD shift for just 1 subset (1 item in the list of phyloseq objects).
+
+>Note: we are just going to use 10 permutations to speed up the analysis. 
+
+```{r BD_shift_wmean}
+wmean1 = BD_shift(physeq_S2D2_l[[2]], nperm=10)
+cat('Subset:', names(physeq_S2D2_l)[2], '\n')
+wmean1 %>% head(n=3)
+```
+
+Note that the `sample.x` column is all 12C-Con control samples, while the comparison column (`sample.y`) is the treatment gradient fraction samples. The "wmean_dist_CI_[low/high]" 
+columns list the CI intervals (calculated by the permutation test). The "wmean_dist_CI_*global" columns define the CI interval for all gradient fractions.
+
+**OK.** Let's plot the results!
+
+```{r plot_wmean, fig.height=3.5, fig.width=7}
+x_lab = bquote('Buoyant density (g '* ml^-1*')')
+y_lab = 'Weighted mean of\nweighted-Unifrac distances'
+ggplot(wmean1, aes(BD_min.x, wmean_dist)) +
+  geom_line(alpha=0.7) +
+  geom_point() +
+  labs(x=x_lab, y=y_lab, title='Beta diversity of 13C-treatment relative to 12C-Con') +
+  theme_bw() 
+```
+
+Each point represents the weighted mean of beta diversity values between all 13C-treatment fractions that overlap a particular 12C-control fraction, so there should be 1 point per 12C-control gradient fraction. 
+
+Note the 2 spikes in beta diversity. The 2nd spike is larger than the first, 
+which is likely due to more taxa at the 'light' gradient fractions (1st spike),
+so a loss of a few taxa (due to BD shifting) impacts beta diveristy less
+than at 'heavy' gradient fractions, where there's less taxa. 
+
+### Identifying BD shift windows
+
+Let's identify the BD shift windows. "BD shift" fractions are those greater than
+the bootstrap CI. To reduce potential noice, I'm going to define BD shift windows
+as 3 consecutive "BD shift" fractions.
+
+```{r wmean_m}
+wmean1_m = wmean1 %>%
+  mutate(BD_shift = wmean_dist > wmean_dist_CI_high) %>%
+  arrange(BD_min.x) %>%
+  mutate(window = (BD_shift == TRUE & lag(BD_shift) == TRUE & lag(BD_shift, 2) == TRUE) |
+                  (BD_shift == TRUE & lag(BD_shift) == TRUE & lead(BD_shift) == TRUE) |
+                  (BD_shift == TRUE & lead(BD_shift) == TRUE & lead(BD_shift, 2) == TRUE),
+         BD_shift = BD_shift == TRUE & window == TRUE,
+         BD_shift = ifelse(is.na(BD_shift), FALSE, BD_shift))
+
+wmean1_m %>% head(n=3)
+```
+
+
+```{r wmean_m_plot, fig.height=3.5, fig.width=7}
+x_lab = bquote('Buoyant density (g '* ml^-1*')')
+y_lab = 'Weighted mean of\nweighted-Unifrac distances'
+ggplot(wmean1_m, aes(BD_min.x, wmean_dist)) +
+  geom_line(alpha=0.7) +
+  geom_linerange(aes(ymin=wmean_dist_CI_low,
+                     ymax=wmean_dist_CI_high),
+                 alpha=0.3) +
+  geom_point(aes(color=BD_shift)) +
+  scale_color_discrete('Gradient\nfraction\nin BD shift\nwindow?') +
+  labs(x=x_lab, y=y_lab, title='Beta diversity of 13C-treatment relative to 12C-Con') +
+  theme_bw() 
+```
+
+The line ranges represent the bootstrap CIs. This permutation test helps to non-subjectively identify BD shift windows, where beta-diversity is higher than expected under the null model.
+
+Note: more permutations should be used for real analyses. 
+
+## Calculating BD shift for all treatments
+
+Now let's run `BD_shift()` on all phyloseq objects in our list. We'll use `plyr::ldply()` for this because it preserves the list names in the resulting data.frame (list names are assigned to `.id` by default).
+
+```{r wmean}
+wmean = plyr::ldply(physeq_S2D2_l, BD_shift, nperm=5)
+wmean %>% head(n=3)
+```
+
+Alright, let's plot the data!
+
+```{r shift_plot, fig.height=5, fig.width=7}
+# formatting the treatment names to look a bit better as facet labels
+wmean = wmean %>%
+  mutate(Substrate = gsub('.+(13C-[A-z]+).+', '\\1', .id),
+         Day = gsub('.+Day ==[ \']*([0-9]+).+', 'Day \\1', .id),
+         Day = Day %>% reorder(gsub('Day ', '', Day) %>% as.numeric))
+
+# calculating BD shift windows
+wmean = wmean %>%
+  mutate(BD_shift = wmean_dist > wmean_dist_CI_high) %>%
+  arrange(Substrate, BD_min.x) %>%
+  group_by(Substrate) %>%
+  mutate(window = (BD_shift == TRUE & lag(BD_shift) == TRUE & lag(BD_shift, 2) == TRUE) |
+                  (BD_shift == TRUE & lag(BD_shift) == TRUE & lead(BD_shift) == TRUE) |
+                  (BD_shift == TRUE & lead(BD_shift) == TRUE & lead(BD_shift, 2) == TRUE),
+         BD_shift = BD_shift == TRUE & window == TRUE,
+         BD_shift = ifelse(is.na(BD_shift), FALSE, BD_shift)) %>%
+  ungroup()
+
+# plotting, with facetting by 13C-treatment
+ggplot(wmean, aes(BD_min.x, wmean_dist)) +
+  geom_line(alpha=0.7) +
+  geom_linerange(aes(ymin=wmean_dist_CI_low,
+                     ymax=wmean_dist_CI_high),
+                 alpha=0.3) +
+  geom_point(aes(color=BD_shift)) +
+  labs(x=x_lab, y=y_lab, 
+       title='Beta diversity of 13C-treatments relative to 12C-Con') +
+  facet_grid(Day ~ Substrate) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle=45, hjust=1))
+```
+
+As you can see, the 'heavy' beta diversity spike is stronger for 13C-Glucose at Day 3 versus 13C-Cellulose, but this pattern reverses at Day 14 of the substrate incubation. These results are to be expected, given that glucose is more labile than cellulose.
+
+
+# Session info
+
+```{r}
+sessionInfo()
+```

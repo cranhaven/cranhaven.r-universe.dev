@@ -1,0 +1,166 @@
+---
+title: "q-SIP"
+author: "Nick Youngblut"
+date: "`r Sys.Date()`"
+output: 
+  rmarkdown::html_vignette:
+    toc: true
+vignette: >
+  %\VignetteIndexEntry{q-SIP}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+***
+
+# Introduction
+
+## q-SIP method workflow
+
+Quantitative stable isotope probing (q-SIP) attempts to deal with the compositional problems of HTS-SIP data by transforming relative abundances with qPCR counts of total gene copies. 
+
+More details can be found at: 
+
+> Hungate, Bruce A., Rebecca L. Mau, Egbert Schwartz, J. Gregory Caporaso, Paul Dijkstra, Natasja van Gestel, Benjamin J. Koch, et al. 2015. “Quantitative Microbial Ecology Through Stable Isotope Probing.” Applied and Environmental Microbiology, August, AEM.02280–15.
+
+`HTSSIP` can both simulate q-SIP datasets and run the q-SIP analysis (with parallel computation of bootstrap confidence intervals). 
+
+# Dataset 
+
+First, let's load some packages including `HTSSIP`. 
+
+```{r, message=FALSE, warning=FALSE}
+library(dplyr)
+library(ggplot2)
+library(HTSSIP)
+```
+
+OK. We're going to be using 2 data files: 
+
+* HTS-SIP data (phyloseq format)
+* qPCR data (total 16S rRNA gene copies per gradient fraction)
+
+We'll be using the dataset that we simulated in the [HTSSIP_sim](./HTSSIP_sim.html) vignette.
+
+The phyloseq object is similar to the dataset in the other vignettes.
+
+```{r}
+# HTS-SIP data
+physeq_rep3
+```
+
+The associated qPCR data is, in this case a list of length = 2. 
+
+```{r}
+# qPCR data (list object)
+physeq_rep3_qPCR %>% names
+```
+
+Really, only the `summary` table is needed for the next step. You could just use the `summary` data.frame object and that would be fine. **However,** you should have just **1** qPCR value per sample. So, if you have 'technical' qPCR replicates (eg., triplicate qPCR reactions per DNA sample), then you need to summarize those replicates to get one value (eg., the mean of all replicate values).
+
+```{r}
+physeq_rep3_qPCR$raw %>% head(n=3)
+physeq_rep3_qPCR$summary %>% head(n=3)
+```
+
+
+# q-SIP
+
+## Abundance count transformation
+
+First, we'll transform the OTU counts. The following function will do the following:
+
+* Total sum scaling (TSS) on OTU counts (relative abundances)
+    * It's OK if OTU counts are already TSS-transformed 
+* Mapping qPCR data to the OTU table 
+  * The `sample_idx` parameter determines how the two datasets are matched to each other.
+  * There should be 
+* Multiplying the counts by the qPCR values. 
+
+```{r}
+phyloseq::otu_table(physeq_rep3) %>% .[1:5, 1:5]
+```
+
+```{r}
+physeq_rep3_t = OTU_qPCR_trans(physeq_rep3, physeq_rep3_qPCR)
+phyloseq::otu_table(physeq_rep3_t) %>% .[1:5, 1:5]
+```
+  
+## BD shift (Z) and atom fraction excess (A)
+
+With the transformed OTU abundance counts, let's calculate the BD shift (Z) and atom fraction excess (A) for each OTU. We'll be comparing controls (designated by the `control_expr` option) and the labeled treatment (all samples not identified by the `control_expr` expression). In this case the `control_expr` is set to `Treatment=="12C-Con"`, which will select all samples where the `Treatment` column in the phyloseq `sample_data` table equals `12C-Con`. 
+
+The `treatment_rep` option designates which column in the `sample_data` table defines the replicate gradients (eg., `12C-Con_rep1`, `12C-Con_rep2`, etc).
+
+```{r}
+# The 'Treatment' column designates treatment vs control
+# The 'Replicate' column designates treatment replicates
+data.frame(sample_data(physeq_rep3)) %>%
+  dplyr::select(Treatment, Replicate) %>%
+  distinct
+```
+
+```{r}
+atomX = qSIP_atom_excess(physeq_rep3_t,
+                         control_expr='Treatment=="12C-Con"',
+                         treatment_rep='Replicate')
+atomX %>% names
+```
+
+The output is a list of data.frames. The `W` table lists the weighted mean BD for each OTU in each gradient. This can be considered a sort-of 'raw data' table. The real meat of the output is the `A` table, which lists (among other things) the BD shift (Z) and atom fraction excess (A) as defined by Hungate et al., (2015). 
+
+> Note: a more complicated expression can be used to designate control samples. For example:
+'Treatment == "12C-Con" & Day == 1'
+
+
+## Bootstrap confidence intervals
+
+OK. The last step is to calculate atom % excess confidence intervals (CI). This is necessary for getting some sort of indication on how accurate the atom fraction excess estimations are. Also, Hungate et al., (2015) uses the CIs to call incorporators, in which an OTU was considered an incorporator if the CI was greater than, and did not span, zero. 
+
+We'll use 20 bootstrap replicates for this tutorial, but I recommend 100 for a real analysis. Bootstrap replicates can be run in parallel (see the function documentation). 
+
+```{r}
+df_atomX_boot = qSIP_bootstrap(atomX, n_boot=20)
+df_atomX_boot %>% head
+```
+
+Let's use the same threshold as Hungate et al., (2015) for defining incorporators. 
+
+```{r}
+CI_threshold = 0
+df_atomX_boot = df_atomX_boot %>%
+  mutate(Incorporator = A_CI_low > CI_threshold,
+                OTU = reorder(OTU, -A))
+```
+
+
+How many incorporators?
+
+```{r}
+n_incorp = df_atomX_boot %>%
+  filter(Incorporator == TRUE) %>%
+  nrow
+cat('Number of incorporators:', n_incorp, '\n')
+```
+
+OK, let's plot the results.
+
+```{r, fig.height=3, fig.width=7}
+
+ggplot(df_atomX_boot, aes(OTU, A, ymin=A_CI_low, ymax=A_CI_high, color=Incorporator)) +
+  geom_pointrange(size=0.25) +
+  geom_linerange() +
+  geom_hline(yintercept=0, linetype='dashed', alpha=0.5) +
+  labs(x='OTU', y='Atom fraction excess') +
+  theme_bw() +
+  theme(
+    axis.text.x = element_blank()
+  )
+```
+
+
+# Session info
+
+```{r}
+sessionInfo()
+```

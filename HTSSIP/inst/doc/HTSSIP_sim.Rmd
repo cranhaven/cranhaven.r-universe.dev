@@ -1,0 +1,226 @@
+---
+title: "HTS-SIP data simulation"
+author: "Nick Youngblut"
+date: "`r Sys.Date()`"
+output: 
+  rmarkdown::html_vignette:
+    toc: true
+vignette: >
+  %\VignetteIndexEntry{HTS-SIP data simulation}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+***
+
+# Introduction
+
+HTSSIP has some functionality for simulating basic HTS-SIP datasets. With that said, I recommend using a more sophisticated simulation toolset such as [SIPSim](https://github.com/nick-youngblut/SIPSim) for applications other than simple testing of HTS-SIP data analysis functions.
+
+HTSSIP relies *heavily* on the great R package [coenocliner](https://CRAN.R-project.org/package=coenocliner). See [this tutorial](http://www.fromthebottomoftheheap.net/code/r-packages/coenocliner/) for a short and simple introduction. 
+
+# Simulating a HTS-SIP dataset
+
+In this vignette, we're going to simulate gradient fraction communities for 6 gradients, with the basic experimental setup as follows:
+
+* Treatments: 13C-glucose vs 12C-control 
+* Treatment replicates: 3 (each)
+* Total gradients: 6
+* Fractions per gradient: 24
+
+First, let's load some packages including `HTSSIP`. 
+
+```{r, message=FALSE, warning=FALSE}
+library(dplyr)
+library(ggplot2)
+library(HTSSIP)
+```
+
+OK, let's set the parameters needed for community simulations. We are basically going to follow the coenocliner tutorial, but instead of a transect along an environmental gradient, we are simulating communities in each fraction of a density gradient. 
+
+```{r}
+# setting parameters for tests
+set.seed(318)                              # reproduciblility
+M = 6                                      # number of OTUs (species)
+ming = 1.67                                # gradient minimum...
+maxg = 1.78                                # ...and maximum
+nfrac = 24                                 # number of gradient fractions
+locs = seq(ming, maxg, length=nfrac)       # Fraction BD's
+tol  = rep(0.005, M)                       # species tolerances
+h    = ceiling(rlnorm(M, meanlog=11))      # max abundances
+
+opt = rnorm(M, mean=1.71, sd=0.008)        # species optima (drawn from a normal dist.)
+params = cbind(opt=opt, tol=tol, h=h)      # put in a matrix
+```
+
+With the current parameters, we can simulate the gradient fraction communities for 1 density gradient: 
+
+```{r}
+df_OTU = gradient_sim(locs, params)
+df_OTU
+```
+
+As you can see, the abundance distribution of each OTU is approximately Gaussian, with varying optima among OTUs. 
+
+### Simulating the full SIP experiment
+
+Let's make the communities of all gradient fractions for all gradients.  
+
+If all OTUs in the 13C-treatment incorporated labeled isotope, then their abundance distributions should be shifted to 'heavier' buoyant densities. Let's set the 13C-treatment gradients to have a higher mean species optima. For kicks, let's also increase the species optima variance (representing more variable isotope incorporation percentages).
+
+```{r}
+opt1 = rnorm(M, mean=1.7, sd=0.005)      # species optima
+params1 = cbind(opt=opt1, tol=tol, h=h)  # put in a matrix
+opt2 = rnorm(M, mean=1.7, sd=0.005)     
+params2 = cbind(opt=opt2, tol=tol, h=h) 
+opt3 = rnorm(M, mean=1.7, sd=0.005)     
+params3 = cbind(opt=opt3, tol=tol, h=h) 
+opt4 = rnorm(M, mean=1.72, sd=0.008)    
+params4 = cbind(opt=opt4, tol=tol, h=h) 
+opt5 = rnorm(M, mean=1.72, sd=0.008)    
+params5 = cbind(opt=opt5, tol=tol, h=h) 
+opt6 = rnorm(M, mean=1.72, sd=0.008)    
+params6 = cbind(opt=opt6, tol=tol, h=h) 
+
+# we need a named list of parameters for the next step. The names in the list will be used as sample IDs
+params_all = list(
+  '12C-Con_rep1' = params1,
+  '12C-Con_rep2' = params2,
+  '12C-Con_rep3' = params3,
+  '13C-Glu_rep1' = params4,
+  '13C-Glu_rep2' = params5,
+  '13C-Glu_rep3' = params6
+)
+```
+
+### Additional sample metadata
+
+Additional sample metadata can be added to the resulting phyloseq object that we are going to simulate. To add metadata, just make a data.frame object with a `Gradient` column, which will be used for matching to the simulated samples. The `Gradient` column values should match the names in the parameter list. 
+
+```{r}
+meta = data.frame(
+  'Gradient' = c('12C-Con_rep1', '12C-Con_rep2', '12C-Con_rep3',
+                 '13C-Glu_rep1', '13C-Glu_rep2', '13C-Glu_rep3'),
+  'Treatment' = c(rep('12C-Con', 3), rep('13C-Glu', 3)),
+  'Replicate' = c(1:3, 1:3)
+)
+
+# do the names match?
+all(meta$Gradient %in% names(params_all))
+```
+
+OK. Let's make the phyloseq object with the parameters that we specified above. 
+
+```{r}
+## physeq object
+physeq_rep3 = HTSSIP_sim(locs, params_all, meta=meta)
+physeq_rep3
+```
+
+How does the `sample_data` table look? 
+
+```{r}
+phyloseq::sample_data(physeq_rep3) %>% head
+```
+
+
+## Simulating qPCR data
+
+The q-SIP analysis requires qPCR measurements of gene copies for each gradient fraction. We can simulate this data for the HTS-SIP dataset phyloseq object that we just created. 
+
+The qPCR value simulation function is fairly flexible. For input, functions are provided that define how qPCR values (averages & variability) relate to buoyant density. For example, you can set the 'peak' of qPCR values to be located at a BD of 1.7 for unlabeled gradient samples and a 'peak' at a BD of 1.75 for labeled samples. For this example, let's set the error among replicate qPCR reactions (technical replicates) to scale with the mean qPCR values for that gradient sample. 
+
+```{r}
+# unlabeled control qPCR values
+control_mean_fun = function(x) dnorm(x, mean=1.70, sd=0.01) * 1e8
+# error will scale with the mean 
+control_sd_fun = function(x) control_mean_fun(x) / 3
+# labeled treatment values
+treat_mean_fun = function(x) dnorm(x, mean=1.75, sd=0.01) * 1e8
+# error will scale with the mean 
+treat_sd_fun = function(x) treat_mean_fun(x) / 3
+```
+
+OK. Let's simulate the qPCR data.
+
+```{r}
+physeq_rep3_qPCR = qPCR_sim(physeq_rep3,
+                control_expr='Treatment=="12C-Con"',
+                control_mean_fun=control_mean_fun,
+                control_sd_fun=control_sd_fun,
+                treat_mean_fun=treat_mean_fun,
+                treat_sd_fun=treat_sd_fun)
+
+physeq_rep3_qPCR %>% names
+```
+
+The output is a list containing:
+
+* 'raw' data
+    * qPCR values for each PCR reaction
+* 'summary' data
+    * qPCR mean values (& standard deviations) for each gradient fraction sample.
+
+```{r}
+physeq_rep3_qPCR$raw %>% head
+```
+
+```{r}
+physeq_rep3_qPCR$summary %>% head
+```
+
+Let's plot the data.
+
+```{r, fig.height=3, fig.width=7}
+x_lab = bquote('Buoyant density (g '* ml^-1*')')
+y_lab = '16S rRNA gene copies'
+
+ggplot(physeq_rep3_qPCR$summary, aes(Buoyant_density, qPCR_tech_rep_mean,
+                      ymin=qPCR_tech_rep_mean-qPCR_tech_rep_sd,
+                      ymax=qPCR_tech_rep_mean+qPCR_tech_rep_sd,
+                      color=IS_CONTROL, shape=Replicate)) +
+  geom_pointrange() +
+  scale_color_discrete('Unlabeled\ncontrol') +
+  labs(x=x_lab, y=y_lab) +
+  theme_bw()
+```
+
+With this simulation, we made the separation between labeled and unlabeled DNA pretty easy to distinguish. 
+
+OK. Just to show the flexiblity of the qPCR value simulation function, let's try using some other functions as input. 
+
+```{r}
+# using the Cauchy distribution instead of normal distributions
+control_mean_fun = function(x) dcauchy(x, location=1.70, scale=0.01) * 1e8
+control_sd_fun = function(x) control_mean_fun(x) / 3
+treat_mean_fun = function(x) dcauchy(x, location=1.75, scale=0.01) * 1e8
+treat_sd_fun = function(x) treat_mean_fun(x) / 3
+# simulating qPCR values
+physeq_rep3_qPCR = qPCR_sim(physeq_rep3,
+                control_expr='Treatment=="12C-Con"',
+                control_mean_fun=control_mean_fun,
+                control_sd_fun=control_sd_fun,
+                treat_mean_fun=treat_mean_fun,
+                treat_sd_fun=treat_sd_fun)
+```
+
+Now, how does the data look?
+
+```{r, fig.height=3, fig.width=7}
+ggplot(physeq_rep3_qPCR$summary, aes(Buoyant_density, qPCR_tech_rep_mean,
+                      ymin=qPCR_tech_rep_mean-qPCR_tech_rep_sd,
+                      ymax=qPCR_tech_rep_mean+qPCR_tech_rep_sd,
+                      color=IS_CONTROL, shape=Replicate)) +
+  geom_pointrange() +
+  scale_color_discrete('Unlabeled\ncontrol') +
+  labs(x=x_lab, y=y_lab) +
+  theme_bw()
+```
+
+
+# Session info
+
+```{r}
+sessionInfo()
+```
+
