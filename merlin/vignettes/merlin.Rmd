@@ -1,0 +1,112 @@
+---
+title: "merlin"
+author: "Emma Martin"
+date: "`r Sys.Date()`"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{merlin}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+## Description
+
+The `merlin` package allows the fitting of multi-outcome models and with any number of nested random effects, outcomes can be modelled jointly, or with shared random effects. 
+
+## Missing data
+
+For n record to be included in the model there must be at least one observation per level in the model. For example in a joint survival and longitudinal biomarker model, if the survival time for a patient is available, but all longitudinal biomarker observations are missing, the individual will be excluded from the analysis.
+
+For each individual outcome in the model, a complete case analysis is used. The response, covariates and level indicators are required to fit the model, which may vary by outcome. For example if a model simultaneously models two separate biomarkers, which are sampled at different time points, data in each record will only be included in the model for the appropriate outcome, potentially resulting in different sample sizes being used for each outcome.
+
+## Variance-covariance matrix structure 
+
+There is a separate variance-covariance matrix for each level of random effects. The structure of the variance-covariance matrix can be varied to allow for correlation between parameters at each level. The possible structures are `identity`, where all diagonal elements are estimated and constrained to be the same, `diagonal` where all diagonal elements are estimated uniquely (the default), `unstructured` where all elements of the variance-covariance matrix are estimated, and `exchangeable` which assumes a common variance and a common covariance. 
+
+## Predictions
+
+Predictions using the fixed-effects only can be found using the `predict()` function with the argument `type = fixedonly`. Marginal predictions, where the random effects are integrated out, can be obtained using `type = marginal`.  
+
+## Examples
+
+In order to illustrate the potential uses of `merlin` a number of increasingly advanced models have been fitted to the commonly used (in the area of joint modelling of longitudinal and survival data) primary biliary cirrhosis dataset. 
+
+This data set needs some re-formatting in order to fit joint models 
+```{r}
+library(merlin)
+data("pbc")
+pbc[1:11,c("id","years","status","status2","drug","serBilir","prothrombin","year")]
+```
+
+The event times are given in the `years` variable and the event indicator in the `status` variable which can take the values alive, dead or transplanted or the `status2` variable which is 0 for alive and 1 for dead. Each survival observation should only appear once for each individual, otherwise each observation will be treated as a separate event, this allows for recurrent events to be modelled. The survival observations can be reformatted as follows:
+
+```{r}
+pbc$stime <- pbc$years
+pbc$stime[duplicated(pbc$id)] <- NA
+pbc$died <- pbc$status2
+pbc$died[duplicated(pbc$id)] <- NA
+```
+
+We are also going to work with the log of biomarkers prothrombin index and serum bilirubin throughout, the time of this measurements will be recorded in the variable time. We will also change the treatment variable to be numeric rather than a factor variable.
+
+```{r}
+pbc$logb <- log(pbc$serBilir) 
+pbc$logp <- log(pbc$prothrombin)
+pbc$time <- pbc$year
+pbc$trt <- as.numeric(pbc$drug) - 1
+```
+
+The data now looks like this. Failing to set the data up in this way will lead to errors in the parameter estimates.  
+
+```{r}
+pbc[1:11,c("id","stime","died","logb","logp","time")]
+```
+
+We can fit a simple linear model
+
+```{r, cache = TRUE}
+lin.model <- merlin(logb ~ time, family = "gaussian", data = pbc)
+lin.model
+summary(lin.model)
+```
+
+We can add flexibility to the model using restricted cubic splines:
+
+```{r, cache = TRUE}
+rcs.model <- merlin(logb ~ rcs(time, df = 3), family = "gaussian", timevar = "time", data = pbc)
+summary(rcs.model)
+```
+
+By default, the restricted cubic splines are orthogonalised (`orthog = TRUE`). The serum bilirubin observations are clustered within individuals, so we can add a normally-distributed random intercept term named `M1`. The coefficient of the random-effect term will normally constrained to 1 using the `*1` notation, unless the random effect is being shared with another outcome model:
+
+```{r, cache = TRUE}
+r.int.model <- merlin(logb ~ rcs(time, df = 3) + M1[id]*1,
+                      family = "gaussian",
+                      levels = "id",
+                      timevar = "time",
+                      data = pbc)
+summary(r.int.model)
+```
+
+We can also add an additional random-slope term (`M2`) to the model by forming an interaction between the time variable and random-effect using `:`. We can increase the number of quadrature nodes to improve estimation of the likelihood using the `ip` option within the `control` argument. 
+
+```{r, cache = TRUE}
+r.slope.model <- merlin(logb ~ rcs(time, df = 3) + M1[id]*1 + time:M2[id]*1,
+                        family = "gaussian",
+                        timevar = "time",
+                        levels = "id",
+                        data = pbc,
+                        control = list(ip = 15))
+summary(r.slope.model)
+```
+
+## Initial estimates 
+
+If a model has random effects, `merlin` will fit fixed effects models to obtain starting values and then assume an identity matrix for the variance of the random effects. Initial values can be manually set using the `from` option. 
