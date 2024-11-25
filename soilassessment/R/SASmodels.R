@@ -1,0 +1,56 @@
+SASmodels=function(data="ec",extract="1:1"){
+  if(data=="ec"){
+    if(extract=="1:1"){
+      ff=data.frame(extract=rep("1:1",9),
+                    model=c("FAO","sonmez","hogg","landon","kargas","ozkan","USDA","hogg","zhang"),
+                    texture=c(rep("yes",3),rep("no",6)))
+    }
+    if(extract=="1:2"){
+        ff=data.frame(extract=rep("1:2",10),
+                      model=c("FAO","hogg","USDA","polynomial","power","sigmoid","spherical",
+                              "linear","gaussian","exponential"),
+                      texture=c(rep("yes",2),"no",rep("yes",7)))
+      }
+    if(extract=="1:1.25"){
+        ff=data.frame(extract=c("1:1.25"),model=c("FAO"),texture=c("yes"))
+      }
+    if(extract=="1:1.5"){
+        ff=data.frame(extract=c("1:1.5"),model=c("FAO"),texture=c("yes"))
+      }
+    if(extract=="1:2.5"){
+        ff=data.frame(extract=rep("1:2.5",11),model=c("polynomial","power","sigmoid",
+                                                      "spherical","linear","gaussian","exponential",
+                                                      "FAO","sonmez","ozkan","shahid"),
+                      texture=c(rep("yes",9),rep("no",2)))
+      }
+    if(extract=="1:3"){
+        ff=data.frame(extract=rep("1:3",2),model=c("landon","FAO"),texture=c("no","yes"))
+      }
+    if(extract=="1:5"){
+        ff=data.frame(extract=rep("1:5",21),model=c("polynomial","power","sigmoid","spherical",
+                                                    "linear","gaussian","exponential","FAO","sonmez",
+                                                    "landon","kargas","ozkan","USDA","chi","park",
+                                                    "viscounti","khorsandi","klaustermeier","he",
+                                                    "aboukila","halder"),
+                      texture=c(rep("yes",9),rep("no",12)))
+      }
+    if (extract=="1:10"){
+        ff=data.frame(extract=c("1:10"),model=c("FAO"),texture=c("yes"))
+      }
+    }
+    if(data=="ph"){
+    if(extract=="kcl"){
+      ff=data.frame(extract=rep("kcl",9),model=c("kabala","sadovski","polynomial","power","sigmoid",
+                                                 "spherical","linear","gaussian","exponential"),
+                    texture=c(rep("no",2),rep("yes",7)))
+    }
+    if (extract=="cacl2"){
+      ff=data.frame(extract=rep("cacl2",11),model=c("miller","davis","brennan","ahern",
+                                                    "polynomial","power","sigmoid","spherical","linear",
+                                                    "gaussian","exponential"),
+                    texture=c(rep("no",4),rep("yes",7)))
+    }
+  }
+
+  return(ff)
+}

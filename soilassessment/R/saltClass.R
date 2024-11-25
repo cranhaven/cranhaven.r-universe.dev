@@ -1,0 +1,9 @@
+saltClass=function(ec,ph,esp){
+  ec=ec*1
+  esp=esp*1
+  ph=ph*1
+  bb1=ifelse(negData("esp",esp)<15,4,13)
+  bb2=ifelse(negData("esp",esp)<15,14,5)
+  saltClass=ifelse(negData("ec",ec)<4,bb1,bb2)
+  return(salinity=saltClass)
+}
