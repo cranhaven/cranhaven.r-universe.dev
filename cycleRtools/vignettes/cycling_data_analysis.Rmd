@@ -1,0 +1,194 @@
+---
+title: "Analysing Cycling Data with R"
+author: "Jordan Mackie"
+date: "`r Sys.Date()`"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Cycling Data Analysis}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include=FALSE, echo=FALSE}
+knitr::opts_chunk$set(fig.width = 7, fig.height = 5)
+options(digits = 2)
+```
+
+
+`cycleRtools` is a package intended to open up the power of R to cyclists and those interested in cycling data. Functions are provided for reading raw data files into the R environment--a signficant barrier in any case--as well as several specialist functions that are provided by other, often proprietary platforms.
+
+****
+
+```{r, echo=FALSE}
+library(cycleRtools)
+```
+
+# Reading in data
+
+For these examples we'll be using a preloaded dataset, named `intervaldata` (i.e `data(intervaldata)`). The corresponding Garmin .fit file is provided in the `extdata` directory of this package, tarballed together with other files of various formats. See `?read_ride` and the example therein.
+
+Briefly, if `intervaldata.fit` is the file name, then this dataset was generated via:
+
+```r
+intervaldata <- read_ride("intervaldata.fit", format = TRUE,
+                          CP = 310,  # Critical power.
+                          sRPE = 7)  # Session RPE.
+```
+
+Note that `read_ride()` is a generic wrapper for all `read_*` functions in this package (`read_fit()`, `read_srm()` etc...) and calls the appropriate function according to file extension.
+
+## CP and sRPE arguments
+
+When these (numeric) arguments are supplied, they are associated with the parsed data and subsequently used by other functions in this package; they can also serve as useful records should the object be saved as part of ongoing training monitoring. They correspond to "**C**ritical **P**ower" and "**s**ession **RPE**", respectively. For more information on these metrics see Jones *et al.*, 2010 and Foster *et al.*, 2001.
+
+## The 'cycleRdata' format
+
+Calling any `read_*` function with the argument `format = TRUE` will generate a data.frame-type object of class `cycleRdata`. The creation of this class was deemed necessary so that certain columns could be assumed to exist in the data; thus ultimately making life more straightforward for the user. See `?cycleRdata` for details of the format.
+
+****
+
+# Exploring the data
+
+It goes without saying that once these cycling data are within the R environment, endless analytical procedures become available. For the purposes of this demonstration, only some of those procedures facilitated by this package are shown.
+
+## Visualising the data
+
+As is customary, data should first be plotted. `cycleRdata` objects have an associated `plot` method:
+
+```{r, fig.height = 10}
+plot(x = intervaldata,     # "x" is the data, for consistency with other methods.
+     y = 1:3,              # Which plots should be created? see below.
+     xvar = "timer.min",   # What should be plotted on the x axis?
+     xlab = "Time (min)",  # x axis label.
+     laps = TRUE,          # Should different laps be coloured?
+     breaks = TRUE)        # Should stoppages in the ride be shown?
+```
+
+The `y` argument for this `plot` method specifies the way in which the plot stack should be generated. Specifically `length(y)` determines the number of plots to be stacked, and the combination of `c(1, 2, 3)` controls what is plotted and where. As is described in `?plot.cycleRdata`, numbers in this argument give:
+
+  1. A W' balance plot (Skiba et al., 2012).
+  2. A power plot.
+  3. An elevation plot.
+  
+So for example:
+
+```r
+plot(intervaldata, y = c(3:1))  # Inverts the above plot.
+plot(intervaldata, y = 2)       # Just plots power.
+plot(intervaldata, y = c(1, 3)) # W' balance over elevation.
+```
+
+Plots can also be zoomed, and the title metric will be adjusted accordingly.
+
+```{r}
+## Zoom to 0-50 minutes.
+plot(intervaldata, y = 3, xvar = "timer.min", xlim = c(0, 50))
+```
+
+
+## Time in zones
+
+Another want of cyclists is the ability to analyse "time in zones". This is provided primarily by the functions `zone_time()` and `zdist_plot()`.
+
+### zone_time()
+
+```{r}
+zone_time(data = intervaldata,
+          column = power.W,           # What are we interested in?
+          zbounds = c(100, 200, 300), # Zone boundaries.
+          pct = FALSE) / 60           # Output in minutes.
+
+## How about time above and below CP, as a percentage?
+## NB: column = power.W is the default.
+zone_time(intervaldata, zbounds = 310, pct = TRUE) 
+```
+
+### zdist_plot()
+
+```{r}
+zdist_plot(data = intervaldata,
+           binwidth = 10,               # 10 Watt bins.
+           zbounds = c(100, 200, 300),  # Zone boundaries.
+           xlim = c(50, 400))           # Zoom to 50-400 Watts.
+```
+
+
+## Summarising the data
+
+`cycleRdata` objects have a `summary` method, which calculates common metrics and will produce a lap and/or interval summary as appropriate.
+
+```{r}
+summary(intervaldata)
+```
+
+Also see `?summary_metrics` for other common metrics.
+
+### Power profiling
+
+Best mean powers for specified durations can be generated via the `mmv()` function. This will return both the best recorded values, as well as when those were recorded in the ride (seconds).
+
+```{r}
+times_sec <- 2:20 * 60   # 2-20 minutes.
+prof <- mmv(data = intervaldata, 
+            column = power.W,    # Could also use speed.kmh.
+            windows = times_sec)
+print(prof)
+```
+
+This returns the usual, hyperbolic power-time profile.
+
+```{r}
+hypm <- lm(prof[1, ] ~ {1 / times_sec})  # Hyperbolic model.
+
+## Critical Power (Watts) and W' (Joules) estimates
+hypm <- setNames(coef(hypm), c("CP", "W'"))
+print(hypm)
+
+## Plot with the inverse model overlaid.
+plot(times_sec, prof[1, ], ylim = c(hypm["CP"], max(prof[1, ])),
+     xlab = "Time (sec)", ylab = "Power (Watts)")
+curve((hypm["W'"] / x) + hypm["CP"], add = TRUE, col = "red")
+abline(h = hypm["CP"], lty = 2)
+legend("topright", legend = c("Model", "CP"), bty = "n",
+       lty = c(1, 2), col = c("red", "black"))
+```
+
+
+### Pt_model()
+
+More sophisticated modelling is provided by the `Pt_model` function; see `?Pt_model`. Briefly:
+
+```{r}
+ms <- Pt_model(prof[1, ], times_sec)
+print(ms)
+
+plot(times_sec, prof[1, ], ylim = c(hypm["CP"], max(prof[1, ])),
+     xlab = "Time (sec)", ylab = "Power (Watts)")
+## Showing an exponential model, as it best fits these data.
+curve(ms$Pfn$exp(x), add = TRUE, col = "red")
+```
+
+
+## Mapping
+
+Viewing a route map is simple thanks to the `leaflet` package.
+
+```{r, fig.height=3}
+library(leaflet)
+leaflet(intervaldata) %>% addTiles() %>% addPolylines(~lon, ~lat)
+```
+
+
+# References
+<dl>
+<dd>Foster C, Florhaug JA, Franklin J, Gottschall L, Hrovatin LA, Parker S, Doleshal P, Dodge C. A New Approach to Monitoring Exercise Training. *Journal of Strength and Conditioning Research* 15: 109–115, 2001.</dd>
+
+
+<dd>Jones AM, Vanhatalo A, Burnley M, Morton RH, Poole DC. Critical Power: Implications for Determination of VO2max and Exercise Tolerance. *Medicine & Science in Sports & Exercise* 42: 1876–1890, 2010.</dd>
+
+
+<dd>Skiba PF, Chidnok W, Vanhatalo A, Jones AM. Modeling the Expenditure and Reconstitution of Work Capacity above Critical Power. *Medicine & Science in Sports & Exercise* 44: 1526–1532, 2012.</dd>
+</dl>
+
+
+
