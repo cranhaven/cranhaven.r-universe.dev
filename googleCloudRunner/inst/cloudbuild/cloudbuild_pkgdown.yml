@@ -1,0 +1,77 @@
+steps:
+- name: gcr.io/cloud-builders/gcloud
+  entrypoint: bash
+  args:
+  - -c
+  - gcloud secrets versions access latest --secret=github-ssh > /root/.ssh/id_rsa
+  volumes:
+  - name: 'ssh'
+    path: /root/.ssh
+# Set up git with key and domain
+- name: 'gcr.io/cloud-builders/git'
+  id: setup gitkey
+  entrypoint: 'bash'
+  args:
+  - '-c'
+  - |
+    chmod 600 /root/.ssh/id_rsa
+    cat <<EOF >/root/.ssh/config
+    Hostname github.com
+    IdentityFile /root/.ssh/id_rsa
+    EOF
+    cp inst/ssh/known_hosts /root/.ssh/known_hosts
+    git config --global user.name "googleCloudRunner"
+    git config --global user.email $_BUILD_EMAIL
+  volumes:
+  - name: 'ssh'
+    path: /root/.ssh
+- name: 'gcr.io/cloud-builders/git'
+  id: clone under new git creds
+  args:
+  - clone
+  - git@github.com:$_GITHUB_REPO
+  - repo
+  volumes:
+  - name: 'ssh'
+    path: /root/.ssh
+- name: 'gcr.io/gcer-public/packagetools:latest'
+  id: Build website
+  dir: repo
+  args:
+  - "Rscript"
+  - "-e"
+  - |
+    devtools::install()
+    list.files()
+    pkgdown::build_site()
+- name: gcr.io/google.com/cloudsdktool/cloud-sdk:alpine
+  args:
+  - bash
+  - -c
+  - gcloud run regions list > data-raw/regions.txt
+- name: gcr.io/google.com/cloudsdktool/cloud-sdk:alpine
+  args:
+  - bash
+  - -c
+  - gcloud compute zones list --format='value(name)' > data-raw/zones.txt
+- name: rocker/tidyverse
+  args:
+  - Rscript
+  - data-raw/cloudrun-regions.R
+# Push build - remember to restrict other builds away from /docs
+# otherwise it will trigger again in never ending git commit loop
+- name: 'gcr.io/cloud-builders/git'
+  id: push website
+  dir: repo
+  entrypoint: 'bash'
+  args:
+  - '-c'
+  - |
+    git add --all && \
+    git status && \
+    git commit -a -m "[skip ci] Build website from commit ${COMMIT_SHA}: \
+                      $(date +"%Y%m%dT%H:%M:%S")" && \
+    git push git@github.com:$_GITHUB_REPO
+  volumes:
+  - name: 'ssh'
+    path: /root/.ssh
