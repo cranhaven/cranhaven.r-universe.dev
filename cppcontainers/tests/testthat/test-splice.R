@@ -1,0 +1,30 @@
+skip_on_os("mac")
+# list
+testthat::test_that("list splice integer", {
+  x <- cpp_list(4:6)
+  y <- cpp_list(9:12)
+  testthat::expect_invisible(splice(x, y, 2, 2, 3))
+  testthat::expect_equal(to_r(x), c(4L, 10:11, 5:6))
+  testthat::expect_equal(to_r(y), c(9L, 12L))
+})
+testthat::test_that("list splice double", {
+  x <- cpp_list(c(1, 2, 3.5))
+  y <- cpp_list(c(0.5, 6, 7.2))
+  testthat::expect_invisible(splice(x, y, 2, 2, 3))
+  testthat::expect_equal(to_r(x), c(1, 6, 7.2, 2, 3.5))
+  testthat::expect_equal(to_r(y), 0.5)
+})
+testthat::test_that("list splice string", {
+  x <- cpp_list(c("hello", "there", "world"))
+  y <- cpp_list(c("a", "quick", "test"))
+  testthat::expect_invisible(splice(x, y, 2, 2, 3))
+  testthat::expect_equal(to_r(x), c("hello", "quick", "test", "there", "world"))
+  testthat::expect_equal(to_r(y), c("a"))
+})
+testthat::test_that("list splice boolean", {
+  x <- cpp_list(c(TRUE, FALSE, FALSE))
+  y <- cpp_list(c(TRUE, FALSE, FALSE))
+  testthat::expect_invisible(splice(x, y, 2, 2, 3))
+  testthat::expect_equal(to_r(x), c(TRUE, FALSE, FALSE, FALSE, FALSE))
+  testthat::expect_equal(to_r(y), TRUE)
+})
