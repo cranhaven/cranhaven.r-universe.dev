@@ -1,0 +1,577 @@
+---
+title: "PCA"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, comment='', message = FALSE, error = TRUE, 
+                      warning=FALSE, booktabs = T, longtable = T, knitr.kable.NA = "",  knitr.kable.linesep = '', longtable = T) 
+```
+
+
+```{r}
+# Initialize next computations
+library(knitr) 
+library(kableExtra)
+library(FactoMineR)
+library(FactoInvestigate)
+library(corrplot)
+library(factoextra)
+library(DDoutlier)
+library(energy)
+library(rrcov)
+library(methods)
+library(parallel)
+library(graphics)
+library(ggplot2)
+library(gridExtra)
+library(imputeMissings)
+library(reshape2)
+library(onewaytests)
+
+eval0 <- FALSE
+eval <- FALSE
+eval2 <- FALSE
+eval3 <- FALSE
+evaldim3 <- FALSE
+eval_rows <- FALSE
+ncp3 <- FALSE
+ncp4 <- FALSE
+ncp5 <- FALSE
+```
+
+```{r}
+# Get selected data
+df <- params$data
+df_code <- df
+
+tryCatch({
+  df <- df[,params$vars1,drop=FALSE]
+  df2 <- df
+  eval0 <- TRUE
+}, error=function(e) {
+  stop(safeError("Variables cannot be selected. "))
+})
+
+# Possible error reason
+if (length(setdiff(params$vars1,colnames(df))) >0) {
+  cat("Please try other column names for the following columns: ")
+  equal <- intersect(colnames(df),params$vars1)
+  kable(setdiff(params$vars1,equal),col.names = "Column")
+}
+```
+
+
+
+```{r, eval=eval0, results="asis"}
+# Data preparation
+
+tryCatch({
+
+# Drop columns if all observations are missing 
+col_names_missing <- sapply(df, function(col) all(is.na(col)))
+df[ ,col_names_missing] <- list(NULL)
+df_list <- df 
+
+
+# Drop empty rows
+rowsums <- data.frame(sapply(df,is.na))
+if (length(which(rowSums(rowsums) == dim(df)[2])) != 0L){
+  rows_drop <- (which(rowSums(rowsums) == dim(df)[2]))
+  length_non_complete <- length(which(rowSums(rowsums) == dim(df)[2]))
+  df <- df[-rows_drop, ,drop=FALSE]
+  eval_rows <- TRUE
+}
+
+# Convert logical variables to character
+cols_logical <- sapply(df, function(col) is.logical(col))
+df[ ,cols_logical] <- sapply(df[ ,cols_logical], as.character)
+
+# Convert numerical variables with less than 5 unique values to character (missing values omitted)
+tochar <- sapply(df, function(col) length(unique(na.omit(col))) < 5L & is.numeric(col))
+df[ ,tochar] <- sapply(df[ ,tochar], as.character)
+
+# Extract numerical variables, set as approximately continuous
+df_num <- df[which(sapply(df, is.numeric) == 1L)]
+df_cont <- df_num
+
+# Extract binary character variables 
+cols_binary <- sapply(df, function(col) is.character(col) & length(unique(na.omit(col))) == 2)
+cols_binary_names <- names(which(cols_binary == TRUE))
+df_binary <- df[,cols_binary,drop=FALSE]
+
+# Make dummy variables for the character variables with more than 2 levels 
+cols_dummy <- sapply(df, function(col) is.character(col) & length(unique(na.omit(col))) > 2)
+df_dummy <-  df[,cols_dummy,drop=FALSE]
+if (ncol(df_dummy)>0) {
+  dummies <- fastDummies::dummy_cols(df_dummy, remove_first_dummy = TRUE, ignore_na=TRUE)
+  dummies2 <- dummies[,-cols_dummy,drop=FALSE]
+  df_binary <- merge(df_binary,dummies2,by="row.names")
+} 
+
+# Put together 
+df_work <- merge(df_num,df_binary,by="row.names")
+df_work$Row.names <- NULL
+df_work$Row.names.y <-NULL
+
+# Initialize next computations
+eval <- TRUE
+
+}, error=function(e) {
+  
+  cat("Dataset cannot be prepared. The problems could be: Other values besides blanks as missing values, automated encoding detection and conversion failed or other. Try to convert to UTF-8 manually, use only blanks as missing values, use distinct names for the variables and repeat the analysis. ", fill=TRUE)
+  
+}
+
+)
+
+```
+
+
+```{r, results="asis", eval=eval}
+# Chunk with first page of basic information
+
+cat("\n# Basic Information", fill=TRUE)
+cat("Automatic statistics for the file:", fill=TRUE)
+dataname <- params$filename[1]
+knitr::kable(dataname, col.names = "File", linesep = '', longtable = T) %>%
+    kable_styling(position = "center", full_width = FALSE, latex_options = c("HOLD_position","repeat_header"))
+
+cat("Your selection for the encoding:", fill=TRUE)
+if (params$fencoding=="unknown"){
+  cat("Auto")
+} else {cat("UTF-8")}
+cat("\\newline",fill=TRUE) 
+
+cat("Your selection for the decimal character:", fill=TRUE)
+if (params$decimal=="auto"){
+  cat("Auto")
+} else {cat(params$decimal)}
+cat("\\newline",fill=TRUE) 
+  
+cat("Observations (rows with at least one non-missing value): ", fill=TRUE)
+cat(dim(df)[1])
+cat("\\newline",fill=TRUE) 
+
+# Missing rows
+if (exists("length_non_complete")){
+  cat("Number of rows that are dropped because they contain no values (all values are missing):", length_non_complete)
+  cat("\\newline",fill=TRUE) 
+}
+
+cat("Variables (columns with at least one non-missing value): ", fill=TRUE)
+cat(dim(df_list)[2])
+cat("\\newline",fill=TRUE) 
+
+
+# Missing columns
+if (exists("col_names_missing")){
+  if (sum(col_names_missing) != 0L){
+    cat("Number of columns that are dropped because they contain no values (all values are missing):", sum(col_names_missing), fill=TRUE)
+    cat("\\newline",fill=TRUE) 
+  } 
+}
+
+
+if (exists("df_cont")){
+  cat("Variables considered continuous: ", fill=TRUE)
+    if (ncol(df_cont)>0){
+      cat(ncol(df_cont),fill=TRUE)
+      knitr::kable(colnames(df_cont), col.names = "Variables considered continuous", linesep = '', longtable = T) %>%
+        kable_styling(position = "center", full_width = FALSE, latex_options = c("HOLD_position","repeat_header"))
+    } else {
+      cat("0", fill=TRUE)
+      cat("\\newline",fill=TRUE) 
+    }
+}
+
+
+if (exists("cols_binary")){
+  if (sum(cols_binary)>0){
+    cat("Character variables considered binary: ", fill=TRUE)
+    cat(sum(cols_binary),fill=TRUE)
+    knitr::kable(names(which(cols_binary==TRUE)), col.names = "Character variables considered binary", linesep = '', longtable = T) %>%
+      kable_styling(position = "center", full_width = FALSE, latex_options = c("HOLD_position","repeat_header"))
+  } 
+}
+
+
+
+if (exists("cols_dummy")){
+  if (sum(cols_dummy)>0){
+    cat("Character variables considered nominal: ", fill=TRUE)
+    cat(sum(cols_dummy),fill=TRUE)
+    knitr::kable(colnames(df_dummy), col.names = "Character variables considered nominal", linesep = '', longtable = T) %>%
+      kable_styling(position = "center", full_width = FALSE, latex_options = c("HOLD_position","repeat_header"))
+  } 
+}
+```
+
+
+```{r, results="asis", eval=eval}
+# Numeric falsly to char? 
+check_reading <- function(col){
+  numeric <- !is.na(as.numeric(col))
+  return(sum(numeric)/sum(!is.na(col)))
+}
+
+df_char2 <- df2[which(sapply(df2, is.character) == 1L)]
+numeric_percent <- sapply(df_char2, function(col) check_reading(col))
+
+if (length(numeric_percent[(numeric_percent>0.9)]) != 0L){
+  cat("**Warning: Do you have NAs or other characters in the dataset? More than 90% of the values of these columns could be treated as numeric. Nevertheless, because of some character values or the selected decimal character, the columns cannot be treated as continuos. Column(s):**", names(numeric_percent[(numeric_percent>0.9)]), fill=TRUE)
+   cat("\\newline",fill=TRUE) 
+}
+
+```
+
+
+```{r, results="asis", dev="cairo_pdf", eval=eval}
+# Continuous variables at least 3
+if (exists("df_cont")){
+   if (ncol(df_cont) == ncol(df) && ncol(df_cont)>=3) {
+     eval2 <- TRUE
+   } else if  (ncol(df_cont) < ncol(df)){
+    cat("**Error: For some selected variables we cannot assume a continuous distribution. The Principal Components Analysis (PCA) may not be the best dimension reduction method. Drop the non-continuous variables and repeat the analysis or consider more appropriate techniques to deal with mixed data types. **")
+    cat("\\newline",fill=TRUE) 
+   } else if (ncol(df_cont) < 3) {
+    cat("**Error: Minimum 3 variables required. **")
+    cat("\\newline",fill=TRUE) 
+   }
+} else {
+  cat("**Error: For some selected variables we cannot assume a continuous distribution. The Principal Components Analysis (PCA) may not be the best dimension reduction method. Drop the non-continuous variables and repeat the analysis or consider more appropriate techniques to deal with mixed data types.  **")
+  cat("\\newline",fill=TRUE) 
+}
+
+```
+
+
+```{r, results="asis", dev="cairo_pdf", eval=eval2}
+# Missings  > 10%
+complete_rate <- sapply(df_cont, function(col) 1-(sum(is.na(col)) / dim(df)[1])) 
+if (length(which(complete_rate < 0.90)) != 0L){
+  cat("**Error: Execution stop because of limit on missing values. There exist continuous variables with more than 10% missing values. This app allows max 10% missing values per observed variable. Please reconsider your data before using this app. **")
+  miss_var <- names(which(complete_rate < 0.90)) 
+  eval2 <- FALSE
+  knitr::kable(miss_var, col.names = "Variable(s) with more than 10% missing values", linesep = '', longtable = T) %>%
+    kable_styling(position = "center", full_width = FALSE, latex_options = c("HOLD_position","repeat_header"))
+}
+
+if (nrow(df_cont[complete.cases(df_cont),]) < 10){
+  cat("**Error: Minimum 10 complete cases required. **")
+}
+``` 
+
+
+```{r, results="asis", dev="cairo_pdf", eval=eval2}
+# Outliers
+try({
+  if (length(knnoutlier(df_cont))>0){
+    cat("Outliers: We suspect outliers in the data. If the suspect outliers are erroneous, you could drop them and restart the app. Outliers may affect negatively the the results of the PCA. These are the suspected row numbers: ")
+    df_cont_unique <- unique(df_cont)
+    df_cont_complete <- df_cont[complete.cases(df_cont),]
+    outliers <- df_cont_complete[knnoutlier(df_cont),]
+    outliers_rows <- which(duplicated(rbind(outliers, df_cont_unique))) - length(knnoutlier(df_cont))
+    cat(outliers_rows, fill=TRUE)
+  } else {
+    cat("Outliers: We cannot identify any statistically significant outliers. ", fill=TRUE)
+  }
+}, silent=TRUE)
+```  
+
+
+```{r, results="asis", dev="cairo_pdf", eval=eval2}
+# Normality
+# Normality for complete and outlier deleted dataset 
+tryCatch({
+  df_norm <- df_cont[complete.cases(df_cont),]
+  if (length(knnoutlier(df_cont))>0){
+    df_norm <- df_norm[-knnoutlier(df_cont),]
+  } 
+  qqcors <- sapply(df_norm,normality)
+  pnorm <- mvnorm.test(df_norm, 100)$p.value
+  if (is.na(pnorm)) pnorm <- 0
+  if (sum(!qqcors)==0 || pnorm > 0.01){
+    cat("Normality: The continuous variables are approximately (multivariate) normally distributed. The Principal Components Analysis (PCA) is a suitable method for revealing the dependencies in the dataset. ", fill=TRUE)
+    cat("\\newline",fill=TRUE) 
+  } else {
+    cat("Warning: We cannot assume an approximately (multivariate) normal distribution of the data. Depending on the distribution of your data, other dimensionality reduction methods could be (more) suitable to your data. ", fill=TRUE)
+  }
+})
+
+```  
+
+```{r, results="asis", dev="cairo_pdf", eval=eval2}
+# Missings in continuous <= 10% 
+indic_missings <- FALSE
+if (length(which(complete_rate < 1 & complete_rate > 0.90)) != 0L){
+  cat("Missings: There exist variable(s) with < 10% missing values. We assume a random missing pattern and apply a missing values imputation technique (Random Forest). ")
+  indic_missings <- TRUE
+  df <- imputeMissings::impute(df, method="randomForest")
+}
+```   
+
+
+```{r include=FALSE, eval=eval2}
+# Decide for scaling
+scale <- TRUE
+tryCatch({
+  dfm <- reshape2::melt(df)
+  bf <- bf.test(value ~ variable, data=dfm, alpha = 0.01)
+  if (bf$p.value <=0.01){
+    # True if BF test significant
+    scale <- TRUE
+  } else {
+    scale <- FALSE
+  }
+
+}, error=function(e) {
+  
+  stop(safeError("Error. Please contact the support. "))
+  
+})
+```
+
+
+```{r, results="asis", dev="cairo_pdf", eval=eval2}
+if (scale == TRUE){
+  cat("Scaling: Since we detect statistically significant differences between the variances of the variables, we scale the data before the PCA. ", fill=TRUE)
+} else {
+  cat("Scaling: Since we do not detect statistically significant differences between the variances of the variables, we do not scale the data before the PCA. ", fill=TRUE)
+}
+```
+
+
+```{r include=FALSE, eval=eval2}
+tryCatch({
+  
+# Dimensions to show
+ncp <- min(ncol(df),5)
+if (ncp==3){
+  ncp3 <- TRUE
+} else if (ncp==4){
+  ncp4 <- TRUE
+} else {
+  ncp5 <- TRUE
+}
+pca <-  PCA(df, ncp=ncp, scale.unit = scale)
+Investigate2(pca, document="pdf_document", keepRmd=TRUE, openFile=FALSE, out.selec=FALSE)
+
+# Initialize next computations
+eval3 <- TRUE
+
+}, error=function(e) {
+  
+  stop(safeError("Error. Please contact the support. "))
+  
+})
+```
+
+\pagebreak 
+
+```{r, results="asis", eval=eval3}
+cat("\n# Outputs", fill=TRUE)
+```
+
+```{r, results="asis", eval=eval3}
+cat("\n## Data Head (Transposed)", fill=TRUE)
+cat("First five observations of the dataset. ", fill=TRUE)
+knitr::kable(t(head(df, n=5)), digits=3, linesep = '', longtable = T) %>%
+    kable_styling(position = "center", full_width = FALSE, latex_options = c("HOLD_position","repeat_header"))
+```
+
+```{r, results="asis", eval=eval3, dev="cairo_pdf", fig.align="center"}
+cat("\n## Pearson Correlations (Matrix)", fill=TRUE)
+cat("Pearson Correlation. ", fill=TRUE)
+M <- cor(df, use="complete.obs", method="pearson")
+corrplot(M, is.corr=TRUE, method="number", type="lower", tl.col="#396e9f", tl.cex = 0.5, cl.cex = 0.5, number.cex = 0.4, cl.align.text="l")
+```
+
+```{r, results="asis", eval=eval3, dev="cairo_pdf", fig.align="center"}
+cat("\n## Kendall Correlations (Matrix)", fill=TRUE)
+cat("Kendall Correlation. ", fill=TRUE)
+M <- cor(df, use="complete.obs", method="kendall")
+corrplot(M, is.corr=TRUE, method="number", type="lower", tl.col="#396e9f", tl.cex = 0.5, cl.cex = 0.5, number.cex = 0.4, cl.align.text="l")
+```
+
+
+```{r, results="asis", eval=eval3}
+cat("\n## Eigenvalues and Proportion Explained", fill=TRUE)
+```
+
+```{r, eval=eval3}
+eigentable <- get_eigenvalue(pca)
+knitr::kable(eigentable, digits=3, col.names = c("Eigenvalue","Variance Explained (%)", "Cumulative Variance Explained (%)"), linesep = '', longtable = T) %>%
+    kable_styling(position = "center", full_width = FALSE, latex_options = c("HOLD_position","repeat_header"))
+```
+
+```{r, results="asis", eval=eval3}
+cat("\n## Screeplot", fill=TRUE)
+fviz_eig(pca, addlabels = TRUE, ylim = c(0, 50))
+```
+
+\pagebreak 
+
+```{r, results="asis", eval=eval3}
+cat("\n## Variables", fill=TRUE)
+```
+
+```{r, results="asis", eval=eval3}
+cat("\n### Loadings", fill=TRUE)
+cat("Equivalent to: Principal Components", fill=TRUE)
+cat("\\newline", fill=TRUE)
+cat("Equivalent to: (Right) Eigenvectors in Singular Value Decomposition (SVD)", fill=TRUE)
+
+df_svd <- scale(df, center=TRUE, scale=scale)
+tmp <- svd.triplet(df_svd, ncp = ncp)
+princomps <- tmp$V
+colprincomp <- c("PC1", "PC2", "PC3", "PC4", "PC5")
+rownames(princomps) <- colnames(df)
+knitr::kable(princomps, digits=3, col.names=colprincomp[1:ncp], linesep = '', longtable = T) %>%
+    kable_styling(position = "center", full_width = FALSE, latex_options = c("HOLD_position","repeat_header"))
+
+#k <- prcomp(df, scale. = scale)
+#princomps <- k$rotation
+#knitr::kable(princomps, digits=3, linesep = '', longtable = T)
+```
+
+```{r, results="asis", eval=eval3}
+cat("\n### Standardized Loadings", fill=TRUE)
+cat("Equivalent to: Correlations between variables and principal components (range [-1,1])", fill=TRUE)
+correlations <- pca$var$cor[,1:ncp]
+knitr::kable(correlations, digits=3, linesep = '', longtable = T) %>%
+    kable_styling(position = "center", full_width = FALSE, latex_options = c("HOLD_position","repeat_header"))
+```
+
+```{r, results="asis", eval=eval3}
+cat("\n### Squared Standardized Loadings", fill=TRUE)
+cat("Equivalent to: Squared correlations", fill=TRUE)
+cat("\\newline", fill=TRUE)
+cat("Equivalent to: Proportion of variance explained by the principal components (range [0,1])", fill=TRUE)
+cat("\\newline", fill=TRUE)
+cat("Equivalent to: Squared cosine of angle between variables and principal components", fill=TRUE)
+knitr::kable(pca$var$cos2, digits=3, linesep = '', longtable = T) %>%
+    kable_styling(position = "center", full_width = FALSE, latex_options = c("HOLD_position","repeat_header"))
+```
+
+```{r, results="asis", eval=eval3, dev="cairo_pdf", fig.height=18, fig.width=15}
+cat("\n### Standardized Loadings Plots (Dimensions 1-2)", fill=TRUE)
+cat("Variables coloured by variance explained (cos2)", fill=TRUE)
+cat("\\newline", fill=TRUE)
+fviz_pca_var(pca, col.var = "cos2", axes = c(1,2), 
+             gradient.cols = c("#ff9900", "#2fa42d", "#396e9f"), title="", ggtheme=theme_minimal(base_size = 22))
+
+if (ncp>2) evaldim3 <- TRUE
+```
+
+```{r, results="asis", eval=evaldim3, dev="cairo_pdf", fig.height=18, fig.width=15}
+cat("\n### Standardized Loadings Plots (Dimensions 1-",ncp,")", fill=TRUE)
+for (i in 1:ncp){
+  for (j in 1:ncp){
+  nam <- paste0(paste0("plot",i),j)
+  plot <- fviz_pca_var(pca, axes = c(i,j), title="", ggtheme=theme_minimal(base_size = 8))
+  assign(nam, plot)
+  }
+}
+
+# PLots arranged
+if (ncp==3){
+  gridExtra::grid.arrange(grobs = list(plot12,plot13,plot23), 
+                      nrow=1, ncol=3, widths = unit(c(11, 11, 11), "cm"), heights = unit(11, "cm"), 
+                      padding = unit(0.3, "line")) 
+} else if (ncp==4){
+  gridExtra::grid.arrange(grobs = list(plot12,plot13,plot23,plot14,plot24,plot34), 
+                      nrow=2, ncol=3, widths = unit(c(11, 11, 11), "cm"), heights = unit(c(11,11), "cm"), 
+                      padding = unit(0.3, "line")) 
+} else {
+  gridExtra::grid.arrange(grobs = list(plot12,plot13,plot23,plot14,plot24,plot34,plot15,plot25,plot35,plot45), 
+                      nrow=4, ncol=3, widths = unit(c(11, 11, 11), "cm"), heights = unit(c(11,11,11,11), "cm"), 
+                      padding = unit(0.3, "line")) 
+}
+
+```
+
+```{r, results="asis", eval=eval3, dev="cairo_pdf", fig.height=5, fig.align="center"}
+cat("\n### Standardized Loadings Plot (Matrix)", fill=TRUE)
+col_statsomat <- colorRampPalette(c("#ff9900", "#2fa42d", "#396e9f"))
+corrplot(pca$var$cor, is.corr=FALSE, tl.col="#396e9f", col=col_statsomat(10), tl.cex = 0.5, cl.cex = 0.5, cl.align.text="l")
+```
+
+```{r, results="asis", eval=eval3, dev="cairo_pdf", fig.height=5, fig.align="center"}
+cat("\n### Squared Standardized Loadings Plot (Matrix)", fill=TRUE)
+cat("Variance explained (cos2)", fill=TRUE)
+cat("\\newline", fill=TRUE)
+corrplot(pca$var$cos2, is.corr=FALSE, method="color", tl.col="#396e9f", tl.cex = 0.5, cl.cex = 0.5, cl.align.text="l")
+```
+
+```{r, results="asis", eval=eval3, dev="cairo_pdf"}
+cat("\n## Observations", fill=TRUE)
+```
+
+```{r, results="asis", eval=eval3, fig.height=9}
+cat("\n### Scores (Head)", fill=TRUE)
+knitr::kable(head(pca$ind$coord), digits=3, linesep = '', longtable = T) %>%
+    kable_styling(position = "center", full_width = FALSE, latex_options = c("HOLD_position","repeat_header"))
+```
+
+```{r, results="asis", eval=eval3, dev="cairo_pdf"}
+cat("\n### Score Plot (Dimensions 1-2)", fill=TRUE)
+fviz_pca_ind(pca, axes = c(1,2), title="", col.ind = "#396e9f", ggtheme=theme_minimal(base_size = 11))
+```
+
+
+```{r, results="asis", eval=evaldim3, fig.height=18, fig.width=15, dev="cairo_pdf"}
+cat("\n### Score Plots (Dimensions 1-",ncp,")", fill=TRUE)
+for (i in 1:ncp){
+  for (j in 1:ncp){
+  nam <- paste0(paste0("plot",i),j)
+  plot <- fviz_pca_ind(pca, axes = c(i,j), col.ind = "#396e9f", title="", ggtheme=theme_minimal(base_size = 8))
+  assign(nam, plot)
+  }
+}
+
+# PLots arranged
+if (ncp==3){
+  gridExtra::grid.arrange(grobs = list(plot12,plot13,plot23), 
+                      nrow=1, ncol=3, widths = unit(c(11, 11, 11), "cm"), heights = unit(11, "cm"), 
+                      padding = unit(0.3, "line")) 
+} else if (ncp==4){
+  gridExtra::grid.arrange(grobs = list(plot12,plot13,plot23,plot14,plot24,plot34), 
+                      nrow=2, ncol=3, widths = unit(c(11, 11, 11), "cm"), heights = unit(c(11,11), "cm"), 
+                      padding = unit(0.3, "line")) 
+} else {
+  gridExtra::grid.arrange(grobs = list(plot12,plot13,plot23,plot14,plot24,plot34,plot15,plot25,plot35,plot45), 
+                      nrow=4, ncol=3, widths = unit(c(11, 11, 11), "cm"), heights = unit(c(11, 11, 11, 11), "cm"), 
+                      padding = unit(0.3, "line")) 
+}
+
+```
+
+```{r, results="asis", eval=eval3, dev="cairo_pdf"}
+cat("\n### Biplot Dimensions 1-2", fill=TRUE)
+cat("An observation that is on the same side of a given variable has a high value for this variable")
+cat("\\newline", fill=TRUE)
+cat("an individual that is on the opposite side of a given variable has a low value for this variable.")
+cat("\\newline", fill=TRUE)
+fviz_pca_biplot(pca, col.var = "#ff9900", col.ind = "#396e9f", title="")
+```
+
+```{r, results="asis", eval=eval3}
+cat("\n# Interpretation by the FactoInvestigate package", fill=TRUE)
+```
+
+```{r child = 'Investigate.Rmd', eval=eval3}
+```
+
+\pagebreak
+
+```{r, results="asis", eval=eval3}
+cat("\n# Final Comment", fill=TRUE)
+cat("The automatic computation and interpretation delivered by the Statsomat app should not completely replace the classical, human-based graphical exploratory data analysis and statistical analysis. There may be data cases for which the Statsomat does not deliver the most optimal solution or output interpretation.", fill=TRUE)
+```   
+
+```{r, results="asis", dev="cairo_pdf", eval=eval3}
+cat("\n# Statistical Methods",fill=TRUE)
+cat("The statistical analysis was done using R [@stats] and following main R packages: FactoMineR [@FactoMineR], FactoInvestigate [@FactoInvestigate], factoextra [@factoextra], corrplot [@corrplot], energy [@energy], DDoutlier [@ddout].", fill=TRUE)
+```  
+
+
