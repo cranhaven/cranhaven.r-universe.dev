@@ -1,0 +1,150 @@
+---
+title: "MALDI cell based assay Example"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{MALDI cell based assay Example}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(fig.width=8, 
+                      fig.height=4,
+                      collapse = TRUE,
+                      comment = "#>"
+)
+```
+
+
+## Introduction
+
+In this document we will apply an automated screening for possible candidate signals that show a response to treatment with a compound.
+For details how to do the experimental part check out our Nature Protocols publication Unger 2021 "Label-free Cell Assays of Compound Uptake and Drug Action using MALDI-TOF Mass Spectrometry".
+Briefly, cells were treated with the following concentration of a compound: 0, 0.04, 0.12, 0.37, 1.11, 3.33, 10, 30 uM.
+After incubation the cells were washed, transferred to a MALDI target plate and matrix was applied.
+For each concentration 4 spots were applied which means that we also have 4 "measurement replicates" for each concentration.
+
+The most important function in this package is fitCurve(). It does not only fit the dose response curve and compute score values but it also does most of the necessary steps needed to prepare the data for fitting like normalization and alignment. In this tutorial we want to first look at each of this steps individually and then apply the fitCurve() function the helps us combine all of them.
+
+For the sake to keep this package small, the spectra used as an example here were trimmed to 400-900 Da mass-range and stored in a compact form as example data.
+
+## Example data and quality check
+
+```{r setup, warning=FALSE}
+library(MALDIcellassay)
+library(MALDIquant)
+```
+
+```{r loadData}
+data("Blank2022spec")
+```
+
+First we will check the spectra for general quality.
+```{r qualityCheck}
+MALDIquant::plot(Blank2022spec[[1]], main = "0uM, replicate 1")
+```
+
+## Preprocessing
+
+The baseline of the spectra already looks ok but for the sake of this tutorial we will apply a baseline correction.
+But first we want so save the names of the spectra (which are the concentrations used to treat the cells).
+Also to get a better overview of the data we compute the mean spectra of each concentration (there are 4 measurement replicates for each concentration) and plot them around m/z 760 as we want to use this signal to normalize and also as lock mass.
+
+```{r baseline}
+conc <- as.numeric(names(Blank2022spec))
+spec_prc <- MALDIquant::removeBaseline(Blank2022spec)
+avg <- MALDIquant::averageMassSpectra(spec_prc, labels = conc)
+MALDIquant::plot(avg[[1]], main = "Overview of mean spectra", xlim = c(755, 765))
+for(i in 2:length(avg)) {
+  MALDIquant::lines(avg[[i]], col = i)
+}
+legend("topright", legend = paste0(names(avg), "uM"), col = 1:8, lty=1)
+```
+We see that the alignment of the spectra is quite good but the intensity varies for the peak around m/z 760.
+To get best results its necessary to normalize the spectra to each other. 
+One way is to add a standard to each measurement spot (internal standard).
+This is not always possible and another option is to use endogenous peaks with high abundance like the signal around 760 m/z.
+As an example we will now find out the m/z deviation to this signal for each spectrum.
+First we need to detect the peaks, then we convert the peaks to a data.frame and finally we use getMzShift() to find the mass shift in each spectrum.
+
+```{r mzShift}
+peaks <- MALDIquant::detectPeaks(Blank2022spec, method = "SuperSmoother", SNR = 5)
+names(peaks) <- names(Blank2022spec)
+mz_shift <- getMzShift(peaks = peaks, targetMz = 760.585, tol = 500)
+summary(mz_shift$mzshift)
+
+```
+As we already suspected the shift is quite small. Now lets use it to align the spectra
+```{r recal}
+spec_align <- shiftMassAxis(Blank2022spec, mz_shift$mzshift)
+
+```
+Now that we have aligned spectra the next step is to normalize them. 
+Also here, a internal standard would be great but as we dont have one we again use the m/z 760 endogenous signal.
+First we extract the intensities for each spectrum of this signal and then we use it as a normalization factor.
+```{r norm}
+peaks_align <- MALDIquant::detectPeaks(spec_align, method = "SuperSmoother", SNR = 3)
+norm <- getNormFactors(peaksdf = peaks2df(peaks_align), targetMz = 760.585, tol = 100)
+summary(norm$norm_factor)
+spec_rdy <- normalizeByFactor(spec_align, norm$norm_factor)
+
+```
+As a final check we now plot again the aligned and normalizes mean spectra for each concentration.
+
+```{r finalCheck}
+avg_rdy <- MALDIquant::averageMassSpectra(spec_rdy, labels = conc)
+MALDIquant::plot(avg_rdy[[1]], main = "Overview of mean spectra", xlim = c(755, 765))
+for(i in 2:length(avg_rdy)) {
+  MALDIquant::lines(avg_rdy[[i]], col = i)
+}
+legend("topright", legend = paste0(names(avg), "uM"), col = 1:8, lty=1)
+```
+
+## High variance filtering
+
+As expected we find our spectra to be perfectly aligned and normalized to 760.585.
+Now we can again detect peaks, bin them and compose a intensity matrix of all peaks.
+```{r intmat}
+peaks_rdy <- MALDIquant::detectPeaks(avg_rdy, method = "SuperSmoother", SNR = 3)
+peaks_rdy <- MALDIquant::binPeaks(peaks_rdy)
+intmat <- MALDIquant::intensityMatrix(peaks_rdy, avg_rdy)
+dim(intmat)
+```
+We get a intensity matrix with 211 peaks in total. The next step is to screen for high variant peaks.
+```{r highVar}
+vars <- apply(intmat, 2, var)
+idx <- which(vars > mean(vars))
+highVarIntmat <- intmat[,idx]
+dim(highVarIntmat)
+```
+
+## Fit Curve
+
+We end up with 20 candidate peaks for which we want to fit a IC50 curve.
+Lets do the fitting for one exemplary signal.
+```{r fit}
+concLog <- log10(unique(conc))
+    if(any(concLog == -Inf)) {
+      concLog[which(concLog == -Inf)] <- (min(concLog[which(!concLog == -Inf)])-1)
+    }
+resp <- nplr::convertToProp(y = intmat[,10])
+model <- nplr::nplr(x = concLog, y = resp, useLog = FALSE, npars = 4)
+title <- paste0("m/z =", round(as.numeric(colnames(intmat)[12]), 2))
+plot(model, main = title)
+```
+And with that we are finished!
+As said during the introduction we did each step manually. 
+To do what we did in an automated way for each signal of interest use the following function:
+```{r fitCruve, eval = FALSE}
+fitCurve(spec = Blank2022spec,
+         SinglePointRecal = TRUE, 
+         normMz = 760.585, 
+         alignTol = 0.1, 
+         normTol = 0.1)
+```
+
+## Session Info
+
+```{r Rsession}
+sessionInfo()
+```
