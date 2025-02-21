@@ -1,0 +1,49 @@
+#' Infer source schema
+#' @description Given data source and headers infer will return a Table Schema based on the data values.
+#' @param source data source, one of:
+#' \itemize{
+#'  \item string with the local CSV file (path)
+#'  \item string with the remote CSV file (url)
+#'  \item list of lists representing the rows
+#'  \item readable stream with CSV file contents
+#'  \item function returning readable stream with CSV file contents
+#'  }
+#' @param options any \code{\link{Table.load}} options
+#' @rdname infer
+#' @export
+#' @return Schema descriptor
+#' @examples
+#' # list of lists data source
+#' source = list(
+#'              list("id"= 1,
+#'                   "age"= 39,
+#'                   "name"= "Paul"),
+#'              list("id"= 2,
+#'                   "age"= 23,
+#'                   "name"= "Jimmy"),
+#'              list("id"= 3,
+#'                   "age"= 36,
+#'                   "name"= "Jane"),
+#'              list("id"= 4,
+#'                   "age"= 28,
+#'                   "name"= "Judy"))
+#' 
+#' infer(source, options=list(headers=list("id","age","name")))$fields
+#' 
+
+# Module API
+
+infer <- function(source, options = list()) {
+  
+  # https://github.com/frictionlessdata/tableschema-js#infer
+  arguments <- list(source)
+  arguments <- append(arguments, options)
+
+  def2 <- do.call(Table.load, arguments )
+  table <- future::value(def2)
+  
+
+  descriptor <- table$infer(limit = options[["limit"]])
+  
+  return(descriptor)
+}
