@@ -1,0 +1,198 @@
+---
+title: "Short introduction to an STRMPS workflow"
+author: "Søren B. Vilsen"
+date: "Last updated: `r Sys.Date()`"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Short introduction to an STRMPS workflow}
+  %\VignetteEncoding{UTF-8}
+  %\VignetteEngine{knitr::rmarkdown}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+    collapse = TRUE,
+    comment = "#>"
+)
+```
+
+The `STRMPS` package is designed to extract and collect the short tandem repeat (STR) information from the `fastq` files produced by massively parallel sequencing (MPS). 
+
+### Example sequences
+The `STRMPS`-package depends on `R` (>= 4.4), `methods`, `utils`, `tidyr`, `tibble`, `dplyr`, `stringr`, `purrr`, `parallel`, as well as the bioconductor packages `Biostrings`, `pwalign`, `ShortRead`, and `IRanges`.
+
+Using the `readFastq` function, we can load a data file into `R`.
+
+```{r, message = FALSE}
+library("Biostrings")
+library("pwalign")
+library("ShortRead")
+
+readPath <- system.file('extdata', 'sampleSequences.fastq', package = 'STRMPS')
+sequences <- readFastq(readPath)
+```
+
+```{r}
+sequences@sread
+```
+
+### Flanking regions
+We are interested in extracting the STR regions of these sequences. They are extracted by searching for marker specific sequences in the regions surrounding the STR region -- called the flanking regions. The following is an example of a `tibble` containing the necessary flanking region information. NOTE: this is just an example, the following loaded flanking region `tibble` is not usable for actual applications.
+
+```{r}
+library("STRMPS")
+data("flankingRegions")
+```
+
+```{r}
+head(flankingRegions, 5)
+```
+
+The columns of the `tibble` contains the following information: 
+
+- `Marker` and `Type` are the name and chromosomal type (autosomal, X, or Y) of each marker.
+- `ForwardFlank` and `ReverseFlank` contain the marker specific sequences used to identify the STR regions. The forward and reverse flanks should occur before and after the STR regions, respectively.
+- `Motif` and `MotifLength` are the structure and length of the STR regions motif, respectively.
+- `Offset` is used to adjust the numeric allele designation so it can be compared to the corresponding CE allele designation. 
+- `ForwardShift` and `ReverseShift` (not shown) are used to trim the extracted sequences to just include the STR regions. If these are set to zero, then the extracted regions contain some useful flanking region information.
+
+### Identification
+
+Using the `flankingRegions` file, we can identify the STR regions of the sequences by calling the `identifySTRRegions` function. The function takes four arguments: 
+
+- `reads`: The sequences to search through.
+- `flankingRegions`: A `tibble` or `data.frame` in the same style as shown above.
+- `numberOfMutation`: The number of allowed mismatches, when searching the sequences.
+- `control`: A control object setting additional parameters (to see more type `?identifySTRRegions.control`).
+
+```{r}
+identifiedSTRs <- identifySTRRegions(
+    reads = sequences,
+    flankingRegions = flankingRegions,
+    numberOfMutation = 1,
+    control = identifySTRRegions.control(
+        numberOfThreads = 1,
+        includeReverseComplement = FALSE
+    )
+)
+```
+
+The function returns a list with the following: 
+
+- `n_reads`: The total number of reads in the supplied `reads` object.
+- `reverseComplement`: TRUE/FALSE value -- did we search for the reverse complementary flanking regions?
+- `identifiedMarkers`: A list containing indecies, and the start and end positions of STR regions for each of the markers in the `flankingRegiions` object. 
+- `identifiedMarkersSequencesUniquelyAssigned`: Almost identical to `identifiedMarkers`, but if multiple markers have been found in a sequences it is disregarded.
+- `remainingSequences`: A vector of indecies of sequences where no marker was identified.
+
+An example of what is stored in the `identifiedMarkersSequencesUniquelyAssigned` list
+
+```{r}
+names(identifiedSTRs$identifiedMarkersSequencesUniquelyAssigned$CSF1PO)
+```
+
+That is, we find the name of the marker, the indecies of the sequences identified as belonging to the marker, the start of the forward flank, the end of the reverse flank, and then trimmed versions of the sequences, where 'junk' has been removed (any information outside the searched for flanking sequences).
+
+### Aggregation
+Given the identified STR regions, we can aggregate the identified strings, to get their coverage. When doing so, we also supply the length of the motifs of every marker, and their type, i.e.\ whether the marker is located on an autosomal, the X, or the Y chromosome. In order to supply the motif length and type information, we need to know which markers were actually identified, and in which order they were identified. 
+
+This could be done as follows:
+```{r}
+sortedIncludedMarkers <- sapply(
+    names(identifiedSTRs$identifiedMarkersSequencesUniquelyAssigned),
+    function(m) which(m == flankingRegions$Marker)
+)
+```
+
+The aggregation is then performed by calling the `stringCoverage` function with the arguments `extractedReadsListObject`, `motifLength`, `Type`, and `control`. In the `control` argument, we pass an argument called `simpleReturn`. If this argument is set to `FALSE`, the aggregation is performed based on both the STR region **and** the forward and reverse flanks. If it is set to `TRUE`, the aggregation is just performed based on the STR regions. That is, if it is `FALSE`, we will find more distinct strings, with lower coverage. Note that when setting `simpleReturn = TRUE`, the quality is also summarised by the geometric average for each base.
+
+```{r}
+stringCoverageList <- stringCoverage(
+    extractedReadsListObject = identifiedSTRs,
+    flankingRegions = flankingRegions,
+    control = stringCoverage.control(
+        numberOfThreads = 1,
+        trace = FALSE,
+        simpleReturn = TRUE
+    )
+)
+```
+
+The `stringCoverage` returns a list of `tibbles` one for each of the identified markers. The result can be seen here:
+```{r}
+stringCoverageList$CSF1PO
+```
+
+We see on marker `CSF1PO`, we have found three distinct markers two with a coverage above 950, and one with a coverage of 37. If the sample only contained a single contributor, we would expect that the two strings with a coverage of above 950 to be the alleles of the individual. While the string with low coverage is either a stutter (as it is in the stutter position), or an error.
+
+### Genotype identification
+
+If the aggregated `stringCoverageList`-object, contains DNA from a single contributor **and** was made with a large amount of input DNA, we can determine the genotype of the contributor. A way of doing so is to identify the string with the largest coverage, and determine whether or not another allele is within some pre-defined heterozygous threshold (by default this is set to $0.35$). 
+
+We determine the genotype of each marker, by using the `getGenotype` function.
+
+```{r}
+genotypeList <- getGenotype(stringCoverageList)
+```
+
+The created `genotypeList`-object contains the genotypes determined by the `thresholdHeterozygosity`. Continuing the example from before, the genotypes of the marker `CSF1PO` are:
+
+```{r}
+genotypeList$CSF1PO
+```
+
+We see that the `getGenotype` function has identified the two strings with coverage above 950, as the potential alleles of the marker for the contributor of the sample. Furthermore, note that the function adds a column called `Indices` containing the indices of the corresponding strings in the `stringCoverageList`-object. That is, in this example, `Indices` contains the values 1 and 3.
+
+### Noise identification
+
+In a similar way to the genotype identification, we implemented simple rules for noise identification. A string is classified as noise if it is less than the coverage of the most prevalent string times `thresholdSignal`. By default this factor is set to $1\%$.
+
+```{r}
+noiseList <- identifyNoise(stringCoverageList, thresholdSignal = 0.03)
+```
+
+The `identifyNoise` function returns a list with an element for every marker in the `stringCoverageList`-object. If an observation is classified as noise, it is then removed from the data. Returning to our example from before, marker `CSF1PO` has no strings with less than $1\%$ of the coverage of the most prevalent string. That is, the following still contains three distinct sequences:
+
+```{r}
+noiseList$CSF1PO
+```
+
+Note that as with the `getGenotype` function, the `identifyNoise` function adds a column called `Indices` containing the indices of the corresponding strings in the `stringCoverageList`-object. That is, in this example, `Indices` contains the values 1, 2, and 3.
+
+### Stuttering
+
+Stuttering refers to the loss (or gain) of a motif in the allele sequence during PCR amplification. A predictor of the rate of stuttering (quantified by the stutter ratio or stutter proportion), is the Block Length of the Missing Motif (BLMM). If we compare the allele to a stutter sequence, then we can identify the approximate location (down to the nearest block) of the motif which stuttered. The BLMM is the length of the block (sub-sequence), which has lost a motif. 
+
+The `findStutter` function for every called allele, found with the `getGenotype` function, finds all potential stutters of the alleles and calculates the stutter ratio and stutter proportions between the allele and potential stutter. It also identifies the missing motif and finds the length of the corresponding block, as well as the longest uninterrupted stretch (LUS), i.e. the length of the longest block. It takes a merge of the `stringCoverageList` and the `genotypeList` created using the `mergeGenotypeStringCoverage` function. 
+
+```{r}
+stringCoverageGenotypeList <- mergeGenotypeStringCoverage(stringCoverageList, genotypeList)
+
+stutterList <- findStutter(stringCoverageGenotypeList)
+stutterTibble <- subset(do.call("rbind", stutterList), !is.na(Genotype))
+head(stutterTibble, 5)
+```
+
+Note that the output also contains a series of flags which could be useful:
+
+- `FLAGStutterIdentifiedMoreThanOnce`: Is the stutter string been identified as a stutter for more than one allele?
+- `FLAGMoreThanTwoAlleles`: Were more than two alleles provided by the merged `stringCoverageGenotypeList` object?
+- `FLAGAlleleDifferenceOne`: Was the difference between the two alleles one motif? If `TRUE` the shorter will appear as a stutter of the longer and, thereby, skew the results of any analysis. These cases should be removed.   
+- `FLAGMoreThanOneBlock`: Was more than one block identified when comparing the potenetial stutter and allele sequences?
+- `FLAGBlocksWithDifferentLengths`: If `FLAGMoreThanOneBlock` was `TRUE`, did the identified blocks have different lengths? Note: This should not be possible in theory, but if it happens it is at most a difference of one and the longest is always chosen (as it should be more likely).
+
+### Workflow function
+
+Instead of calling all the above functions, we can call the workflow function `STRMPSWorkflow`. The function takes a path to a file, and either returns a series of `.RData` files in the provided `output` directory, or it returns the `stringCoverageList` object created by the `stringCoverage` function. The function can also continue from previously created files using the `continueCheckpoint` argument (if the files are placed in the `output` directory).
+
+```{r, eval = FALSE}
+STRMPSWorkflow(
+    read_path,
+    control = workflow.control(
+        restrictType = "Autosomal",
+        numberOfThreads = 1
+    )
+)
+```
+
+There also exists a batch version of the function called `STRMPSWorkflowBatch` which takes an `input` directory containing the `.fastq` files to be analysed. 
