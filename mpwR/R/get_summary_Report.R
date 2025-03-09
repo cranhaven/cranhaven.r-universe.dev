@@ -1,0 +1,101 @@
+#' Summary report
+#'
+#' Generates a summary report
+#'
+#' For each submitted data a summary report including information about achieved identifications (ID), data completeness (DC), missed cleavages (MC), and both quantitative (LFQ) and retention time (RT) precision is generated.
+#'
+#' @param input_list A list with data frames including ID, DC, MC, LFQ and RT information.
+#' @param CV_RT_th_hold Numeric. User-specified threshold for CV value of retention time precision. Default is 5.
+#' @param CV_LFQ_Pep_th_hold Numeric. User-specified threshold for CV value of quantitative precision. Default is 20.
+#' @param CV_LFQ_PG_th_hold Numeric. User-specified threshold for CV value of quantitative precision. Default is 20.
+#'
+#' @author Oliver Kardell
+#'
+#' @return This function returns a list. For each analysis a respective data frame is stored in the list with the following information:
+#' \itemize{
+#'  \item Analysis - analysis name.
+#'  \item "Median ProteinGroup.IDs abs." - median number of proteingroup identifications.
+#'  \item "Median Protein.IDs abs." - median number of protein identifications.
+#'  \item "Median Peptide.IDs abs." - median number of peptide identifications.
+#'  \item "Median Precursor.IDs abs." - median number of precursor identifications.
+#'  \item "Full profile - Precursor.IDs abs." - number of precursor identifications for full profiles.
+#'  \item "Full profile - Peptide.IDs abs." - number of peptide identifications for full profiles.
+#'  \item "Full profile - Protein.IDs abs." - number of protein identifications for full profiles.
+#'  \item "Full profile - ProteinGroup.IDs abs." - number of proteingroup identifications for full profiles.
+#'  \item "Full profile - Precursor.IDs %" - number of precursor identifications for full profiles in percentage.
+#'  \item "Full profile - Peptide.IDs %" - number of peptide identifications for full profiles in percentage.
+#'  \item "Full profile - Protein.IDs %" - number of protein identifications for full profiles in percentage.
+#'  \item "Full profile - ProteinGroup.IDs %" - number of proteinGroup identifications for full profiles in percentage.
+#'  \item "Precursor.IDs abs. with a CV Retention time < X %" - number of precursor identifications with a CV value for retention time precision under user-specified threshold X.
+#'  \item "Proteingroup.IDs abs. with a CV LFQ < X %" - number of proteingroup identifications with a CV value for quantitative precision under user-specified threshold X.
+#'  \item "Peptide.IDs abs. with a CV LFQ < X %" - number of peptide identifications with a CV value for quantitative precision under user-specified threshold X.
+#'  \item "Peptide IDs with zero missed cleavages abs." - number of peptide identifications with zero missed cleavages.
+#'  \item "Peptide IDs with zero missed cleavages %" - number of peptide identifications with zero missed cleavages in percentage.
+#' }
+#'
+#' @export
+#'
+#' @examples
+#' # Load libraries
+#' library(tibble)
+#'
+#' # Example data
+#' data <- list(
+#' DIANN = list(
+#'  filename = "B",
+#'  software = "DIA-NN",
+#'  data = list(
+#'    "DIA-NN" = tibble::tibble(
+#'      "Run_mpwR" = c("R01", "R01", "R02", "R03", "R01"),
+#'      "Precursor.IDs_mpwR" = c("A1", "A1", "A1", "A1", "B2"),
+#'      "Retention.time_mpwR" = c(3, 3.5, 4, 5, 4),
+#'      "ProteinGroup_LFQ_mpwR" = c(3, 4, 5, 4, 4),
+#'      "Peptide.IDs_mpwR" = c("A", "A", "A", "A", "B"),
+#'      "Protein.IDs_mpwR" = c("A", "A", "A", "A", "B"),
+#'      "ProteinGroup.IDs_mpwR" = c("A", "A", "A", "A", "B"),
+#'      "Stripped.Sequence_mpwR" = c("ABCR", "AKCR", "ABKCK", "ARKAR", "ABCDR")
+#'    )
+#'  )
+#' )
+#' )
+#'
+#' # Result
+#' output <- get_summary_Report(
+#'   input_list = data
+#' )
+
+get_summary_Report <- function(input_list,
+                                CV_RT_th_hold = 5,
+                                CV_LFQ_Pep_th_hold = 20,
+                                CV_LFQ_PG_th_hold = 20) {
+
+  output_list <- list()
+
+  for (i in seq_len(length(input_list))) {
+    if (input_list[[i]][["software"]] == "DIA-NN") {
+      output_list[[i]] <- generate_summary_Report(input_df = input_list[[i]][["data"]][["DIA-NN"]], analysis_name = input_list[[i]][["filename"]], software = "DIA-NN", CV_RT_th_hold = CV_RT_th_hold, CV_LFQ_Pep_th_hold = CV_LFQ_Pep_th_hold,  CV_LFQ_PG_th_hold =  CV_LFQ_PG_th_hold)
+      names(output_list)[i] <- input_list[[i]][["filename"]]
+      next
+    } else if (input_list[[i]][["software"]] == "Spectronaut") {
+      output_list[[i]] <- generate_summary_Report(input_df = input_list[[i]][["data"]][["Spectronaut"]], analysis_name = input_list[[i]][["filename"]], software = "Spectronaut", CV_RT_th_hold = CV_RT_th_hold, CV_LFQ_Pep_th_hold = CV_LFQ_Pep_th_hold,  CV_LFQ_PG_th_hold =  CV_LFQ_PG_th_hold)
+      names(output_list)[i] <- input_list[[i]][["filename"]]
+      next
+    } else if (input_list[[i]][["software"]] == "MaxQuant") {
+      output_list[[i]] <- generate_summary_Report(input_df = input_list[[i]][["data"]][["ev"]], input_MQ_peptide = input_list[[i]][["data"]][["pep"]], input_MQ_proteingroup = input_list[[i]][["data"]][["pg"]], analysis_name = input_list[[i]][["filename"]], software = "MaxQuant", CV_RT_th_hold = CV_RT_th_hold, CV_LFQ_Pep_th_hold = CV_LFQ_Pep_th_hold,  CV_LFQ_PG_th_hold =  CV_LFQ_PG_th_hold)
+      names(output_list)[i] <- input_list[[i]][["filename"]]
+      next
+    } else if (input_list[[i]][["software"]] == "PD") {
+      output_list[[i]] <- generate_summary_Report(input_df = input_list[[i]][["data"]][["psm"]], input_PD_peptide = input_list[[i]][["data"]][["pep"]], input_PD_protein = input_list[[i]][["data"]][["prot"]], input_PD_proteingroup = input_list[[i]][["data"]][["pg"]], analysis_name = input_list[[i]][["filename"]], software = "PD", CV_RT_th_hold = CV_RT_th_hold, CV_LFQ_Pep_th_hold = CV_LFQ_Pep_th_hold,  CV_LFQ_PG_th_hold =  CV_LFQ_PG_th_hold)
+      names(output_list)[i] <- input_list[[i]][["filename"]]
+      next
+    } else if (input_list[[i]][["software"]] == "Generic") {
+      output_list[[i]] <- generate_summary_Report(input_df = input_list[[i]][["data"]][["Generic"]], analysis_name = input_list[[i]][["filename"]], software = "Generic", CV_RT_th_hold = CV_RT_th_hold, CV_LFQ_Pep_th_hold = CV_LFQ_Pep_th_hold,  CV_LFQ_PG_th_hold =  CV_LFQ_PG_th_hold)
+      names(output_list)[i] <- input_list[[i]][["filename"]]
+      next
+    }
+  }
+
+  output_df <- bind_rows(output_list)
+
+  return(output_df)
+}
