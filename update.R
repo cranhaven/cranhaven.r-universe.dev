@@ -52,17 +52,30 @@ read_cranberries_removed <- local({
 #' @export
 cran_events <- local({
   data <- NULL
+  
   function(url = "https://cran.r-project.org/src/contrib/PACKAGES.in") {
     if (!is.null(data)) return(data)
 
     con <- url(url)
     db <- read.dcf(con)
+
+    ## Check for typos and spelling errors in column names
+    ## Drop unknown column names and drop missing-value package names
+    ## that might follow from it
+    known_names <- c("Package", "X-CRAN-Comment", "X-CRAN-History", "Replaced_by", "Additional_repositories", "Maintainer", "License_restricts_use", "SystemRequirements", "LazyDataCompression", "License_is_FOSS", "OS_type", "URL")
+    unknown <- setdiff(colnames(db), known_names)
+    str(unknown)
+    if (length(unknown) > 0) {
+      warning(sprintf("Detected unknown fields in <%s>: %s", url, paste(sQuote(unknown), collapse = ", ")), immediate. = TRUE)
+      db <- db[, known_names, drop = FALSE]
+      db <- db[!is.na(db[, "Package"]), ]
+    }
     db <- as.data.frame(db)
 
     ## Assert assumption about one entry per package
     dups <- db$Package[duplicated(db$Package)]
     if (length(dups) > 0) {
-      warning(sprintf("Detected duplicated package entries in %s: [n=%d] %s", url, length(dups), paste(sQuote(dups), collapse = ", ")))
+      warning(sprintf("Detected duplicated package entries in %s: [n=%d] %s", url, length(dups), paste(sQuote(dups), collapse = ", ")), immediate. = TRUE)
       for (pkg in dups) {
         idxs <- which(db$Package == pkg)
         db_pkg <- lapply(db[idxs,], function(x) {
