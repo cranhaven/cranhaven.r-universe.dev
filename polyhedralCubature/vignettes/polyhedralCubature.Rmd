@@ -1,0 +1,146 @@
+---
+title: "Multiple integration over convex polyhedra"
+output: 
+  rmarkdown::html_vignette:
+    css: vignette.css
+vignette: >
+  %\VignetteIndexEntry{Multiple integration over convex polyhedra}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+This package allows to evaluate multiple integrals like:
+$$
+\int_{-5}^4\int_{-5}^{3-x}\int_{-10}^{6-x-y} f(x,y,z)
+\,\mathrm{d}z\,\mathrm{d}y\,\mathrm{d}x
+$$
+
+Using base R only, a possibility is to nest the `integrate` function to 
+evaluate such an integral:
+
+```{r}
+f <- function(x, y, z) x*(x+1) - y*z^2
+integrate(Vectorize(function(x) { 
+  integrate(Vectorize(function(y) { 
+    integrate(function(z) { 
+      f(x,y,z) 
+    }, -10, 6 - x - y)$value
+   }), -5, 3 - x)$value 
+}), -5, 4) 
+```
+
+This approach works well in general. But it has one default: the estimate of 
+the absolute error it returns is not reliable, because the estimates of the 
+absolute errors of the inner integrals are not taken into account.
+
+Here is how to proceed with the **polyhedralCubature** package.
+The domain of integration is defined by the set of inequalities:
+$$
+\left\{\begin{matrix}
+-5  & \leq & x & \leq & 4     \\
+-5  & \leq & y & \leq & 3-x   \\
+-10 & \leq & z & \leq & 6-x-y
+\end{matrix}
+\right.
+$$
+which is equivalent to 
+$$
+\left\{\begin{matrix}
+-x & \leq & 5 \\
+x & \leq & 4 \\
+-y & \leq & 5 \\
+x+y & \leq & 3 \\
+-z & \leq & 10 \\
+x+y+z & \leq & 6
+\end{matrix}
+\right..
+$$
+This set of inequalities defines a convex polyhedron. 
+In order to use **polyhedralCubature**, you have to construct the matrix `A` 
+defining the linear combinations of the variables, and the vector `b` giving 
+the upper bounds of these linear combinations:
+
+```{r Ab}
+A <- rbind(
+  c(-1, 0, 0), # -x
+  c( 1, 0, 0), # x
+  c( 0,-1, 0), # -y
+  c( 1, 1, 0), # x+y
+  c( 0, 0,-1), # -z
+  c( 1, 1, 1)  # x+y+z
+)
+b <- c(5, 4, 5, 3, 10, 6)
+```
+
+Then you can use the `integrateOverPolyhedron` function:
+
+```{r integrate_function}
+library(polyhedralCubature)
+f <- function(x, y, z) {
+  x*(x+1) - y*z^2
+}
+integrateOverPolyhedron(f, A, b)
+```
+
+Alternatively, you can use the `getAb` function to get `A` and `b` with the 
+help of the user-friendly syntax of the **ompr** package:
+
+```{r getAb}
+library(ompr)
+model <- MIPModel() %>%
+  add_variable(x) %>% add_variable(y) %>% add_variable(z) %>%
+  add_constraint(-5 <= x) %>% add_constraint(x <= 4) %>%
+  add_constraint(-5 <= y) %>% add_constraint(y <= 3 - x) %>%
+  add_constraint(-10 <= z) %>% add_constraint(z <= 6 - x - y)
+getAb(model)
+```
+
+Observe that the function $f$ is a polynomial here. Then one can get the 
+exact value of the integral by feeding `integrateOverPolyhedron` with a 
+**spray** polynomial instead of a function:
+
+```{r integrate_spray, message=FALSE}
+library(spray)
+x <- lone(1, 3); y <- lone(2, 3); z <- lone(3, 3)
+p <- f(x, y, z)
+integrateOverPolyhedron(p, A, b)
+```
+
+The first step in `integrateOverPolyhedron` consists in finding the vertices 
+of the polyhedron from the set of linear inequalities. It is possible, and 
+better, to use exact arithmetic for this step, by defining the matrix `A` 
+and the vector `b` in character mode, each entry representing an integer or a
+fraction like `"1/3"`. Here we can simply do:
+
+```{r character_mode}
+storage.mode(A) <- "character"
+storage.mode(b) <- "character"
+```
+
+But this is not the way to use if you have a fraction like `1/3` in an entry:
+
+```{r as_character_fraction}
+as.character(1/3)
+```
+
+Instead, you must directly define `A` and `b` in character mode and enter 
+`"1/3"` for this entry.
+
+Finally, when $f$ is a polynomial, you can get the exact value of the integral 
+given as a fraction, by using a **qspray** polynomial instead of a **spray** 
+polynomial:
+
+```{r integrate_qspray}
+library(qspray)
+x <- qlone(1); y <- qlone(2); z <- qlone(3)
+q <- f(x, y, z)
+integrateOverPolyhedron(q, A, b)
+```
+
