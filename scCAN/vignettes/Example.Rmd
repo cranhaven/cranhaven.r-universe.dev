@@ -1,0 +1,548 @@
+---
+title: '&nbsp;'
+author: "null"
+output:
+  html_document:
+    df_print: paged
+  pdf_document: default
+editor_options:
+  chunk_output_type: inline
+csl: ieee.csl
+bibliography: scCAN.bib
+
+vignette: |
+  %\VignetteIndexEntry{scCAN} 
+  %\usepackage[UTF-8]{inputenc}
+  %\VignetteEngine{knitr::rmarkdown} 
+---
+# Introduction
+Clustering is the key step to define cell types from the heterogeneous cell population. One critical challenge is that single-cell RNA sequencing (scRNA-seq) experiments generate a massive amount of data with an excessive noise level, which hinders many computational algorithms. We propose a single cell Clustering method using Autoencoder and Network fusion (scCAN) that can accurately segregate cells from the high-dimensional noisy scRNA-Seq data.
+
+# Preliminaries
+This vignette provides step-by-step instruction for scCAN R package installation, analyses using example and scRNA-seq datasets, and an in-depth analysis using scRNA-seq data with prior biological knowledge.
+
+Install scCAN package from CRAN repository. 
+```{r, eval=FALSE}
+install.packages("scCAN")
+```
+
+To start the analysis, load scCAN package:
+
+```{r}
+library(scCAN)
+```
+# Analysis on the example dataset
+The input of scCAN is an expression matrix in which rows represent samples and columns represent genes. scCAN package includes an example dataset of 1,000 cells and 2,000 genes.
+
+<!-- scCAN will automatically rescale the expression data to a range from 0 to 1 (min-max scaling) for each cell to reduce the technical variability and heterogeneous calibration from sequencing technologies. -->
+
+```{r, eval=TRUE}
+#Load example data (SCE dataset)
+data("SCE")
+#Get data matrix and label
+data <- t(SCE$data); label <- as.character(SCE$cell_type1)
+
+```
+Inspect the example of 10 cells and 10 genes.
+```{r}
+data[1:10,1:10]
+dim(data)
+```
+
+Next, we can cluster the example dataset using the following command. 
+```{r, eval=FALSE}
+#Generate clustering result. The input matrix has rows as samples and columns as genes
+result <- scCAN(data)
+#The clustering result can be found here 
+cluster <- result$cluster
+```
+Users can visualize the expression data with the new cluster annotation. To reduce the dimension, users can use the package *irlba* [@baglama2019package] to obtain the first 20 principal components, and the package *Rtsne* [@krijthe2018package] to obtain the transcriptome landscape using t-SNE. Finally, we can
+visualize the cell landscape using scatter plot available in *ggplot2* [@wickham2016ggplot2] package.
+
+```{r, eval=FALSE}
+suppressPackageStartupMessages({
+library(irlba)
+library(ggplot2)
+library(Rtsne)
+})
+# Get 2D emebedding data of the original data.
+set.seed(1)
+low <- irlba::irlba(data, nv = 20)$u
+tsne <- as.data.frame(Rtsne::Rtsne(low)$Y)
+tsne$cluster <- as.character(cluster)
+colnames(tsne) <- c("t-SNE1","t-SNE2","Cluster")
+p <- ggplot2::ggplot(tsne, aes(x = `t-SNE1`, y = `t-SNE2`, colour = `Cluster`))+
+  ggtitle("Transcriptome landscape visualization using t-SNE")+labs(color='Cluster') +
+  geom_point(size=2, alpha = 0.8) +
+    theme_classic()+
+    theme(axis.text.x=element_blank(),
+          axis.ticks.x=element_blank(),
+          axis.text.y=element_blank(),
+          axis.ticks.y=element_blank(),
+          axis.title=element_text(size=14),
+          plot.title = element_text(size=16),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          legend.position="bottom", legend.box = "horizontal",
+          legend.text =element_text(size=10),
+          legend.title=element_text(size=14))+
+    guides(colour=guide_legend(nrow = 1))
+p
+```
+
+![Visualization of expression data using cells clusters identified from scCAN.](Example.png)
+
+# Download and analyze real human dataset
+## Data downloading and clustering
+We will use a real dataset from Pollen et al.[@pollenLowcoverageSinglecellMRNA2014a] that is available on our website. This dataset has 301 cells sequenced from human tissues including blood, skin, brain, and stem cells. 
+```{r, eval=FALSE}
+suppressPackageStartupMessages({
+library(SummarizedExperiment)
+})
+path <- "https://bioinformatics.cse.unr.edu/software/scCAN/data/pollen.rds"
+SCE <- readRDS(url(path,"rb"))
+# Get expression matrix
+data <- t(SummarizedExperiment::assay(SCE))
+# Get cell annotation
+label <- SummarizedExperiment::colData(SCE)
+```
+
+Next, we can cluster dataset using the following command. 
+```{r, eval=FALSE}
+#Generate clustering result, the input matrix has rows as samples and columns as genes
+start <- Sys.time()
+result <- scCAN(data)
+running_time <- difftime(Sys.time(),start,units = "mins")
+print(paste0("Running time = ", running_time))
+#The clustering result can be found here 
+cluster <- result$cluster
+```
+
+```
+## Running time = 1.293936 mins
+```
+
+
+This dataset also has an annotation file that includes true cell labels:
+```{r, eval=FALSE}
+head(label)
+```
+```
+DataFrame with 6 rows and 2 columns
+          cell_type1 cell_type2
+            <factor>   <factor>
+Hi_2338_1       2338     dermal
+Hi_2338_2       2338     dermal
+Hi_2338_3       2338     dermal
+Hi_2338_4       2338     dermal
+Hi_2338_5       2338     dermal
+Hi_2338_6       2338     dermal
+```
+The annotation file is stored data frame in which rows are samples. The annotation file has two sets of labels: (i) *cell_type1* indicates cell types discovered from Pollen et al., (ii) *cell_type2* has annotation of tissues that the cells was taken. Users can compare the obtain clustering results against *cell_type1* for validation and visualization.
+
+```{r, eval=FALSE}
+#Calculate adjusted Rand Index using mclust package
+ari <- round(scCAN::adjustedRandIndex(cluster,label$cell_type1), 2)
+print(paste0("ARI = ", ari))
+```
+
+Users can use the same code above to plot the transcriptome landscape of the Pollen dataset. Below is the transcriptome landscapes of the dataset using the annotation provided by Pollen et al., and the landscape using the new cluster annotation.
+
+![Visualization of expression data using original cell types and cluster identified from scCAN for Pollen dataset.](Pollen_raw.png)
+
+scCAN was able to cluster Pollen dataset in 1 minutes with 9 clusters identified.The clusters discovered by scCAN are highly correlated with cell labels obtained from the original publication [@pollenLowcoverageSinglecellMRNA2014a] with an ARI of 0.92.
+
+## Visualizing the data using latent variables of scCAN
+scCAN generates a compressed representation of original expression data. This representation is part of the output, and can be obtained using the following code:
+
+```{r, eval=FALSE}
+suppressPackageStartupMessages({
+  library(ggplot2)
+  library(cowplot)
+  library(scatterplot3d)
+  library(scales)
+})
+  # Get latent data from scCAN result
+  latent <- result$latent
+  # Generating 2D embedding data using 2 first latent variables
+  data1= latent[,1:2]
+  
+  # Generating 3D embedding data using 3 first latent variables
+  data2= latent[,1:3]
+  
+  #Plotting 2D data using ggplot
+  name ="Pollen"
+  dat <- as.data.frame(data1)
+  dat$p <- as.character(cluster)
+  colnames(dat) <- c("Latent Variable 1", "Latent Variable 2", "scCAN Cluster")
+  p1 <- ggplot(dat, aes(x = `Latent Variable 1`,y = `Latent Variable 2`,colour = `scCAN Cluster`)) +
+    theme(plot.title = element_text(hjust = 0.5)) +
+    geom_point(size=2, alpha = 0.6) +
+    #scale_color_manual(values = colors)+
+    theme_classic()+
+    theme(axis.text.x=element_blank(),
+          axis.ticks.x=element_blank(),
+          axis.text.y=element_blank(),
+          axis.ticks.y=element_blank(),
+          axis.title=element_text(size=14),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          legend.position="none", legend.box = "horizontal",
+          legend.text =element_text(size=12),
+          legend.title=element_text(size=14) )+
+    guides(colour=guide_legend(ncol=2))
+  title1 <- ggdraw() + draw_label(name, size=16)
+  legend1 <- get_legend(p1 +
+                          theme(legend.position="bottom", legend.box = "horizontal",legend.title=element_text(size=12),
+                                legend.margin = margin(0), legend.spacing.x = unit(0.1, "cm") ,
+                                legend.text=element_text(size=12)) + guides(color=guide_legend(nrow = 2))
+  )
+  
+  m1 <- plot_grid(title1, p1, legend1, rel_heights = c(0.05, 0.5, .1), ncol = 1)
+  plot_grid(m1,rel_heights = c(0.05, 0.9), ncol = 1)
+  
+  
+  #Plotting 3D data using scatterplot3d package
+  graphics.off()
+  name = "Pollen"
+  dat <- as.data.frame(data2)
+  # dat$t <- label$cell_type1
+  dat$p <- as.character(cluster)
+  colnames(dat) <- c("Latent Variable 1", "Latent Variable 2", "Latent Variable 3", "scCAN Cluster")
+  pal <- hue_pal()(length(unique(cluster)))
+  colors <- pal[as.numeric(dat$`scCAN Cluster`)]
+  
+  scatterplot3d(dat[,1:3], pch = 16,
+                grid=TRUE, box=TRUE,color = colors)
+  
+```
+
+The 2D and 3D visualizations using 2 latent variables and 3 latent variables obtained from latent data are shown as follows:
+
+![Visualization of 2D and 3D representation of scCAN latent data using clusters identified from scCAN for Pollen dataset.](Pollen_pc.png)
+
+Users can also use latent data as an input to standard dimensional reduction algorithms including built-in R Principal Component Analysis (PCA), t-SNE @van2008visualizing and UMAP @becht2019dimensionality.
+```{r, eval=FALSE}
+  suppressPackageStartupMessages({
+  library(umap)
+  })
+  set.seed(1)
+  pc.data <- prcomp(latent, rank. = 2)$x
+  tsne.data <- Rtsne(latent, check_duplicates = F,dims = 2)$Y
+  umap.data <- umap(latent,n_components = 2)$layout
+```
+
+Users can use the ggplot function to plot the 2D visualizations of the latent data:
+
+![2D Visualization of latent data with PCA, t-SNE and UMAP for Pollen dataset.](Pollen_2D.png)
+
+
+We can also use PCA, t-SNE and UMAP to get 3D embedding data of the latent variables.
+
+```{r, eval=FALSE}
+suppressPackageStartupMessages({
+  library(Rtsne)
+  library(umap)
+})
+  # Get latent data from scCAN result
+  latent <- result$latent
+  set.seed(1)
+  pc.data <- prcomp(latent, rank. = 3)$x
+  tsne.data <- Rtsne(latent, check_duplicates = F,dims = 3)$Y
+  umap.data <- umap(latent,n_components = 3)$layout
+```
+
+We can use *scatterplot3d* R package to plot 3D visualization of the latent data.
+
+```{r, eval=FALSE}
+suppressPackageStartupMessages({
+  library(ggplot2)
+  library(cowplot)
+  library(scatterplot3d)
+  library(scales)
+})
+  graphics.off()
+  name = "Pollen"
+  par(mfrow=c(1,3))
+  
+  pc.data <- as.data.frame(pc.data)
+  pc.data$t <- label
+  pc$p <- as.character(result$cluster)
+  colnames(pc) <- c("PC1","PC2","PC3","True Cluster","scCAN Cluster" )
+  pal <- hue_pal()(length(result$cluster)))
+  colors <- pal[as.numeric(tsne$`scCAN Cluster`)]
+    
+  scatterplot3d(pc.data[,1:3], pch = 16,
+                  grid=TRUE, box=TRUE,color = colors)
+    
+  tsne <- as.data.frame(tsne.data)
+  tsne$t <- label
+  tsne$p <- as.character(result$cluster)
+  colnames(tsne) <- c("t-SNE1","t-SNE2","t-SNE3","True Cluster","scCAN Cluster" )
+  pal <- hue_pal()(length(unique(result$cluster)))
+  colors <- pal[as.numeric(tsne$`scCAN Cluster`)]
+  
+  scatterplot3d(tsne[,1:3], pch = 16,
+                grid=TRUE, box=TRUE,color = colors)
+  
+  
+  umap <- as.data.frame(umap.data)
+  umap$t <- label
+  umap$p <- as.character(result$cluster)
+  colnames(umap) <- c("UMAP1","UMAP2","UMAP3","True Cluster","scCAN Cluster" )
+  
+  scatterplot3d(umap[,1:3], pch = 16,
+                grid=TRUE, box=TRUE,color = colors)
+  
+  mtext(name,side=3,line=-1.5,outer=TRUE,cex = 1.4)
+```
+
+![3D Visualization of latent data with PCA, t-SNE and UMAP for Pollen dataset.](Pollen_3D.png)
+
+# Example code for rare cell type detection
+The sampling process is necessary to reduce both time and space complexity, but it can alter the capability of detecting rare cell types. By selecting 5,000 cells from a large dataset, we might end up with insufficient number of rare cells, and therefore reduce the chance of detecting them.
+
+We have developed two strategies to enhance the method's capability of detecting rare cell types. First, we now allow users to change the parameter *samp.size* so that they can increase the sample size, thus boosting the method's capability in detecting rare cell types. Second, we provide an instruction to perform multi-state clustering, i.e., further splitting the clustering results. When a cell type has too few cells, these cells are often mistakenly grouped with other cell types. By further splitting each clusters, we are able to detect rare cell types that would not be possible by performing one-stage clustering. 
+
+To demonstrate the efficiency of both solutions, we have tested them on the Zilionis dataset @zilionis2019single. The Zilionis dataset has 34,558 cells and 9 cell types. Among the 9 cell types, the tRBC cell type has only 108 cells (0.3\%). A sub-sample of 5,000 cells is expected to have approximately 19 tRBC cells, which might be insufficient for many clustering method to detect them. In is indeed the case for this dataset. When we use the default value of $samp.size=5,000$, the tRBC cells are groupped with tPlasma cells (panel B in the figure below).
+
+To demonstrate the efficiency of the first strategy, we set $samp.size=10,000$. The method is able to seperate tRBC cells (cluster 2 in panel C of the figure below). The method is expected to perform even better if we further increase the sample size.
+
+To demonstrate the efficiency of the second strategy, we performed a two-stage clustering using the the default setting of $samp.size=5,000$. In stage one, we partitioned the data using scCAN and obtained the clustering results. In stage two, we further partitioned each cluster obtained from stage one using the same method scCAN. Again, as shown in the figure below, the method is able to separate tRBC cells (cluster 2\_2 in panel D of the figure below)
+
+The code to detect rare cell types from Zilionis dataset using two proposed approaches are shown below:
+```{r, eval=FALSE}
+suppressPackageStartupMessages({
+library(SummarizedExperiment)
+})
+path <- "https://bioinformatics.cse.unr.edu/software/scCAN/data/zilionis.rds"
+SCE <- readRDS(url(path,"rb"))
+# Get expression matrix
+data <- t(SummarizedExperiment::assay(SCE))
+# Get cell annotation
+label <- SummarizedExperiment::colData(SCE)
+
+# Detect rare cell types by increasing sample size and reducing number of neighboring cells
+res <- scCAN(data, samp.size = 10000, n.neighbors = 10)
+
+# Detect rare cell types by performing two-stage clustering analysis
+# Stage 1: Perform clustering on the whole data using scCAN with default settings
+res <- scCAN(data)
+cluster <- res$cluster
+
+# Stage 2: Perform clustering on each cluster obtain from stage 1
+cluster2 <- rep(NA, length(cluster))
+for (cl in unique(cluster)){
+  idx <- which(cl == cluster)
+  tmp <- scCAN(data[idx, ])
+  cluster2[idx] <- paste0(cl, "_", tmp$cluster)
+}
+res$cluster2 <- cluster2
+```
+
+
+We can use the same approach presented above to to visualize the transcriptome landscape with true cell types and clusters obtained from scCAN.
+
+![Rare cell type detection result measured by F1 score using original scCAN and two rare cell types detection strategies.](Rare_cell.png)
+
+<!-- <br><br> -->
+<!-- From the Figure above, the transcriptome landscape and the cell types of the dataset are shown in Sub-figure A. Sub-figure B shows that scCAN mistakenly grouped tRBC cells with tPlasma cells when we used the default setting of $samp.size=5,000$. Sub-figure C shows the clustering results using the new parameter $samp.size=10,000$. With a sample size of 10,000, the method can properly separate tRBC cells and assigned them to cluster 2. The F1 score for the result presented in Sub-figure C is 0.9 which indicates that scCAN properly separated tRBC from the rest. Finally, Sub-figure D shows the two-stage clustering using the the default setting of $samp.size=5,000$. Cluster 2 were further split into two sub-clusters: 2\_1 and 2\_2. The tRBC cells were completely separated from the rest (cluster 2\_2) with an F1 score of 1. -->
+
+# Example code for in-depth analysis using scRNA-seq data and prior biological knowledge.
+## Download data
+In this section, we investigate the scaling ability of scCAN for clustering big data (>1 million cells). We will use neural dataset obtained from multiple brain regions of two embryonic mice published by 10X Genomics [@genomics20171, @zheng2017massively]. The dataset was stored in *DelayedArray* format that contains 1,300,774 cells and 27,998 genes. The *DelayedArray* stores data in physical hard disk and the data can be read to memory by small blocks. We will use *TENxBrainData* R package available from Bioconductor to efficiently load the data. Before running the following code, users need to make sure that they have sufficient memory (200+ GB of RAM) and data storage (10GB).
+
+```{r, eval=FALSE}
+# Loading
+# if (!require("BiocManager", quietly = TRUE))
+#     install.packages("BiocManager")
+# BiocManager::install("DelayedArray")
+# BiocManager::install("DelayedMatrixStats")
+# BiocManager::install("TENxBrainData")
+# BiocManager::install("HDF5Array")
+suppressPackageStartupMessages({
+  library(TENxBrainData)
+  library(Matrix)
+  library(SummarizedExperiment)
+  library(DelayedArray)
+  library(DelayedMatrixStats)
+  library(HDF5Array)
+})
+tenx <- TENxBrainData()
+counts <- assay(tenx)
+data <- t(counts)
+gene.names <- rowData(tenx)
+cell.names <- colData(tenx)
+rownames(data) <- cell.names$Barcode
+colnames(data) <- gene.names$Ensembl
+```
+## Data pre-processing and clustering
+The raw data is extremely sparse with excessive number of zero values. We perform one pre-processing step to remove genes that have low expression values. We filter the genes that have total UMI counts across all cells less than 1\% of the maximum total UMI counts of all genes.The code for pre-processing is presented as follows:
+```{r, eval=FALSE}
+# Set number of processing unit to 20
+setAutoBPPARAM(BiocParallel::MulticoreParam(workers=4))
+# Calculate total count for each gene
+total.count <- DelayedArray::colSums(data)
+# Filter gene that has total count less than 1 percent of maximum total count.
+setAutoBPPARAM(BiocParallel::MulticoreParam(workers=4))
+idx <- which(total.count <= (max(total.count*1/100)))
+data <- data[,-idx]
+genes <- as.vector(gene.names$Ensembl)[-idx]
+colnames(data) <- genes
+```
+
+To cluster the obtained data, we need to convert it to sparse matrix using the code below:
+
+```{r, eval=FALSE}
+# Devide data into different block
+trunks<- seq(from = 1, to = nrow(data))
+seg <- split(trunks, ceiling(seq_along(trunks)/50000))
+# Convert each block to sparse dgCMatrix and combine them into a single one
+mat = NULL
+for(i in 1:length(seg)){
+  tmp <- as(data[seg[[i]],], "dgCMatrix")
+  mat = rbind(mat,tmp)
+}
+rownames(mat) <- cell.names$Barcode
+colnames(mat) <- genes
+# Set the number of clusters k = 10:50 (k = 2:15 by default) for scCAN to maximize the number clusters that can be explored.
+start <- Sys.time()
+res <- scCAN(mat,sparse = T,r.seed = 1,k = 10:50)
+running_time <- difftime(Sys.time(),start,units = "mins")
+cluster <- res$cluster
+message("Running time = ", running_time)
+message("Number of cluster = ", unique(cluster))
+
+```
+```
+## Running time = 51.37449 mins
+## Number of cluster = 19
+```
+scCAN was able to cluster 1.3 million cells within 51 minutes with 19 discovered clusters.
+
+![Visualization and clustering results of 1.3 million cells sequenced from brain tissue of E18 mice using scCAN's clusters.](1.3M.tsne.png)
+
+
+## Clustering result validation using biological analysis
+Originally, the 1.3M dataset does not have true cell types. The cluster results were obtained using k-means clustering algorithms with number of clusters *k* vary from *2* to *20*. Therefore, we will validate the sccAN's clustering results using biologically validated cell types with known marker genes. We retrieve markers genes of 31 neural cell types for mouse brain tissue in PanglaoDB database @franzen2019panglaodb. We filter the cell types that have a number of markers lower than 15. As the results, we obtain a list of markers genes for 24 cell types. We consider these biologically validated cell types as a ground truth to validate scCAN result. 
+
+We follow the approach proposed by Xie et al. @xie2020scaide to perform validation of scCAN result. For each cluster obtained from scCAN, we divide cells in each gene into two parts: (i) cells belong aforementioned cluster, and (ii) cells belong to other clusters. Next, we perform two-sided Wilcoxon test using two sets of cells with corraction to assess the differential expression. We also calculate fold-change of average expression of two sets to measure ratio of the difference. Output from this step is a list Wilcoxon p-value and fold-change values of all genes for each cluster identified from scCAN. We repeat this project for every gene in all clusters obtained from scCAN. Here, we set the threshold cut-off of the Wilcoxon test ($p\leq0.001$) for a strict detection of a small number of marker genes and 1.5 for fold-change. The codes to process markers genes and conduct differential analysis are shown below:
+```{r, eval=FALSE}
+# Download the cell type with markers gene
+url <- "https://panglaodb.se/markers/PanglaoDB_markers_27_Mar_2020.tsv.gz"
+tmp <- tempfile()
+download.file(url,tmp)
+file = gzfile(tmp)
+markers <- read.table(file, sep="\t", header = T)
+# Select only brain tissue
+markers = markers[which(markers$organ=="Brain"),]
+# Remove marker that belongs to human
+markers = markers[c(which(markers$species=="Mm Hs"),which(markers$species=="Mm")),]
+# Select cell types that have more than 15 markers
+breaks = c(15)
+for(br in breaks){
+  tmp <- as.data.frame(table(markers$cell.type))
+  
+  if(is.null(br)){
+    select_mrks <- tmp
+  }else{
+    select_mrks <- tmp[which(tmp$Freq>=br),]
+  }
+  cts <- unique(select_mrks$Var1)
+  panglao_markers <- list()
+  # ann <- NULL
+  for( ct in cts){
+    idx <- which(markers$cell.type==ct)
+    tmp <- markers[idx,]
+    panglao_markers[[ct]]<-tmp$official.gene.symbol
+  }
+  saveRDS(panglao_markers,paste0("Panglao_mrks_",br,".rds"))
+}
+# Load the expression matrix of markers genes collected from PanglaoDB database
+path <- "https://bioinformatics.cse.unr.edu/software/scCAN/data/1.3M_markers.rds"
+gene_expression_data <- readRDS(url(path,"rb"))
+# Load saved scCAN clustering result
+path <-"https://bioinformatics.cse.unr.edu/software/scCAN/result/1.3M_scCAN.rds"
+res <- readRDS(url(path,"rb"))
+cluster <- res$cluster
+# Evaluate wilcox rank sum test and log fold change values
+# Perform pair wise Wilcoxon Rank Sum and log fold change for each cluster
+# This process could take hours for big data
+eval_gene_markers <- scCAN::get_cluster_markers(gene_expression_data, 
+                                              cluster, 
+                                              threads = 16)
+gene_names <- rownames(gene_expression_data)
+# Select marker the test with p <= 0.001 and log fold change > 1.5, 
+# output is the list of markers that are strongly differentiated in the clusters
+cluster_markers_list <- scCAN::curate_markers(eval_gene_markers, gene_names, 
+                                              wilcox_threshold=0.001, 
+                                              logfc_threshold=1.5)
+```
+Next, we calculate the probability of a clusters belong to a reference cell type. Output from this step is a confusion matrix where rows represent scCAN's clusters and columns represent reference cell types. 
+```{r, eval=FALSE}
+library(matrixStats)
+# Load pre-saved the list of markers that are strongly expressed in a specific cluster
+path <-"https://bioinformatics.cse.unr.edu/software/scCAN/result/cluster_markers.rds"
+cluster_markers_list <- readRDS(url(path,"rb"))
+# Load PanglaoDB markers
+path <-"https://bioinformatics.cse.unr.edu/software/scCAN/result/panglao_markers.rds"
+panglao_markers<- readRDS(url(path,"rb"))
+# Caculate pair wise cell type/cluster probabilty using jaccard index
+celltype_prob <- scCAN::calculate_celltype_prob(cluster_markers_list,
+                                                panglao_markers,
+                                                type = "jacc")
+colnames(celltype_prob) <- names(panglao_markers)
+celltype_id <- matrixStats::rowMaxs(celltype_prob)
+celltype_prob[1:10,1:10]
+```
+```
+      Anterior pituitary gland cells Astrocytes Bergmann glia Cajal-Retzius cells Choroid plexus cells
+ [1,]                     0.01190476 0.00000000    0.00000000          0.04205607           0.02564103
+ [2,]                     0.03050847 0.12962963    0.08278146          0.02052786           0.02473498
+ [3,]                     0.00000000 0.00000000    0.00000000          0.00000000           0.00000000
+ [4,]                     0.04216867 0.08205128    0.05780347          0.03773585           0.01298701
+ [5,]                     0.02631579 0.01398601    0.01652893          0.00625000           0.00000000
+ [6,]                     0.01754386 0.00000000    0.00000000          0.02912621           0.02222222
+ [7,]                     0.02756892 0.10981308    0.07389163          0.04269663           0.02842377
+ [8,]                     0.02546296 0.02386117    0.01594533          0.08577406           0.01428571
+ [9,]                     0.03398058 0.02494331    0.01193317          0.15283843           0.02000000
+[10,]                     0.03030303 0.03608247    0.03488372          0.13270142           0.02614379
+      Dopaminergic neurons GABAergic neurons Immature neurons Interneurons Meningeal cells
+ [1,]           0.03246753       0.006711409       0.04651163   0.12146893     0.000000000
+ [2,]           0.01423488       0.014492754       0.02006689   0.09147609     0.017921147
+ [3,]           0.00000000       0.000000000       0.00000000   0.00625000     0.000000000
+ [4,]           0.00000000       0.013605442       0.06470588   0.06534091     0.013333333
+ [5,]           0.02000000       0.063157895       0.02542373   0.08333333     0.010204082
+ [6,]           0.00000000       0.026315789       0.06557377   0.02880658     0.000000000
+ [7,]           0.01038961       0.010526316       0.02729529   0.10769231     0.020887728
+ [8,]           0.01913876       0.009685230       0.03211009   0.16990291     0.007211538
+ [9,]           0.01758794       0.005089059       0.01923077   0.17224080     0.012626263
+[10,]           0.02649007       0.013698630       0.02366864   0.12535613     0.013422819
+```
+We can view the cluster that is strongly correlated with the reference cell type using heatmap plot. Color scale is reported by the value of *celltype_prob* for each cluster-label combination.
+```{r,eval=FALSE}
+library(pheatmap)
+pheatmap(celltype_prob)
+```
+
+![](Ref_heatmap.png)
+
+We select the cluster that has highest probability value with reference cell type.
+
+```{r, eval=FALSE}
+path <-"https://bioinformatics.cse.unr.edu/software/scCAN/result/1.3M_scCAN.rds"
+res <- readRDS(url(path,"rb"))
+cluster <- res$cluster
+# Map the cluster that has highest Jaccard Index value with reference cell type
+celltype_idx <- apply(celltype_prob,1,function(x){which.max(x)}  )
+cell.name <- colnames(celltype_prob)[celltype_idx]
+# Assign reference cell type to all clusters discover by scCAN
+mapping.table <- data.frame(cluster = seq(1:19), cell_type = cell.name)
+mapped.ct <- mapping.table$cell_type[mapping.table$cluster[cluster]]
+mapped.ct[1:10]
+```
+```
+[1] "Interneurons"    "Pyramidal cells" "Astrocytes"      "Interneurons"    "Neurons"         "Neurons"        
+[7] "Pyramidal cells" "Neurons"         "Pyramidal cells" "Pyramidal cells"
+```
+# Reference
