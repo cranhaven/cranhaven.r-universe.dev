@@ -1,0 +1,66 @@
+#' Subset an expression matrix based on probe's feature importance
+#'
+#' This function reduces the number of rows (probes) in gene/transcript expression matrix,
+#' leaving only those that have the biggest feature importance for binary classification.
+#'
+#'@param Matrix numeric matrix of expression data where each row corresponds to a probe (gene, transcript),
+#'  and each column correspondes to a specimen (patient). Probe IDs must be indicated as matrix row names.
+#'@param importance.list a list of data frames, containing the result of binary classification:
+#'probe IDs in first column and probe's feature importance (relative influence) in the second column
+#'in the order from most important to the least important for classification.
+#'Such list is the \code{\link{MiBiClassGBODT}} output (\code{Importance}).
+#'@param NRows integer defines how many probes are to be left in the expression matrix.
+#'
+#'@details
+#'Function provides gene expression matrix subsetting according to probe's feature importance for binary
+#'classification, i.e., feature selection. Feature selection provides better classification and
+#'identification of significant genes while "not important" genes are taken away from analysis.
+#'The procedure of the pairwise combinations of the feature selection and classification methods are
+#'described by Pirooznia et al (2008).
+#'\cr
+#'The function is able to use multiple feature importance data at a time to subset one expression matrix.
+#'If \code{importance.list} contains more than one data frame (i.e., the result of a binary classification
+#'for more than one model created during cross-validation), the function selects most important probes
+#'from each data frame and then removes the repeats.
+#'Thus, the output matrix may contain number of probes more than \code{NRows}.
+#'
+#'@return expression matrix with only selected probes in alphabetical order as rows
+#'and all specimens as columns.
+#'
+#'@examples
+#'# get gene expression and specimen data
+#' data("IMexpression");data("IMspecimen")
+#' #sample expression matrix and specimen data for binary classification,
+#' #only "NORM" and "EBV" specimens are left
+#' SampleMatrix<-MiDataSample(IMexpression, IMspecimen$diagnosis,"norm", "ebv")
+#' dim(SampleMatrix) # 100 probes
+#' SampleSpecimen<-MiSpecimenSample(IMspecimen$diagnosis, "norm", "ebv")
+#' #Fitting, low tuning for faster running
+#' ClassRes<-MiBiClassGBODT(SampleMatrix, SampleSpecimen, n.crossval = 3,
+#'                          ntrees = 10, shrinkage = 1, intdepth = 2)
+#' # List of influence data frames for all 3 models build using cross-validation
+#' # is the 2nd element of BiClassGBODT results
+#' # take 10 most important probes from each model
+#' Sample2Matrix<-MiFracData(SampleMatrix, importance.list = ClassRes[[2]], 10)
+#' dim(Sample2Matrix) # less than 100 probes left
+#'
+#'@references
+#'Pirooznia M., Yang J.Y., Yang M.Q., Deng Y. (2008) A comparative study of different machine learning methods on microarray gene expression data. BMC Genomics 9 (Suppl1), S13. \url{https://doi.org/10.1186/1471-2164-9-S1-S13}
+#'
+#'@seealso \code{\link{MiBiClassGBODT}}
+#'
+#'@author Elena N. Filatova
+#'
+#'@export
+
+
+
+MiFracData <- function(Matrix, importance.list, NRows){
+  params <- c()
+  for (i in 1:length(importance.list)){params <- c(params, as.character(importance.list[[i]][1:NRows, 1]))} # make vector of important genes from all lists
+  paramsId <- match(unique(params), rownames(Matrix)) # take away repeats
+  fracdata <- Matrix[paramsId, ]
+  fracdata <- fracdata[sort(rownames(fracdata), decreasing = F), ] # genes in alphabetical order
+  return(fracdata)
+}
+
