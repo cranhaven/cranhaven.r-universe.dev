@@ -1,0 +1,329 @@
+---
+title: "KibioR - Biological examples"
+author:
+- affiliation: CHU de Québec Research Center, Université Laval, Molecular Medicine
+    department, Québec, QC, Canada
+  email: regis.ongaro-carcy2@crchudequebec.ulaval.ca
+  name: Régis Ongaro-Carcy
+date: "`r Sys.Date()`"
+output:
+  rmarkdown::html_document:
+    highlight: tango
+    number_sections: true
+    theme: cosmo
+    toc: true
+    toc_depth: 3
+    toc_float: true
+vignette: >
+  %\VignetteIndexEntry{kibior_biological_examples}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+bibliography: biological_vignette_ref.json
+---
+
+```{r setup, include = TRUE, echo = FALSE, results = FALSE, message = FALSE, warning = FALSE}
+library(knitr)
+knitr::opts_chunk$set(include = TRUE, echo = TRUE, warning = FALSE, 
+                      message = FALSE, results = "markup", collapse = TRUE, 
+                      cache = FALSE, comment = "##")
+library(ggplot2)
+library(dplyr)
+library(stringr)
+library(readr)
+library(magrittr)
+library(kibior)
+``` 
+
+<center>
+![](./img/logo_kibio_r_text.png)
+</center>
+<br/>
+
+
+<br/><br/>
+
+
+> This vignette contains the use case presented in the KibioR paper.
+
+
+<br/><br/>
+
+# Biological data importation
+
+The `$import()` method will try importation from known file extensions.
+If it does not guess the file format, try using the right method it depends on:
+
+- `$import_sequences()`: import fasta format
+- `$import_features()`: import gtf, gff, bed formats
+- `$import_alignments()`: import bam format
+- `$import_tabular()`: import csv, txt, tab formats
+- `$import_json()`: import json format
+
+
+For instance, we can import all data from `extdata` in one command.
+
+```r
+# get extdata folder path
+system.file("extdata", package = "kibior") %>% 
+    # list all files inside the folder
+    list.files(full.names = TRUE) %>% 
+    # import all files in R session
+    lapply(kc_local$import)
+```
+
+Some file with `gff3.gz`, `bed`, `fa.gz` and `json` extensions were just imported in one shot. For some reasons, the `bai` extension file was not. We can try to import it with the right method `$import_alignement()`, which will cut down some checks and try to call the right method.
+
+```r
+# get extdata folder path
+system.file("extdata", package = "kibior") %>% 
+    # list all files inside the folder
+    list.files(full.names = TRUE) %>% 
+    # Select only bai files
+    .[endsWith(.,".bai")] %>% 
+    # import them
+    kc$import_alignments()
+```
+
+Using published data: for instance, we can import [Hetionet](https://het.io) JSON dataset from [Greene Lab, Baranzini Lab, et al.](https://het.io/about#acknowledgements).
+
+```r
+# downlaod dataset from one compressed json file
+url <- "https://github.com/hetio/hetionet/raw/master/hetnet/json/hetionet-v1.0.json.bz2"
+t <- tempfile(fileext=".json.bz2")
+download.file(url, t)
+hetionet <- jsonlite::fromJSON(t)
+
+# get nodes and edges
+hetionet$nodes %>% kc_local$push("hetionet_nodes")
+hetionet$edges %>% kc_local$push("hetionet_edges")
+``` 
+
+
+<br/><br/><br/><br/>
+
+# Use cases
+
+These use cases come from the `Kibio` and `KibioR` publication.
+
+
+## Use case 1: Characterize the effects of drugs using tissue-specific interactions
+
+The objective of this analysis is to investigate targets for the drug metformin within the framework of tissue-specific gene expression patterns and Protein-Protein Interactions (PPIs) of that target protein. The resources used to reach this objective are DrugBank [@TIWHCPGJ], HUGO Gene Nomenclature Committee (HGNC [@4VVDCN69]) and the Database of Human Tissue Protein-Protein Interactions (TissueNet v.2 [@RXB6IN5R]). In this example, we perform consecutive search/pull commands with `KibioR` to emulate what one do when exploring datasets following a classical iterative manner. 
+
+A litterature search had identified metformin [@6JCY4X9K] as a drug that helps control blood sugar and is used to treat pre-diabetes, type 2 diabetes and gestational diabetes. We searched for metformin in the DrugBank to obtained its 3 target genes (proteins): protein kinase AMP-activated non-catalytic subunit beta 1 (PRKAB1), glycerol-3-phosphate dehydrogenase 1 (GPD1) and electron transfer flavoprotein dehydrogenase (ETFDH). The gene symbols in HGNC gave us the associated Ensembl Gene IDs. We then injected these Ensembl IDs in another search with TissueNet2 database to find tissue-specific interactions for these target genes. This resulted in all the subcutaneous adipose interactions (170) and all whole blood interactions (167). With these parameters, we obtained the non-redondant 3 interactions between subcutaneous adipose and whole blood tissues: solute carrier family 25 member 10 (SLC25A10, ENSG00000183048), cell death inducing DFFA like effec-tor A (CIDEA, ENSG00000176194) and coagulation factor X (F10, ENSG00000126218). 
+
+
+```r
+# get the metformin drugbank id (DB00331)
+kc$search("pub_drugbank", 
+          query = "metformin", 
+          columns = c("name", "drugbank_id"))[[1]]
+
+# query targeted proteins associaated with metformin id (PRKAB1, ETFDH, GPD1)
+kc$pull("pub_drugbank_proteins", 
+        query = "drug_ids:DB00331 && protein_type:target",
+        columns = c("name", "gene_name", "protein_type"))[[1]]
+  
+# hgnc id to get the associated Ensembl Gene ID             
+#   GPD1   = ENSG00000167588     
+#   ETFDH  = ENSG00000171503      
+#   PRKAB1 = ENSG00000111725 
+res <- kc$search("pub_hgnc", 
+        query = "symbol:(PRKAB1 || ETFDH || GPD1)", 
+        columns = c("symbol", "ensembl_gene_id"))[[1]]
+
+# list all unique tissues
+kc$keys("pub_tissuenet_v2", "tissue")
+
+# get all interactions for both tissues: adipose subcutaneous and whole blood.
+net_blood <- kc$pull("pub_tissuenet_v2", query = "(ENSG00000167588 || ENSG00000171503 || ENSG00000111725) && tissue:whole_blood")[[1]]
+
+net_adipo <- kc$pull("pub_tissuenet_v2", query = "(ENSG00000167588 || ENSG00000171503 || ENSG00000111725) && tissue:adipose_subcutaneous")[[1]]
+
+# compare blood and adipose tissue with unique ENS IDs
+setdiff(unique(c(net_blood$protein_one, net_blood$protein_two)),
+        unique(c(net_adipo$protein_one, net_adipo$protein_two)))
+        
+# ENSG00000183048 = SLC25A10
+# ENSG00000176194 = CIDEA
+# ENSG00000126218 = F10
+```
+
+Findings in mice suggest SLC25A10 as a possible target for anti-obesity treatments [@NGA8YNC4] and mice without a functional CIDEA are resistant to diet-induced obesity and diabetes[@IBX42235]. These tissue-specific interactions seem to be interesting targets for diabetes, and could explain potential mechanisms of action in subcutaneous adipose. These results emphasize the need to consider prior knowledge of tissue-specific drug-protein interactions for drug design, as it could potentially improve the prediction of drug effects and/or adverse effects.
+
+
+## Use case 2: Identification of miRNAs linked to inflammation in the prostate
+
+It has been demonstrated that miRNAs regulate antitumor immunity [@7ZFQ9FTF]. Aberrant expression of miRNAs was observed in prostate cancer [@WNS3W8ZC]. The objective of this case study was to identify miRNAs that could regulate genes linked to immunity mainly expressed in the prostate, and that could be involved in cancer. This analysis required 4 resources: 1/ InnateDB a database of genes involved in innate immune response [@7CCJS7QV], 2/ the Human Protein Atlas, a database of all the human proteins in cells, tissues and organs [@VNYPL7QM], 3/ miRTarBase, a curated database of miRNA-target interactions [@IAW2GCUG] and 4/ miRBase, a microRNA sequences and annotations database [@XZA27BY6]. Here, we simply used 3 joins with filters between 4 databases to get our answer.
+
+We started the exploration from a list of human genes involved in innate immune response from InnateDB and selected those expressed in "glandular cell" type and "prostate" tissues using the Human Protein Atlas dataset. This resulted in a list of 768 unique genes. We then found the miRNA targets for these genes using the miRTarBase. This search was restricted to human miRNA-mRNA associations with strong validation evidence [@FXW6EABI], namely those with at least "qRT-PCR", "Luciferase reporter assay" and "Western blot" as methods of validation. This resulted in a list of 1180 miRNA-mRNA interactions. Finally, the miRNA identifiers of these interactions were linked to the miRBase where the “experimental” filter was applied to obtain a reduced list of 48 unique miRNAs. 
+
+```r
+# Get all gene names from prostate glandular cells in the Human Protein Atlas
+# that have a reference in InnateDB
+res <- kc$inner_join("pub_protein_atlas_v19_3", "pub_innatedb", 
+            left_query = 'cell_type:"glandular cells" && tissue:prostate', 
+            left_columns = "gene_name", 
+            by = c("gene_name"="gene_symbol"))
+
+# unique gene names 
+res$gene_name %>% unique() %>% length()
+
+# Join the previous result to 3 types of experimental human data from miRTarBase
+# by binding the target gene
+res2 <- kc$inner_join(res, "pub_mirtarbase_v8", 
+            right_query = 'species_mirna:"Homo sapiens" && experiments:("qRT-PCR" && "Western blot" && "Luciferase reporter assay")',
+            by = c("gene_name" = "target_gene"))
+            
+# unique miRNA-mRNA interactions
+res2$mirtarbase_unique_id %>% unique() %>% length()
+
+# Join again the previous result to miRBase, only on experimental data
+# to find miRNA names
+res3 <- kc$inner_join(res2, "pub_mirbase_v2", 
+            right_query = "features_evidence:experimental", 
+            right_columns = c("id", "name", "description"), 
+            by = c("mirna" = "name"))
+
+# List unique miRNA identifiers
+res3$id %>% unique()
+```
+
+The expression profiles of two of those miRNAs have evidence of being involved in prostate cancer [@I9S7MMQJ]. In fact, miR-375 (RF00700) is known to be important for early diagnosis [@JT87LG9C] and miR-650 (RF00952) can suppress the cellular stress response 1 (CSR1) expression and promote tumor growth [@X9QP5LR8]. Finding new targets could help to develop miRNA-based strategies for more effective immunotherapeutic interventions in cancer. This finding confirms the utility of our approach and motivates further investigation of other miRNAs that were identified for their potential roles in prostate cancer pathophysiology and/or treatment.
+
+
+## Use case 3: Identification of pathways for metabolites produced by the microbiome
+
+The aim of this exploration was to find drug metabolism pathways linked to metabolites of human gut microbiome origin [@GE8LM2X4]. The resources used to reach this objective are HMDB [@4X2PW4SP] and the Small Molecule Pathway Database (SMPDB [@FCQ6D44E]). We used a more complex set of commands to show the ease of `KibioR` imbrication into common R command steps. We also did not limit our search to only one column for the first query, making it truely searching in all textual fields and bringing results from potential free-text comments containing the word "microbial".
+
+We started by searching the HMDB metabolites dataset for metabolites of “microbial” origin. We obtained 546 metabolite records listed as such on the 114,100 initial records. From these selected metabolites, we change the referential by joining on to the SMPDB protein database relation, where we retrieve the microbial metabolites associated pathways. Finally, to find all data linked to these pathways, the SMPDB pathways database was mined, pruning only for the “drug metabolism” pathways. This search resulted in 41 unique pathways. 
+
+
+```r
+
+# One big command using magrittr pipe "%>%"
+
+# get HMDB protein accession from HMDB metabolites that contain the "microbial" word
+# it can be a type or a single word in a comment
+res <- kc$pull("pub_hmdb_metabolites_v2", 
+        query = "Microbial",     
+        columns = "protein_association_protein_accessions") %>% 
+    # extract all unique HMDB IDs
+    unlist(use.names = FALSE) %>% 
+    unique() %>%
+    # split them in bulks of 20 max HMDB IDs
+    # this avoid limitations in sending potentially huge requests
+    split(., ceiling(seq_along(.)/20)) %>%
+    # only search in HMDB IDs column
+    lapply(function(x) paste0(x, collapse = " || ")) %>%
+    lapply(function(x) paste0('hmdbp_id:(', x ,')')) %>%
+    (function(x){ message("Searching for subsets of HMDB IDs in SMPDB"); x }) %>% 
+    # Get assocaited Pathways names in HMDB proteins
+    lapply(function(x) kc$pull("pub_smpdb_proteins_v2",
+                    query= x, 
+                    columns="pathway_name")[[1]]) %>%
+    # fusion into one table (one column = pathway_name)
+    data.table::rbindlist() %>% 
+    # join all selected pathway names with those having 
+    # only a drug metabolism subject, and get all data 
+    # returned by SMPDB Pathways
+    kc$inner_join("pub_smpdb_pathways_v2", 
+                    right_query = 'subject:"drug metabolism"',  
+                    by = c("pathway_name" = "name"))
+
+# number of unique pathways
+res$pw_id %>% unique() %>% length()
+```
+
+This investigation identified drug metabolism pathways that could be influenced by different microbiota composition and/or variations in microbial-derived metabolite precursor availability. It is noteworthy that data exploration can be tailored to diverse applications. For example, if the interest is understanding skin aging, one could navigate to the Digital Ageing Atlas (Ageing Map) [@BGVTVFHU] database to highlight pathways and metabolites that could potentially act on aging. This could be an interesting lead for the development of new therapeutics.
+
+
+<br/><br/><br/><br/>
+
+# How to...
+
+## Search elements from a vector of IDs
+
+Basically, the general form is `kc$search("index", query = "column:(id1 || id2 || id3)")`.
+
+To automate in a script, one can use:
+
+```r
+#> one vector of IDs
+vect <- c("id1", "id2", "id3")
+#> search everywhere for these IDs
+vect %>% 
+    paste0(collapse = " || ") %>% 
+    kc$search("*", query = .)
+```
+
+You can create a utils function for that:
+
+```r
+# note the space before and after the ||
+vector_to_query <- function(vector, operator = " || "){
+    paste0(vector, collapse = operator)
+}
+```
+
+## Delete all indices
+
+> Be very cautious with this one. Deleting an index cannot be undone.
+
+By default, `kibior` will not allow you to delete everything at once with `$delete("*")`.
+But, if you need to do it, you can forcefully apply it with `kc$list() %>% kc$delete()`.
+
+
+
+## Push a list of datasets
+
+```r
+#> Suppose we have the following list of datasets
+ds <- list(
+    "sw" = dplyr::starwars,
+    "st" = dplyr::storms
+)
+#> One can easily push all of them in one go with their attributed list name.
+ds %>% purrr::imap(kc$push)
+kc$list()
+```
+
+## Import data from a single big JSON file
+
+You can find a lot of data already availabel on the web. We can take an example with Hetionet [doi:10.7554/elife.26726](https://doi.org/10.7554/elife.26726) available on [het.io](https://het.io/). The file is big and contains graph data (nodes and edges). One way of integrating it in `Kibio` is to separate the nodes from the edges available inside the file with a simple code.
+
+```r
+# download dataset from one compressed json file
+url <- "https://github.com/hetio/hetionet/raw/master/hetnet/json/hetionet-v1.0.json.bz2"
+t <- tempfile(fileext=".json.bz2")
+download.file(url, t)
+hetionet <- jsonlite::fromJSON(t)
+
+# get nodes and edges
+hetionet$nodes %>% kc_local$push("hetionet_nodes")
+hetionet$edges %>% kc_local$push("hetionet_edges")
+```
+
+
+# Session info
+
+This vignette has been built using the following session:
+
+<details>
+    <summary>Session info</summary>
+
+    <p>
+
+    ```{r}
+    sessionInfo()
+    ```
+
+    </p>
+</details>  
+
+
+<br/><br/><br/><br/>
+
+# References
+
+
