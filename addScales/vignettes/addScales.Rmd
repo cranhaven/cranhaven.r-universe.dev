@@ -1,0 +1,185 @@
+---
+title: "Adding Visual Scaling Information to Trellis Plots with the addScales Package"
+author: "Bert Gunter"
+date: "`r Sys.Date()`"
+output: 
+  rmarkdown::html_vignette:
+vignette: >
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteIndexEntry{The addScales Package}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE,
+                      cache.path = "inst/path",
+                      fig.dim = c(8,7),
+                      fig.align = "center")
+```
+
+## Why addScales?
+
+In an article entitled "How Much Warmer Was Your City in 2019?", the New York Times provided its online readers with an interactive graphical display that could show graphs of daily temperatures from 1981 to 2010 for more than 3500 cities. [Here](https://www.nytimes.com/interactive/2020/world/year-in-weather.html#nyc) is
+the display for New York City.
+
+Although this display presents historical temperature data, it does not actually allow historical trends in the data to be visually detected. The only temperature trends shown are seasonal variation: winter is colder than summer in New York!
+
+This naturally leads one to consider how such historical temperature trends could be visualized. To explore this, the addScales package includes daily temperature data (highs and lows) for New York, San Francisco, and Chicago, downloaded from the National Climate Data Center. The New York City record goes back to 1870, and that is the data set discussed here (through the end of 2019). Naturally, given the growth of the city from its relatively modest 19th century size to a 21st century megalopolis -- with all the associated asphalt, concrete, buildings, air conditioners, cars, and so forth -- one would expect to see a gradual warming trend (wholly apart from any possible global warming effects). So the question is: how to show this?
+
+*Note:* In what follows, code that replicates that used in the `addScales` Help page examples will (mostly) be omitted here.
+
+Clearly, plotting averages of the daily highs and lows in sequence isn't going to be useful. There are, apart from leap years,  365*150 = 54,750 days! A reasonable first attempt might be to simply summarize each year's temperatures -- by their median, say -- and plot the 150 summaries versus time. Here's the result.
+
+```{r yearly summaries,echo = TRUE, cache = TRUE, fig.dim = c(5,5) }
+library(addScales)
+data(NYCTemps) ## load the data sets
+## Extract Month and Year from DATE COLUMNS
+NYC <-within(NYCTemps, {
+              Daily <- .5*(TMAX + TMIN)
+              Month <- factor(months(as.Date(DATE)), levels = month.name)
+              Year <- as.numeric(substring(DATE,1,4))
+})
+## Summarize by median yearly temperature
+yearly <- aggregate(Daily ~ Year, data = NYC, FUN = median)
+## Plot, overlaying a smooth 'loess' trend curve
+trellis.par.set(plot.symbol = list(col = "darkblue"),
+               plot.line = list(col = "darkblue"))
+xyplot(Daily ~ Year, data = yearly, 
+       type = c("l","g"),
+       col = "darkblue",
+       panel = function(x,y,...){
+           panel.xyplot(x,y,...)
+           panel.loess(x,y, col = "maroon", lwd = 1.5,
+                       span = .6, deg = 2)
+       },
+       ylab = "Median Yearly Temp",
+       main = "NYC Yearly Median Temperatures Over Time"
+)
+```
+\
+\
+
+This plot clearly shows the expected temperature trend, an increase of about 6°F over 150 years. However, there's a cost: a lot of the fine-grained information of the daily temperature record has been lost. For example, one might ask whether there is seasonal variation in this trend -- do summers and winters show the same trend, for example? And is the day-to-day variation around this trend the same throughout the the year?
+
+As mentioned previously, plotting daily results in one plot as residuals from the yearly trend, say, won't work. There are simply too many points. An obvious alternative is to plot the historical record in a trellis display with different panels for different times of the year. For example, one might pick one day in the middle of every month and plot the multi-year record of each day's data in a trellised arrangement of 12 plots.
+
+A slight improvement on this idea is to plot monthly summaries -- averages, for example -- instead. The monthly averages will be less variable than individual days, but still granular enough to address questions like those above (because NYC temperatures don't usually vary that much within a month compared to yearly variation). Here is such a plot using the code in the Help page for `addScales`.
+\
+\
+
+```{r Same scales, cache = TRUE}
+monthly <- aggregate(Daily ~  Year + Month, data = NYC, FUN = mean)  
+nyctemps <-
+   xyplot(Daily ~ Year|Month, type = "l", layout = c(3,4),
+          data = monthly,
+          as.table = TRUE,
+          between = list(x=1, y=0),
+          ## reduce strip size
+          par.strip.text = list(lines = .8, cex = .7),
+          ## remove blank space for top axis
+          par.settings = list(layout.heights = list(axis.top = 0)),
+          panel = function(...){
+             panel.grid(v = -1, h = 0, col = "gray70")
+             panel.xyplot(...)
+             panel.loess(..., span = .5, col = "darkred",
+             lwd = 1.5)
+          },
+          scales = list(axs = "i", alternating = 1, tck = c(1,0)),
+          xlab = "Year",
+          ylab = "Average Temperature (\u00B0F)",
+          main = "Mean Monthly Historical Temperatures in NYC"
+   )
+nyctemps
+```
+\
+\
+
+This clearly doesn't work either! The default y-axis scaling that was used
+put all the data on the same scale. In doing so, the large yearly NYC temperature changes ended up squeezing the monthly data into a small portion of their respective panels, so the data got lost in whitespace. In short, not very useful!
+
+Of course, the lattice software provides options to deal with this, specifically by using the `relation = "free"` option of the `scales` argument to separately scale the y-scale for each panel to fit its data only. To avoid having to repeat the call with this change, it is convenient to just use lattice's `update` method to directly modify the saved trellis plot object, `nyctemps`.  Note that the `prepanel.trim` prepanel function has been used to set the panel y limits to hold only the middle 90% of each panel's y data, trimming the most extreme 5% on either end from the display. See the [Further Package Functionality] section for why this can be useful. This will also slightly change the estimate of the historical trend from the prior yearly median plot of course.
+
+```{r Free scales, cache = TRUE, cache.rebuild = TRUE, echo = TRUE}
+nyctemps <- update(nyctemps,
+                   prepanel = function(trim.x, trim.y,...)
+                       prepanel.trim(trim.x = 0, trim.y = .05,...),
+                   scales = list(axs = "i", alternating = 1, tck = c(1,0),
+                                 y = list(relation = "free"))
+)
+nyctemps
+```
+\
+\
+
+This reveals the plot details that were previously lost. But now there is another problem. Because each panel in the display has been separately scaled to its own data, one has to closely inspect the scales to compare the behavior in different panels,.for example, to see whether the increase in December temperatures over 150 years is the same as that for July. This is not easy to do and of course gets even more difficult when there are more panels. In addition, all the separate axis scales in the display occupy a lot of the visual real estate. We need scaling information, but one would prefer that it occupy as little space as possible. After all, it's the data behavior that's of interest. This is the dilemma `addScales` tries to resolve.
+
+To show how, we first remove the scales with another trellis `update` call and then call `addScales` -- using its defaults -- on that. Here's what you get:
+
+```{r addsc temp, cache = TRUE,  cache.rebuild = TRUE, echo = TRUE}
+nyctemps <- update(nyctemps, scales = list(axs = "i",
+                                           alternating = 1, tck = c(1,0),
+                                 y = list(relation = "free", draw = FALSE))
+)
+addScales(nyctemps)
+```
+\
+\
+
+So how should this be read? First, the labeled red center line in each panel gives the midrange monthly temperature from each month. This serves as a visual anchor for the center of the data distribution in each panel. The single value is relatively easy to read and compare over the full set of 12 panels. We show below how one can also color code the midlines as an additional visual cue.
+
+More important, the spread of the data is anchored by the two parallel dashed *scale* lines above and below the center line. The distance from the center line to these scale lines is the same in all panels, and is given by the legend just below the main title: h = ± 3.1°F. Hence the distance between the dashed scale lines is 6.2° for all panels. This immediately shows that there is seasonal variation in this spread: summer temperatures are less variable than winter, because the fixed scale lines are wider apart in the summer panels -- and thus most of the summer data in the panels fall within the 6.2° range --  than winter, where much of the data fall outside this range.
+
+The scale lines also allow one to easily estimate that winter increasing trends are around 6° or more, while in summer it is half that or less. Finally, because the individual panels are slightly larger after recovering space used by all the y-axis scales, one can also see a possibly interesting detailed feature of the data that may not have been quite as visible previously: temperatures for several years in the early 1930's seemed to be be consistently below normal in NYC, especially in the summer. Might this have been related to the infamous dust bowl drought years in the Midwest during that period?
+
+An alternative to using scale lines to depict spread suggested by Deepayan Sarkar, the author of the lattice plotting system, is to shade the regions between the scale lines. This is implemented with a `scaleType` argument to the default panel function, `panel.addScales`.  With `scaleType = "region"` (the default is `"lines"`), here's what the NYC temperature plot looks like:
+\
+\
+```{r, Temp Region, cache = TRUE}
+addScales(nyctemps, scaleType = "region")
+```
+\
+\
+
+Note that as is standard in the lattice package, unused arguments in the high level plotting function -- in this case `scaleType` --  are passed down to the panel function that actually creates the plots.
+
+A couple of cautions, though. First, this feature relies on the graphics device's ability to support alpha transparency. If it cannot, nothing will be shown. Second, note that if colors are used in the underlying panel plots, for example to show grouping or to encode ordering of a variable (think heat maps), the shading may interfere with the visual decoding of color. However, as discussed in [Options], the shading color and transparency, like all the *aesthetic* characteristics of the `addScales` features, is fully specifiable by the user. So alternatives to the defaults that "work" should be possible.
+
+As mentioned above, in addition to using labels, one can also color the midlines to encode their relative values. This is done by adding a `colCode = "m"` argument to the call:
+\
+```{r, more colCode, cache = TRUE, echo = TRUE}
+addScales(nyctemps, scaleType = "region", colCode = "m")
+```
+\
+\
+Note that the call also made the midlines a bit thicker to show the colors more clearly. The default color for the midline labels has also been changed to black, as they
+would be difficult to read in many panels if they were the color of the midlines. The labels obviously act as a legend for the color coding, so no separate legend is needed. The particular *palette* of colors used (dark purple to yellow for low to high here) is user specifiable via a `palette` argument passed down to the panel function. The panel Help file should be consulted for details of how to do this. The default used here is `hcl.colors(n = 100, "Viridis")`. 
+
+Going a bit further, the regions can also be color coded to match the midlines by setting `colCode = "r". 
+
+\
+```{r, Temp colCode, cache = TRUE, echo = TRUE}
+addScales(nyctemps, scaleType = "region", colCode = "r")
+```
+\
+\
+This seems to help here, but of course in other situations, this may be a color code too far!
+
+Finally, while the typical use case for `addScales` -- and the default -- is to add scaling only for the y-axis, sometimes this needs to be done for the x-axis or both axes. `addScales` allows this using either lines or shaded regions (but not a mix of both) via its "scaleline" argument, a list with two named components "h" and "v" in its full specification. The "h" component controls **h**orizontal scales/regions for the y-axis, and the "v" component **v**ertical lines for the x-axis. The default is `list(h = TRUE, v = FALSE)`, specifying that calculated horizontal scaling be added. 
+`list(h = TRUE, v = TRUE)` (or simply `TRUE` in abbreviated format) specifies scaling in both directions. An example with historical USA Crime Statistics with both x and y scaling is given in the `addScales` Help page. Users can also specify explicit numeric values rather than using computed values. See the Help page for details.
+
+## Options
+All "aesthetic" aspects of the scaling information can be specified via various .aes arguments, so that the user has complete control over plot appearance. This includes scale line types (dashed, solid, dotted, etc.), colors, widths; fonts, font sizes, font colors;  and so forth. All such panel features are arguments to the default panel function, `panel.addScales`, and its Help page should be consulted for details. Following lattice conventions, these arguments are specified in the `addScales` call and passed down to the panel function. 
+
+Any  aesthetic arguments not specified in the `addScales` call revert to their `panel.addScales` defaults; or, if these don't exist, to the defaults of the underlying lattice panel functions,`panel.refline`, `panel.text`, and `panel.rect` (for shaded regions). Consult the Help pages for these functions for details.
+
+The specification of the addScales `legend` argument, which is *not* part of the panels, is controlled by the `legend`, `ndig.legend`, `legend.aes`, and `legend.loc` arguments. These specify, respectively, the legend text that is shown, the number of digits shown in the automatically generated default legend, the font size, color, family, etc. of the font used, and on which side of the trellis display the legend should be placed. Those who wish to substitute their own legend text for the default should pay particular attention to the instructions on the `addScales` Help page. The recipe is simple, but needs to be followed exactly. 
+
+
+## Further Package Functionality
+
+`addScales(...)` returns an object of S3 class `c("scaledTrellis","trellis")` that can (usually automatically) be plotted by the lattice `print.trellis` (same as `plot.trellis`) function. For such an object, "foo", `scaleline(foo)` extracts the default scale line value from foo. This allows users to construct their own legend beyond the capabilities in the package. `revert(foo)` will recover the trellis object that generated it, e.g. the `obj` argument to the `addScales` call. This could be used to redo plots with new data, for example. The `scaledTrellis` method called by `update(foo)` can update *both* addScales and lattice plot arguments -- it will sort out which is which and update accordingly. Of course, some fairly obvious caveats apply (don't mess with `data` arguments; be careful about resetting the `scales` components of `xyplot`; etc.). See the `update` Help page for details and examples.
+
+In addition to these scaling-specific functions, the package adds a `prepanel.trim` prepanel function (see the Help page for `xyplot` for details of prepanel functions) that sets panel x and/or y limits to include only the middle $1-2p$ proportion of each panel's data, i.e. excluding the proportion $p$ of the most extreme values on either end. The default is $p =.05$. This can be useful to avoid loss of detail in visualizing the features of the bulk of the data when scales try to accommodate extremes. The usual cautions apply concerning the possible loss of important information when this is done. 
+
+Finally, worth mentioning is that `addScales`, `revert`, and `scaleline` are all S3 generics, so methods can be written for them to add scaling information to other types of plots, including in other packages. The intent is to improve the effectiveness of "small multiples" (Edward Tufte's term) for data visualization even when heterogenous scales among panels make comparisons problematic. This package offers one simple approach to the issue. I hope it will stimulate others to offer alternatives for other plot formats and systems.
+
