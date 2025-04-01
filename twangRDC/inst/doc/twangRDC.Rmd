@@ -1,0 +1,276 @@
+---
+title: "Gradient boosted weighting for linkage failures in US Census Bureau datasets"
+author: "Matthew Cefalu, John Sullivan, Narayan Sastry, and Elizabeth Fussell"
+date: "`r Sys.Date()`"
+output: 
+        rmarkdown::html_document:  
+        fig_caption: yes
+vignette: >
+  %\VignetteIndexEntry{Gradient boosted weighting for linkage failures in US Census Bureau datasets}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+  knitr::opts_chunk$set(
+    collapse = TRUE,
+    comment = "#>"
+  )
+  library(twangRDC) 
+  data(nola_south)
+```
+
+## Introduction
+
+The **twangRDC** R package is a streamlined version of the `twang` R package that was created specifically for use in the Federal Statistical Research Data Centers (FSRDCs), which are restricted data enclaves run by the Census Bureau to promote research use of data products from the Census and other federal statistical agencies. In particular, the **twangRDC** package contains functions to address linkage failures, which may systematically affect some records creating bias in population estimates. Further, the same functions can be used to ensure that a comparison group is equivalent to a treatment group on observable characteristics. 
+
+The package utilizes gradient boosted models to estimate weights for linkage failures and comparison group construction. Results using **twangRDC** will not necessarily be reproduced using `twang` due to important differences in implementation. The **twangRDC** package allows for much larger datasets, like those used in population sciences, and many more covariates, but users should note that with smaller datasets, the `twang` package is computationally more efficient. The **twangRDC** package uses *xgboost* for gradient boosting, which provides users with an optimized gradient boosting library that can utilize parallel computation within the FSRDCs.
+
+## Methodology
+
+The **twangRDC** package uses gradient boosted models to derive weights for nonequivalent groups. The algorithm alternates between adding iterations to the gradient boosted model (increasing its complexity) and evaluating balance between the two groups on the covariates. The algorithm automatically stops when additional iterations no longer improve balance. The package allows the user to generate weights for two different scenarios: linkage failures and the construction of a comparison group. 
+
+### Linkage failures
+
+The Census Bureau's Person Identification Validation System (PVS) facilitates data linkage by assigning unique person identifiers, known as Protected Identification Keys (PIKs) to federal, commercial, census, and survey data. The PVS uses probabilistic matching to assign a unique PIK for each person based on Personally Identifiable Information (PII) from secure reference files containing data from the Social Security Administration Numerical Identification file and other federal files. PIKs are linking keys that can be used to match person records across datasets^[Wagner, Deborah and Mary Layne. The Person Identification Validation System (PVS): Applying the Center Administrative Records Research and Applications’ (CARRA) Record Linkage Software. US Census Bureau, Center Administrative Records Research and Applications Working Paper #2014-01. 2014.]. For example, using a PIK, a respondent in the 2000 Decennial Census can be linked to their response in the 2010 Decennial Census. PIKs are assigned through a probabilistic matching process that links survey or census records containing Personally Identifiable Information (PII) like name, address, date of birth and place of birth, to a Social Security reference file. 
+
+Not all survey and census records can be linked to the reference file and as such not all records will be assigned a PIK. Linkage failures may occur if the PII used to match to the reference file is of insufficient quality (e.g., missing information), has insufficiently unique identifying information (e.g., a common name such as John Smith), or if an individual has no matching record in the Social Security reference file (e.g., undocumented residents). PIKs can be assigned for the large majority of 2000 Decennial Census records. A Decennial Census record must have a PIK in order to link it to administrative records that contain other information, such as mortality or annual residence.
+
+The **twangRDC** package can generate weights to account for linkage failures such that observations with PIKs are representative of the population. It does this by using standard nonresponse weights, where nonresponse is defined by linkage failure. This is achieved by weighting observations with PIKs by the inverse probability of having a PIK. As a note, although designed for linkage failure, the **twangRDC** can be used for other nonresponse and missing data. 
+
+The steps of the algorithm are described here assuming the user specifies strata in the model, but the steps are the same without strata by considering the data coming from a single stratum. Guidance on specific decisions relevant for each step is provided throughout the examples. 
+
+1. Calculate the population-level means of the covariates within strata. If weights are specified by the user, the population-level means are calculated accounting for the weights. 
+2. Initialize a gradient boosted model that includes all covariates and the strata as a factor.
+3. Add `iters.per.step` iterations to the gradient boosted model.
+4. Calculate the means of the covariates within strata among observations with PIK using weights based on the current model. 
+5. Calculate the standardized differences of the covariates between weighted observations with PIK versus the population within strata as calculated in step #1.
+6. Summarize the model fit by taking the maximum of the absolute standardized differences within strata. 
+7. Check if the average of the maximum absolute standardized differences across strata has been minimized. If a minimum has been achieved, stop. Otherwise, return to step #3.
+
+### Comparison group construction
+
+If the goal is the construction of a comparison group, **twangRDC** can apply gradient boosted propensity score weights for the average treatment effect on the treated. Treatment observations receive a weight of 1, while comparison observations receive a weight of the odds of treatment based on the propensity score model. The steps of the algorithm are described here assuming the user specifies strata in the model, but the steps are the same without strata by considering the data coming from a single stratum. Guidance on specific decisions relevant for each step is provided throughout the examples. 
+
+1. Calculate the treatment group means of the covariates within strata. If weights are specified by the user, the treatment group means are calculated accounting for the weights. 
+2. Initialize a gradient boosted model that includes all covariates and the strata as a factor.
+3. Add `iters.per.step` iterations to the gradient boosted model.
+4. Calculate the means of the covariates within strata among comparison cases using propensity score weights based on the current model. 
+5. Calculate the standardized differences of the covariates between the treatment and propensity score weighted comparison group means.
+6. Summarize the model fit by taking the maximum of the absolute standardized differences within strata. 
+7. Check if the average of maximum absolute standardized differences across strata has been minimized. If a minimum has been achieved, stop. Otherwise, return to step #3.
+
+
+### Description of arguments
+
+The primary function of **twangRDC** is `ps.xgb`, which performs the methodology previously described. In Table 1, we describe the options of `ps.xgb`. Additional details can be found in the help file.
+
+| Argument      | Description |
+| ----------- | ----------- |
+| formula      |   A symbolic description of the model to be fit with an observed data indicator or a treatment indicator on the left side of the formula and the variables to be balanced on the right side. If `strata` is specified, the model automatically includes the strata as a factor variable on the right hand side of the equation. |
+| linkage | An indicator of whether the weighting should be for linkage failure or comparison group construction. `linkage=TRUE` requests weighting to account for linkage failure, while `linkage=FALSE` requests weighting for comparison group construction. |
+| strata   | An optional factor variable identifying the strata. If specified, balance is optimized within strata.|
+| data   | The data.|
+| params   | *xgboost* parameters. Details below.|
+| file   | An optional filename to save intermediate results. The file is overwritten at each step of the algorithm.|
+| iters.per.step   | An integer specifying the number of iterations to add to the model at each step of algorithm.|
+| max_steps   | An integer specifying the maximum number of steps to take while optimizing the gradent boosted model. The maximum number of iterations considered during optimization is given by `max_steps*iters.per.step`.|
+| id.var   | A variable that uniquely identifies observations. 
+| min.width   | An integer specifying the minimum number of iterations between the current number of model iterations and the optimal value. |
+| save.model   | A logical value indicating if the *xgboost* model is saved as part of the output object. |
+| weights   | An optional variable that identifies user defined weights to be incorporated into the optimization, e.g., sampling design weights. If specified, the output automatically accounts for these weights.|
+Table: Table 1: Description of arguments to the ps.xgb function
+
+### Description of *xgboost* parameters
+
+A detailed description of the *xgboost* options can be found in the *xgboost* documentation. Here, we briefly describe the options that are most useful in this context. 
+
+- `eta` is a value between 0 and 1 that controls the learning rate. Smaller values of `eta` reduce overfit but require additional iterations to achieve optimal balance. 
+- `max_depth` is the maximum allowable depth of the gradient boosted trees. A larger value allows the model to consider more complex interactions between the covariates. Increasing `max_depth` may require a reduction in `eta`.
+- `min_child_weight` is the minimum number of observations needed to further partition a tree. If a leaf node is such that it has fewer than `min_child_weight` observations, the tree partitioning process will stop. Users can conceptualize this as similar to the number of observations in a level of a categorical variable for a standard regression model. Note, if weights are specified in `ps.xgb`, then `min_child_weight` references the sum of the weights. 
+
+### Selection of argument values
+
+The options for **twangRDC** should be set to achieve optimal balance. Many of the arguments are tuning parameters that should be tweaked to explore if the resulting model achieves better or worse balance than other choices of the arguments. We recommend that users run the models several times modifying the choice of the arguments to optimize their choice. In most cases, we have found that small changes to the arguments will not result in substantial differences in the underlying model fit. However, it is important to explore this possibility for each new analysis. Some general recommendations are provided here.
+
+- The covariates listed in the `formula` should include all covariates that are to be balanced. If working with small to moderate sample sizes, it is likely that achieving balance on a large set of covariates is not feasible, and the user should make the choice of covariates as parsimonious as possible. The underlying gradient boosted model will automatically consider interactions and nonlinearities, but balance is only calculated based on the form of the covariates in the `formula`. To assess balance for specific interactions, the interactions must be included in the `formula`. 
+- A larger value of `iters.per.step` will reduce the computation time necessary for the model to finish. However, there is a tradeoff between the choice of `iters.per.step` and the balance achieved by the model. Larger values will result in worse balance. We recommend values between 50 and 500 for datasets exceeding 100,000 records.
+- `eta`, `max_depth`, and `min_child_weight` should be set to a combination of values that allow the *xgboost* model to run for at least a few thousand iterations. If the optimum iteration is too small, users can decrease `eta` or `max_depth` or increase `min_child_weight`. Conversely, if the algorithm does not stop within the users expectations, the value of `eta` or `max_depth` can be increased or `min_child_weight` decreased. Our experience suggests that values of `eta` between 0.1 and 0.3 are a good place to start. 
+
+## Example use of **twangRDC**
+
+We will highlight two uses of the **twangRDC** R package. First, we will generate weights that address potential bias due to linkage failures by ensuring individuals with PIKs are representative of their geographic region's population. Second, we will highlight using the **twangRDC** R package to generate propensity score weights such that a group of southern metropolitan areas can be used as a comparison group for residents of Orleans Parish, Louisiana, which corresponds exactly with the boundaries of the City of New Orleans.
+
+### The Data
+
+A simulated data file was created for use in this vignette. It contains simulated records for residents of Orleans Parish and three other metropolitan areas in the South census region (Atlanta, GA, Memphis, TN, and Washington, D.C.). We built the file exclusively from public use data, but it mirrors the structure of restricted versions of the 2000 Decennial Census available through the FSRDC network^[https://www.census.gov/fsrdc]. Each simulated record includes basic individual demographic characteristics and basic household characteristics. Each record also includes two important indicators, one to simulate whether the individual record received a PIK and another to denote whether the individual lived in Orleans Parish.
+
+<!-- , and a set of tract-level contextual characteristics.  -->
+
+The data was created by extracting all variables for households and individuals from the 5% Integrated Public Use Microdata Sample (IPUMS^[Steven Ruggles, Sarah Flood, Ronald Goeken, Josiah Grover, Erin Meyer, Jose Pacas and Matthew Sobek. IPUMS USA: Version 10.0 [dataset]. Minneapolis, MN: IPUMS, 2020. https://doi.org/10.18128/D010.V10.0]) of the 2000 Decennial Census. We simulated assignment of households to census tracts and attached tract identifiers and characteristics.
+
+<!-- We extracted contextual information from public use tract level tabulations of the 2000 Decennial Census (distributed by NHGIS^[Steven Manson, Jonathan Schroeder, David Van Riper, and Steven Ruggles. IPUMS National Historical Geographic Information System: Version 14.0 [Database]. Minneapolis, MN: IPUMS. 2019. http://doi.org/10.18128/D050.V14.0]) and created select factor-based measures.  -->
+
+We also simulated an indicator of PIK assignment (PIK=yes/no) to person records. Public use data do not include PIK assignment, so we estimated a predicted probability of receiving a PIK by using estimated regression parameters from Bond et al. 2013^[Bond, Brittany, J. David Brown, Adela Luque and Amy O’Hara. The nature of the bias when studying only linkable person records: Evidence from the ACS. US Census Bureau, Center Administrative Records Research and Applications Working Paper #2014-08, 2014.]. We added a random error to the predicted probability so that the PIK assignment status **is not deterministic** and converted the predicted probability into a dichotomous PIK=yes/no variable.
+
+Lastly, we pooled Orleans Parish records with those from other southern metropolitan areas, created an indicator for Orleans Parish residence and, for the purposes of this vignette, sampled the data to shrink the size of the dataset. The simulated file contains individual records for `r prettyNum(sum(nola_south$metarea==556),big.mark=",")` residents of Orleans Parish, LA and `r prettyNum(sum(nola_south$metarea!=556),big.mark=",")` individual records for residents from select southern metropolitan areas.
+
+Table 2 provides a description of the data elements included in the simulated data file. 
+
+| Data element      | Description | Labels and Coding |
+| ----------- | ----------- | ----------- |
+| metarea      |  A categorical variable for metropolitan area.| Atlanta, GA (52)<br/> Memphis, TN/AR/MS (492)<br/> New Orleans, LA (556)<br/> Washington, DC/MD/VA (884)  |
+| c00_age12   | A categorical variable for age in years at the 2000 Decennial Census.| 0 to 2 years old (1)<br/>3 to 5 years old (2)<br/>6 to 9 years old (3)<br/>10 to 14 years old (4)<br/> 15 to 18 years old (5)<br/> 19 to 24 years old (6)<br/> 25 to 34 years old (7)<br/> 35 to 44 years old (8)<br/> 45 to 54 years old (9)<br/> 55 to 64 years old (10)<br/> 65 to 74 years old (11)<br/> 75 and older (12) | 
+| c00_sex |A binary indicator of sex as reported on the 2000 Decennial Census. |Male (0) <br/>Female (1)|
+| c00_race | A categorical variable for race as reported on the 2000 Decennial Census.|White (1)<br/>African American (2)<br/>American Indian or Alaskan Native (3)<br/>Asian (4)<br/>Other Asian or Pacific Islander (5)<br/>Some other race (6)|
+| c00_nphu |The number of persons in housing unit as reported on the 2000 Decennial Census. | 1 to 16 |
+| hhid | Household identifier.||
+|tract_id_str|Census tract identifier.||
+|sim_pik   |Simulated binary indicator of PIK assignment.|No PIK assigned (0)<br/>PIK assigned (1)| 
+|nola_rec   | Binary indicator for record from Orleans Parish.|Not Orleans Parish Record (0)<br/>Orleans Parish Record (1)|
+|id|An ID variable that uniquely identifies individuals in the dataset.|
+Table: Table 2: Description of data elements
+
+<!-- |concdis |Tract level factor measure of concentrated disadvantage/|| -->
+<!-- |res_stab |Tract level factor measure of residential stability.|| -->
+<!-- |imm_conc |Tract level factor measure of immigrant concentration.|| -->
+  
+### Weighting to account for linkage failure
+
+As previously mentioned, we will generate weights that ensure individuals with PIKs are representative of their geographic region. To keep the computational time of this vignette down, we focus only on a subset of Orleans parish. The **twangRDC** package is installed on the FSRDC servers and available to all FSRDC researchers by loading the package into R as shown here. First, we load the **twangRDC** package and our simulated dataset into R.
+
+```{r}
+  library(twangRDC) 
+  data(nola_south)
+```
+
+Next, it is important that the variables of the dataset are coded as intended. In this case, we convert several of variables to factors. 
+
+
+```{r}
+  # factors need to be coded as such
+  nola_south$metarea = as.factor(nola_south$metarea)
+  nola_south$c00_age12 = as.factor(nola_south$c00_age12)
+  nola_south$c00_race = as.factor(nola_south$c00_race)
+  nola_south$c00_sex = as.factor(nola_south$c00_sex)
+``` 
+
+In a final data preparation step, we limit the dataset to Orleans Parish. 
+
+```{r}
+  # only consider Orleans parish 
+  nola_only = subset(nola_south , metarea==556)
+``` 
+
+In this case, we wish to generate weights to ensure that individuals with PIKs are representative of their entire Census tract. That is, for each Census tract, we want to generate weights such that the observations with PIKs within the Census tract are representative of the tract's population. This is achieved by specifying `linkage=TRUE`, which tells the function that we wish to generate nonresponse weights based on linkage failure, and `strata="tract_id_str"`, which tells the function that we wish to generate weights that are representative within strata defined by Census tracts. The formula `sim_pik ~ c00_age12 + c00_race + c00_sex` identifies the observations with PIK on the left hand side and the characteristics that we want to consider when estimating the weights the right hand side.
+
+```{r , results='hide' , warning=FALSE}
+  # set the model parameters
+  params = list(eta = .1 , max_depth = 5 , min_child_weight=50)
+
+  # fit the xgboost model
+  res.pik = ps.xgb(sim_pik ~ c00_age12 + c00_race + c00_sex , 
+               strata="tract_id_str",
+               data=nola_only,
+               params=params,
+               max.steps=50,
+               iters.per.step=100,
+               min.iter=1000,
+               id.var="id",
+               linkage = TRUE)
+```
+
+The parameters of the underlying *xgboost* model are specified in `params`. These were described in more detail in a previous section. The `id.var="id"` provides a unique identifier for observations such that the generated weights can easily be merged back in with the original data. The other options specified in the `ps.xgb` function control how frequently the algorithm checks for convergence and how many iterations should be considered before stopping. First, `iters.per.step=100` tells the algorithm to only consider every 100-th iteration when evaluating convergence. Larger values improve computational time by reducing the number of balance evaluations, while smaller values may achieve slightly better balance. Next, `min.iter=1000` tells the algorithm that at least 1000 iterations must be used before stopping for convergence. Larger values ensure that more complex models are evaluated before determining the optimal set of weights. Finally, `max.steps=50` indicates that the algorithm should only evaluate balance up to 50 times before stopping. The maximum number of iterations of the *xgboost* model is given by `max.steps*iters.per.setp`, which in this case is 5000. In general, this value should be large to ensure that the optimum set of weights is achieved. The default value is `max.steps=Inf`, which will continue adding iterations to the model until the convergence criteria is met. Due to computational concerns, we recommend testing your code with values of `iters.per.step` and `max.steps` such that the total number of iterations is small (1000 to 10000). Once you have determined the model is working as intended, set `max.steps` to `Inf`.
+
+Now that the weights have been estimated, we will evaluate their quality. First, we need to ensure that a sufficient number of iterations have been used such that the balance criteria is minimized. 
+
+```{r, fig.show='hold',fig.cap = "Figure 1: Convergence of gradient boosted model for linkage failure."}
+  plot(res.pik)
+```
+
+The `plot` function provides a plot of the balance criteria (Figure 1), which in this case is the average of the strata-specific maximum absolute standardized difference of the covariates, versus the number iterations. We use this figure to verify that the algorithm has run for a sufficient number of iterations such that a clear minimum has been achieved. For example, Figure 1 shows that there is little change in the maximum absolute standardized difference after approximately 2,000 iterations. This indicates that adding additional iterations is unlikely to substantially improve the balance.
+
+After evaluating convergence of the algorithm, we can assess the quality of the weights using balance tables. First, the `bal.table` function will produce the population mean for each covariate, as well as the unadjusted (unweighted) and the adjusted (weighted) mean among those with PIK (Table 3). It also provides the standardized difference for each covariate before and after weighting. The standardized difference for a specific covariate is calculated as the mean difference between those with PIK versus those without divided by the population standard deviation. The goal is for the standardized differences after weighting to all be small, with many researchers recommending absolute values less than 0.1 as the target. Regardless of the specific target, standardized differences close to zero are ideal, and the quality of the balance should be assessed with the context of the specific analysis in mind. In this case, all of our standardized differences are very close to zero. 
+
+```{r , eval=FALSE}
+  bal.table(res.pik)
+```
+
+```{r , echo=FALSE, results='asis'}
+  knitr::kable(bal.table(res.pik),digits=3)
+```
+Table: Table 3: Balance table for linkage failure example
+
+Next, balance can be assessed within Census tract since our goal for this model was to generate weights such that observations with PIKs are representative of their Census tract. We will identify tract-covariate combinations in which the adjusted standardized differences are the furthest from zero (Table 4). The `type='strata'` option tells `bal.table` to provide the maximum absolute standardized difference by the strata variable, in this case, the maximum absolute standardized difference of the covariates within each Census tract. We additionally specify `include.var=TRUE`, which identifies the covariate that the maximum absolute standardized difference corresponds to within each Census tract, `decreasing = T`, which orders the strata in decreasing order of their weighted standardized differences, and `n=3`, which only prints the three strata with the largest absolute standardized differences. Note that this table produces a single row for each stratum, such that the table only shows the covariate with the worst balance for each stratum.
+
+```{r , eval=FALSE}
+  bal.table(res.pik , type='strata' , include.var=TRUE , n=3 , decreasing = T)
+```
+
+```{r , echo=FALSE, results='asis'}
+  knitr::kable(bal.table(res.pik , type='strata' , include.var=TRUE , n=3 , decreasing = T),digits=3)
+```
+Table: Table 4: Balance table within Census tract for linkage failure example
+
+
+This table allows us to assess which strata had the worst balance after weighting, and among those strata, which covariates were problematic. In this case, both our within strata balance and our overall population balance look excellent (i.e., adjusted standardized differences close to zero). We conclude that the weighting has achieved our goal of making the sample representative of the population. 
+
+### Extracting weights 
+
+The `get.weights` function extracts the weights at the optimal iteration. The resulting data contains the weights and the ID variable specified in `id.var`. The weights can then be merged back in with the original data using the `id.var`. Note that base R merge function is slow compared to modern alternatives. If your data is large, consider `data.table` or `dplyr`.
+
+```{r , eval=FALSE}
+  # extract weights
+  w = get.weights(res.pik)
+  
+  # merge weights into data
+  dta=merge(dta , w , by='id' , all=TRUE)
+```
+
+These weights can be used in subsequent steps of the analysis. For example, if matching a specific marginal population total is necessary, the weights output by this function can be used as an input to a post-stratification step. Alternately, if the goal of the study is to compare two groups, these weights can be used as inputs into a propensity score model. 
+
+### Comparison group construction
+
+Our second example use of **twangRDC** will generate a comparison group for Orleans Parish consisting of residents of the three other southern metropolitan areas. The steps of the process remain the same as the PIK weighting example, but with minor adjustments to the interpretation and specification of the model. First, `linkage = FALSE` specifies that we are no longer interested in weights to account for linkage failure, but instead, we wish to generate a comparison group using propensity score weights. Note that `ps.xgb` only estimates the average treatment effect on the treated, with the treatment group identified by records with a value of 1 in the left hand side of the formula. Second, our formula now includes an interaction between age and sex. This informs the algorithm to evaluate balance based on unique combinations of age and sex (e.g., it will attempt to balance the proportion of each sex-by-age combination). Currently, **twangRDC** only allows for specification of interactions between factor variables. Finally, we no longer specify a stratification variable, as we are attempting to create a comparison group that is representative of Orleans parish as a whole. If we were interested in using the linkage failure weights from our previous example, they could be specified in the `weights` option, and the output of this model would automatically account for those weights.
+
+```{r , results='hide' , warning=FALSE}
+  # set the model parameters
+  params = list(eta = .3 , max_depth = 5 , subsample = 1 , 
+                max_delta_step=0 , gamma=0 , lambda=0 , alpha=0, 
+                min_child_weight=50 , objective = "binary:logistic")
+
+  # fit the xgboost model
+  res.ps = ps.xgb(nola_rec ~ c00_age12:c00_sex + c00_race , 
+               data=nola_south,
+               params=params,
+               max.steps=25,
+               iters.per.step=100,
+               min.iter=1000,
+               min.width = 500,
+               id.var="id",
+               linkage = FALSE)
+```
+
+After fitting the model, the same steps covered in the linkage failure example should be used here as well. The first step is to evaluate the convergence of the model using the `plot` function (Figure 2). We are verifying that the algorithm has run for a sufficient number of iterations such that a clear minimum has been achieved.
+
+```{r, fig.show='hold',fig.cap = "Figure 2: Convergence of gradient boosted model for comparison group construction."}
+plot(res.ps)
+```
+
+Next, we evaluate the performance of the algorithm by looking at balance tables (Table 5). Since we specified `linkage=FALSE`, the `bal.table` function will now produce the treatment group mean for each covariate, as well as the mean before and after propensity score weighting among comparison cases. It also provides the standardized differences for each covariate. As in the linkage failure example, the goal is for the standardized differences after weighting to all be close to zero.
+
+```{r , eval=FALSE}
+  bal.table(res.ps)
+```
+
+```{r , echo=FALSE, results='asis'}
+  knitr::kable(bal.table(res.ps),digits=4)
+```
+Table: Table 5: Balance table within Census tract for comparison group example
+
+
+Since no strata were specified in the model, the `type='strata'` option used in the linkage failure example is no longer useful. These weights can be extracted and merged in with the data using the same steps described in the linkage failure example. 
+
+## Additional resources
+
+For more information, tutorials, and tools for weighting and analysis of nonequivalent groups, see the TWANG website at https://www.rand.org/statistics/twang.html. 
