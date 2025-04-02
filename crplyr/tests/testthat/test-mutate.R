@@ -1,0 +1,22 @@
+context("'mutate' on CrunchDataset (not implemented)")
+
+with_mock_crunch({
+    ds <- loadDataset("1", project = NULL)
+    test_that("mutate errors nicely", {
+        expect_error(
+            mutate(ds, men=gender == "Male"),
+            "You can, however, derive"
+        )
+        expect_error(
+            suppressWarnings(mutate_(ds, men=gender == "Male")),
+            "You can, however, derive"
+        )
+    })
+
+    test_that("When group_by calls mutate, it also errors nicely", {
+        expect_error(
+            group_by(ds, men=gender == "Male"),
+            "You can, however, derive"
+        )
+    })
+})
