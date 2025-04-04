@@ -1,0 +1,44 @@
+#' Package: Softening splits in classification trees
+#'
+#' The basic idea of split softening is to modify the process of classification
+#' of an input case with a decision tree such that
+#' in the area near the threshold of a softened split both branches
+#' of the tree are used to provide a prediction for the submitted case
+#' and their results are combined.
+#'
+#' Functions in this package allow to add softening to the nodes of
+#' a classification tree created with the package \code{tree}.
+#' Each node where a decision on a continuous variable is made is enriched
+#' with softening parameters which specify the boundaries of the softening area
+#' and which together with the original split threshold determine the weights
+#' of the branches when combined.
+#'
+#' The weights of branches are (1/2, 1/2) in the original split threshold.
+#' Other points inside the softening area have weights given by linear interpolation
+#' to reach the values (0, 1), or vice versa, on the boundaries of the softening area.
+#'
+#' A data structure for a decision tree prepared for softening
+#' can be created from a \code{tree} object
+#' with the \code{\link{softsplits}} function.
+#'
+#' Softening parameters may be set to the `soft tree' structure.
+#' The package offers the following functions for this purpose:
+#' \itemize{
+#' 	\item\code{\link{softening.by.data.range}}
+#' 	\item\code{\link{softening.by.esd}}
+#' 	\item\code{\link{softening.optimized}}
+#' 	\item\code{\link{soften}}
+#' }
+#'
+#' A softened tree might be used to obtain a prediction for a dataset
+#' using the \code{\link{predictSoftsplits}} function.
+#'
+#' @references
+#' \enc{Dvořák}{Dvorak}, J. (2019), \emph{Classification trees with soft splits optimized for ranking} <doi:10.1007/s00180-019-00867-1>
+#' \code{https://rdcu.be/bkeW2}
+#'
+#' @docType package
+#' @name SplitSoftening
+#' @useDynLib SplitSoftening
+NULL
+
