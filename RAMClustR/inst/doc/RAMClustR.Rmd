@@ -1,0 +1,135 @@
+---
+title: "RAMClustR"
+author: "Corey Broeckling"
+date: "`r Sys.Date()`"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{RAMClustR: post-XCMS Feature Clustering}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Background
+### Metabolomics
+Metabolomics is frequently performed using chromatographically coupled mass spectrometry, with gas chromatography, liquid chromatography, and capillary electrophoresis being the most frequently utilized methods of separation.  The coupling of chromatography to mass spectrometry is enabled with an appropriate ionization source - electron impact (EI) for gas phase separations and electrospray ionization (ESI) for liquid phase separations. XCMS is a commonly used tool to detect all the signals from a metabolomics dataset, generating aligned features, where a feature is represented by a mass and retention time.  Each feature is presumed to derive from a single compound.  However, each compound is represented by several features.  With any ionization method, isotopic peaks will be observed reflective of the elemental composition of the analyte.  In EI, fragmentation is a byproduct of ionization, and has driven the generation of large mass spectral libraries.  In ESI, in-source fragmentation frequently occurs, the magnitude of which is compound dependent, with more labile compounds being more prone to in-source fragmentation.  ESI can also product multiple adduct forms (protonated, potassiated, sodiated, ammoniated...), and can produce multimers (i.e. [2M+H]+, [3M+K]+, etc) and multiple charged species ([M+2H]++).  This can become further complicated by considering combinations of these phenomena.  For example [2M+3H]+++ (triply charged dimer) or an in-source fragment of a dimer.
+
+
+### RAMClustR approach
+RAMClustR was designed to group features designed from the same compound using an approach which is __1.__ unsupervised, __2.__ platform agnosic, and __3.__ devoid of curated rules, as the depth of understanding of these processes is insufficient to enable accurate curation/prediction of all phenomenon that may occur.  We acheive this by making two assumptions.  The first is that two features derived from the same compound with have (approximately) the same retention time.  The second is that two features derived from the same compound will have (approximately) the same quantitative trend across all samples in the xcms sample set.  From these assumptions, we can calculate a retention time similarity score and a correlational similarity score for each feature pair.  A high similarity score for both retention time and correlation indicates a strong probability that two features derive from the same compound.  Since both conditions must be met, the product of the two similarity scores provides the best approximatio of the total similarity score - i.e. a feature pair with retention time similarity of 1 and correlational similarity of 0 is unlikely to derive from one compound - 1 x 0 = 0, the final similarity score is zero, indicating the two features represent two different compounds.  Similarly, a feature pair with retention time similarity of 0 and correlational similarity of 1 is unlikely to derive from one compound - 0 x 1 = 0.  Alternatively - a feature pair with retention time similarity of 1 and correlational similarity of 1 is likely to derive from one compound - 1 x 1 = 1.  
+
+
+The RAMClustR algorithm is built on creating similarity scores for all pairs of features, submitting this score matrix for heirarchical clustering, and then cutting the resulting dendrogram into neat chunks using the dynamicTreeCut package - where each 'chunk' of the dendrogram results in a group of features likely to be derived from a single compound.  Importantly, this is acheived without looking for specific phenomenon (i.e. sodiation), meaning that grouping can be performed on any dataset, whether it is positive or negative ionization mode, EI or ESI, LC-MS GC-MS or CE-MS, in-source fragment or complex adduction event, and predictable or unpredictable signals.  
+
+## RAMClustR use: 
+### XCMS input:
+We will start with the XCMS package data.  This will take up to a few minutes to run, depending on your computer specs. 
+
+```{r xcms faaKO, eval=FALSE, include=TRUE}
+library(BiocManager)
+library(xcms)
+install.packages("faahKO")
+library(faahKO)
+cdfpath <- system.file("cdf", package = "faahKO")
+cdffiles <- list.files(cdfpath, recursive = TRUE, full.names = TRUE)
+# to point to your own directory
+# cdffiles <- list.files(utils::choose.dir(), recursive = TRUE, full.names = TRUE, pattern = ".cdf")
+# note: choose.dir() will bring up a window to browse to your directory
+# the pattern argument is case sensitive, ensure it matches your file type in a case sensitive
+# manner
+# see vignette('xcms') for xcms use and guidance
+xset <- xcmsSet(cdffiles)  # detect features
+xset <- group(xset)  # group features across samples by retention time and mass
+xset <- retcor(xset, family = "symmetric", plottype = NULL)  # correct for drive in retention time
+xset <- group(xset, bw = 10)  # regroup following rt correction
+xset <- fillPeaks(xset)  # 'fillPeaks' to remove missing values in final dataset
+```
+```{r view xcms object summary, eval=FALSE, include=TRUE}
+xset
+```
+
+We can use the xset we just created as input to ramclustR.  You likely have already installed RAMClustR - in the event you have not: 
+
+```{r ramclustR installation, eval=FALSE, include=TRUE}
+install.packages("devtools", repos="http://cran.us.r-project.org", dependencies=TRUE)
+library(devtools) 
+install_github("cbroeckl/RAMClustR", build_vignettes = TRUE, dependencies = TRUE)
+library(RAMClustR) 
+```
+
+The ramclustR function is built to use xcms data to estimate the most appropriate parameters.  As such we do not need to set too many options.  However, we do need to provide ramclustR some data for record keeping and providing instrument descriptions for spectra output. 
+
+```{r ramclustR of xcms processed faaKO, eval=FALSE, include=TRUE}
+experiment <- defineExperiment(csv = TRUE) # experiment <- defineExperiment(force.skip = TRUE)
+RC <- ramclustR(xcmsObj = xset, ExpDes=experiment)
+```
+
+
+In the 'defineExperiment' function, we can set the 'csv' value to either TRUE, FALSE, or a character string to a csv file, if you have been through the process previously.  Setting it to TRUE will enable you to open a csv written to your working directory and edit it before it is imported back into R.  setting csv=FALSE will result in two popup windows asking for input.   Once we have the experimental design data in, we can run ramclustR.  the 'experiment' object you created will now be stored with the RC object at RC$ExpDes.  
+
+There is little visible action at the completion of the ramclustR function.  However, you should now have an RC object where each XCMS feature has been assigned to a cluster.  A document was written to a new directory called 'spectra' in your working directory.  This document will be named [your project name].msp and contains all spectra for all clusters detected.  
+
+Additionally, the RC R object contains a new dataset called "SpecAbund".  You can access this dataset through the RC$SpecAbund call, and could write it to a file by calling  
+
+```{r export csv, eval=FALSE, include=TRUE}
+write.csv(RC$SpecAbund, file="SpecAbund.csv", row.names=TRUE)
+```
+
+### csv input:
+If you have processed your data using some other program, and can get your feature data out in csv format, ramclustR can process it. Your csv file should look like this: 
+
+ sample  | 123.456_45.3   |  232.423_94.1 | ...
+ --------|----------------|---------------|----
+ trt 1   | 19470          | 878274        | ...
+ trt 2   | 13420          | 818334        | ...
+ cnt 1   | 12440          | 872274        | ...
+ cnt 1   | 19421          | 563244        | ...
+ 
+Sample names in the first column.  Column names contain the mz value and the retention time in your units of choice, and these two values are separated by a delimiter, in this case and underscore "_".  If you also have data from an MSe experiment, you must input the data in the same format, and the column and row names must be identical.  For this exercise, we will just use the xcms data we just generated to make a csv version which we can input
+
+```{r csv input, eval=FALSE, include=TRUE}
+# make csv files - outcsv1 for real MS data, outcsv2 for 'fake' idMSMS data after adding some noise.
+outcsv1<-RC$MSdata
+outcsv2<-abs(jitter(outcsv1, factor = 0.1))
+write.csv(outcsv1, file = paste0(getwd(), "/msdata.csv"), row.names = TRUE)
+write.csv(outcsv2, file = paste0(getwd(), "/msmsdata.csv"), row.names = TRUE)
+
+# run ramclustR on those csv files
+# first the MS data only
+
+RC1 <- ramclustR(ms = paste0(getwd(), "/msdata.csv"), 
+                 featdelim = "_", 
+                 st = 5, 
+                 ExpDes=experiment, 
+                 sampNameCol = 1)
+
+# then the MS and MSMS data. 
+# first we need to redefine our experiment, make sure to enter 'LC-MS' for plaform and '2' for the LC-MS MSlevs 
+experiment <- defineExperiment(csv = TRUE)
+RC2 <- ramclustR(ms = paste0(getwd(), "/msdata.csv"), 
+                 idmsms = paste0(getwd(), "/msmsdata.csv"), 
+                 featdelim = "_", 
+                 timepos = 2, 
+                 st = 5, 
+                 ExpDes=experiment, 
+                 sampNameCol = 1)
+```
+
+
+### Molecular weight inference (high resolution LC-MS):
+The ramclustR function does not tell you what your ions are likely to represent, only which ions are likely derived from the same compound.  We have adapted the 'findMain' function from the 'InterpretMSSpectrum' CRAN package to perform this task, with an alternate ramclustR score returned as well.  The do.findmain function in RAMClustR calls the findMain function, and the ramclust object is returned with the findMain results.  For every compound, the findMain score is used by default.  A second ramclustR score is also calcluated to determine the most likely molecular weight.  When the two two calculated masses are essentially identical (within two times the ppm.error selected), the findmain result is used.  In practice we find that the two scoring methods agree about 90% of the time.  The 10% of the time that they disagree, the higher of the two molecular weights is returned.  To run this function:
+
+```{r do.findmain, eval=FALSE, include=TRUE}
+RC <- do.findmain(RC, mode = "positive", mzabs.error = 0.02, ppm.error = 10)
+```
+
+
+There are now named slots in the in the RC object that were not there before.  see ?do.findmain for a description of what these slots contain.  You will also two new new directories called 'mat' and 'ms' in the 'spectrum' directory that was previously created.  The 'mat' contains spectra in .mat format suitable for import into MSFinder software.  The 'ms' contains spectra in .ms format suitable for import into Sirius software. There will also be a pdf document in your 'spectra' directory called 'findmainPlots.pdf' demonstrating the evidence supporting M. lets look for a relationship between inferred M and retention time:  
+
+RAMClustR exports files suitable for import into Sirius and MSFinder, but does not run these programs.  You can run these programs based on your needs.  These programs generate output files that can be imported back into R to provide annotations for the RAMClustR compounds of interest.   Import functions are currently written for MSFinder output, and will soon be developed for Sirius output formats.
+
+## Questions:
+Corey Broeckling  -  cbroeckl@colostate.edu
