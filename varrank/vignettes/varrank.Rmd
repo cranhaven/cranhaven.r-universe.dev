@@ -1,0 +1,342 @@
+---
+title: "varrank: An R Package for Variable Ranking Based on Mutual Information with Applications to Systems Epidemiology"
+author: "Gilles Kratzer, Reinhard Furrer"
+date: "`r Sys.Date()`"
+output: rmarkdown::html_vignette
+#output: pdf_document
+vignette: >
+  %\VignetteIndexEntry{varrank}
+  %\VignetteEngine{knitr::knitr}
+  %\usepackage[utf8]{inputenc}
+bibliography: bib_varrank.bib
+---
+
+```{r setup, include = FALSE, cache = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE, 
+  comment = "#>", 
+  fig.width = 6, fig.height = 6, fig.align = "center"
+)
+options(digits = 3)
+```
+
+**What is the package design for?**
+
+The two main problems addressed by this package are **selection of the most representative variable** within a group of variables of interest (i.e. dimension reduction) and **variable ranking** with respect to a set of features of interest.
+
+**How does it work?**
+
+The *varrank* R package takes a named dataset as input. It transforms the continuous variables into categorical ones using discretization rules. Then a *varrank* analysis sequentially compares relevance with redundancy. The final rank is based on the measure of this score.
+
+**What are the R package functionalities?**
+
+The workhorse of the R package is the *varrank()* function. It computes the rank of variables and it returns a varrank class object. This object can be summarized with a comprehensive verbal description or a plot.
+
+**What is the structure of this document?**
+
+We first illustrate the package with a simple example. In a second step we compare the output of the main function *varrank()* with alternative approaches. Then some details are provided. For a full description of the technical details we refer to the original publication [@gk2018]. 
+
+# Simple *varrank* example
+
+The package is available through [CRAN](https://CRAN.R-project.org/package=varrank) and can be installed directly in R: 
+
+```{r,eval=FALSE}
+install.packages("varrank")
+```
+
+Once installed, the *varrank* R package can be loaded using:
+
+```{r,eval=TRUE}
+library(varrank)
+```
+
+Let us start with a ranking example from the *mlbench* R package [@leischmlbench]. The *PimaIndiansDiabetes* dataset contains 768 observations on 9 clinical variables. To run the *varrank()* function, one needs to choose a score function model ("battiti", "kwak", "peng", "estevez"), a discretization method (see discretization for details) and an algorithm scheme ("forward", "backward").
+
+For the first search, it is advised to use either "peng" (faster) or "estevez" (more reliable but much slower for large datasets) and, in case the number of variables is large (>100), restrict the "forward" search to "n.var = 100." The progress bar will give you an idea of the remaining run time.
+
+```{r, warning = FALSE, message = FALSE}
+data(PimaIndiansDiabetes, package = "mlbench")
+varrank.PimaIndiansDiabetes <- varrank(data.df = PimaIndiansDiabetes, method = "estevez", variable.important = "diabetes", discretization.method = "sturges", algorithm = "forward", scheme="mid", verbose = FALSE)
+
+summary(varrank.PimaIndiansDiabetes)
+```
+
+The function *varrank()* returns a list with multiple entries: "names.selected" and "distance.m". If `algorithm = "forward"`, "names.selected" contains an ordered list of the variable names in **decreasing** order of importance relative to the set in "variable.important" and, for a backward search, the list is in increasing order of importance. The scheme of comparison between relevance and redundance should be set to "mid" (Mutual Information Difference) or "miq" (Mutual Information Quotient). In order to visually assess *varrank()* output, one can plot it:
+
+```{r}
+plot(varrank.PimaIndiansDiabetes)
+```
+
+Basically, the *varrank()* function sequentially compares the relevancy/redundancy balance of information across the set of variables. There is a legend containing the color code (cold blue for redundancy, hot red for relevancy) and the distribution of the scores. The columns of the triangular matrix contain the scores at each selection step. The variable selected at each step is the one with the highest score (the variables are ordered in the plot). The scores at selection can thus be read from the diagonal. A negative score indicates a redundancy final trade of information and a positive score indicates a relevancy final trade of information.
+
+## Comparison with other R packages
+
+### Caret
+
+Here is the output of the *caret* R package [@kuhn2014caret] applied to the same *PimaIndiansDiabetes* dataset. *caret* allows one to perform a model-free variable selection search. In such a case, the importance of each predictor is evaluated individually using a filter approach.
+
+```{r}
+library(caret)
+library(e1071)
+# prepare training scheme
+control <- trainControl(method = "repeatedcv", number = 10, repeats = 3)
+# train the model
+model <- train(diabetes~., data = PimaIndiansDiabetes, method = "lvq", preProcess = "scale", trControl = control)
+# estimate variable importance
+importance <- varImp(model, useModel = FALSE)
+# summarize importance
+print(importance)
+# plot importance
+plot(importance)
+```
+
+### R Package *Boruta*
+
+An alternative for variable selection is the *Boruta* R package [@kursa2010feature]. This compares the original attributes' importance with the importance achieved by random, estimated using their permuted copies in the Random Forest method. The *Boruta* output from the analysis of the same dataset is as follows.
+
+```{r}
+library(Boruta)
+out.boruta <- Boruta(diabetes~., data = PimaIndiansDiabetes)
+print(out.boruta)
+plot(out.boruta, cex.axis = 0.8, las=1)
+```
+
+### R Package varSelRF
+
+*varSelRF* [@diaz2007genesrf] is a random forest-based R package that performs variable ranking. The output of the same analysis is as follows.
+
+
+```{r, warning = FALSE, message = FALSE}
+library(varSelRF)
+
+rf <- randomForest(diabetes~., data = PimaIndiansDiabetes, ntree = 200, importance = TRUE)
+rf.rvi <- randomVarImpsRF(xdata = PimaIndiansDiabetes[, 1:8], Class = PimaIndiansDiabetes[, 9], forest = rf, numrandom = 20, usingCluster = FALSE)
+randomVarImpsRFplot(rf.rvi, rf, show.var.names = TRUE, cexPoint = 0.3,cex.axis=0.3)
+```
+
+### FSelector
+
+The *FSelector* R package [@romanski2016fselector] contains a large number of implemented techniques for generating rank weights for features. Below is an example based on an entropy-based filter using information gain applied to the same example.
+
+```{r}
+library(FSelector)
+weights <- information.gain(diabetes~., data = PimaIndiansDiabetes)
+row.names(weights)[order(weights$attr_importance, decreasing = TRUE)]
+```
+
+# Underlying Theory of *varrank* 
+
+## Information theory metrics
+
+The *varrank* R package is based on the estimation of information theory metrics, namely, the *entropy* and the *mututal information*. 
+
+Intuitivelly, the *entropy* is defined as the average amount of information produced by a stochastic source of data. The *mutual information* is defined as the mutual dependence between the two variables.
+
+## Entropy from observational data
+
+Formally, for a continuous random variable $X$ with probability density function $P(X)$ the entropy $\text{H}(X)$ is defined as [see @cover2012elements for details]
+
+$$
+        \text{H}(X) = \textbf{E} [ - \log{P(X)} ].
+$$
+
+The entropy $\text{H}(X)$ of a discrete random variable $X$ is defined as [see @cover2012elements for details]
+$$
+        \text{H}(X) = \sum^{N}_{n = 1} P(x_n) \log{P(x_n)},
+$$
+where $N$ is the number of states of the random variable $X$.
+
+The latter definition can easily be extended for an arbitrarily large set of random variables. For $M$ random variables with $N_1$ to $N_M$ possible states respectively, the joint entropy is defined as
+\begin{equation}
+        \text{H}(X_1, \dots, X_M) = \sum^{N_1}_{x_1 = 1} \dots \sum^{N_M}_{x_M = 1}P(x_1,  \dots, x_M)  \log{P(x_1,  \dots, x_M)}.
+\end{equation}
+
+We now illustrate the calculation of entropy for some simple cases and give the true/theoretical values, as well.
+
+
+```{r, fig.width = 3, fig.height = 3}
+### 1D example ####
+# sample from continuous uniform distribution
+x1 = runif(1000)
+hist(x1, xlim = c(0, 1))
+
+#True entropy value: H(X) = log(1000) = 6.91
+entropy.data(freqs.table = table(discretization(data.df = data.frame(x1), discretization.method = "rice", freq = FALSE)))
+
+# sample from a non-uniform distribution
+x2 = rnorm(n = 10000, mean = 0, sd = 1)
+hist(x2)
+
+#differential entropy: H(x) = log(1*sqrt(2*pi*exp(1))) = 1.42
+entropy.data(freqs.table = table(discretization(data.df = data.frame(x2), discretization.method = "sturges", freq = FALSE)))
+
+### 2D example ####
+# two independent random variables
+x1 <- runif(100)
+x2 <- runif(100)
+
+
+## Theoretical entropy: 2*log(100) = 9.21
+entropy.data(freqs.table = table(discretization(data.df = data.frame(x1, x2), discretization.method = "sturges", freq = FALSE)))
+```
+
+## Mutual information from observational data
+
+The mutual information $\text{MI}(X;Y)$ of two discrete random variables $X$ and $Y$ is defined as [see @cover2012elements for details]
+\begin{equation}
+        \text{MI}(X;Y) = \sum^{N}_{n = 1} \sum^{M}_{m = 1}P(x_n,y_m) \log{\frac{P(x_ny_,m)}{P(x_n)P(y_m)} },
+\end{equation}
+where $N$ and $M$ are the number of states of the random variables $X$ and $Y$, respectively. The extension to continuous variables is straightforward. The MI can also be expressed using entropy as [see @cover2012elements for details]
+\begin{equation}\label{eq:mi_entropy}
+\text{MI}(X;Y) = \text{H}(X) + \text{H}(Y) -\text{H}(X, Y).
+\end{equation}
+
+```{r}
+# mutual information for 2 uniform random variables
+x1 <- runif(10000)
+x2 <- runif(10000)
+
+# approximately zero
+mi.data(X = x1, Y = x2, discretization.method = "kmeans") 
+
+# MI computed directely
+mi.data(X = x2, Y = x2, discretization.method = "kmeans") 
+
+# MI computed with entropies:
+##MI(x,y) = H(x)+H(y)-H(x, y) for x=y; 
+##MI(x,x) = 2 * H(x) - H(x,x) 
+2 * entropy.data(freqs.table = table(discretization(data.df = data.frame(x2), discretization.method = "kmeans", freq = FALSE))) - entropy.data(freqs.table = table(discretization(data.df = data.frame(x2, x2), discretization.method = "kmeans", freq = FALSE)))
+```
+
+# Variables ranking/feature ranking
+
+Mutual information is very appealing when one wants to compute the degree of dependency between multiple random variables. Indeed, as it is based on the joint and marginal probability density functions (pdfs), it is very effective in measuring any kind of relationship [@cover2012elements]. The Minimum Redundancy Maximum Relevance (mRMR) algorithm can be described as an ensemble of models [@van2010increasing], originally proposed by @battiti1994using and coined by @peng2005feature. A general formulation of the ensemble of the mRMR technique is as follows. Given a set of features $\textbf{F}$, a subset of important features $\textbf{C}$, a candidate feature $f_i$ and possibly some already selected features $f_s \in \textbf{S}$, the local score function for a scheme in difference (Mutual Information Difference) is expressed as:
+
+\begin{equation}
+        g(\alpha, \beta, \textbf{C}, \textbf{S}, \textbf{F}) = \text{MI}(f_i;\textbf{C}) - \beta \sum_{f_s \in \textbf{S}} \alpha(f_i, f_s, \textbf{C}) ~\text{MI}(f_i; f_s).
+\end{equation}\label{eq:mRMR}
+
+
+This equation is called the mRMRe equation. Model names and their corresponding functions $\alpha$ and parameters $\beta$ are listed below in historical order of publication:
+
+1. $\beta>0$ is a user defined parameter and $\alpha(f_i,f_s,\textbf{C})=1$, named mutual information feature selector (MIFS). This method is called \textit{biattiti} in varrank and presented in @battiti1994using.
+
+2. $\beta>0$ is a user defined parameter and $\alpha(f_i,f_s,\textbf{C})={\text{MI}(f_s;\textbf{C})}/{\text{H}(f_s)}$, named MIFS-U. This method is called \textit{kwak} in varrank and presented in @kwak2002input.
+
+3. $\beta={1}/{|\textbf{S}|}$ and $\alpha(f_i,f_s,\textbf{C})=1$, which is named min-redundancy max-relevance (mRMR). This method is called \textit{peng} in varrank and presented in @peng2005feature.
+
+4. $\beta={1}/{|\textbf{S}|}$ and $\alpha(f_i,f_s,\textbf{C})={1}/{\text{min}(\text{H}(f_i),\text{H}(f_s))}$ named Normalized MIFS (NMIFS). This method is called \textit{estevez} in varrank and presented in @estevez2009normalized.
+
+The two terms on the right-hand side of the definition of the local score function above are local proxies for the relevance and the redundancy, respectively. Redundancy is a penalty included to avoid selecting features highly correlated with previously selected ones. Local proxies are needed because computing the joint MI between high dimensional vectors is computationally expensive. The function $\alpha$ and the parameter $\beta$ attempt to balance both terms to the same scale. In @peng2005feature and @estevez2009normalized, the ratio of comparison is adaptively chosen as $\beta = 1/{|S|}$ to control the second term, which is a cumulative sum and increases quickly as the cardinality of $\textbf{S}$ increases. The function $\alpha$ tends to normalize the right side. One can remark that $0 \leq \text{MI}(f_i;f_s) \leq \min(\text{H}(f_i), \text{H}(f_s))$.
+
+## Software implementation
+
+A common characteristic of data from systems epidemiology is that it contains both discrete and continuous variables. Thus, a common popular and efficient choice for computing information metrics is to discretize the continuous variables and then deal with only discrete variables. A recent survey of discretization techniques can be found in @garcia2013survey. Some static univariate unsupervised splitting approaches are implemented in the package. In the current implementation, one can give a user-defined number of bins (not recommended) or use a histogram-based approach. Popular choices for the latter are: Cencov's rule [@cencov1962estimation], Freedman-Diaconis' rule [@freedman1981histogram], Scott's rule [@scott], Sturges' rule [@sturges], Doane's formula [@doane] and Rice's rule. The MI is estimated through entropy using mRMRe equation and the count of the empirical frequencies. This is a plug-in estimator. Another approach is to use a clustering approach with the elbow method to determine the optimal number of clusters. Finally, one very popular MI estimation compatible only with continuous variables is based on nearest neighbors [@kraskov2004estimating]. 
+The workhorse of *varrank* is the forward/backward implementation of mRMRe equation. The sequential forward variable ranking algorithm is described in [@gk2018]. 
+
+## Software functionalities
+
+The package *varrank* exploits the **object oriented functionalities** of R through the S3 class. The function *varrank()* returns an object of class *varrank*, a list with multiple entries. At present, three S3 methods have been implemented: the print method displaying a condensed output, the summary method displaying the full output and a plot method. The plot method is an adapted version of *heatmap.2()* from the R package *gplots*.
+
+```{r}
+output <- varrank(data.df = PimaIndiansDiabetes, method = "battiti", variable.important = "diabetes", discretization.method = "sturges", ratio = 0.6, algorithm = "forward", scheme="mid", verbose = FALSE)
+
+##print
+output
+
+##summary
+summary(output)
+```
+
+The plot display depends on whether the algorithm is run in a forward search or backward search.
+
+```{r}
+output <- varrank(data.df = PimaIndiansDiabetes, method = "battiti", variable.important = "diabetes", discretization.method = "sturges", ratio = 0.6, algorithm = "forward", scheme="mid", verbose = FALSE)
+
+plot(output)
+```
+
+```{r}
+output<-varrank(data.df = PimaIndiansDiabetes, method = "battiti", variable.important = "diabetes", discretization.method = "sturges", ratio = 0.6, algorithm = "backward",scheme="mid", verbose = FALSE)
+
+plot(output)
+```
+
+
+## Examples based on different datasets
+
+Below are some examples of the *varrank* methodology applied to classical R datasets.
+
+### Swiss Fertility and Socioeconomic Indicators (1888) Data 
+
+The swiss fertility dataset [@R-Core-Team:2017aa] consists of six continuous variables with 47 observations.
+
+Exploratory data analysis:
+
+```{r}
+pairs(swiss, panel = panel.smooth, main = "Swiss Data", 
+      col = 3 + (swiss$Catholic > 80), gap = 0)
+summary(lm(Fertility ~ . , data = swiss))
+```
+
+Forward *varrank* analysis:
+
+```{r}
+swiss.varrank <- varrank(data.df = swiss, method = "estevez", variable.important = "Fertility", discretization.method = "sturges", algorithm = "forward", scheme = "mid", verbose = FALSE)
+swiss.varrank
+plot(swiss.varrank)
+```
+
+### Longley
+
+This is a data frame with seven continuous economical variables from the US, observed yearly from 1947 to 1962. This dataset is known to be highly collinear [@R-Core-Team:2017aa].
+
+The exploratory data analysis:
+
+```{r}
+pairs(longley, main = "Longley Data", gap = 0)
+summary(fm1 <- lm(Employed ~ ., data = longley))
+```
+
+Forward  *varrank* analysis:
+
+```{r}
+longley.varrank <- varrank(data.df = longley, method = "estevez", variable.important = "Employed", discretization.method = "sturges", algorithm = "forward", scheme = "mid", verbose = FALSE)
+longley.varrank
+plot(longley.varrank)
+```
+
+
+### Air Quality dataset
+
+Daily air quality measurements in New York from May to September 1973. This dataset [@R-Core-Team:2017aa] contains 6 continuous variables with 154 observations. A complete case analysis is performed.
+
+Exploratory data analysis:
+
+```{r}
+pairs(airquality, panel = panel.smooth, main = "Air Quality Data", gap = 0)
+```
+
+Forward  *varrank* analysis
+
+```{r}
+airquality.varrank <- varrank(data.df = (data.frame(lapply(airquality[complete.cases(airquality), ], as.numeric))), method = "estevez", variable.important = "Ozone", discretization.method = "sturges", algorithm = "forward", scheme = "mid", verbose = FALSE)
+airquality.varrank
+plot(airquality.varrank)
+```
+
+### Airbags and other influences on accident fatalities
+
+This is US data (1997-2002) from police-reported car crashes in which there was a harmful event (people or property) and from which at least one vehicle was towed. This dataset [@maindonald2014daag] contains 15 variables with 26'217 observations. The *varrank* forward search is performed using "peng" model.
+
+```{r}
+data(nassCDS)
+
+nassCDS.varrank <- varrank(data.df = nassCDS, method = "peng", variable.important = "dead", discretization.method = "sturges", algorithm = "forward", scheme = "mid", verbose = FALSE)
+nassCDS.varrank
+
+plot(nassCDS.varrank, notecex = 0.5)
+```
+
+# Bibliography
+
