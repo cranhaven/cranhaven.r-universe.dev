@@ -1,0 +1,1307 @@
+#' A simple feature point data containing locations of municipalities central localities
+#'
+#' Data is extracted from latest version (April 2023) of Topographic Database (Maastotietokanta) by National Land Survey of Finland (Maanmittauslaitos)
+#'
+#' @format A simple feature POINT data with 311 rows and 21 variables:
+#' \describe{
+#'   \item{mtk_id}{mtk_id}
+#'   \item{sijaintitarkkuus}{location precision}
+#'   \item{aineistolahde}{data source}
+#'   \item{alkupvm}{start date}
+#'   \item{teksti}{Municipality name}
+#'   \item{suunta}{direction}
+#'   \item{dx}{dx}
+#'   \item{dy}{dy}
+#'   \item{kohderyhmä}{kohderyhmä}
+#'   \item{kohdeluokka}{kohdeluokka}
+#'   \item{ladontatunnus}{ladontatunnus}
+#'   \item{kirjasintyyppikoodi}{kirjasintyyppikoodi}
+#'   \item{kirjasinkoko}{kirjasinkoko}
+#'   \item{kirjasinvarikoodi}{kirjasinvarikoodi}
+#'   \item{kirjasinkallistuskulma}{kirjasinkallistuskulma}
+#'   \item{kirjasinvalyskerroin}{kirjasinvalyskerroin}
+#'   \item{kuntatunnus}{municipality code}
+#'   \item{municipality_code}{municipality code}
+#'   \item{municipality_name_fi}{municipality name in Finnish}
+#'   \item{municipality_name_sv}{municipality name in Swedish}
+#'   \item{municipality_name_en}{municipality name in English}
+#'   \item{geometry}{geometry}
+#' }
+"municipality_central_localities"
+
+
+
+#' custom geofacet grid for health care districts
+#'
+#' Grid table to be used with ggplot2 and geofacet
+#'
+#' @format A data frame with 21 rows and 4 variables:
+#' \describe{
+#'   \item{name}{District name (Sairaanhoitopiiri) in Finnish}
+#'   \item{code}{District code}
+#'   \item{row}{Vertical location in grid}
+#'   \item{col}{Horizontal location in grid}
+#' }
+"grid_sairaanhoitop"
+
+#'
+#' custom geofacet grid for regions
+#'
+#' Grid table to be used with ggplot2 and geofacet
+
+#' @format A data frame with 19 rows and 4 variables:
+#' \describe{
+#'   \item{name}{Region name (maakunta) in Finnish}
+#'   \item{code}{Region code}
+#'   \item{row}{Vertical location in grid}
+#'   \item{col}{Horizontal location in grid}
+#' }
+"grid_maakunta"
+
+#'
+#' custom geofacet grid for Wellbeing services counties
+#'
+#' Grid table to be used with ggplot2 and geofacet
+
+#' @format A data frame with 23 rows and 4 variables:
+#' \describe{
+#'   \item{name}{Wellbeing services county name (hyvinvointialue) in Finnish}
+#'   \item{code}{Wellbeing services counties code}
+#'   \item{row}{Vertical location in grid}
+#'   \item{col}{Horizontal location in grid}
+#' }
+"grid_hyvinvointialue"
+
+#' custom geofacet grid for Ahvenanmaa region
+#'
+#' Grid table to be used with ggplot2 and geofacet
+#'
+#' @format A data frame with 16 rows and 4 variables:
+#' \describe{
+#'   \item{name}{Municipality name (kunta) in Finnish}
+#'   \item{code}{Municipality code}
+#'   \item{row}{Vertical location in grid}
+#'   \item{col}{Horizontal location in grid}
+#' }
+"grid_ahvenanmaa"
+
+#' custom geofacet grid for Etelä-Karjala region as in 2020
+#'
+#' Grid table to be used with ggplot2 and geofacet
+#'
+#' @format A data frame with 9 rows and 4 variables:
+#' \describe{
+#'   \item{name}{Municipality name (kunta) in Finnish}
+#'   \item{code}{Municipality code}
+#'   \item{row}{Vertical location in grid}
+#'   \item{col}{Horizontal location in grid}
+#' }
+"grid_etela_karjala"
+
+#' custom geofacet grid for Etelä-Pohjanmaa
+#'
+#' Grid table to be used with ggplot2 and geofacet
+#'
+#' @format A data frame with 18 rows and 4 variables:
+#' \describe{
+#'   \item{name}{Municipality name (kunta) in Finnish}
+#'   \item{code}{Municipality code}
+#'   \item{row}{Vertical location in grid}
+#'   \item{col}{Horizontal location in grid}
+#' }
+"grid_etela_pohjanmaa"
+
+#' custom geofacet grid for Etelä-Savo
+#'
+#' Grid table to be used with ggplot2 and geofacet
+#'
+#' @format A data frame with 11 rows and 4 variables:
+#' \describe{
+#'   \item{name}{Municipality name (kunta) in Finnish}
+#'   \item{code}{Municipality code}
+#'   \item{row}{Vertical location in grid}
+#'   \item{col}{Horizontal location in grid}
+#' }
+"grid_etela_savo"
+
+#' custom geofacet grid for Kainuu region
+#'
+#' Grid table to be used with ggplot2 and geofacet
+#'
+#' @format A data frame with 8 rows and 4 variables:
+#' \describe{
+#'   \item{name}{Municipality name (kunta) in Finnish}
+#'   \item{code}{Municipality code}
+#'   \item{row}{Vertical location in grid}
+#'   \item{col}{Horizontal location in grid}
+#' }
+"grid_kainuu"
+
+#' custom geofacet grid for Kanta-Häme region
+#'
+#' Grid table to be used with ggplot2 and geofacet
+#'
+#' @format A data frame with 11 rows and 4 variables:
+#' \describe{
+#'   \item{name}{Municipality name (kunta) in Finnish}
+#'   \item{code}{Municipality code}
+#'   \item{row}{Vertical location in grid}
+#'   \item{col}{Horizontal location in grid}
+#' }
+"grid_kanta_hame"
+
+#' custom geofacet grid for Keski-Pohjanmaa region
+#'
+#' Grid table to be used with ggplot2 and geofacet
+#'
+#' @format A data frame with 8 rows and 4 variables:
+#' \describe{
+#'   \item{name}{Municipality name (kunta) in Finnish}
+#'   \item{code}{Municipality code}
+#'   \item{row}{Vertical location in grid}
+#'   \item{col}{Horizontal location in grid}
+#' }
+"grid_keski_pohjanmaa"
+
+#' custom geofacet grid for Keski-Suomi region as in 2020
+#'
+#' Grid table to be used with ggplot2 and geofacet
+#'
+#' @format A data frame with 22 rows and 4 variables:
+#' \describe{
+#'   \item{name}{Municipality name (kunta) in Finnish}
+#'   \item{code}{Municipality code}
+#'   \item{row}{Vertical location in grid}
+#'   \item{col}{Horizontal location in grid}
+#' }
+"grid_keski_suomi"
+
+#' custom geofacet grid for Kymenlaakso region
+#'
+#' Grid table to be used with ggplot2 and geofacet
+#'
+#' @format A data frame with 6 rows and 4 variables:
+#' \describe{
+#'   \item{name}{Municipality name (kunta) in Finnish}
+#'   \item{code}{Municipality code}
+#'   \item{row}{Vertical location in grid}
+#'   \item{col}{Horizontal location in grid}
+#' }
+"grid_kymenlaakso"
+
+#' custom geofacet grid for Lappi region as in 2020
+#'
+#' Grid table to be used with ggplot2 and geofacet
+#'
+#' @format A data frame with 21 rows and 4 variables:
+#' \describe{
+#'   \item{name}{Municipality name (kunta) in Finnish}
+#'   \item{code}{Municipality code}
+#'   \item{row}{Vertical location in grid}
+#'   \item{col}{Horizontal location in grid}
+#' }
+"grid_lappi"
+
+#' custom geofacet grid for Päijät-Häme region
+#'
+#' Grid table to be used with ggplot2 and geofacet
+#'
+#' @format A data frame with 10 rows and 4 variables:
+#' \describe{
+#'   \item{name}{Municipality name (kunta) in Finnish}
+#'   \item{code}{Municipality code}
+#'   \item{row}{Vertical location in grid}
+#'   \item{col}{Horizontal location in grid}
+#' }
+"grid_paijat_hame"
+
+#' custom geofacet grid for Pirkanmaa region
+#'
+#' Grid table to be used with ggplot2 and geofacet
+#'
+#' @format A data frame with 23 rows and 4 variables:
+#' \describe{
+#'   \item{name}{Municipality name (kunta) in Finnish}
+#'   \item{code}{Municipality code}
+#'   \item{row}{Vertical location in grid}
+#'   \item{col}{Horizontal location in grid}
+#' }
+"grid_pirkanmaa"
+
+#' custom geofacet grid for Pohjanmaa region
+#'
+#' Grid table to be used with ggplot2 and geofacet
+#'
+#' @format A data frame with 14 rows and 4 variables:
+#' \describe{
+#'   \item{name}{Municipality name (kunta) in Finnish}
+#'   \item{code}{Municipality code}
+#'   \item{row}{Vertical location in grid}
+#'   \item{col}{Horizontal location in grid}
+#' }
+"grid_pohjanmaa"
+
+#' custom geofacet grid for Pohjois-Karjala region
+#'
+#' Grid table to be used with ggplot2 and geofacet
+#'
+#' @format A data frame with 13 rows and 4 variables:
+#' \describe{
+#'   \item{name}{Municipality name (kunta) in Finnish}
+#'   \item{code}{Municipality code}
+#'   \item{row}{Vertical location in grid}
+#'   \item{col}{Horizontal location in grid}
+#' }
+"grid_pohjois_karjala"
+
+#' custom geofacet grid for Pohjois-Pohjanmaa region
+#'
+#' Grid table to be used with ggplot2 and geofacet
+#'
+#' @format A data frame with 30 rows and 4 variables:
+#' \describe{
+#'   \item{name}{Municipality name (kunta) in Finnish}
+#'   \item{code}{Municipality code}
+#'   \item{row}{Vertical location in grid}
+#'   \item{col}{Horizontal location in grid}
+#' }
+"grid_pohjois_pohjanmaa"
+
+#' custom geofacet grid for Pohjois-Savo region
+#'
+#' Grid table to be used with ggplot2 and geofacet
+#'
+#' @format A data frame with 19 rows and 4 variables:
+#' \describe{
+#'   \item{name}{Municipality name (kunta) in Finnish}
+#'   \item{code}{Municipality code}
+#'   \item{row}{Vertical location in grid}
+#'   \item{col}{Horizontal location in grid}
+#' }
+"grid_pohjois_savo"
+
+#' custom geofacet grid for Satakunta region
+#'
+#' Grid table to be used with ggplot2 and geofacet
+#'
+#' @format A data frame with 16 rows and 4 variables:
+#' \describe{
+#'   \item{name}{Municipality name (kunta) in Finnish}
+#'   \item{code}{Municipality code}
+#'   \item{row}{Vertical location in grid}
+#'   \item{col}{Horizontal location in grid}
+#' }
+"grid_satakunta"
+
+#' custom geofacet grid for Uusimaa region
+#'
+#' Grid table to be used with ggplot2 and geofacet
+#'
+#' @format A data frame with 26 rows and 4 variables:
+#' \describe{
+#'   \item{name}{Municipality name (kunta) in Finnish}
+#'   \item{code}{Municipality code}
+#'   \item{row}{Vertical location in grid}
+#'   \item{col}{Horizontal location in grid}
+#' }
+"grid_uusimaa"
+
+#' custom geofacet grid for Varsinais-Suomi region
+#'
+#' Grid table to be used with ggplot2 and geofacet
+#'
+#' @format A data frame with 27 rows and 4 variables:
+#' \describe{
+#'   \item{name}{Municipality name (kunta) in Finnish}
+#'   \item{code}{Municipality code}
+#'   \item{row}{Vertical location in grid}
+#'   \item{col}{Horizontal location in grid}
+#' }
+"grid_varsinais_suomi"
+
+
+#' Aggregated municipality key table for years 2013-2025
+#'
+#' Table for aggregating municipality level data to various regional groupings
+#'
+#' @format A data frame with 4057 rows and 81 variables:
+#' \describe{
+#' \item{kunta}{kunta}
+#' \item{municipality_name_fi}{municipality_name_fi}
+#' \item{municipality_name_sv}{municipality_name_sv}
+#' \item{municipality_name_en}{municipality_name_en}
+#' \item{kuntaryhmitys_code}{kuntaryhmitys_code}
+#' \item{kuntaryhmitys_name_fi}{kuntaryhmitys_name_fi}
+#' \item{kuntaryhmitys_name_sv}{kuntaryhmitys_name_sv}
+#' \item{kuntaryhmitys_name_en}{kuntaryhmitys_name_en}
+#' \item{avi_code}{avi_code}
+#' \item{avi_name_fi}{avi_name_fi}
+#' \item{avi_name_sv}{avi_name_sv}
+#' \item{avi_name_en}{avi_name_en}
+#' \item{ely_code}{ely_code}
+#' \item{ely_name_fi}{ely_name_fi}
+#' \item{ely_name_sv}{ely_name_sv}
+#' \item{ely_name_en}{ely_name_en}
+#' \item{kielisuhde_code}{kielisuhde_code}
+#' \item{kielisuhde_name_fi}{kielisuhde_name_fi}
+#' \item{kielisuhde_name_sv}{kielisuhde_name_sv}
+#' \item{kielisuhde_name_en}{kielisuhde_name_en}
+#' \item{tyossakayntial_code}{tyossakayntial_code}
+#' \item{tyossakayntial_name_fi}{tyossakayntial_name_fi}
+#' \item{maakunta_code}{maakunta_code}
+#' \item{maakunta_name_fi}{maakunta_name_fi}
+#' \item{maakunta_name_sv}{maakunta_name_sv}
+#' \item{maakunta_name_en}{maakunta_name_en}
+#' \item{seutukunta_code}{seutukunta_code}
+#' \item{seutukunta_name_fi}{seutukunta_name_fi}
+#' \item{seutukunta_name_sv}{seutukunta_name_sv}
+#' \item{seutukunta_name_en}{seutukunta_name_en}
+#' \item{year}{year}
+#' \item{suuralue_code}{suuralue_code}
+#' \item{suuralue_name_fi}{suuralue_name_fi}
+#' \item{suuralue_name_sv}{suuralue_name_sv}
+#' \item{suuralue_name_en}{suuralue_name_en}
+#' \item{sairaanhoitop_code}{sairaanhoitop_code}
+#' \item{sairaanhoitop_name_fi}{sairaanhoitop_name_fi}
+#' \item{sairaanhoitop_name_sv}{sairaanhoitop_name_sv}
+#' \item{sairaanhoitop_name_en}{sairaanhoitop_name_en}
+#' \item{nuts1_code}{nuts1_code}
+#' \item{nuts1_name_fi}{nuts1_name_fi}
+#' \item{nuts1_name_sv}{nuts1_name_sv}
+#' \item{nuts1_name_en}{nuts1_name_en}
+#' \item{nuts2_code}{nuts2_code}
+#' \item{nuts2_name_fi}{nuts2_name_fi}
+#' \item{nuts2_name_sv}{nuts2_name_sv}
+#' \item{nuts2_name_en}{nuts2_name_en}
+#' \item{nuts3_code}{nuts3_code}
+#' \item{nuts3_name_fi}{nuts3_name_fi}
+#' \item{nuts3_name_sv}{nuts3_name_sv}
+#' \item{nuts3_name_en}{nuts3_name_en}
+#' \item{vaalipiiri_code}{vaalipiiri_code}
+#' \item{vaalipiiri_name_fi}{vaalipiiri_name_fi}
+#' \item{vaalipiiri_name_sv}{vaalipiiri_name_sv}
+#' \item{vaalipiiri_name_en}{vaalipiiri_name_en}
+#' \item{hyvinvointialue_code}{hyvinvointialue_code}
+#' \item{hyvinvointialue_name_fi}{hyvinvointialue_name_fi}
+#' \item{hyvinvointialue_name_sv}{hyvinvointialue_name_sv}
+#' \item{hyvinvointialue_name_en}{hyvinvointialue_name_en}
+#' \item{tyossakayntial_name_sv}{tyossakayntial_name_sv}
+#' \item{tyossakayntial_name_en}{tyossakayntial_name_en}
+#' \item{yhteistyoalue_code}{yhteistyoalue_code}
+#' \item{yhteistyoalue_name_fi}{yhteistyoalue_name_fi}
+#' \item{yhteistyoalue_name_sv}{yhteistyoalue_name_sv}
+#' \item{yhteistyoalue_name_en}{yhteistyoalue_name_en}
+#' \item{tyollisyysalue_code}{tyollisyysalue_code}
+#' \item{tyollisyysalue_name_fi}{tyollisyysalue_name_fi}
+#' \item{tyollisyysalue_name_sv}{tyollisyysalue_name_sv}
+#' \item{tyollisyysalue_name_en}{tyollisyysalue_name_en}
+#' \item{municipality_code}{municipality_code}
+#' \item{kunta_name}{kunta_name}
+#' \item{name_fi}{name_fi}
+#' \item{name_sv}{name_sv}
+#' \item{kela_palvelualue_name_fi}{kela_palvelualue_name_fi}
+#' \item{kela_palvelualue_code}{kela_palvelualue_code}
+#' \item{kela_palvelualue_name_sv}{kela_palvelualue_name_sv}
+#' \item{kela_palvelualue_name_en}{kela_palvelualue_name_en}
+#' \item{kela_asumistukialue_name_fi}{kela_asumistukialue_name_fi}
+#' \item{kela_asumistukialue_code}{kela_asumistukialue_code}
+#' \item{kela_asumistukialue_name_sv}{kela_asumistukialue_name_sv}
+#' \item{kela_asumistukialue_name_en}{kela_asumistukialue_name_en}
+#' }
+#' @source \url{https://data.stat.fi/api/classifications/v2/classifications}
+"municipality_key"
+
+#' Municipality key table for 2025
+#'
+#' Table for aggregating municipality level data to various regional groupings
+#'
+#' @format A data frame with 308 rows and 69 variables:
+#' \describe{
+#' \item{kunta}{kunta}
+#' \item{municipality_name_fi}{municipality_name_fi}
+#' \item{municipality_name_sv}{municipality_name_sv}
+#' \item{municipality_name_en}{municipality_name_en}
+#' \item{avi_code}{avi_code}
+#' \item{avi_name_fi}{avi_name_fi}
+#' \item{avi_name_sv}{avi_name_sv}
+#' \item{avi_name_en}{avi_name_en}
+#' \item{ely_code}{ely_code}
+#' \item{ely_name_fi}{ely_name_fi}
+#' \item{ely_name_sv}{ely_name_sv}
+#' \item{ely_name_en}{ely_name_en}
+#' \item{kielisuhde_code}{kielisuhde_code}
+#' \item{kielisuhde_name_fi}{kielisuhde_name_fi}
+#' \item{kielisuhde_name_sv}{kielisuhde_name_sv}
+#' \item{kielisuhde_name_en}{kielisuhde_name_en}
+#' \item{maakunta_code}{maakunta_code}
+#' \item{maakunta_name_fi}{maakunta_name_fi}
+#' \item{maakunta_name_sv}{maakunta_name_sv}
+#' \item{maakunta_name_en}{maakunta_name_en}
+#' \item{seutukunta_code}{seutukunta_code}
+#' \item{seutukunta_name_fi}{seutukunta_name_fi}
+#' \item{seutukunta_name_sv}{seutukunta_name_sv}
+#' \item{seutukunta_name_en}{seutukunta_name_en}
+#' \item{year}{year}
+#' \item{suuralue_code}{suuralue_code}
+#' \item{suuralue_name_fi}{suuralue_name_fi}
+#' \item{suuralue_name_sv}{suuralue_name_sv}
+#' \item{suuralue_name_en}{suuralue_name_en}
+#' \item{nuts1_code}{nuts1_code}
+#' \item{nuts1_name_fi}{nuts1_name_fi}
+#' \item{nuts1_name_sv}{nuts1_name_sv}
+#' \item{nuts1_name_en}{nuts1_name_en}
+#' \item{nuts2_code}{nuts2_code}
+#' \item{nuts2_name_fi}{nuts2_name_fi}
+#' \item{nuts2_name_sv}{nuts2_name_sv}
+#' \item{nuts2_name_en}{nuts2_name_en}
+#' \item{nuts3_code}{nuts3_code}
+#' \item{nuts3_name_fi}{nuts3_name_fi}
+#' \item{nuts3_name_sv}{nuts3_name_sv}
+#' \item{nuts3_name_en}{nuts3_name_en}
+#' \item{vaalipiiri_code}{vaalipiiri_code}
+#' \item{vaalipiiri_name_fi}{vaalipiiri_name_fi}
+#' \item{vaalipiiri_name_sv}{vaalipiiri_name_sv}
+#' \item{vaalipiiri_name_en}{vaalipiiri_name_en}
+#' \item{hyvinvointialue_code}{hyvinvointialue_code}
+#' \item{hyvinvointialue_name_fi}{hyvinvointialue_name_fi}
+#' \item{hyvinvointialue_name_sv}{hyvinvointialue_name_sv}
+#' \item{hyvinvointialue_name_en}{hyvinvointialue_name_en}
+#' \item{yhteistyoalue_code}{yhteistyoalue_code}
+#' \item{yhteistyoalue_name_fi}{yhteistyoalue_name_fi}
+#' \item{yhteistyoalue_name_sv}{yhteistyoalue_name_sv}
+#' \item{yhteistyoalue_name_en}{yhteistyoalue_name_en}
+#' \item{tyollisyysalue_code}{tyollisyysalue_code}
+#' \item{tyollisyysalue_name_fi}{tyollisyysalue_name_fi}
+#' \item{tyollisyysalue_name_sv}{tyollisyysalue_name_sv}
+#' \item{tyollisyysalue_name_en}{tyollisyysalue_name_en}
+#' \item{municipality_code}{municipality_code}
+#' \item{kunta_name}{kunta_name}
+#' \item{name_fi}{name_fi}
+#' \item{name_sv}{name_sv}
+#' \item{kela_palvelualue_name_fi}{kela_palvelualue_name_fi}
+#' \item{kela_palvelualue_code}{kela_palvelualue_code}
+#' \item{kela_palvelualue_name_sv}{kela_palvelualue_name_sv}
+#' \item{kela_palvelualue_name_en}{kela_palvelualue_name_en}
+#' \item{kela_asumistukialue_name_fi}{kela_asumistukialue_name_fi}
+#' \item{kela_asumistukialue_code}{kela_asumistukialue_code}
+#' \item{kela_asumistukialue_name_sv}{kela_asumistukialue_name_sv}
+#' \item{kela_asumistukialue_name_en}{kela_asumistukialue_name_en}
+#' }
+#' @source \url{https://data.stat.fi/api/classifications/v2/classifications}
+"municipality_key_2025"
+
+
+
+
+
+#' Municipality key table for 2024
+#'
+#' Table for aggregating municipality level data to various regional groupings
+#'
+#' @format A data frame with 309 rows and 61 variables:
+#' \describe{
+#' \item{kunta}{kunta}
+#' \item{municipality_name_fi}{municipality_name_fi}
+#' \item{municipality_name_sv}{municipality_name_sv}
+#' \item{municipality_name_en}{municipality_name_en}
+#' \item{kuntaryhmitys_code}{kuntaryhmitys_code}
+#' \item{kuntaryhmitys_name_fi}{kuntaryhmitys_name_fi}
+#' \item{kuntaryhmitys_name_sv}{kuntaryhmitys_name_sv}
+#' \item{kuntaryhmitys_name_en}{kuntaryhmitys_name_en}
+#' \item{avi_code}{avi_code}
+#' \item{avi_name_fi}{avi_name_fi}
+#' \item{avi_name_sv}{avi_name_sv}
+#' \item{avi_name_en}{avi_name_en}
+#' \item{ely_code}{ely_code}
+#' \item{ely_name_fi}{ely_name_fi}
+#' \item{ely_name_sv}{ely_name_sv}
+#' \item{ely_name_en}{ely_name_en}
+#' \item{kielisuhde_code}{kielisuhde_code}
+#' \item{kielisuhde_name_fi}{kielisuhde_name_fi}
+#' \item{kielisuhde_name_sv}{kielisuhde_name_sv}
+#' \item{kielisuhde_name_en}{kielisuhde_name_en}
+#' \item{maakunta_code}{maakunta_code}
+#' \item{maakunta_name_fi}{maakunta_name_fi}
+#' \item{maakunta_name_sv}{maakunta_name_sv}
+#' \item{maakunta_name_en}{maakunta_name_en}
+#' \item{seutukunta_code}{seutukunta_code}
+#' \item{seutukunta_name_fi}{seutukunta_name_fi}
+#' \item{seutukunta_name_sv}{seutukunta_name_sv}
+#' \item{seutukunta_name_en}{seutukunta_name_en}
+#' \item{year}{year}
+#' \item{suuralue_code}{suuralue_code}
+#' \item{suuralue_name_fi}{suuralue_name_fi}
+#' \item{suuralue_name_sv}{suuralue_name_sv}
+#' \item{suuralue_name_en}{suuralue_name_en}
+#' \item{nuts1_code}{nuts1_code}
+#' \item{nuts1_name_fi}{nuts1_name_fi}
+#' \item{nuts1_name_sv}{nuts1_name_sv}
+#' \item{nuts1_name_en}{nuts1_name_en}
+#' \item{nuts2_code}{nuts2_code}
+#' \item{nuts2_name_fi}{nuts2_name_fi}
+#' \item{nuts2_name_sv}{nuts2_name_sv}
+#' \item{nuts2_name_en}{nuts2_name_en}
+#' \item{nuts3_code}{nuts3_code}
+#' \item{nuts3_name_fi}{nuts3_name_fi}
+#' \item{nuts3_name_sv}{nuts3_name_sv}
+#' \item{nuts3_name_en}{nuts3_name_en}
+#' \item{vaalipiiri_code}{vaalipiiri_code}
+#' \item{vaalipiiri_name_fi}{vaalipiiri_name_fi}
+#' \item{vaalipiiri_name_sv}{vaalipiiri_name_sv}
+#' \item{vaalipiiri_name_en}{vaalipiiri_name_en}
+#' \item{hyvinvointialue_code}{hyvinvointialue_code}
+#' \item{hyvinvointialue_name_fi}{hyvinvointialue_name_fi}
+#' \item{hyvinvointialue_name_sv}{hyvinvointialue_name_sv}
+#' \item{hyvinvointialue_name_en}{hyvinvointialue_name_en}
+#' \item{yhteistyoalue_code}{yhteistyoalue_code}
+#' \item{yhteistyoalue_name_fi}{yhteistyoalue_name_fi}
+#' \item{yhteistyoalue_name_sv}{yhteistyoalue_name_sv}
+#' \item{yhteistyoalue_name_en}{yhteistyoalue_name_en}
+#' \item{municipality_code}{municipality_code}
+#' \item{kunta_name}{kunta_name}
+#' \item{name_fi}{name_fi}
+#' \item{name_sv}{name_sv}
+#' }
+#' @source \url{https://data.stat.fi/api/classifications/v2/classifications}
+"municipality_key_2024"
+
+
+
+#' Municipality key table for 2023
+#'
+#' Table for aggregating municipality level data to various regional groupings
+#'
+#' @format A data frame with 309 rows and 74 variables:
+#' \describe{
+#'   \item{kunta}{Municipality code}
+#'   \item{municipality_name_fi}{Municipality name in Finnish}
+#'   \item{municipality_name_sv}{Municipality name in Swedish}
+#'   \item{municipality_name_en}{Municipality name in English}
+#'   \item{kuntaryhmitys_code}{Tilastollinen kuntaryhmitys (Statistical grouping) code}
+#'   \item{kuntaryhmitys_name_fi}{Tilastollinen kuntaryhmitys (Statistical grouping) name in Finnish}
+#'   \item{kuntaryhmitys_name_sv}{Tilastollinen kuntaryhmitys (Statistical grouping) name in Swedish}
+#'   \item{kuntaryhmitys_name_en}{Tilastollinen kuntaryhmitys (Statistical grouping) name in English}
+#'   \item{avi_code}{Aluehallintovirasto code (Regional State Administrative Agencies)}
+#'   \item{avi_name_fi}{Aluehallintovirasto name in Finnish (Regional State Administrative Agencies)}
+#'   \item{avi_name_sv}{Aluehallintovirasto name in Finnish (Regional State Administrative Agencies)}
+#'   \item{avi_name_en}{Aluehallintovirasto name in Finnish (Regional State Administrative Agencies)}
+#'   \item{ely_code}{Elinkeino-, liikenne- ja ympäristökeskuksen code (Centre for Economic Development, Transport and the Environment)}
+#'   \item{ely_name_fi}{Elinkeino-, liikenne- ja ympäristökeskuksen name in Finnish (Centre for Economic Development, Transport and the Environment)}
+#'   \item{ely_name_sv}{Elinkeino-, liikenne- ja ympäristökeskuksen name in Swedish (Centre for Economic Development, Transport and the Environment)}
+#'   \item{ely_name_en}{Elinkeino-, liikenne- ja ympäristökeskuksen name in English (Centre for Economic Development, Transport and the Environment)}
+#'   \item{maakunta_code}{Maakunta code (Regions of Finland)}
+#'   \item{maakunta_name_fi}{Maakunta name in Finnish (Regions of Finland)}
+#'   \item{maakunta_name_sv}{Maakunta name in Swedish (Regions of Finland)}
+#'   \item{maakunta_name_en}{Maakunta name in English (Regions of Finland)}
+#'   \item{kielisuhde_code}{Kielisuhde code (Language distribution 2020)}
+#'   \item{kielisuhde_name_fi}{Kielisuhde name in Finnish (Language distribution 2020)}
+#'   \item{kielisuhde_name_sv}{Kielisuhde name in Swedish (Language distribution 2020)}
+#'   \item{kielisuhde_name_en}{Kielisuhde name in English (Language distribution 2020)}
+#'   \item{seutukunta_code}{Seutukunta code (Sub-regions of Finland)}
+#'   \item{seutukunta_name_fi}{Seutukunta name in Finnish (Sub-regions of Finland)}
+#'   \item{seutukunta_name_sv}{Seutukunta name in Swedish (Sub-regions of Finland)}
+#'   \item{seutukunta_name_en}{Seutukunta name in English (Sub-regions of Finland)}
+#'   \item{year}{data year}
+#'   \item{suuralue_code}{Suuralue code}
+#'   \item{suuralue_name_fi}{Suuralueen nimi in Finnish (Large Areas)}
+#'   \item{suuralue_name_sv}{Suuralueen nimi in Swedish (Large Areas)}
+#'   \item{suuralue_name_en}{Suuralueen nimi in English (Large Areas)}
+#'   \item{nuts1_code}{NUTS 2016 classification code (level 1)}
+#'   \item{nuts1_name_fi}{NUTS 2016 classification name in Finnish (level 1)}
+#'   \item{nuts1_name_sv}{NUTS 2016 classification name in Swedish (level 1)}
+#'   \item{nuts1_name_en}{NUTS 2016 classification name in English (level 1)}
+#'   \item{nuts2_code}{NUTS 2016 classification code (level 2)}
+#'   \item{nuts2_name_fi}{NUTS 2016 classification name in Finnish (level 2)}
+#'   \item{nuts2_name_sv}{NUTS 2016 classification name in Swedish (level 2)}
+#'   \item{nuts2_name_en}{nuts2_name_en}
+#'   \item{nuts3_code}{NUTS 2016 classification code (level 2)}
+#'   \item{nuts3_name_fi}{NUTS 2016 classification name in Finnish (level 3)}
+#'   \item{nuts3_name_sv}{NUTS 2016 classification name in Swedish (level 3)}
+#'   \item{nuts3_name_en}{NUTS 2016 classification name in English (level 3)}
+#'   \item{vaalipiiri_code}{Vaalipiiri code (Constituencies)}
+#'   \item{vaalipiiri_name_fi}{Vaalipiiri name in Finnish (Constituencies)}
+#'   \item{vaalipiiri_name_sv}{Vaalipiiri name in Swedish (Constituencies)}
+#'   \item{vaalipiiri_name_en}{Vaalipiiri name in English (Constituencies)}
+#'   \item{municipality_code}{Municipality code}
+#'   \item{kunta_name}{Municipality name in Finnish}
+#'   \item{name_fi}{Municipality name in Finnish}
+#'   \item{name_sv}{Municipality name in Finnish}
+#'   \item{yhteistyoalue_code}{Sosiaali- ja terveydenhuollon yhteistyöalueiden koodi (Collaborative areas for healthcare and social welfare codes)}
+#'   \item{yhteistyoalue_name_fi}{Sosiaali- ja terveydenhuollon yhteistyöalueet}
+#'   \item{yhteistyoalue_name_sv}{Samarbetsområden för social- och hälsovården}
+#'   \item{yhteistyoalue_name_en}{Collaborative areas for healthcare and social welfare}
+#'   \item{tyossakayntial_code}{Työssäkäyntialue code}
+#'   \item{tyossakayntial_name_fi}{Työssäkäyntialue name in Finnish}
+#'   \item{tyossakayntial_name_sv}{Työssäkäyntialue name in Swedish}
+#'   \item{tyossakayntial_name_en}{Työssäkäyntialue name in English}
+#'   \item{hyvinvointialue_name_fi}{Hyvinvointialue name in Finnish (Wellbeing services counties)}
+#'   \item{hyvinvointialue_name_sv}{Hyvinvointialue name in Swedish (Wellbeing services counties)}
+#'   \item{hyvinvointialue_name_en}{Hyvinvointialue name in English (Wellbeing services counties)}
+#'   \item{hyvinvointialue_code}{Hyvinvointialue code (Wellbeing services counties)}
+#' }
+#' @source \url{https://data.stat.fi/api/classifications/v2/classifications}
+"municipality_key_2023"
+
+
+
+#' Municipality key table for 2022
+#'
+#' Table for aggregating municipality level data to various regional groupings
+#'
+#' @format A data frame with 309 rows and 65 variables:
+#' \describe{
+#' \item{kunta}{kunta}
+#' \item{municipality_name_fi}{municipality_name_fi}
+#' \item{municipality_name_sv}{municipality_name_sv}
+#' \item{municipality_name_en}{municipality_name_en}
+#' \item{kuntaryhmitys_code}{kuntaryhmitys_code}
+#' \item{kuntaryhmitys_name_fi}{kuntaryhmitys_name_fi}
+#' \item{kuntaryhmitys_name_sv}{kuntaryhmitys_name_sv}
+#' \item{kuntaryhmitys_name_en}{kuntaryhmitys_name_en}
+#' \item{avi_code}{avi_code}
+#' \item{avi_name_fi}{avi_name_fi}
+#' \item{avi_name_sv}{avi_name_sv}
+#' \item{avi_name_en}{avi_name_en}
+#' \item{ely_code}{ely_code}
+#' \item{ely_name_fi}{ely_name_fi}
+#' \item{ely_name_sv}{ely_name_sv}
+#' \item{ely_name_en}{ely_name_en}
+#' \item{kielisuhde_code}{kielisuhde_code}
+#' \item{kielisuhde_name_fi}{kielisuhde_name_fi}
+#' \item{kielisuhde_name_sv}{kielisuhde_name_sv}
+#' \item{kielisuhde_name_en}{kielisuhde_name_en}
+#' \item{tyossakayntial_code}{tyossakayntial_code}
+#' \item{tyossakayntial_name_fi}{tyossakayntial_name_fi}
+#' \item{maakunta_code}{maakunta_code}
+#' \item{maakunta_name_fi}{maakunta_name_fi}
+#' \item{maakunta_name_sv}{maakunta_name_sv}
+#' \item{maakunta_name_en}{maakunta_name_en}
+#' \item{seutukunta_code}{seutukunta_code}
+#' \item{seutukunta_name_fi}{seutukunta_name_fi}
+#' \item{seutukunta_name_sv}{seutukunta_name_sv}
+#' \item{seutukunta_name_en}{seutukunta_name_en}
+#' \item{year}{year}
+#' \item{suuralue_code}{suuralue_code}
+#' \item{suuralue_name_fi}{suuralue_name_fi}
+#' \item{suuralue_name_sv}{suuralue_name_sv}
+#' \item{suuralue_name_en}{suuralue_name_en}
+#' \item{sairaanhoitop_code}{sairaanhoitop_code}
+#' \item{sairaanhoitop_name_fi}{sairaanhoitop_name_fi}
+#' \item{sairaanhoitop_name_sv}{sairaanhoitop_name_sv}
+#' \item{sairaanhoitop_name_en}{sairaanhoitop_name_en}
+#' \item{nuts1_code}{nuts1_code}
+#' \item{nuts1_name_fi}{nuts1_name_fi}
+#' \item{nuts1_name_sv}{nuts1_name_sv}
+#' \item{nuts1_name_en}{nuts1_name_en}
+#' \item{nuts2_code}{nuts2_code}
+#' \item{nuts2_name_fi}{nuts2_name_fi}
+#' \item{nuts2_name_sv}{nuts2_name_sv}
+#' \item{nuts2_name_en}{nuts2_name_en}
+#' \item{nuts3_code}{nuts3_code}
+#' \item{nuts3_name_fi}{nuts3_name_fi}
+#' \item{nuts3_name_sv}{nuts3_name_sv}
+#' \item{nuts3_name_en}{nuts3_name_en}
+#' \item{vaalipiiri_code}{vaalipiiri_code}
+#' \item{vaalipiiri_name_fi}{vaalipiiri_name_fi}
+#' \item{vaalipiiri_name_sv}{vaalipiiri_name_sv}
+#' \item{vaalipiiri_name_en}{vaalipiiri_name_en}
+#' \item{hyvinvointialue_code}{hyvinvointialue_code}
+#' \item{hyvinvointialue_name_fi}{hyvinvointialue_name_fi}
+#' \item{hyvinvointialue_name_sv}{hyvinvointialue_name_sv}
+#' \item{hyvinvointialue_name_en}{hyvinvointialue_name_en}
+#' \item{tyossakayntial_name_sv}{tyossakayntial_name_sv}
+#' \item{tyossakayntial_name_en}{tyossakayntial_name_en}
+#' \item{municipality_code}{municipality_code}
+#' \item{kunta_name}{kunta_name}
+#' \item{name_fi}{name_fi}
+#' \item{name_sv}{name_sv}
+#' }
+#' @source \url{https://data.stat.fi/api/classifications/v2/classifications}
+"municipality_key_2022"
+
+#' Municipality key table for 2021
+#'
+#' Table for aggregating municipality level data to various regional groupings
+#'
+#' @format A data frame with 309 rows and 63 variables:
+#' \describe{
+#' \item{kunta}{kunta}
+#' \item{municipality_name_fi}{municipality_name_fi}
+#' \item{municipality_name_sv}{municipality_name_sv}
+#' \item{municipality_name_en}{municipality_name_en}
+#' \item{kuntaryhmitys_code}{kuntaryhmitys_code}
+#' \item{kuntaryhmitys_name_fi}{kuntaryhmitys_name_fi}
+#' \item{kuntaryhmitys_name_sv}{kuntaryhmitys_name_sv}
+#' \item{kuntaryhmitys_name_en}{kuntaryhmitys_name_en}
+#' \item{avi_code}{avi_code}
+#' \item{avi_name_fi}{avi_name_fi}
+#' \item{avi_name_sv}{avi_name_sv}
+#' \item{avi_name_en}{avi_name_en}
+#' \item{ely_code}{ely_code}
+#' \item{ely_name_fi}{ely_name_fi}
+#' \item{ely_name_sv}{ely_name_sv}
+#' \item{ely_name_en}{ely_name_en}
+#' \item{kielisuhde_code}{kielisuhde_code}
+#' \item{kielisuhde_name_fi}{kielisuhde_name_fi}
+#' \item{kielisuhde_name_sv}{kielisuhde_name_sv}
+#' \item{kielisuhde_name_en}{kielisuhde_name_en}
+#' \item{tyossakayntial_code}{tyossakayntial_code}
+#' \item{tyossakayntial_name_fi}{tyossakayntial_name_fi}
+#' \item{maakunta_code}{maakunta_code}
+#' \item{maakunta_name_fi}{maakunta_name_fi}
+#' \item{maakunta_name_sv}{maakunta_name_sv}
+#' \item{maakunta_name_en}{maakunta_name_en}
+#' \item{seutukunta_code}{seutukunta_code}
+#' \item{seutukunta_name_fi}{seutukunta_name_fi}
+#' \item{seutukunta_name_sv}{seutukunta_name_sv}
+#' \item{seutukunta_name_en}{seutukunta_name_en}
+#' \item{year}{year}
+#' \item{suuralue_code}{suuralue_code}
+#' \item{suuralue_name_fi}{suuralue_name_fi}
+#' \item{suuralue_name_sv}{suuralue_name_sv}
+#' \item{suuralue_name_en}{suuralue_name_en}
+#' \item{sairaanhoitop_code}{sairaanhoitop_code}
+#' \item{sairaanhoitop_name_fi}{sairaanhoitop_name_fi}
+#' \item{sairaanhoitop_name_sv}{sairaanhoitop_name_sv}
+#' \item{sairaanhoitop_name_en}{sairaanhoitop_name_en}
+#' \item{nuts1_code}{nuts1_code}
+#' \item{nuts1_name_fi}{nuts1_name_fi}
+#' \item{nuts1_name_sv}{nuts1_name_sv}
+#' \item{nuts1_name_en}{nuts1_name_en}
+#' \item{nuts2_code}{nuts2_code}
+#' \item{nuts2_name_fi}{nuts2_name_fi}
+#' \item{nuts2_name_sv}{nuts2_name_sv}
+#' \item{nuts2_name_en}{nuts2_name_en}
+#' \item{nuts3_code}{nuts3_code}
+#' \item{nuts3_name_fi}{nuts3_name_fi}
+#' \item{nuts3_name_sv}{nuts3_name_sv}
+#' \item{nuts3_name_en}{nuts3_name_en}
+#' \item{vaalipiiri_code}{vaalipiiri_code}
+#' \item{vaalipiiri_name_fi}{vaalipiiri_name_fi}
+#' \item{vaalipiiri_name_sv}{vaalipiiri_name_sv}
+#' \item{vaalipiiri_name_en}{vaalipiiri_name_en}
+#' \item{hyvinvointialue_code}{hyvinvointialue_code}
+#' \item{hyvinvointialue_name_fi}{hyvinvointialue_name_fi}
+#' \item{hyvinvointialue_name_sv}{hyvinvointialue_name_sv}
+#' \item{hyvinvointialue_name_en}{hyvinvointialue_name_en}
+#' \item{municipality_code}{municipality_code}
+#' \item{kunta_name}{kunta_name}
+#' \item{name_fi}{name_fi}
+#' \item{name_sv}{name_sv}
+#' }
+#' @source \url{https://data.stat.fi/api/classifications/v2/classifications}
+"municipality_key_2021"
+# names(municipality_key_2021) %>% paste0("#'   \\item{",.,"}{",.,"}\n") %>% cat(., file = "tmp.txt")
+
+
+
+#' Municipality key table for 2020
+#'
+#' Table for aggregating municipality level data to various regional groupings
+#'
+#' @format A data frame with 310 rows and 63 variables:
+#' \describe{
+#' \item{kunta}{kunta}
+#' \item{municipality_name_fi}{municipality_name_fi}
+#' \item{municipality_name_sv}{municipality_name_sv}
+#' \item{municipality_name_en}{municipality_name_en}
+#' \item{kuntaryhmitys_code}{kuntaryhmitys_code}
+#' \item{kuntaryhmitys_name_fi}{kuntaryhmitys_name_fi}
+#' \item{kuntaryhmitys_name_sv}{kuntaryhmitys_name_sv}
+#' \item{kuntaryhmitys_name_en}{kuntaryhmitys_name_en}
+#' \item{avi_code}{avi_code}
+#' \item{avi_name_fi}{avi_name_fi}
+#' \item{avi_name_sv}{avi_name_sv}
+#' \item{avi_name_en}{avi_name_en}
+#' \item{ely_code}{ely_code}
+#' \item{ely_name_fi}{ely_name_fi}
+#' \item{ely_name_sv}{ely_name_sv}
+#' \item{ely_name_en}{ely_name_en}
+#' \item{kielisuhde_code}{kielisuhde_code}
+#' \item{kielisuhde_name_fi}{kielisuhde_name_fi}
+#' \item{kielisuhde_name_sv}{kielisuhde_name_sv}
+#' \item{kielisuhde_name_en}{kielisuhde_name_en}
+#' \item{tyossakayntial_code}{tyossakayntial_code}
+#' \item{tyossakayntial_name_fi}{tyossakayntial_name_fi}
+#' \item{maakunta_code}{maakunta_code}
+#' \item{maakunta_name_fi}{maakunta_name_fi}
+#' \item{maakunta_name_sv}{maakunta_name_sv}
+#' \item{maakunta_name_en}{maakunta_name_en}
+#' \item{seutukunta_code}{seutukunta_code}
+#' \item{seutukunta_name_fi}{seutukunta_name_fi}
+#' \item{seutukunta_name_sv}{seutukunta_name_sv}
+#' \item{seutukunta_name_en}{seutukunta_name_en}
+#' \item{year}{year}
+#' \item{suuralue_code}{suuralue_code}
+#' \item{suuralue_name_fi}{suuralue_name_fi}
+#' \item{suuralue_name_sv}{suuralue_name_sv}
+#' \item{suuralue_name_en}{suuralue_name_en}
+#' \item{sairaanhoitop_code}{sairaanhoitop_code}
+#' \item{sairaanhoitop_name_fi}{sairaanhoitop_name_fi}
+#' \item{sairaanhoitop_name_sv}{sairaanhoitop_name_sv}
+#' \item{sairaanhoitop_name_en}{sairaanhoitop_name_en}
+#' \item{nuts1_code}{nuts1_code}
+#' \item{nuts1_name_fi}{nuts1_name_fi}
+#' \item{nuts1_name_sv}{nuts1_name_sv}
+#' \item{nuts1_name_en}{nuts1_name_en}
+#' \item{nuts2_code}{nuts2_code}
+#' \item{nuts2_name_fi}{nuts2_name_fi}
+#' \item{nuts2_name_sv}{nuts2_name_sv}
+#' \item{nuts2_name_en}{nuts2_name_en}
+#' \item{nuts3_code}{nuts3_code}
+#' \item{nuts3_name_fi}{nuts3_name_fi}
+#' \item{nuts3_name_sv}{nuts3_name_sv}
+#' \item{nuts3_name_en}{nuts3_name_en}
+#' \item{vaalipiiri_code}{vaalipiiri_code}
+#' \item{vaalipiiri_name_fi}{vaalipiiri_name_fi}
+#' \item{vaalipiiri_name_sv}{vaalipiiri_name_sv}
+#' \item{vaalipiiri_name_en}{vaalipiiri_name_en}
+#' \item{municipality_code}{municipality_code}
+#' \item{kunta_name}{kunta_name}
+#' \item{name_fi}{name_fi}
+#' \item{name_sv}{name_sv}
+#' \item{hyvinvointialue_code}{hyvinvointialue_code}
+#' \item{hyvinvointialue_name_fi}{hyvinvointialue_name_fi}
+#' \item{hyvinvointialue_name_sv}{hyvinvointialue_name_sv}
+#' \item{hyvinvointialue_name_en}{hyvinvointialue_name_en}
+#' }
+#' @source \url{https://data.stat.fi/api/classifications/v2/classifications}
+"municipality_key_2020"
+# names(municipality_key_2020) %>% paste0("#'   \\item{",.,"}{",.,"}\n") %>% cat(., file = "tmp.txt")
+
+#' Municipality key table for 2019
+#'
+#' Table for aggregating municipality level data to various regional groupings
+#'
+#' @format A data frame with 311 rows and 63 variables:
+#' \describe{
+#' \item{kunta}{kunta}
+#' \item{municipality_name_fi}{municipality_name_fi}
+#' \item{municipality_name_sv}{municipality_name_sv}
+#' \item{municipality_name_en}{municipality_name_en}
+#' \item{kuntaryhmitys_code}{kuntaryhmitys_code}
+#' \item{kuntaryhmitys_name_fi}{kuntaryhmitys_name_fi}
+#' \item{kuntaryhmitys_name_sv}{kuntaryhmitys_name_sv}
+#' \item{kuntaryhmitys_name_en}{kuntaryhmitys_name_en}
+#' \item{avi_code}{avi_code}
+#' \item{avi_name_fi}{avi_name_fi}
+#' \item{avi_name_sv}{avi_name_sv}
+#' \item{avi_name_en}{avi_name_en}
+#' \item{ely_code}{ely_code}
+#' \item{ely_name_fi}{ely_name_fi}
+#' \item{ely_name_sv}{ely_name_sv}
+#' \item{ely_name_en}{ely_name_en}
+#' \item{kielisuhde_code}{kielisuhde_code}
+#' \item{kielisuhde_name_fi}{kielisuhde_name_fi}
+#' \item{kielisuhde_name_sv}{kielisuhde_name_sv}
+#' \item{kielisuhde_name_en}{kielisuhde_name_en}
+#' \item{tyossakayntial_code}{tyossakayntial_code}
+#' \item{tyossakayntial_name_fi}{tyossakayntial_name_fi}
+#' \item{maakunta_code}{maakunta_code}
+#' \item{maakunta_name_fi}{maakunta_name_fi}
+#' \item{maakunta_name_sv}{maakunta_name_sv}
+#' \item{maakunta_name_en}{maakunta_name_en}
+#' \item{seutukunta_code}{seutukunta_code}
+#' \item{seutukunta_name_fi}{seutukunta_name_fi}
+#' \item{seutukunta_name_sv}{seutukunta_name_sv}
+#' \item{seutukunta_name_en}{seutukunta_name_en}
+#' \item{year}{year}
+#' \item{suuralue_code}{suuralue_code}
+#' \item{suuralue_name_fi}{suuralue_name_fi}
+#' \item{suuralue_name_sv}{suuralue_name_sv}
+#' \item{suuralue_name_en}{suuralue_name_en}
+#' \item{sairaanhoitop_code}{sairaanhoitop_code}
+#' \item{sairaanhoitop_name_fi}{sairaanhoitop_name_fi}
+#' \item{sairaanhoitop_name_sv}{sairaanhoitop_name_sv}
+#' \item{sairaanhoitop_name_en}{sairaanhoitop_name_en}
+#' \item{nuts1_code}{nuts1_code}
+#' \item{nuts1_name_fi}{nuts1_name_fi}
+#' \item{nuts1_name_sv}{nuts1_name_sv}
+#' \item{nuts1_name_en}{nuts1_name_en}
+#' \item{nuts2_code}{nuts2_code}
+#' \item{nuts2_name_fi}{nuts2_name_fi}
+#' \item{nuts2_name_sv}{nuts2_name_sv}
+#' \item{nuts2_name_en}{nuts2_name_en}
+#' \item{nuts3_code}{nuts3_code}
+#' \item{nuts3_name_fi}{nuts3_name_fi}
+#' \item{nuts3_name_sv}{nuts3_name_sv}
+#' \item{nuts3_name_en}{nuts3_name_en}
+#' \item{vaalipiiri_code}{vaalipiiri_code}
+#' \item{vaalipiiri_name_fi}{vaalipiiri_name_fi}
+#' \item{vaalipiiri_name_sv}{vaalipiiri_name_sv}
+#' \item{vaalipiiri_name_en}{vaalipiiri_name_en}
+#' \item{municipality_code}{municipality_code}
+#' \item{kunta_name}{kunta_name}
+#' \item{name_fi}{name_fi}
+#' \item{name_sv}{name_sv}
+#' \item{hyvinvointialue_code}{hyvinvointialue_code}
+#' \item{hyvinvointialue_name_fi}{hyvinvointialue_name_fi}
+#' \item{hyvinvointialue_name_sv}{hyvinvointialue_name_sv}
+#' \item{hyvinvointialue_name_en}{hyvinvointialue_name_en}
+#' }
+#' @source \url{https://data.stat.fi/api/classifications/v2/classifications}
+"municipality_key_2019"
+
+#' Municipality key table for 2018
+#'
+#' Table for aggregating municipality level data to various regional groupings
+#'
+#' @format A data frame with 311 rows and 59 variables:
+#' \describe{
+#' \item{kunta}{kunta}
+#' \item{municipality_name_fi}{municipality_name_fi}
+#' \item{municipality_name_sv}{municipality_name_sv}
+#' \item{municipality_name_en}{municipality_name_en}
+#' \item{kuntaryhmitys_code}{kuntaryhmitys_code}
+#' \item{kuntaryhmitys_name_fi}{kuntaryhmitys_name_fi}
+#' \item{kuntaryhmitys_name_sv}{kuntaryhmitys_name_sv}
+#' \item{kuntaryhmitys_name_en}{kuntaryhmitys_name_en}
+#' \item{avi_code}{avi_code}
+#' \item{avi_name_fi}{avi_name_fi}
+#' \item{avi_name_sv}{avi_name_sv}
+#' \item{avi_name_en}{avi_name_en}
+#' \item{ely_code}{ely_code}
+#' \item{ely_name_fi}{ely_name_fi}
+#' \item{ely_name_sv}{ely_name_sv}
+#' \item{ely_name_en}{ely_name_en}
+#' \item{kielisuhde_code}{kielisuhde_code}
+#' \item{kielisuhde_name_fi}{kielisuhde_name_fi}
+#' \item{kielisuhde_name_sv}{kielisuhde_name_sv}
+#' \item{kielisuhde_name_en}{kielisuhde_name_en}
+#' \item{tyossakayntial_code}{tyossakayntial_code}
+#' \item{tyossakayntial_name_fi}{tyossakayntial_name_fi}
+#' \item{maakunta_code}{maakunta_code}
+#' \item{maakunta_name_fi}{maakunta_name_fi}
+#' \item{maakunta_name_sv}{maakunta_name_sv}
+#' \item{maakunta_name_en}{maakunta_name_en}
+#' \item{seutukunta_code}{seutukunta_code}
+#' \item{seutukunta_name_fi}{seutukunta_name_fi}
+#' \item{seutukunta_name_sv}{seutukunta_name_sv}
+#' \item{seutukunta_name_en}{seutukunta_name_en}
+#' \item{year}{year}
+#' \item{suuralue_code}{suuralue_code}
+#' \item{suuralue_name_fi}{suuralue_name_fi}
+#' \item{suuralue_name_sv}{suuralue_name_sv}
+#' \item{suuralue_name_en}{suuralue_name_en}
+#' \item{sairaanhoitop_code}{sairaanhoitop_code}
+#' \item{sairaanhoitop_name_fi}{sairaanhoitop_name_fi}
+#' \item{sairaanhoitop_name_sv}{sairaanhoitop_name_sv}
+#' \item{sairaanhoitop_name_en}{sairaanhoitop_name_en}
+#' \item{nuts1_code}{nuts1_code}
+#' \item{nuts1_name_fi}{nuts1_name_fi}
+#' \item{nuts1_name_sv}{nuts1_name_sv}
+#' \item{nuts1_name_en}{nuts1_name_en}
+#' \item{nuts2_code}{nuts2_code}
+#' \item{nuts2_name_fi}{nuts2_name_fi}
+#' \item{nuts2_name_sv}{nuts2_name_sv}
+#' \item{nuts2_name_en}{nuts2_name_en}
+#' \item{nuts3_code}{nuts3_code}
+#' \item{nuts3_name_fi}{nuts3_name_fi}
+#' \item{nuts3_name_sv}{nuts3_name_sv}
+#' \item{nuts3_name_en}{nuts3_name_en}
+#' \item{municipality_code}{municipality_code}
+#' \item{kunta_name}{kunta_name}
+#' \item{name_fi}{name_fi}
+#' \item{name_sv}{name_sv}
+#' \item{hyvinvointialue_code}{hyvinvointialue_code}
+#' \item{hyvinvointialue_name_fi}{hyvinvointialue_name_fi}
+#' \item{hyvinvointialue_name_sv}{hyvinvointialue_name_sv}
+#' \item{hyvinvointialue_name_en}{hyvinvointialue_name_en}
+#' }
+#' @source \url{https://data.stat.fi/api/classifications/v2/classifications}
+"municipality_key_2018"
+# names(municipality_key_2017) %>% paste0("#'   \\item{",.,"}{",.,"}\n") %>% cat(., file = "tmp.txt")
+
+#' municipality_key_2017
+#'
+#' Table for aggregating municipality level data to various regional groupings
+#'
+#' @format A data frame with 311 rows and 55 variables:
+#' \describe{
+#' \item{kunta}{kunta}
+#' \item{municipality_name_fi}{municipality_name_fi}
+#' \item{municipality_name_sv}{municipality_name_sv}
+#' \item{municipality_name_en}{municipality_name_en}
+#' \item{avi_code}{avi_code}
+#' \item{avi_name_fi}{avi_name_fi}
+#' \item{avi_name_sv}{avi_name_sv}
+#' \item{avi_name_en}{avi_name_en}
+#' \item{kuntaryhmitys_code}{kuntaryhmitys_code}
+#' \item{kuntaryhmitys_name_fi}{kuntaryhmitys_name_fi}
+#' \item{kuntaryhmitys_name_sv}{kuntaryhmitys_name_sv}
+#' \item{kuntaryhmitys_name_en}{kuntaryhmitys_name_en}
+#' \item{tyossakayntial_code}{tyossakayntial_code}
+#' \item{tyossakayntial_name_fi}{tyossakayntial_name_fi}
+#' \item{ely_code}{ely_code}
+#' \item{ely_name_fi}{ely_name_fi}
+#' \item{ely_name_sv}{ely_name_sv}
+#' \item{ely_name_en}{ely_name_en}
+#' \item{maakunta_code}{maakunta_code}
+#' \item{maakunta_name_fi}{maakunta_name_fi}
+#' \item{maakunta_name_sv}{maakunta_name_sv}
+#' \item{maakunta_name_en}{maakunta_name_en}
+#' \item{seutukunta_code}{seutukunta_code}
+#' \item{seutukunta_name_fi}{seutukunta_name_fi}
+#' \item{seutukunta_name_sv}{seutukunta_name_sv}
+#' \item{seutukunta_name_en}{seutukunta_name_en}
+#' \item{kielisuhde_code}{kielisuhde_code}
+#' \item{kielisuhde_name_fi}{kielisuhde_name_fi}
+#' \item{kielisuhde_name_sv}{kielisuhde_name_sv}
+#' \item{kielisuhde_name_en}{kielisuhde_name_en}
+#' \item{year}{year}
+#' \item{suuralue_code}{suuralue_code}
+#' \item{suuralue_name_fi}{suuralue_name_fi}
+#' \item{suuralue_name_sv}{suuralue_name_sv}
+#' \item{suuralue_name_en}{suuralue_name_en}
+#' \item{sairaanhoitop_code}{sairaanhoitop_code}
+#' \item{sairaanhoitop_name_fi}{sairaanhoitop_name_fi}
+#' \item{sairaanhoitop_name_sv}{sairaanhoitop_name_sv}
+#' \item{sairaanhoitop_name_en}{sairaanhoitop_name_en}
+#' \item{nuts1_code}{nuts1_code}
+#' \item{nuts1_name_fi}{nuts1_name_fi}
+#' \item{nuts1_name_sv}{nuts1_name_sv}
+#' \item{nuts1_name_en}{nuts1_name_en}
+#' \item{nuts2_code}{nuts2_code}
+#' \item{nuts2_name_fi}{nuts2_name_fi}
+#' \item{nuts2_name_sv}{nuts2_name_sv}
+#' \item{nuts2_name_en}{nuts2_name_en}
+#' \item{nuts3_code}{nuts3_code}
+#' \item{nuts3_name_fi}{nuts3_name_fi}
+#' \item{nuts3_name_sv}{nuts3_name_sv}
+#' \item{nuts3_name_en}{nuts3_name_en}
+#' \item{municipality_code}{municipality_code}
+#' \item{kunta_name}{kunta_name}
+#' \item{name_fi}{name_fi}
+#' \item{name_sv}{name_sv}
+#' }
+#' @source \url{https://data.stat.fi/api/classifications/v2/classifications}
+"municipality_key_2017"
+
+#' municipality_key_2016
+#'
+#' Table for aggregating municipality level data to various regional groupings
+#'
+#' @format A data frame with 313 rows and 39 variables:
+#' \describe{
+#' \item{kunta}{kunta}
+#' \item{municipality_name_fi}{municipality_name_fi}
+#' \item{municipality_name_sv}{municipality_name_sv}
+#' \item{municipality_name_en}{municipality_name_en}
+#' \item{avi_code}{avi_code}
+#' \item{avi_name_fi}{avi_name_fi}
+#' \item{avi_name_sv}{avi_name_sv}
+#' \item{avi_name_en}{avi_name_en}
+#' \item{kuntaryhmitys_code}{kuntaryhmitys_code}
+#' \item{kuntaryhmitys_name_fi}{kuntaryhmitys_name_fi}
+#' \item{kuntaryhmitys_name_sv}{kuntaryhmitys_name_sv}
+#' \item{kuntaryhmitys_name_en}{kuntaryhmitys_name_en}
+#' \item{tyossakayntial_code}{tyossakayntial_code}
+#' \item{tyossakayntial_name_fi}{tyossakayntial_name_fi}
+#' \item{ely_code}{ely_code}
+#' \item{ely_name_fi}{ely_name_fi}
+#' \item{ely_name_sv}{ely_name_sv}
+#' \item{ely_name_en}{ely_name_en}
+#' \item{maakunta_code}{maakunta_code}
+#' \item{maakunta_name_fi}{maakunta_name_fi}
+#' \item{maakunta_name_sv}{maakunta_name_sv}
+#' \item{maakunta_name_en}{maakunta_name_en}
+#' \item{seutukunta_code}{seutukunta_code}
+#' \item{seutukunta_name_fi}{seutukunta_name_fi}
+#' \item{seutukunta_name_sv}{seutukunta_name_sv}
+#' \item{seutukunta_name_en}{seutukunta_name_en}
+#' \item{kielisuhde_code}{kielisuhde_code}
+#' \item{kielisuhde_name_fi}{kielisuhde_name_fi}
+#' \item{kielisuhde_name_sv}{kielisuhde_name_sv}
+#' \item{kielisuhde_name_en}{kielisuhde_name_en}
+#' \item{year}{year}
+#' \item{suuralue_code}{suuralue_code}
+#' \item{suuralue_name_fi}{suuralue_name_fi}
+#' \item{suuralue_name_sv}{suuralue_name_sv}
+#' \item{suuralue_name_en}{suuralue_name_en}
+#' \item{municipality_code}{municipality_code}
+#' \item{kunta_name}{kunta_name}
+#' \item{name_fi}{name_fi}
+#' \item{name_sv}{name_sv}
+#' }
+#' @source \url{https://data.stat.fi/api/classifications/v2/classifications}
+"municipality_key_2016"
+
+#' municipality_key_2015
+#'
+#' Table for aggregating municipality level data to various regional groupings
+#'
+#' @format A data frame with 317 rows and 39 variables:
+#' \describe{
+#' \item{kunta}{kunta}
+#' \item{municipality_name_fi}{municipality_name_fi}
+#' \item{municipality_name_sv}{municipality_name_sv}
+#' \item{municipality_name_en}{municipality_name_en}
+#' \item{avi_code}{avi_code}
+#' \item{avi_name_fi}{avi_name_fi}
+#' \item{avi_name_sv}{avi_name_sv}
+#' \item{avi_name_en}{avi_name_en}
+#' \item{kuntaryhmitys_code}{kuntaryhmitys_code}
+#' \item{kuntaryhmitys_name_fi}{kuntaryhmitys_name_fi}
+#' \item{kuntaryhmitys_name_sv}{kuntaryhmitys_name_sv}
+#' \item{kuntaryhmitys_name_en}{kuntaryhmitys_name_en}
+#' \item{tyossakayntial_code}{tyossakayntial_code}
+#' \item{tyossakayntial_name_fi}{tyossakayntial_name_fi}
+#' \item{ely_code}{ely_code}
+#' \item{ely_name_fi}{ely_name_fi}
+#' \item{ely_name_sv}{ely_name_sv}
+#' \item{ely_name_en}{ely_name_en}
+#' \item{maakunta_code}{maakunta_code}
+#' \item{maakunta_name_fi}{maakunta_name_fi}
+#' \item{maakunta_name_sv}{maakunta_name_sv}
+#' \item{maakunta_name_en}{maakunta_name_en}
+#' \item{seutukunta_code}{seutukunta_code}
+#' \item{seutukunta_name_fi}{seutukunta_name_fi}
+#' \item{seutukunta_name_sv}{seutukunta_name_sv}
+#' \item{seutukunta_name_en}{seutukunta_name_en}
+#' \item{kielisuhde_code}{kielisuhde_code}
+#' \item{kielisuhde_name_fi}{kielisuhde_name_fi}
+#' \item{kielisuhde_name_sv}{kielisuhde_name_sv}
+#' \item{kielisuhde_name_en}{kielisuhde_name_en}
+#' \item{year}{year}
+#' \item{suuralue_code}{suuralue_code}
+#' \item{suuralue_name_fi}{suuralue_name_fi}
+#' \item{suuralue_name_sv}{suuralue_name_sv}
+#' \item{suuralue_name_en}{suuralue_name_en}
+#' \item{municipality_code}{municipality_code}
+#' \item{kunta_name}{kunta_name}
+#' \item{name_fi}{name_fi}
+#' \item{name_sv}{name_sv}
+#' }
+#' @source \url{https://data.stat.fi/api/classifications/v2/classifications}
+"municipality_key_2015"
+
+#' municipality_key_2014
+#'
+#' Table for aggregating municipality level data to various regional groupings
+#'
+#' @format A data frame with 320 rows and 39 variables:
+#' \describe{
+#' \item{kunta}{kunta}
+#' \item{municipality_name_fi}{municipality_name_fi}
+#' \item{municipality_name_sv}{municipality_name_sv}
+#' \item{municipality_name_en}{municipality_name_en}
+#' \item{avi_code}{avi_code}
+#' \item{avi_name_fi}{avi_name_fi}
+#' \item{avi_name_sv}{avi_name_sv}
+#' \item{avi_name_en}{avi_name_en}
+#' \item{kuntaryhmitys_code}{kuntaryhmitys_code}
+#' \item{kuntaryhmitys_name_fi}{kuntaryhmitys_name_fi}
+#' \item{kuntaryhmitys_name_sv}{kuntaryhmitys_name_sv}
+#' \item{kuntaryhmitys_name_en}{kuntaryhmitys_name_en}
+#' \item{tyossakayntial_code}{tyossakayntial_code}
+#' \item{tyossakayntial_name_fi}{tyossakayntial_name_fi}
+#' \item{ely_code}{ely_code}
+#' \item{ely_name_fi}{ely_name_fi}
+#' \item{ely_name_sv}{ely_name_sv}
+#' \item{ely_name_en}{ely_name_en}
+#' \item{maakunta_code}{maakunta_code}
+#' \item{maakunta_name_fi}{maakunta_name_fi}
+#' \item{maakunta_name_sv}{maakunta_name_sv}
+#' \item{maakunta_name_en}{maakunta_name_en}
+#' \item{seutukunta_code}{seutukunta_code}
+#' \item{seutukunta_name_fi}{seutukunta_name_fi}
+#' \item{seutukunta_name_sv}{seutukunta_name_sv}
+#' \item{seutukunta_name_en}{seutukunta_name_en}
+#' \item{kielisuhde_code}{kielisuhde_code}
+#' \item{kielisuhde_name_fi}{kielisuhde_name_fi}
+#' \item{kielisuhde_name_sv}{kielisuhde_name_sv}
+#' \item{kielisuhde_name_en}{kielisuhde_name_en}
+#' \item{year}{year}
+#' \item{suuralue_code}{suuralue_code}
+#' \item{suuralue_name_fi}{suuralue_name_fi}
+#' \item{suuralue_name_sv}{suuralue_name_sv}
+#' \item{suuralue_name_en}{suuralue_name_en}
+#' \item{municipality_code}{municipality_code}
+#' \item{kunta_name}{kunta_name}
+#' \item{name_fi}{name_fi}
+#' \item{name_sv}{name_sv}
+#' }
+#' @source \url{https://data.stat.fi/api/classifications/v2/classifications}
+"municipality_key_2014"
+
+#' municipality_key_2013
+#'
+#' Table for aggregating municipality level data to various regional groupings
+#'
+#' @format A data frame with 320 rows and 35 variables:
+#' \describe{
+#' \item{kunta}{kunta}
+#' \item{municipality_name_fi}{municipality_name_fi}
+#' \item{municipality_name_sv}{municipality_name_sv}
+#' \item{municipality_name_en}{municipality_name_en}
+#' \item{avi_code}{avi_code}
+#' \item{avi_name_fi}{avi_name_fi}
+#' \item{avi_name_sv}{avi_name_sv}
+#' \item{avi_name_en}{avi_name_en}
+#' \item{kuntaryhmitys_code}{kuntaryhmitys_code}
+#' \item{kuntaryhmitys_name_fi}{kuntaryhmitys_name_fi}
+#' \item{kuntaryhmitys_name_sv}{kuntaryhmitys_name_sv}
+#' \item{kuntaryhmitys_name_en}{kuntaryhmitys_name_en}
+#' \item{tyossakayntial_code}{tyossakayntial_code}
+#' \item{tyossakayntial_name_fi}{tyossakayntial_name_fi}
+#' \item{ely_code}{ely_code}
+#' \item{ely_name_fi}{ely_name_fi}
+#' \item{ely_name_sv}{ely_name_sv}
+#' \item{ely_name_en}{ely_name_en}
+#' \item{maakunta_code}{maakunta_code}
+#' \item{maakunta_name_fi}{maakunta_name_fi}
+#' \item{maakunta_name_sv}{maakunta_name_sv}
+#' \item{maakunta_name_en}{maakunta_name_en}
+#' \item{seutukunta_code}{seutukunta_code}
+#' \item{seutukunta_name_fi}{seutukunta_name_fi}
+#' \item{seutukunta_name_sv}{seutukunta_name_sv}
+#' \item{seutukunta_name_en}{seutukunta_name_en}
+#' \item{kielisuhde_code}{kielisuhde_code}
+#' \item{kielisuhde_name_fi}{kielisuhde_name_fi}
+#' \item{kielisuhde_name_sv}{kielisuhde_name_sv}
+#' \item{kielisuhde_name_en}{kielisuhde_name_en}
+#' \item{year}{year}
+#' \item{municipality_code}{municipality_code}
+#' \item{kunta_name}{kunta_name}
+#' \item{name_fi}{name_fi}
+#' \item{name_sv}{name_sv}
+#' }
+#' @source \url{https://data.stat.fi/api/classifications/v2/classifications}
+"municipality_key_2013"
+
+
+#' Municipality level population data from Sotkanet
+#'
+#' This dataset contains population data at municipality level pulled from THL (Sotkanet) from 2000 to 2022
+#'
+#' @format A data frame with 7107 rows and 3 variables:
+#' \describe{
+#' \item{municipality_code}{municipality_code}
+#' \item{primary.value}{primary.value}
+#' \item{year}{year}
+#' }
+"sotkadata_population"
+
+#' Municipality level Swedish speaking population numbers from Sotkanet
+#'
+#' This dataset contains Swedish speaking population figures at municipality level pulled from THL (Sotkanet) from 2000 to 2022
+#'
+#' @format A data frame with 5761 rows and 3 variables:
+#' \describe{
+#' \item{municipality_code}{municipality_code}
+#' \item{indicator.title.fi}{indicator.title.fi}
+#' \item{primary.value}{primary.value}
+#' }
+"sotkadata_swedish_speaking_pop"
+
+#' Zipcode level population data from Statistics Finland
+#'
+#' This dataset contains population for each zipcode in Finland. Data is downloaded from Statistics Finland
+#'
+#' @format A data frame with 3027 rows and 2 variables:
+#' \describe{
+#' \item{posti_alue}{posti_alue}
+#' \item{X2022}{X2022}
+#' }
+"statfi_zipcode_population"
+
