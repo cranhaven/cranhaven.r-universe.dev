@@ -1,0 +1,262 @@
+---
+title: "Introduction to hacksig"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Introduction to hacksig}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+options(tibble.print_min = 5L, tibble.print_max = 5L)
+```
+
+Hacksig is a collection of cancer transcriptomics gene signatures as well as a 
+simple and tidy interface to compute single sample enrichment scores.
+
+This document will show you how to getting started with hacksig, but first, we must load the following packages:
+
+```{r, message=FALSE}
+library(hacksig)
+
+# to plot and transform data
+library(dplyr)
+library(ggplot2)
+library(purrr)
+library(tibble)
+library(tidyr)
+
+# to get the MSigDB gene signatures
+library(msigdbr)
+
+# to parallelize computations
+library(future)
+
+theme_set(theme_bw())
+```
+
+
+## Get implemented signatures
+
+In order to get a complete list of the implemented signatures, you can use 
+`get_sig_info()`. It returns a tibble with very useful information:
+
+- the `signature_id`;
+- a string of keywords associated to a signature (separated by the "pipe" `|` symbol);
+- the `publication_doi` linking to the original publication;
+- a brief `description`.
+
+```{r}
+get_sig_info()
+```
+
+To get a full view of the tibble, use:
+
+```{r, eval=FALSE}
+get_sig_info() %>% print(n = Inf)
+# or
+View(get_sig_info())
+```
+
+If you want to get the list of gene symbols for one or more of the implemented 
+signatures, then use `get_sig_genes()` with valid keywords:
+
+```{r}
+get_sig_genes("ifng")
+```
+
+
+## Check your signatures
+
+The first thing you should do before computing scores for a signature is to check how many of its genes are present in your data.
+To accomplish this, we can use `check_sig()` on a normalized gene expression matrix (either microarray or RNA-seq normalized data), which must be formatted as an object of class `matrix` or `data.frame` with gene symbols as row names and sample IDs as column names.
+
+For this tutorial, we will use `test_expr` (an R object included in hacksig) as an example gene expression matrix with 20 simulated samples.
+
+By default, `check_sig()` will compute statistics for every signature implemented in `hacksig`.
+
+```{r}
+check_sig(test_expr)
+```
+
+You can filter for specific signatures by entering keywords in the 
+`signatures` argument (partial match and regular expressions will work):
+
+```{r}
+check_sig(test_expr, signatures = c("metab", "cinsarc"))
+```
+
+We can also check for signatures not implemented in hacksig, that is custom signatures.
+For example, we can use the `msigdbr` package to download the *Hallmark* gene set collection as a tibble and transform it into a list:
+
+```{r}
+hallmark_list <- msigdbr(species = "Homo sapiens", category = "H") %>%
+    distinct(gs_name, gene_symbol) %>%
+    nest(genes = c(gene_symbol)) %>%
+    mutate(genes = map(genes, compose(as_vector, unname))) %>%
+    deframe()
+
+check_sig(test_expr, hallmark_list)
+```
+
+Missing genes for the `HALLMARK_NOTCH_SIGNALING` gene set are:
+
+```{r}
+check_sig(test_expr, hallmark_list) %>% 
+    filter(signature_id == "HALLMARK_NOTCH_SIGNALING") %>% 
+    pull(missing_genes)
+```
+
+
+## Compute single sample scores
+
+### hack_sig
+
+The main function of the package, `hack_sig()`, permits to obtain single sample scores from gene signatures.
+By default, it will compute scores for all the signatures implemented in the package with the original publication method.
+
+```{r}
+hack_sig(test_expr)
+```
+
+You can also filter for specific signatures (e.g. the immune and stromal ESTIMATE signatures) and choose a particular single sample method:
+
+```{r}
+hack_sig(test_expr, signatures = "estimate", method = "zscore")
+```
+
+Valid choices for single sample `method`s are:
+
+  * `"zscore"`, for the combined z-score;
+  * `"ssgsea"`, for the single sample GSEA;
+  * `"singscore"`, for the singscore method.
+  
+Run `?hack_sig` to see additional parameter specifications for these methods.
+
+As in `check_sig()`, the argument `signatures` can also be a list of gene signatures.
+For example, we can compute normalized single sample GSEA scores for the Hallmark gene sets:
+
+```{r}
+hack_sig(test_expr, hallmark_list, 
+         method = "ssgsea", sample_norm = "separate", alpha = 0.5)
+```
+
+There are three methods for which `hack_sig()` cannot be used to compute gene signature scores with the original method. These are: CINSARC, ESTIMATE and the Immunophenoscore.
+
+### hack_cinsarc
+
+For the CINSARC classification, you must provide a vector with distant metastasis status:
+
+```{r}
+set.seed(123)
+rand_dm <- sample(c(0, 1), size = ncol(test_expr), replace = TRUE)
+hack_cinsarc(test_expr, rand_dm)
+```
+
+### hack_estimate
+
+Immune, stromal, ESTIMATE and tumor purity scores from the ESTIMATE method can be obtained with: 
+
+```{r}
+hack_estimate(test_expr)
+```
+
+### hack_immunophenoscore
+
+Finally, the raw immunophenoscore and its discrete (0-10 normalized) counterpart can be obtained with:
+
+```{r}
+hack_immunophenoscore(test_expr)
+```
+
+You can also obtain all biomarker scores with:
+
+```{r}
+hack_immunophenoscore(test_expr, extract = "all")
+```
+
+
+## Stratify your samples
+
+If you want to categorize your samples into two or more signature classes based 
+on a score cutoff, you can use `hack_class()` after `hack_sig()`:
+
+```{r}
+test_expr %>% 
+    hack_sig("estimate", method = "singscore", direction = "up") %>% 
+    hack_class()
+```
+
+By default, `hack_class()` will stratify samples either with the original publication method (if any) or by the median score (otherwise).
+`hack_class()` will work only with signatures implemented in `hacksig`.
+
+
+## Speed-up computation time
+
+Our rank-based single sample method implementations (i.e. single sample GSEA and singscore) are slower than their counterparts implemented in `GSVA` and `singscore`.
+Hence, to speed-up computation time you can use the `future` package:
+
+```{r}
+plan(multisession)
+hack_sig(test_expr, hallmark_list, method = "ssgsea")
+```
+
+
+## Use case
+
+Let's say we want to compute single sample scores for the KEGG gene set collection and then correlate these scores with the tumor purity given by the ESTIMATE method.
+
+First, we get the KEGG list and use `check_sig()` to keep only those gene sets whose genes are more than 2/3 present in our gene expression matrix. 
+
+```{r}
+kegg_list <- msigdbr(species = "Homo sapiens", subcategory = "KEGG") %>%
+    distinct(gs_name, gene_symbol) %>%
+    nest(genes = c(gene_symbol)) %>%
+    mutate(genes = map(genes, compose(as_vector, unname))) %>%
+    deframe()
+
+kegg_ok <- check_sig(test_expr, kegg_list) %>% 
+    filter(frac_present > 0.66) %>% 
+    pull(signature_id)
+```
+
+Then, we apply both the combined z-score and the ssGSEA method for the resulting list of 10 KEGG gene sets using `purrr::map_dfr()`:
+
+```{r}
+kegg_scores <- map_dfr(list(zscore = "zscore", ssgsea = "ssgsea"), 
+                       ~ hack_sig(test_expr,
+                                  kegg_list[kegg_ok],
+                                  method = .x,
+                                  sample_norm = "separate"),
+                       .id = "method")
+```
+
+We can transform the `kegg_scores` tibble in long format using `tidyr::pivot_longer()`:
+
+```{r}
+kegg_scores <- kegg_scores %>% 
+    pivot_longer(starts_with("KEGG"), 
+                 names_to = "kegg_id", values_to = "kegg_score")
+```
+
+Finally, after computing the tumor purity scores, we can merge the two data sets and plot the results:
+
+```{r, fig.dim=c(9,5)}
+purity_scores <- hack_estimate(test_expr) %>% select(sample_id, purity_score)
+
+kegg_scores %>% 
+    left_join(purity_scores, by = "sample_id") %>% 
+    ggplot(aes(x = kegg_id, y = kegg_score)) +
+    geom_boxplot(outlier.alpha = 0) +
+    geom_jitter(aes(color = purity_score), alpha = 0.8, width = 0.1) +
+    facet_wrap(facets = vars(method), scales = "free_x") +
+    coord_flip() +
+    scale_color_viridis_c() +
+    labs(x = NULL, y = "enrichment score", color = "Tumor purity") +
+    theme(legend.position = "top")
+```
+
