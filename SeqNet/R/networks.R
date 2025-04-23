@@ -1,0 +1,1295 @@
+#' Create a network object.
+#' 
+#' Creates a 'network' object containing no modules. 
+#' @param p The number of nodes in the network
+#' @return A network object.
+#' @export 
+#' @examples 
+#' nw <- create_empty_network(10)
+#' plot(nw) # A network with no edges.
+create_empty_network <- function(p) {
+  # Check 'p'.
+  if((p %% 1 != 0) || p <= 0) {
+    stop("Argument 'p' must be a positive integer.")
+  }
+
+  network <- list(p = p,
+                  modules = NULL, 
+                  node_names = NULL)
+  
+  class(network) <- "network"
+  
+  return(network)
+}
+
+
+#' Create a network object.
+#' 
+#' Generates a 'network' object from a list of 'network_modules', The modules
+#' are assumed to have their local network structure already generated. 
+#' Individual modules can be generated using the \code{\link{random_module}} 
+#' function.
+#' @param p The number of nodes in the graph
+#' @param module_list A named list of 'network_module' objects.
+#' @param node_names (optional) Vector of strings providing names for each node
+#' in the graph. Default names are "1", "2", ..., "p".
+#' @param ... Arguments to be passed to other methods. Possible arguments 
+#' include:
+#' 
+#' \tabular{ll}{
+#' prob_rewire \tab
+#' The probability of removing a connection from the local network
+#'  structure; this is applied to each edge created. Used in 
+#'  \code{\link{random_module_structure}}. \cr
+#' 
+#' prob_remove \tab 
+#' The probability of rewiring a connection from the local network
+#'  structure; this is applied every connection of each node. See 
+#'  \code{\link{random_module_structure}}. \cr
+#'  
+#' neig_size \tab  
+#' The initial degree of each node when constructing the ring lattice. 
+#'  See \code{\link{random_module_structure}}. \cr
+#'  
+#' alpha \tab 
+#' A positive value used to parameterize the Beta distribution used
+#'  to sample nodes based on their degree. Larger values will place more weight 
+#'  on highly connected nodes. See \code{\link{random_module_structure}}. \cr
+#' 
+#' beta \tab A positive value used to parameterize the Beta distribution used
+#'  to sample nodes based on their degree. Set to 1 by default. Increasing this
+#'  parameter will cause the sampling to favor moderately connected nodes over 
+#'  the extreme tail of highly connected nodes. 
+#'  See \code{\link{random_module_structure}}. \cr
+#' 
+#' epsilon \tab A small constant added to the sampling probability of each node.
+#'  See \code{\link{random_module_structure}}. \cr
+#' }
+#' @return A network object.
+#' @export 
+#' @examples 
+#' # Networks can be crafted manually by first constructing the individual
+#' # modules, then putting them together to create a network.
+#' module_1 <- random_module(1:10) # A module containing nodes 1-10
+#' module_2 <- random_module(5:15) # A module containing nodes 5-15
+#' # Create a network containing 20 nodes and the two modules. 
+#' nw <- create_network_from_modules(20, list(module_1, module_2))
+#' nw 
+#' # Note: nodes 16-20 are not in a module, so they have no connections.
+#' plot(nw)
+create_network_from_modules <- function(p, 
+                                        module_list, 
+                                        node_names = as.character(1:p), 
+                                        ...) {
+  # Check 'p'.
+  if((p %% 1 != 0) || p <= 0) {
+    stop("Argument 'p' must be a positive integer.")
+  }
+
+  # Check 'module_list'.
+  if(is.null(module_list)) {
+    # NULL module_list is ok.
+  } else if(is(module_list, "list")) {
+    # Check each element in the list 'modules'.
+    if(!all(sapply(module_list, function(m) is(m, "network_module")))) 
+      stop("Argument 'module_list' must be a list of 'network_module'.")
+  } else if(is(module_list, "network_module")) {
+    # If 'module_list' is provided but is not a list, correct without warning.
+    module_list <- list(module_list)
+  } else {
+    stop("Argument 'module_list' must be a list of 'network_module'.")
+  }
+  
+  network <- create_empty_network(p)
+  network <- add_modules_to_network(network, module_list)
+  network <- set_node_names(network, node_names)
+  
+  return(network)
+}
+
+
+###########################################################################
+#
+# Functions to create network
+#
+###########################################################################
+
+#' Create a network object from an adjacency matrix
+#' 
+#' @param adjacency_matrix The adjacency matrix for the network. Since the
+#' adjacency matrix only provides information on the global connections, the
+#' resulting 'network' object will consist of a single module containing these
+#' connections.
+#' @param ... Additional arguments passed to
+#' \code{\link{create_module_from_adjacency_matrix}}. 
+#' @return A network object.
+#' @export 
+#' @examples
+#' adj_mat <- random_module_structure(10)
+#' nw <- create_network_from_adjacency_matrix(adj_mat)
+#' all(adj_mat == get_adjacency_matrix(nw))
+create_network_from_adjacency_matrix <- function(adjacency_matrix, ...) {
+  # Check 'adjacency_matrix'
+  flag <- check_adjacency_cpp(adjacency_matrix)
+  if(flag == 1)
+    stop("Argument 'adjacency_matrix' is not a square matrix.")
+  if(flag == 2)
+    stop("Argument 'adjacency_matrix' has nonzero diagonal values.")
+  if(flag == 3)
+    stop("Argument 'adjacency matrix' is not symmetric.")
+  if(flag == 4)
+    stop("Argument 'adjacency_matrix' contains values that are not 0 or 1.")
+  
+  p <- ncol(adjacency_matrix)
+  
+  # Use node names from 'adjacency_matrix', if provided.
+  if(!is.null(colnames(adjacency_matrix))) {
+    node_names <- colnames(adjacency_matrix)
+  } else {
+    node_names <- paste(1:p)
+  }
+  
+  # Set up module.
+  module <- create_module_from_adjacency_matrix(adjacency_matrix,
+                                                nodes = 1:p,
+                                                ...)
+  
+  network <- create_network_from_modules(p, 
+                                         module_list = list(module), 
+                                         node_names = node_names)
+  
+  return(network)
+}
+
+#' Create a network object from an association matrix
+#' 
+#' @param association_matrix The association matrix for the network. Since the
+#' association matrix only provides information on the global connections, the
+#' resulting 'network' object will consist of a single weighted module 
+#' containing these connections. The edge weights, i.e. the partial correlations,
+#' will correspond to the nonzero values in the matrix.
+#' @param ... Additional arguments passed to 
+#' \code{\link{create_module_from_association_matrix}}.
+#' @return A network object.
+#' @export 
+#' @examples
+#' # Create a random weighted network and extract the association matrix from it.
+#' nw <- random_network(10)
+#' nw <- gen_partial_correlations(nw)
+#' assoc_mat <- get_association_matrix(nw)
+#' # Any association matrix can be used to directly create a network object.
+#' # However, the created network will only contain one module.
+#' nw_from_assoc <- create_network_from_association_matrix(assoc_mat)
+#' all(get_adjacency_matrix(nw) == get_adjacency_matrix(nw_from_assoc))
+create_network_from_association_matrix <- function(association_matrix, 
+                                                   ...) {
+  p <- ncol(association_matrix)
+  
+  # Use node names from association_matrix, if provided and no new nodes are added.
+  if(!is.null(colnames(association_matrix))) {
+    node_names <- colnames(association_matrix)
+  } else {
+    node_names <- paste(1:p)
+  }
+  
+  # Set up module.
+  module <- create_module_from_association_matrix(association_matrix,
+                                                  nodes = 1:p,
+                                                  ...)
+  
+  network <- create_network_from_modules(p, 
+                                         module_list = list(module), 
+                                         node_names = node_names)
+  
+  return(network)
+}
+
+
+#' Create a network object.
+#' 
+#' Creates an unweighted 'network' object containing randomly generated 
+#' modules.
+#' @param p The number of nodes in the network. If \code{p} is much larger than 
+#' 10^4, computation may begin to slow depending on the average module size and 
+#' the amount of overlap among modules.
+#' @param n_modules The number of modules to include in the network. If 
+#' \code{NULL}, then modules are created until all nodes in the network have 
+#' positive degree.
+#' @param ... Arguments to be passed to other methods. Possible arguments 
+#' include:
+#' 
+#' \tabular{ll}{
+#' nu \tab 
+#' A value between 0 and 1 used to control the amount of overlap among 
+#'  modules. Smaller values result in less overlap. Used in 
+#'  \code{\link{sample_module_nodes}}. \cr
+#'  
+#' prob_rewire \tab
+#' The probability of removing a connection from the local network
+#'  structure; this is applied to each edge created. Used in 
+#'  \code{\link{random_module_structure}}. \cr
+#' 
+#' prob_remove \tab 
+#' The probability of rewiring a connection from the local network
+#'  structure; this is applied every connection of each node. See 
+#'  \code{\link{random_module_structure}}. \cr
+#'  
+#' neig_size \tab  
+#' The initial degree of each node when constructing the ring lattice. 
+#'  See \code{\link{random_module_structure}}. \cr
+#'  
+#' alpha \tab 
+#' A positive value used to parameterize the Beta distribution used
+#'  to sample nodes based on their degree. Larger values will place more weight 
+#'  on highly connected nodes. See \code{\link{random_module_structure}}. \cr
+#' 
+#' beta \tab A positive value used to parameterize the Beta distribution used
+#'  to sample nodes based on their degree. Set to 1 by default. Increasing this
+#'  parameter will cause the sampling to favor moderately connected nodes over 
+#'  the extreme tail of highly connected nodes. 
+#'  See \code{\link{random_module_structure}}. \cr
+#' 
+#' epsilon \tab A small constant added to the sampling probability of each node.
+#'  See \code{\link{random_module_structure}}. \cr
+#'  
+#' avg_module_size \tab 
+#' See \code{\link{create_modules_for_network}}. \cr
+#' 
+#' sd_module_size \tab 
+#' See \code{\link{create_modules_for_network}}. \cr
+#' 
+#' min_module_size \tab 
+#' See \code{\link{create_modules_for_network}}. \cr
+#' 
+#' max_module_size \tab 
+#' See \code{\link{create_modules_for_network}}. \cr
+#' }
+#' 
+#' @return An unweighted network object.
+#' @references 
+#' \insertRef{grimes21}{SeqNet}
+#' @export 
+#' @examples 
+#' # Create a random network of 10 nodes
+#' nw <- random_network(10)
+#' nw
+#' # Add a random weight to each connection.
+#' nw <- gen_partial_correlations(nw)
+#' # Plot the network
+#' plot(nw)
+random_network <- function(p,
+                           n_modules = NULL,
+                           ...) {
+  # Check 'p'.
+  if((p %% 1 != 0) || p <= 0) {
+    stop("Argument 'p' must be a positive integer.")
+  }
+  
+  # Check 'n_modules'.
+  if(!is.null(n_modules) && ((n_modules %% 1 != 0) || n_modules < 0)) {
+    stop("Argument 'n_modules' must be a non-negative integer or NULL.")
+  }
+  
+  module_list <- create_modules_for_network(n_modules, p, ...)
+  network <- create_network_from_modules(p, module_list = module_list)
+  
+  return(network)
+}
+
+
+#' Randomly sample subsets of genes for each module
+#' 
+#' Creates a collection of modules containing randomly samples genes.
+#' @param n_modules The number of modules to include in the network.
+#' @param p The number of nodes in the network.
+#' @param avg_module_size The average number of nodes in a module.
+#' @param sd_module_size The standard deviation of module size.
+#' @param min_module_size The minimum number of nodes in a module.
+#' @param max_module_size A positive value. Any generated module sizes above this 
+#' value will be reduced to 'max_module_size'. Set to 'Inf' to avoid this 
+#' truncation.
+#' @param sample_link_nodes_fn A function used for sampling link nodes for a new 
+#' module.
+#' @param sample_module_nodes_fn A function used for sampling nodes for a new 
+#' module.
+#' @param ... Additional arguments passed to \code{\link{random_module}}.
+#' @return A list containing the indices for genes contained in each module.
+#' @references 
+#' \insertRef{grimes21}{SeqNet}
+#' @export 
+#' @examples 
+#' # Create a two modules (having random structures and sizes) from a pool 
+#' # of 100 nodes.
+#' create_modules_for_network(n_modules = 2, p = 100)
+#' # Set n_modules = NULL to continue making modules until all nodes have
+#' # been selected at least once.
+#' create_modules_for_network(n_modules = NULL, p = 100)
+create_modules_for_network <- function(n_modules, 
+                                       p, 
+                                       avg_module_size = 50, 
+                                       sd_module_size = 50,
+                                       min_module_size = 10, 
+                                       max_module_size = 200, 
+                                       sample_link_nodes_fn = sample_link_nodes,
+                                       sample_module_nodes_fn = sample_module_nodes,
+                                       ...) {
+  ############################################################
+  # Check parameters for generating module size.
+  ############################################################
+  if(!is.null(n_modules) && n_modules == 0) {
+    return(NULL)
+  }
+  
+  if(is.null(avg_module_size)) {
+    avg_module_size <- 50
+  }
+  if(is.null(sd_module_size)) {
+    sd_module_size <- avg_module_size
+  }
+  
+  if(avg_module_size <= min_module_size) {
+    avg_module_size <- 1.1 * min_module_size
+    warning(paste("Argument min_module_size should be smaller than avg_module_size.",
+                  "Setting avg_module_size to 1.1 * min_module_size =", avg_module_size))
+  }
+  
+  mu = (avg_module_size - min_module_size)
+  # Adjust sd_module_size if it's too small, unless it's zero.
+  if((sd_module_size^2 - mu) <= 0 && sd_module_size != 0) {
+    sd_module_size <- sqrt(mu) * 1.01
+    warning(paste("Argument 'sd_module_size' is too small.",
+                  "Setting to 1.01 * (avg_module_size - min_module_size) =", sd_module_size))
+  }
+  size <- mu^2/(sd_module_size^2 - mu)
+  # Max module size cannot be larger than the number of nodes in the network.
+  max_module_size <- min(p, max_module_size)
+  
+  ############################################################
+  # Generate module sizes.
+  ############################################################
+  if(is.null(n_modules)) {
+    # Generate extra modules sizes. Should not need more than 2p.
+    if(sd_module_size == 0) {
+      module_sizes <- rep(avg_module_size, 2 * p)
+    } else {
+      module_sizes <- min_module_size + rnbinom(2 * p, size = size, mu = mu)
+    }
+  } else {
+    if(sd_module_size == 0) {
+      module_sizes <- rep(avg_module_size, n_modules)
+    } else {
+      module_sizes <- min_module_size + rnbinom(n_modules, size = size, mu = mu)
+    }
+  }
+  module_sizes <- sapply(module_sizes, min, max_module_size)
+  
+  ############################################################
+  # Initialize nodes in the network.
+  ############################################################
+  if(is.null(n_modules)) {
+    # Generate extra modules sizes. Should not need more than p.
+    module_list <- vector("list", 2 * p)
+  } else {
+    module_list <- vector("list", n_modules)
+  }
+  
+  all_nodes <- 1:p
+  nodes_available <- min(module_sizes[1], p)
+  deg <- rep(0, p)
+  node_unselected <- rep(TRUE, p)
+  need_more_modules <- TRUE
+  i <- 0
+  # Loop until all nodes are selected, but do not allow more than 2p modules.
+  while(need_more_modules && i < (2 * p)) {
+    i <- i + 1
+    m <- module_sizes[i] 
+    index_nodes_available <- 1:nodes_available
+    index_nodes_selected <- which(!node_unselected[index_nodes_available])
+    nodes <- rep(0, m)
+    if(i > 1) {
+      link_nodes <- sample_link_nodes_fn(1,
+                                         index_nodes_selected, 
+                                         deg[index_nodes_selected],
+                                         ...)
+      index_nodes_available <- setdiff(index_nodes_available, link_nodes)
+      nodes <- c(link_nodes,
+                 sample_module_nodes_fn(m - length(link_nodes),
+                                        index_nodes_available,
+                                        deg[index_nodes_available],
+                                        ...))
+    } else {
+      # No modules exist; sample nodes uniformly
+      nodes <- sample(index_nodes_available, m)
+    }
+    nodes <- sort(nodes)
+    module_list[[i]] <- random_module(nodes, weights = deg[nodes], ...)
+    node_unselected[nodes] <- FALSE
+    
+    # Update degree distribution
+    deg[nodes] <- deg[nodes] + colSums(get_adjacency_matrix(module_list[[i]]))
+    
+    if(is.null(n_modules)) {
+      need_more_modules <- any(node_unselected)
+    } else {
+      need_more_modules <- (i < n_modules)
+    }
+    nodes_available <- min(nodes_available + module_sizes[i + 1], p)
+  }
+  
+  # i = n_modules
+  module_list <- module_list[1:i] # Remove any extra nodes.
+  return(module_list)
+}
+
+#' Sample link nodes for new module
+#' 
+#' @param n The number of link nodes to sample.
+#' @param nodes The nodes to sample from.
+#' @param degree The degree of each node.
+#' @param alpha A positive value used to parameterize the Beta distribution.
+#' @param beta  A positive value used to parameterize the Beta distribution. 
+#' @param epsilon Used when sampling link nodes.
+#' @param ... Additional arguments are ignored.
+#' @return A vector of selected nodes (possibly of length 1).
+#' @note This function is used by \code{\link{create_modules_for_network}}
+#' and is not meant to be used externally. 
+#' @export
+sample_link_nodes <- function(n, nodes, degree, alpha = 100, beta = 1, epsilon = 10^-5, ...) {
+  # if(FALSE && eta0 < 0) {
+  #   prob <- (1 - ecdf_cpp(degree))^-eta0 + epsilon
+  # } else {
+  #   prob <- pbeta(ecdf_cpp(degree), alpha, beta) + epsilon
+  # }
+  # prob <- degree^eta0 + epsilon
+  prob <- pbeta(ecdf_cpp(degree), alpha, beta) + epsilon
+  
+  link_nodes <- sample(nodes, n, prob = prob)
+  return(link_nodes)
+}
+
+#' Sample nodes for new module
+#' 
+#' @param n The number of nodes to sample.
+#' @param nodes The nodes available to sample from.
+#' @param degree The degree of each node.
+#' @param nu Multiplier for nodes that are already in one or more modules.
+#' @param ... Additional arguments are ignored.
+#' @return A vector of selected nodes of length m.
+#' @note This function is used by \code{\link{create_modules_for_network}}
+#' and is not meant to be used externally. 
+#' @export
+sample_module_nodes <- function(n, nodes, degree, nu = 0.01, ...) {
+  if(nu <= 0) {
+    stop("nu must be positive.")
+  }
+  m <- length(nodes)
+  val <- 1 / m
+  prob <- rep(val, m)
+  prob[degree > 0] = nu * val
+  module_nodes <- sample(nodes, n, prob = prob)
+  return(module_nodes)
+}
+
+###########################################################################
+#
+# Getter functions for network objects.
+#
+###########################################################################
+
+#' @inherit get_adjacency_matrix
+#' @export
+get_adjacency_matrix.network <- function(x, ...) {
+  if(!is(x, "network"))
+    stop(paste0("'", deparse(substitute(x)), "' is not a 'network' object."))
+  
+  p <- x$p
+  adj_matrix <- matrix(0, nrow = p, ncol = p) # Adjacency matrix.
+  n_modules <- length(x$modules)
+  if(n_modules > 0) {
+    for(i in 1:n_modules) {
+      module_index <- x$modules[[i]]$nodes
+      module_matrix <- get_adjacency_matrix.network_module(x$modules[[i]])
+      adj_matrix[module_index, module_index] <- 
+        (((adj_matrix[module_index, module_index] + module_matrix) > 0) * 1)
+    }
+  }
+  
+  attr(adj_matrix, "dimnames")[[2]] <- x$node_names
+
+  return(adj_matrix)
+}
+
+
+#' @inherit get_association_matrix
+#' @export
+get_association_matrix.network <- function(x, tol = 10^-13, ...) {
+  if(!is(x, "network")) 
+    stop(paste0("'", deparse(substitute(x)), "' is not a 'network' object."))
+  
+  if(!all(sapply(x$modules, is_weighted))) 
+    stop("Network modules must be weighted.")
+  
+  sigma <- get_sigma(x)
+  assoc_matrix <- -solve(sigma)
+  diag(assoc_matrix) <- -diag(assoc_matrix)
+  assoc_matrix <- cov2cor(assoc_matrix)
+  
+  diag(assoc_matrix) <- 0
+  assoc_matrix[abs(assoc_matrix) < tol] <- 0 # Set entries near zero to zero.
+  colnames(assoc_matrix) <- x$node_names
+  
+  return(assoc_matrix)
+}
+
+#' @inherit get_sigma
+#' @export
+get_sigma.network <- function(x, ...) {
+  if(!is(x, "network")) 
+    stop(paste0("'", deparse(substitute(x)), "' is not a 'network' object."))
+  
+  if(!all(sapply(x$modules, is_weighted))) 
+    stop("Network modules must be weighted.")
+  
+  m <- rep(0, x$p)
+  sigma <- diag(0, x$p)
+  for(i in 1:length(x$modules)) {
+    nodes <- x$modules[[i]]$nodes
+    sigma[nodes, nodes] <- sigma[nodes, nodes] + get_sigma(x$modules[[i]])
+    m[nodes] <- m[nodes] + 1
+  }
+  
+  index <- which(m == 0)
+  m[index] <- 1
+  diag(sigma)[index] <- 1
+  # Cov of x_i and x_j is divided by by 1 / sqrt(m_i * m_j), where
+  # m_i and m_j are the number of modules genes i and j belong to, respectively.
+  # This assumes the data are generated by summing the expression of each
+  # module and dividing by 1 / sqrt(m).
+  denom <- 1 / sqrt(m)
+  # The following calculates diag(denom) %*% sigma %*% diag(denom).
+  sigma <- denom * sigma * rep(denom, each = x$p)
+  return(sigma)
+}
+
+#' Get summary for a node in the network.
+#' 
+#' @param node The node to summarize. Can be a character string 
+#' corresponding to a name of a node in the network, or an integer value from 
+#' 1 to p corresponding to the index of a node.
+#' @param network A network object.
+#' @return A list containing summary information for the node; this includes 
+#' a vector of indicies to other nodes in the network it is connected to, and 
+#' a vector of incidices to modules that contain the node.
+#' @export
+#' @examples
+#' set.seed(12345)
+#' nw <- random_network(100)
+#' get_summary_for_node(1, nw)
+#' # Node 1 is contained in modules 1 and 2, and it is connected to nodes 
+#' # 2, 4, 11, 13, 23, and 29.
+get_summary_for_node <- function(node, network) {
+  if(!is(network, "network")) 
+    stop(paste0("'", deparse(substitute(network)), 
+                "' is not a 'network' object."))
+  
+  # Check 'node'.
+  if(is.character(node)) {
+    # If a string is provided, find the index for this node in the network.
+    node_index <- which(network$node_names == node)
+    if(length(node) == 0) 
+      stop("Argument 'network' does not contain a node nammed ", '"', node, '".')
+  } else if(is.numeric(node) && (node %% 1 == 0)) {
+    if(node < 1 || node > network$p) 
+      stop("Argument 'node' = ", node, " must index a node in the network;",
+           " this network contains 1:", network$p, " nodes.")
+    node_index <- node
+  } else {
+    stop("Argument 'node' must be a character string or integer value.")
+  }
+
+  # Initialize summary variables for node.
+  degree <- 0
+  n_modules <- 0
+  connections <- NULL
+  module_index <- NULL
+  
+  # Update degree using the marginal adjacency matrix for the network.
+  adj_matrix <- get_adjacency_matrix(network)
+  degree <- sum(adj_matrix[, node_index])
+  
+  # Update module information.
+  if(length(network$modules) > 0) {
+    # Loop through each module.
+    for(i in 1:length(network$modules)) {
+      # If node is in this module, update summary information.
+      if(node_index %in% network$modules[[i]]$nodes) {
+        module_index <- c(module_index, i)
+        node_index_in_module <- which(network$modules[[i]]$nodes == node_index)
+        adj_matrix <- get_adjacency_matrix(network$modules[[i]])
+        connected_nodes <- network$modules[[i]]$nodes[
+          which(adj_matrix[, node_index_in_module] != 0)]
+        connections <- c(connections, connected_nodes)
+      }
+    }
+  }
+  
+  # Delete any duplicated connections (this happens if two genes are connected
+  # in multiple modules). 
+  connections <- unique(connections)
+  connections <- sort(connections)
+  
+  return(list(node = node,
+              node_index = node_index,
+              connections = connections,
+              module_index = module_index))
+}
+
+#' Get the degree distribution for a network.
+#' 
+#' Counts the connections to each node within each structure. Note, this
+#' is not the same as the degree distribution from the adjacency matrix
+#' obtained from the network, which collapses the individual structures into
+#' one graph.
+#' @param network A network object.
+#' @return A vector of length p, containing the degree for each node in the 
+#' network.
+#' @export
+#' @examples 
+#' set.seed(13245)
+#' nw <- random_network(10)
+#' deg <- get_degree_distribution(nw) # Degree of each node.
+#' table(deg) # Frequency table of degrees.
+#' # Five nodes have degree 2, three nodes have degree 3, etc.
+get_degree_distribution <- function(network) {
+  if(!is(network, "network")) 
+    stop(paste0("'", deparse(substitute(network)), "' is not a 'network' object."))
+  
+  adj_matrix <- get_adjacency_matrix(network)
+  degree <- colSums(adj_matrix)
+  return(degree)
+}
+
+
+
+#' @inherit get_node_names
+#' @export
+get_node_names.network <- function(x, ...) {
+  if(!is(x, "network")) 
+    stop(paste0("'", deparse(substitute(x)), "' is not a 'network' object."))
+  return(x$node_names)
+}
+
+#' Get a list of modules from the network
+#' 
+#' @param network A 'network' object.
+#' @return A list whose length is the number of modules in the network; 
+#' each element is a vector containing the indicies of the nodes
+#' that belong to that module.
+#' @export
+#' @examples
+#' set.seed(12345)
+#' # Create a random network of 50 nodes and modules of sizes between 5-20.
+#' nw <- random_network(50, n_modules = 5, min_module_size = 5, 
+#'                      max_module_size = 20, avg_module_size = 10,
+#'                      sd_module_size = 5)
+#' get_network_modules(nw) # Indicies of nodes contained in each module.
+get_network_modules <- function(network) {
+  if(!is(network, "network")) 
+    stop(paste0("'", deparse(substitute(network)), 
+                "' is not a 'network' object."))
+  lapply(network$modules, function(module) module$nodes)
+}
+
+###########################################################################
+#
+# Utility functions for network objects.
+#
+###########################################################################
+
+#' Internal function for adding a set of modules to the network
+#' 
+#' @param network The network to modify.
+#' @param module_list A list of 'network_module' objects to add to the network.
+#' @return The modified network.
+add_modules_to_network <- function(network, module_list) {
+  if(!is(network, "network")) 
+    stop(paste0("'", deparse(substitute(network)), 
+                "' is not a 'network' object."))
+
+  # Check 'module_list'
+  # Only perform checks if module_list is not NULL and non-empty.
+  if(!is.null(module_list) && length(module_list) > 0) {
+    if(is(module_list, "network_module")) {
+      # A single module is provided; put into a list without warning.
+      module_list <- list(module_list)
+    }
+    if(!all(sapply(module_list, function(m) is(m, "network_module")))) { 
+      stop("Argument 'module_list' must be a list of 'network_module' objects.")
+    } else {
+      # All elements in 'module_list' are modules; check that their nodes 
+      # index nodes within the network.
+      p <- network$p
+      index_bad_modules <- which(sapply(module_list, function(module) {
+        module$nodes[1] <= 0 || module$nodes[length(module$nodes)] > p
+      }))
+      if(length(index_bad_modules) > 0)
+        stop("'module_list' contains modules with nodes outside of",
+             " 1:", p, ". Errors with modules: ", 
+             paste(index_bad_modules, collapse = ", "))
+    }
+  }
+  
+  module_names <- names(module_list)
+  if(!is.null(module_names)) {
+    for(i in 1:length(module_list)) {
+      module_list[[i]] <- set_module_name(module_list[[i]], module_names[i])
+    }
+  }
+  
+  new_module_list <- c(network$modules, module_list)
+  if(!is.null(new_module_list)) {
+    # If new_module_list were NULL, this assignment would remove the 'modules'
+    # element from the network. So, 
+    network$modules <- new_module_list
+  }
+  
+  return(network)
+}
+
+
+#' Internal function for replacing a module in the network
+#' 
+#' @param module_index The index of the module to replace.
+#' @param module The new module to replace with.
+#' @param network The network to modify.
+#' @return The modified network.
+replace_module_in_network <- function(module_index, module, network) {
+  if(!is(module, "network_module")) 
+    stop(paste0("'", deparse(substitute(module)), 
+                "' is not a 'network_module' object."))
+  if(!is(network, "network")) 
+    stop(paste0("'", deparse(substitute(network)), 
+                "' is not a 'network' object."))
+  
+  # Check 'module_index'.
+  if(!(module_index %in% 1:length(network$modules)))
+    stop("Argument 'module_index' must be in 1:", length(network$modules), ".")
+  
+  # Check 'module'.
+  if(!all(module$nodes %in% 1:network$p))
+    stop("Argument 'module' must contain nodes in 1:", network$p, ".")
+  
+  
+  network$modules[[module_index]] <- module
+  
+  return(network)
+}
+
+
+#' @inherit remove_weights
+#' @export
+remove_weights.network <- function(x, ...) {
+  x$modules <- lapply(x$modules, remove_weights)
+  return(x)
+}
+
+#' Adds a random module of a given size to the network
+#' 
+#' @param network The 'network' object to modify.
+#' @param module_size The size of the module to generate.
+#' @param ... Additional arguments passed into random_module().
+#' @return The modified 'network' object.
+#' @export
+#' @examples 
+#' # This function provides an alternative way to iteratively add random
+#' # modules to the network. It uses a weighted sampling of nodes, where
+#' # nodes that haven't been selected for a module have a higher probability 
+#' # of being sampled for the new module.
+#' nw <- create_empty_network(100)
+#' plot(nw) # An empty network of 100 nodes.
+#' # Add random modules of size 10 to the network, 1 at a time.
+#' # By plotting the network each time, we can watch it grow.
+#' set.seed(12345)
+#' plot(nw <<- add_random_module_to_network(nw, 10))
+#' plot(nw <<- add_random_module_to_network(nw, 10))
+#' plot(nw <<- add_random_module_to_network(nw, 10))
+#' plot(nw <<- add_random_module_to_network(nw, 10))
+#' plot(nw <<- add_random_module_to_network(nw, 10))
+#' plot(nw <<- add_random_module_to_network(nw, 10))
+#' # Etc.
+add_random_module_to_network <- function(network, module_size, ...) {
+  if(!is(network, "network")) 
+    stop(paste0("'", deparse(substitute(network)), 
+                "' is not a 'network' object."))
+  
+  p <- network$p
+  
+  # Check 'module_size'
+  if(module_size > p) 
+    stop("Argument 'module_size' = ", module_size, " cannot be greater than the",
+         " number of nodes in the network (p =", p, ")")
+  
+  i <- length(network$modules) + 1
+  all_nodes <- 1:p
+  nodes_available <- p
+  deg <- get_degree_distribution(network)
+  node_unselected <- (deg == 0)
+  
+  index_nodes_available <- 1:nodes_available
+  index_nodes_selected <- which(!node_unselected[index_nodes_available])
+  
+  nodes <- NULL
+  if(i > 1) {
+    link_nodes <- sample_link_nodes(1,
+                                    index_nodes_selected, 
+                                    deg[index_nodes_selected],
+                                    ...)
+    index_nodes_available <- setdiff(index_nodes_available, link_nodes)
+    nodes <- c(link_nodes,
+               sample_module_nodes(module_size - length(link_nodes),
+                                   index_nodes_available,
+                                   deg[index_nodes_available],
+                                   ...))
+  } else {
+    # No modules exist; sample nodes uniformly
+    nodes <- sample(index_nodes_available, module_size)
+  }
+  nodes <- sort(nodes)
+  module <- random_module(nodes, weights = deg[nodes], ...)
+
+  network <- add_modules_to_network(network, module)
+  
+  return(network)
+}
+
+
+#' Set the node names in a network
+#' 
+#' @param network The network to modify.
+#' @param node_names A vector of strings containing the names for each node
+#' in the network. If a numeric vector is provided, the values will be coerced
+#' into strings. If 'node_names' is \code{NULL}, then the names will default to 
+#' "1", "2", ..., "p".
+#' @return The modified network.
+#' @export
+#' @examples 
+#' # Create a random network with 10 nodes. 
+#' nw <- random_network(10)
+#' get_node_names(nw) # Default names are 1, 2, ..., 10.
+#' nw <- set_node_names(nw, paste("node", 1:10, sep = "_"))
+#' get_node_names(nw) # Print out updated node names.
+#' # Modules only contain the indicies to nodes, not the node names
+#' module <- nw$modules[[1]]
+#' get_node_names(module)
+#' # When converting the network to a matrix, node names appear as column names.
+#' adj_matrix <- get_adjacency_matrix(nw)
+#' colnames(adj_matrix) 
+set_node_names <- function(network, node_names) {
+  if(!is(network, "network")) 
+    stop(paste0("'", deparse(substitute(network)), 
+                "' is not a 'network' object."))
+  
+  # Check 'node_names'
+  if(is.null(node_names)) {
+    # Use default names.
+    node_names <- as.character(1:network$p)
+    warning("Argument 'node_names' is NULL; setting default names to ",
+         '"1", "2", ..., "', network$p, '".')
+  }
+  if(is.numeric(node_names)) {
+    # Coerce numeric values to character strings without warning.
+    node_names <- as.character(node_names)
+  }
+  if(!is.character(node_names)) 
+    stop("Argument 'node_names' must be a vector of strings (or numeric vector).")
+  if(length(node_names) != network$p)
+    stop("Length of argument 'node_names' must equal the number of nodes",
+         " in 'network' (p = ", network$p, ").")
+  if(length(unique(node_names)) != length(node_names))
+    stop("Argument 'node_names' must contain unique names.")
+  
+  network$node_names <- node_names
+  
+  return(network)
+}
+
+#' @inherit rewire_connections_to_node
+#' @export
+rewire_connections_to_node.network <- function(x,
+                                               node,
+                                               prob_rewire = 1,
+                                               weights = NULL,
+                                               alpha = 100,
+                                               beta = 1,
+                                               epsilon = 10^-5,
+                                               run_checks = TRUE,
+                                               ...) {
+  if(!is(x, "network")) 
+    stop(paste0("'", deparse(substitute(x)), "' is not a 'network' object."))
+  
+  if(length(x$modules) > 0) {
+    for(i in 1:length(x$modules)) {
+      if(node %in% x$modules[[i]]$nodes) {
+        x$modules[[i]] <- 
+          rewire_connections_to_node(x$modules[[i]], node, prob_rewire, 
+                                     weights, alpha, beta, epsilon, run_checks, ...)
+      }
+    }
+  } else {
+    warning("Argument 'x' contains no modules. Returning the network unmodified.")
+  }
+  
+  return(x)
+}
+
+
+
+#' @inherit rewire_connections
+#' @export
+rewire_connections.network <- function(x,
+                                       prob_rewire = 1,
+                                       weights = NULL,
+                                       alpha = 100,
+                                       beta = 1,
+                                       epsilon = 10^-5,
+                                       run_checks = TRUE,
+                                       ...) {
+  if(!is(x, "network")) 
+    stop(paste0("'", deparse(substitute(x)), "' is not a 'network' object."))
+  
+  if(length(x$modules) > 0) {
+    x$modules <- lapply(x$modules, rewire_connections, prob_rewire, 
+                        weights, alpha, beta, epsilon, run_checks, ...)
+  } else {
+    warning("Argument 'x' contains no modules. Returning the network unmodified.")
+  }
+  
+  return(x)
+}
+
+
+#' @inherit remove_connections_to_node
+#' @export
+remove_connections_to_node.network <- function(x,
+                                               node,
+                                               prob_remove,
+                                               run_checks = TRUE,
+                                               ...) {
+  if(!is(x, "network")) 
+    stop(paste0("'", deparse(substitute(x)), "' is not a 'network' object."))
+  
+  if(length(x$modules) > 0) {
+    for(i in 1:length(x$modules)) {
+      if(node %in% x$modules[[i]]$nodes) {
+        x$modules[[i]] <- 
+          remove_connections_to_node(x$modules[[i]], node, prob_remove, run_checks, ...)
+      }
+    }
+  } else {
+    warning("Argument 'x' contains no modules. Returning the network unmodified.")
+  }
+  
+  return(x)
+}
+
+#' @inherit remove_connections
+#' @export
+remove_connections.network <- function(x,
+                                       prob_remove,
+                                       run_checks = TRUE,
+                                       ...) {
+  if(!is(x, "network")) 
+    stop(paste0("'", deparse(substitute(x)), "' is not a 'network' object."))
+  
+  if(length(x$modules) > 0) {
+    for(i in 1:length(x$modules)) {
+      x$modules[[i]] <- 
+        remove_connections(x$modules[[i]], prob_remove, run_checks, ...)
+    }
+  } else {
+    warning("Argument 'x' contains no modules. Returning the network unmodified.")
+  }
+  
+  return(x)
+}
+
+#' Perturbs the connections in a network
+#' 
+#' The network is perturbed by removing connections from hubs and/or rewiring
+#' other nodes in the network. By default, one hub is turned off (i.e. its 
+#' connections are removed each with probability \code{rewire_hub_prob = 0.5}), and 
+#' no other nodes are changed. Hub nodes are defined as those having degree
+#' above three standard deviations from the average degree, and nodes are
+#' sampled from these to be turned off; if there are no hub nodes, then
+#' those with the largest degree are turned off.
+#' @param network The network to modify.
+#' @param n_hubs The number of hub nodes to turn off.
+#' @param n_nodes The number of non-hub nodes to rewire. When rewiring, the
+#' degree of the node is unchanged.
+#' @param rewire_hub_prob The probability that a connection is removed from
+#' a hub that is selected to be turned off. If \code{rewire_hub_prob = 1}, then
+#' all of the connections to the hub are removed.
+#' @param rewire_other_prob The probability that a connection is rewired from
+#' a non-hub that is selected for rewiring. If \code{rewire_other_prob = 1}, then 
+#' all of the connections to the hub are rewired; however, this does not mean 
+#' that all connections will be changed, as some connections may be removed
+#' but later rewired back.
+#' @param ... Additional arguments passed to 
+#' \code{\link{rewire_connections_to_node}} and 
+#' \code{\link{remove_connections_to_node}}.
+#' @return The modified network.
+#' @export
+#' @examples 
+#' # Create a random network, perturb the network, then plot the differential network.
+#' set.seed(12345)
+#' nw <- random_network(100)
+#' # Rewire 2 random hub genes and 10 other random genes:
+#' nw_diff <- perturb_network(nw, n_hubs = 2, n_nodes = 10)
+#' plot_network_diff(nw, nw_diff) 
+perturb_network <- function(network, 
+                            n_hubs = 1,
+                            n_nodes = 0,
+                            rewire_hub_prob = 0.5,
+                            rewire_other_prob = 0.5,
+                            ...) {
+  if(!is(network, "network")) 
+    stop(paste0("'", deparse(substitute(network)), 
+                "' is not a 'network' object."))
+  
+  if(n_hubs > network$p || n_hubs < 0) {
+    stop("Argument 'n_hubs' must be between 0 and the network size, p.")
+  }
+  if(n_nodes > network$p || n_nodes < 0) {
+    stop("Argument 'n_nodes' must be between 0 and the network size, p.")
+  }
+  
+  # First rewire others, then turn off the hub.
+  # Hub genes will be identified by having a degree above 3 SDs from the mean.
+  degrees <- get_degree_distribution(network)
+  index_hubs <- which(degrees > floor(mean(degrees) + 3 * sd(degrees)))
+  index_others <- 1:network$p
+  if(length(index_hubs) > 0) 
+    index_others <- index_others[-index_hubs] # Remove hub nodes.
+  
+  if(n_hubs > 0) {
+    if(length(index_hubs) < n_hubs) {
+      # If not enough hubs, use nodes with highest degree.
+      selected_hubs <- order(degrees, decreasing = TRUE)[1:n_hubs]
+      index_others <- setdiff(index_others, selected_hubs) # Remove chosen hubs.
+    } else {
+      # Otherwise, sample from hubs.
+      if(length(index_hubs) == 1) { # && n_hubs == 1, but don't need to check.
+        # Do not use sample() if only 1 hub.
+        selected_hubs <- index_hubs
+      } else {
+        selected_hubs <- sample(index_hubs, n_hubs)
+      }
+    }
+    # Turn off selected hubs.
+    for(index in selected_hubs) {
+      network <- remove_connections_to_node(network, index, rewire_hub_prob, ...)
+    }
+  }
+  
+  if(n_nodes > 0) {
+    if(length(index_others) < n_nodes) {
+      # If not enough nodes, give warning and reduce n_nodes.
+      warning(paste0(n_nodes, "nodes requested to rewire but only", length(index_others),
+                     "were available and rewired."))
+      n_nodes <- length(index_others)
+    } 
+    # Select nodes to rewire.
+    if(length(index_others) == 1) {
+      # Do not use sample() if only 1 hub.
+      selected_nodes <- index_others
+    } else {
+      selected_nodes <- sample(index_others, n_nodes)
+    }
+    # Rewire selected nodes.
+    for(index in selected_nodes) {
+      network <- rewire_connections_to_node(network, index, rewire_other_prob, ...)
+    }
+  }
+  
+  return(network)
+}
+
+
+#' Print function for 'network' object.
+#' 
+#' @param x A 'network' object.
+#' @param ... Additional arguments are ignored.
+#' @return Prints a summary of the module.
+#' @export
+#' @examples 
+#' nw <- random_network(10)
+#' nw
+#' print(nw)
+print.network <- function(x, ...) {
+  if(!is(x, "network")) 
+    stop(paste0("'", deparse(substitute(x)), 
+                "' is not a 'network' object."))
+  
+  n_modules <- length(x$modules)
+  vals <- get_network_characteristics(x, global_only = TRUE)
+  
+  message <- paste0(ifelse(is_weighted(x), "A weighted", "An unweighted"), 
+                    " network containing ", vals$p, " nodes, ", 
+                    vals$n_edges, " edges, and ", n_modules, 
+                    " module", ifelse(n_modules > 1, "s", ""), ".\n")
+  cat(message)
+  print(round(unlist(vals[-c(1, 2, 6)]), 3))
+}
+
+
+#' @inherit is_weighted
+#' @export
+is_weighted.network <- function(x, ...) {
+  if(!is(x, "network")) 
+    stop(paste0("'", deparse(substitute(x)), "' is not a 'network' object."))
+  
+  if(length(x$modules) == 0) {
+    return(TRUE)
+  } 
+  
+  if(all(sapply(x$modules, is_weighted))) {
+    return(TRUE)
+  } else {
+    return(FALSE)
+  }
+}
+
+#' Collapses all modules in network into a single module
+#' 
+#' This modification can be used if it is desired to simulate from a single
+#' GGM rather than averaging over the GGMs for each module.
+#' @param network The 'network' object to modify
+#' @return The modified 'network' object.
+#' @export
+#' @examples
+#' # This function can be used prior to generating weights for the network 
+#' # connections. With multiple modules in the network, the weighted network may
+#' # gain conditional dependencies between nodes across modules. If the network
+#' # is reduced to a single module prior to generating weights, then the
+#' # weighted and unweighted networks will maintain the same structure.
+#' nw <- random_network(20, n_modules = 3)
+#' g <- plot(nw)
+#' nw <- gen_partial_correlations(nw)
+#' plot(nw, g) # Additional edges appear from conditional dependencies across modules.
+#' nw <- remove_weights(nw) # Remove weights to avoid warning message in next call.
+#' nw <- as_single_module(nw)
+#' nw <- gen_partial_correlations(nw)
+#' plot(nw, g) # With only one module, the weighted network has the same structure.
+as_single_module <- function(network) {
+  if(is_weighted(network)) {
+    warning("A weighted network was provided; all connections weights have been removed.")
+    network <- remove_weights(network)
+  }
+  network <- create_network_from_adjacency_matrix(
+    get_adjacency_matrix(network))
+  
+  return(network)
+}
+
+
+#' Characteristics of the network topology
+#' 
+#' The average degree, clustering coefficient, and average path length are calculated.
+#' @param network A 'network', 'network_module', or 'matrix' object.
+#' @param global_only If \code{TRUE}, only the global characteristics are calculated. 
+#' @return A list containing characteristics of the network.
+#' @export
+#' @examples 
+#' nw <- random_network(10)
+#' get_network_characteristics(nw)
+get_network_characteristics <- function(network, global_only = FALSE) {
+  adj <- get_adjacency_matrix(network)
+  graph <- igraph::graph_from_adjacency_matrix(adj, mode = "undirected")
+  # graph <- igraph::graph_from_edgelist(edges_from_adjacency_cpp(adj), directed = FALSE)  
+  
+  deg <- igraph::degree(graph)
+  tab <- table(deg)
+  
+  if(!global_only) {
+    # Calculate the emperical degree distribution.
+    K = as.numeric(names(tab))
+    P_K = as.numeric(tab / sum(tab))
+  }
+  
+  
+  if(!global_only) {
+    # Calculate the average clustering coefficient C(K) for nodes with each degree K.
+    ind <- which(deg > 1)
+    if(length(ind) == 0) {
+      # Store properties of K in a data.frame.
+      C_K <- rep(NA, length(K))
+    } else {
+      clustco <- igraph::transitivity(graph, type = "local")[ind]
+      deg_sub <- deg[ind]
+      clus <- rep(NA, max(deg_sub))
+      for(i in 2:(max(deg_sub))) {
+        coefs <- clustco[which(deg_sub == i)]
+        if(length(coefs) > 0) {
+          clus[i] <- mean(coefs)
+        }
+      }
+      
+      if("0" %in% names(tab) && "1" %in% names(tab)) {
+        C_K <- c(NA, NA, clus[which(!is.na(clus))])
+      } else if("0" %in% names(tab) || "1" %in% names(tab)) {
+        C_K <- c(NA, clus[which(!is.na(clus))])
+      } else {
+        C_K <- clus[which(!is.na(clus))]
+      }
+    }
+  }
+  
+  
+  # Calculate the average shortest path length L(K) for nodes with each degree K.
+  if(!global_only) {
+    if(length(ind) == 0) {
+      # Store properties of L in a data.frame.
+      L_K <- rep(NA, length(K))
+      `avg path length` = NaN
+    } else {
+      avgpath <- sapply(igraph::V(graph), function(v) {
+        d <- igraph::distances(graph, v)[-v]
+        d <- d[d != Inf] # Subset on distances within component
+        mean(d)
+      })
+      L <- rep(NA, max(deg))
+      # Loop over nodes with positive degree (i.e. start at i = 1).
+      for(i in 1:(max(deg_sub))) {
+        paths <- avgpath[which(deg == i)]
+        if(length(paths) > 0) {
+          L[i] <- mean(paths, na.rm = TRUE)
+        }
+      }
+      
+      if("0" %in% names(tab)) {
+        L_K <- c(NA, L[which(!is.na(L))])
+      } else {
+        L_K <- L[which(!is.na(L))]
+      }
+      `avg path length` = mean(avgpath, na.rm = TRUE)
+    }
+  } else {
+    `avg path length` = igraph::mean_distance(graph)
+  }
+  
+  if(!global_only) {
+    df <- data.frame(K = K, 
+                     P_K = P_K,
+                     C_K = C_K,
+                     L_K = L_K)
+  } else {
+    df <- NULL
+  }
+   
+  return(list(p = ncol(adj),
+              n_edges = sum(adj[lower.tri(adj)]),
+              `avg degree` = mean(deg), 
+              `clustering coef` = igraph::transitivity(graph), 
+              `avg path length` = `avg path length`, 
+              df = df))
+}
