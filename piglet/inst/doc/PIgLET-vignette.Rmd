@@ -1,0 +1,587 @@
+---
+title: "PIgLET: Program for Ig clusters"
+author: "Ayelet Peres & William D. Lees & Gur Yaari"
+date: "Last modified `r Sys.Date()`"
+output:
+  bookdown::html_document2:
+    base_format: rmarkdown::html_vignette
+    toc: yes
+    toc_depth: 3
+  pdf_document:
+    dev: pdf
+    fig_height: 20
+    fig_width: 15
+    highlight: pygments
+    toc: yes
+    toc_depth: 3
+    template: null
+  md_document:
+    fig_height: 20
+    fig_width: 15
+    preserve_yaml: no
+    toc: yes
+    toc_depth: 3
+always_allow_html: yes
+bibliography: bibliography.bib
+csl: ieee-with-url.csl
+link-citations: yes
+urlcolor: blue
+geometry: margin=1in
+fontsize: 11pt
+vignette: >
+  %\usepackage[utf8]{inputenc}
+  %\VignetteIndexEntry{PIgLET: Program for Ig clusters}
+  %\VignetteEngine{knitr::rmarkdown} 
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  crop = knitr::hook_pdfcrop
+)
+suppressMessages(library(htmltools))
+```
+
+```{r, echo=FALSE}
+htmltools::img(src = knitr::image_uri("piglet_logo.svg"), 
+               alt = 'logo', 
+               style = 'position:absolute; top:0; right:0; padding:10px;border: none !important;')
+```
+
+# Introduction
+
+In adaptive immune receptor repertoire analysis, determining the
+germline variable (V) allele associated with each T- and B-cell receptor
+sequence is a crucial step. This process is highly impacted by allele
+annotations. Aligning sequences, assigning them to specific germline
+alleles, and inferring individual genotypes are challenging when the
+repertoire is highly mutated, or sequence reads do not cover the whole V
+region.
+
+PIgLET was created to provide a solution for this challenge. The package
+includes two main tools. The first, creates an alternative naming scheme
+for the V alleles, based on the proposed approach in Peres at. el
+[@peres2022ighv]. The second, is an allele based genotype, that
+determined the presence of an allele based on a threshold derived from a
+naive population.
+
+The naming scheme is compatible with current annotation tools and
+pipelines. Analysis results can be converted from the proposed naming
+scheme to the nomenclature determined by the International Union of
+Immunological Societies (IUIS). The package genotype inference method is
+accompanied by an online interactive website, to allow researchers to
+further explore the approach on real data [IGHV reference
+book](https://yaarilab.github.io/IGHV_reference_book/).
+
+# Package Overview
+
+PIgLET is a suite of computational tools that improves genotype
+inference and downstream AIRR-seq data analysis. The package as two main
+tools. The first is Allele Clusters, this tool is designed to reduce the
+ambiguity within the IGHV alleles. The ambiguity is caused by duplicated
+or similar alleles which are shared among different genes. The second
+tool is an allele based genotype, that determined the presence of an
+allele based on a threshold derived from a naive population.
+
+## Allele Similarity Cluster:
+
+This section provides the functions that support the main tool of
+creating the allele similarity cluster form an IGHV germline set.
+
+-   `inferAlleleClusters`: The main function of the section to create
+    the allele clusters based on a germline set.
+-   `ighvDistance`: Calculate the distance between IGHV aligned germline
+    sequences.
+-   `ighvClust`: Hierarchical clustering of the distance matrix from
+    `ighvDistance`.
+-   `generateReferenceSet`: Generate the allele clusters reference set.
+-   `plotAlleleCluster`: Plots the Hierarchical clustering.
+-   `artificialFRW1Germline`: Artificially create an IGHV reference set
+    with framework1 (FWR1) primers.
+
+## Allele based genotype:
+
+This section provides the functions to infer the IGHV genotype using the
+allele based method and the allele clusters thresholds
+
+-   `inferGenotypeAllele`: Infer the IGHV genotype using the allele
+    based method.
+-   `assignAlleleClusters`: Renames the v allele calls based on the new
+    allele clusters.
+-   `germlineASC`: Converts IGHV germline set to ASC germline set.
+-   `recentAlleleClusters`: Download the most recent version of the
+    allele clusters table archive from Zenodo.
+-   `extractASCTable`: Extracts the allele cluster table from the Zenodo
+    archive file.
+-   `zenodoArchive`: An R6 object to query the Zenodo api.
+
+# Allele Similarity Cluster
+
+## Introduction
+
+The term Allele similarity clusters (ASC), defines alleles that have a
+degree of germline proximity. The proximity is defined as the
+Levenshtein distance between the coding region of the alleles' germline
+sequences. A distance matrix of all alleles' Levenshtein distance is
+constructed and the hierarchical tree is calculated. The tree leaves are
+then clustered by 95% similarity which creates the alleles clusters.
+
+### Library amplicon length {#sec-amplicon-Length}
+
+Even though, we wish that all repertoires data available will cover the
+entire V region this is not always the case. Hence, we adapted our
+protocols to fit partial V coverage libraries. For the beginning we
+chose two library amplicon length, BIOMED-2 primers and Adaptive region
+coverage. The table below summaries the naming for each of the amplicon
+lengths and see Fig. \@ref(fig:plot-amplicon) for coverage illustration:
+
+| Library amplicon length | Coverage                                | Similar known protocol |
+|--------------------|--------------------------------|--------------------|
+| S1                      | Full length - 1 to 318 (IMGT numbering) | 5' Race                |
+| S2                      | Starting within the framework 1 region  | BIOMED-2               |
+| S3                      | End of the V region                     | Adaptive               |
+
+```{r plot-amplicon, fig.width=11, fig.height=2, echo=FALSE, fig.cap="**V library amplicon length.** Each row is a different V coverage, S1 for full length, S2 for BIOMED-2 primers, and S3 for adaptive coverage. The colors indicates the V regions according to IMGT numbering, where dark gray represents the IMGT gaps."}
+FWR1 <-
+  "caggtgcagctggtgcagtctggggct...gaggtgaagaagcctggggcctcagtgaaggtctcctgcaaggcttct"
+
+CDR1 <- "ggatacaccttc............accggctactat"
+
+FWR2 <- "atgcactgggtgcgacaggcccctggacaagggcttgagtggatgggacgg"
+
+CDR2 <- "atcaaccctaac......agtggtggcaca"
+
+FWR3 <-
+  "aactatgcacagaagtttcag...ggcagggtcaccagtaccagggacacgtccatcagcacagcctacatggagctgagcaggctgagatctgacgacacggtcgtgtattactgt"
+
+CDR3 <- "gcgagaga"
+
+seq <- c("seq1" = paste0(FWR1, CDR1, FWR2, CDR2, FWR3, CDR3))
+
+mat_letters = matrix(sample(letters[1:4], 100, replace = TRUE), 10)
+
+i = 1
+regions <- c()
+letters <- c()
+reg <- c("FWR1", "CDR1", "FWR2", "CDR2", "FWR3", "CDR3")
+for (s in toupper(c(FWR1, CDR1, FWR2, CDR2, FWR3, CDR3))) {
+  letters <- c(letters, strsplit(s, "")[[1]])
+  
+  regions <-
+    c(regions, ifelse(grepl("[.]", strsplit(s, "")[[1]]), "gap", reg[i]))
+  i = i + 1
+}
+
+togap <- function(vgap, vdj) {
+  ##add in vdj gaps
+  gapadd <- vdj
+  for (i in which(unlist(strsplit(vgap, "", fixed = T)) == ".")) {
+    gapadd <-
+      paste0(substr(gapadd, 1, i - 1), ".", substr(gapadd, i, nchar(gapadd)))
+  }
+  return(gapadd)
+}
+
+
+primer <- "GGCCTCAGTGAAGGTCTCCTGCAAG"
+seq <- toupper(paste0(FWR1, CDR1, FWR2, CDR2, FWR3, CDR3))
+loc <-
+  unlist(aregexec(
+    text = gsub("[.]", "", seq),
+    pattern = primer,
+    max.distance = 4
+  ))
+seq_n_gap <- gsub("[.]", "", seq)
+preceding <- substr(seq_n_gap, 1, (loc[1] - 1 + nchar(primer)))
+preceding <- gsub("[AGCT]", "N", preceding)
+fr1_seq <- substr(seq_n_gap, (loc[1] + nchar(primer)), nchar(seq_n_gap))
+seq_paste <- paste0(preceding, fr1_seq)
+seq_gapped <- togap(seq, seq_paste)
+FWR1_s2 <- strsplit(seq_gapped, toupper(CDR1))[[1]][1]
+i = 1
+for (s in toupper(c(FWR1_s2, CDR1, FWR2, CDR2, FWR3, CDR3))) {
+  if (any(grepl("N", s))) {
+    letters <- c(letters, strsplit(s, "")[[1]])
+    
+    regions <-
+      c(regions, ifelse(grepl("[.]", strsplit(s, "")[[1]]), "", ifelse(grepl(
+        "N", strsplit(s, "")[[1]]
+      ), "", reg[i])))
+    
+  } else{
+    letters <- c(letters, strsplit(s, "")[[1]])
+    regions <-
+      c(regions, ifelse(grepl("[.]", strsplit(s, "")[[1]]), "gap", reg[i]))
+  }
+  
+  i = i + 1
+  
+}
+
+lower_thresh <- 225
+upper_seq <- substr(seq, lower_thresh, nchar(seq))
+lower_seq <- strsplit(seq, upper_seq, fixed = T)[[1]][1]
+lower_seq <- gsub("[ATCG]", "N", lower_seq)
+s3_seq <- paste0(lower_seq, upper_seq)
+
+
+seqs_s3 <-
+  sapply(toupper(c(FWR1, CDR1, FWR2, CDR2, FWR3, CDR3)), function(s) {
+    s <- gsub("[ATCG]", "N", s)
+    stringi::stri_extract(s3_seq, fixed = toupper(s))
+  }, USE.NAMES = F)
+
+seqs_s3[5] <-
+  strsplit(strsplit(s3_seq, gsub("[ATCG]", "N", toupper(CDR2)), fixed = T)[[1]][2], toupper(CDR3), fixed = T)[[1]][1]
+seqs_s3[6] <- toupper(CDR3)
+i = 1
+for (s in seqs_s3) {
+  letters <- c(letters, strsplit(s, "")[[1]])
+  regions <- c(regions, ifelse(grepl("[.]", strsplit(s, "")[[1]]),
+                               "", ifelse(grepl(
+                                 "N", strsplit(s, "")[[1]]
+                               ), "", reg[i])))
+  i = i + 1
+}
+
+
+mat_seq <- matrix(letters,
+                  nrow = 3,
+                  ncol = 320,
+                  byrow = T)
+mat_regions <- matrix(regions,
+                      nrow = 3,
+                      ncol = 320,
+                      byrow = T)
+
+fam_col <-
+  c(
+    "brown4",
+    "darkblue",
+    "darkorchid4",
+    "darkgreen",
+    "firebrick",
+    "darkorange3",
+    "deeppink4",
+    "deepskyblue4",
+    "darkslategrey"
+  )
+
+split_col <- unlist(sapply(1:6, function(i) {
+  rep(reg[i], nchar(c(FWR1, CDR1, FWR2, CDR2, FWR3, CDR3)[i]))
+}))
+split_col <- factor(split_col, levels = reg)
+vreg <- ComplexHeatmap::Heatmap(
+  mat_regions,
+  name = "V regions",
+  col = structure(c("white", "#00000099", fam_col[1:6]),
+                  names = c("", "gap", reg)),
+  heatmap_height = grid::unit(5, "cm"),
+  row_split = c("S1", "S2", "S3"),
+  cluster_rows = F,
+  cluster_columns = F,
+  show_heatmap_legend = F,
+  column_split = split_col
+)
+ComplexHeatmap::draw(vreg, padding = grid::unit(c(0, 0, 0, 1), "cm"))
+```
+
+
+## Inferring Allele Similarity Clusters {#sec-asc}
+
+The main function in this section `inferAlleleClusters` returns an S4
+object that includes the ASC allele cluster table `alleleClusterTable`
+with the new names and the default thresholds, the renamed germline set
+`alleleClusterSet`, and the germline set hierarchical clustering
+`hclustAlleleCluster`, and the similarity threshold parameters
+`threshold`. Further by using the plot function on the returned object,
+a colorful visualization of the allele clusters dendrogram and threshold
+is received.
+
+The function receives as an input a germline reference set of allele
+sequences, the filtration parameters for the 3' and 5' regions, and two
+similarity thresholds for the ASC clusters and families.
+
+To create the clusters we will first load data from the package:
+
+1.  The IGHV germline reference - this reference set was download from
+    IMGT in July 2022.
+
+```{r germline}
+library(piglet)
+data(HVGERM)
+```
+
+2.  The allele functionality table - the table contains functionality
+information for each of the alleles. Download from IMGT in July 2022
+
+```{r functionality}
+data(hv_functionality)
+```
+
+Before clustering the germline set, we will remove non functional
+alleles, alleles that do not start on the first 5' nucleotide, and those
+that are shorter than 318 bases.
+
+```{r lst-germlineset}
+germline <- HVGERM
+## keep only functional alleles
+germline <- germline[hv_functionality$allele[hv_functionality$functional=="F"]]
+## keep only alleles that start from the first position of the V sequence
+germline <- germline[!grepl("^[.]", germline)]
+## keep only alleles that are at minimum 318 nucleotide long
+germline <- germline[nchar(germline) >= 318]
+## keep only localized alleles (remove NL)
+germline <- germline[!grepl("NL", names(germline))]
+```
+
+```{r lst-germlineset-code, ref.label='lst-germlineset', anchor="block", eval=FALSE}
+```
+
+Then we will create the ASC clusters using the `inferAlleleClusters`
+function. For better clustering results with the human IGHV reference
+set, it is recommended to set the `trim_3prime_side` parameter to 318.
+Here, we will use the default similarity thresholds 75% for the family
+and 95% for the clusters.
+
+```{r lst-asc, fig.cap=""}
+asc <- inferAlleleClusters(
+  germline_set = germline, 
+  trim_3prime_side = 318, 
+  mask_5prime_side = 0, 
+  family_threshold = 75, 
+  allele_cluster_threshold = 95)
+```
+
+The output of `inferAlleleClusters` is an `S4` object of type
+`GermlineCluster` that contains several slots:
+
+| Slot                | Description                                                                             |
+|----------------------|--------------------------------------------------|
+| germlineSet         | The input germline set with the 3' and 5' modifications (If defined)                    |
+| alleleClusterSet    | The input germline set with the ASC name scheme, if exists without duplicated sequences |
+| alleleClusterTable  | The allele similarity cluster with the new names and the default thresholds             |
+| threshold           | The input family and allele cluster similarity thresholds                               |
+| hclustAlleleCluster | Germline set hierarchical clustering, an hclust object                                  |
+
+We can use the S4 plot method to plot the hierarchical clustering of the
+germline set as seen below in Fig. \@ref(fig:asc-plot).
+
+```{r asc-plot, fig.height=18, fig.width=15, fig.cap="**Allele similarity clusters.** The out most circle is the allele names, the second layer are the ASC groups, each group is labeled and colored. The third circle is the clustering dendrogram, the branches are colored by the ASC families. The blue and orange dashed lines are the 95% and 75% similarity ASC threshold."}
+plot(asc)
+```
+
+### Artificial framework 1 reference set
+
+As described in section \@ref(sec-amplicon-Length), not all repertoires data available
+covers the entire V region. Hence, a modified reference set for the
+sequenced region can help us further understand the results we can
+obtain from certain library protocols.
+
+Hence, we created the function `artificialFRW1Germline`, to mimic the
+seen coding region of targeted framework 1 (FRW1) primers for a given
+reference set. The primers were obtained from BIOMED-2 protocol
+[@van2003design].
+
+Essentially the function matches the primer to each of the germline set
+sequences and either mask or trim the region. The returned object is a
+character vector with the named sequence in the desire length
+(Trimmed/Masked).
+
+To demonstrate the use of the function, we can use the cleaned germline
+set from above (<a href="#lst-germlineset-code">block 1</a>). 
+In this case we will mask the FRW1 region, this will return the sequences with the Ns instead of DNA
+nucleotide. The function output a log of the process, this output can be
+repressed using the `quiet=TRUE` flag.
+
+```{r frw1}
+germline_frw1 <- artificialFRW1Germline(germline, mask_primer = T)
+```
+
+We can use the artificial germline set to infer the ASC clusters in the
+same fashion as in section \@ref(sec-asc).
+
+# Allele based genotype
+
+## Introduction
+
+Genotyping an Individual's repertoire is becoming a common practice in down stream analysis. There are several tools nowadays to achieve such inference, namely TIgGER [@TIgGER] and IgDiscover [@IgDIscover]. Though the methods are doing a fine job at inferring the genotype in high accuracy, they often neglect to detect lowly frequent alleles. The set of restriction the methods operates under enhance the specificity over the sensitivity.
+
+Aside from low frequent alleles, another limitation that can hinder genotype inference is sequence multiple assignment. Each sequence in the repertoire is assigned its inferred V(D)J alleles for each of the segments. The assignments can be influenced by several factors, such as sequencing errors, somatic hyper mutations, amplicon length, and the initial reference set. This confounding factors can results in assigning more than a single allele per sequence segment. This multiple assignment has a downstream affect on the genotype inference. Each tool tries to deal with this effect in various ways.
+
+In PIgLET the Allele based genotype section is dedicated to the ASC-based genotype inference.
+
+## ASC-based thresholds
+
+### Introduction {#sec-genotype}
+
+Briefly, the ASC-based threshold were determined based on a population of a large naive IGH repertoire cohort. For each allele a specific threshold was determined based on the population usage, the haplotype information (if available) and based on the alleles presented in the individual. The thresholds were adjusted based on a genomic validation approach with a coupled dataset, of both repertoire and long read data. At base the default threshold for any allele is $0.0001$, this value is also what the function `inferAlleleClusters` returns for each of the alleles in the germline set. For more information on the specific threshold please review the manuscript Peres at al. [@peres2022ighv] and the [IGHV reference
+book](https://yaarilab.github.io/IGHV_reference_book/).
+
+### Retriving Zenodo archive
+
+The ASC-based threshold, found in the manuscript and the IGHV reference book are archived in Zenodo and can be retrieved using PIgLET. 
+
+To retrieve the archive files we can use the `recentAlleleClusters` function. The function can get a path value for locally saving the archive files with the `path` flag, if non is supplied then the function save the files in a temporary directory. The flag `get_file=TRUE`, will return the downloaded file full path.
+
+```{r, eval=FALSE}
+zenodo_doi <- "10.5281/zenodo.7401189"
+asc_archive <-
+  recentAlleleClusters(doi = zenodo_doi, get_file = TRUE)
+```
+
+To extract the ASC threshold table we can use the `extractASCTable`
+function
+
+```{r, eval=FALSE}
+allele_cluster_table <- extractASCTable(archive_file = asc_archive)
+```
+
+```{r, echo=FALSE}
+allele_cluster_table <- read.delim('asc_alleles_table.tsv',sep='\t')
+```
+
+The table is has identical ASC clusters to the table we created above
+(<a href="#lst-asc">block 2</a>).
+
+```{r, echo=FALSE}
+asc_tables <- dplyr::left_join(
+  asc@alleleClusterTable %>%
+    dplyr::select(new_allele, imgt_allele) %>% dplyr::group_by(new_allele) %>%
+    dplyr::summarise(imgt_allele = paste0(sort(
+      unique(imgt_allele)
+    ), collapse = "/")),
+  allele_cluster_table %>% dplyr::select(new_allele, imgt_allele) %>% dplyr::group_by(new_allele) %>%
+    dplyr::summarise(imgt_allele = paste0(sort(
+      unique(imgt_allele)
+    ), collapse = "/")),
+  by = "new_allele",
+  suffix = c(".piglet", ".zenodo")
+)
+```
+
+We can now extract the threshold from the Zenodo archive table and fill
+the table created using the PIgLET. We recommend that in case an allele
+does not have a threshold in the archive to keep the default threshold
+of $0.0001$.
+
+## Inferring ASC-based genotype
+
+Genotype inference has an increasing importance in downstream analysis,
+as described in \@ref(sec-genotype) an individual genotype inference can help reduce bias within the repertoire annotations. Based on the reference
+book, the ASC clusters, and the ASC-based threshold we developed in PIgLET a genotype inference function which is based on the ASC-based genotype.
+
+The function `inferGenotypeAllele` infer an subject genotype using the
+absolute fraction and the allele based threshold. Essentially, for each
+unique allele that is found in the repertoire, its absolute fraction is
+calculated and compared to the population derived threshold. In case the
+allele's fraction is above the threshold then it is inferred into the
+subject genotype.
+
+Recommendations:
+
+-   For naive repertoires:
+    -   Filter the repertoire for up to 3 mutation within the V region
+    -   Setting the flag `find_unmutated=T`. Not needed if the above
+        mutation filter is applied
+-   For non-naive repertoires:
+    -   Cloning the repertoire and selecting a single clonal
+        representative with the least amount of mutations
+    -   Setting the flag `single_assignment=F`. In this case the
+        function treats cases of multiple allele call assignment as
+        belonging to all groups.
+
+Below is a demonstration of inferring the genotype for an example
+dataset taken from TIgGER [@TIgGER] package.
+
+The data is b cell repertoire data from individual (PGP1) in AIRR
+format. The records were annotated with by IMGT/HighV-QUEST.
+
+```{r}
+# loading TIgGER AIRR-seq b cell data
+data <- tigger::AIRRDb
+```
+
+For using the genotype inference function on non ASC name scheme
+annotations, we first need to transform the `v_call` column to the ASC
+alleles. We will use the ASC-table downloaded from Zenodo archive and
+the example data
+
+First we will collapse allele duplication in the ASC-table
+
+```{r}
+allele_cluster_table <-
+  allele_cluster_table %>% dplyr::group_by(new_allele, func_group, thresh) %>%
+  dplyr::summarise(imgt_allele = paste0(sort(unique(imgt_allele)), collapse = "/"),
+                   .groups = "keep")
+```
+
+Now, we can transform the data
+
+```{r}
+# storing original v_call values
+data$v_call_or <- data$v_call
+# assigning the ASC alleles
+asc_data <- assignAlleleClusters(data, allele_cluster_table)
+
+head(asc_data[, c("v_call", "v_call_or")])
+```
+
+If we have not inferred the ASC clustered and generated the renamed
+germline set, we can use the `germlineASC` to obtain it. We need to
+supply the function the ASC-table and an IGHV germline set.
+
+```{r}
+# reforming the germline set
+asc_germline <- germlineASC(allele_cluster_table, germline = HVGERM)
+```
+
+Once we have both the modified dataset and germline reference set, we
+can infer the genotype. The function returns the genotype table with the
+following columns
+
+| gene           | alleles             | imgt_alleles          | counts              | absolute_fraction     | absolute_threshold           | genotyped_alleles | genotype_imgt_alleles |
+|---------|---------|---------|---------|---------|---------|---------|---------|
+| allele cluster | the present alleles | the imgt nomenclature | the number of reads | the absolute fraction | the population driven allele | the alleles which | the imgt nomenclature |
+
+```{r}
+# inferring the genotype
+asc_genotype <- inferGenotypeAllele_asc(
+  asc_data,
+  alleleClusterTable = allele_cluster_table,
+  germline_db = asc_germline,
+  find_unmutated = T
+)
+
+head(asc_genotype)
+```
+
+For plotting the genotype with TIgGER `plotGenotype`, we need to do a
+small modification to our genotype table
+
+```{r}
+# get the genotype alleles
+alleles <- unlist(strsplit(asc_genotype$genotyped_imgt_alleles, ","))
+# get the genes
+genes <- gsub("[*][0-9]+", "", alleles)
+# extract the alleles
+alleles <- sapply(strsplit(alleles, "[*]"), "[[", 2)
+# make sure to extract only alleles
+alleles <- gsub("([0-9]+).*$", "\\1", alleles)
+# create the genotype
+genotype <- data.frame(alleles = alleles, gene = genes)
+# plot the genotype
+tigger::plotGenotype(genotype = genotype)
+```
+
+# Contact
+
+For help, questions, or suggestions, please contact:
+
+* [Ayelet Peres](mailto:peresay@biu.ac.il)
+* [Gur Yaari](mailto:gur.yaari@biu.ac.il)
+* [Issue tracker](https://bitbucket.org/yaarilab/piglet/issues?status=new&status=open&status=submitted&is_spam=!spam)
+
+# References
+
