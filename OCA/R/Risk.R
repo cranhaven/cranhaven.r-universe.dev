@@ -1,0 +1,81 @@
+#' Risk
+#'
+#' @description
+#' \loadmathjax{}
+#' Risk measures such as Value at Risk (VaR) and Expected Shortfall (ES) with normal and t-student
+#' distributions based on variance-covariance method. It is a shortcut for VaR and ES.
+#'
+#' @param variance It could be either a scalar or a matrix containing the variances and covariances
+#'  of the losses. Provide a covariance matrix when analyzing correlated losses or a scalar when dealing
+#'  with a single loss.
+#' @param alpha The confidence level at which either the VaR or the ES will be computed, by default \code{alpha} is set to 0.95.
+#' @param measure An optional character string giving a measure for computing the risk. \code{"VaR"} stands for Value at Risk,
+#'  \code{"ES"} stands for Expected Shortfall, and if both is chosen, then the function returns both the VaR
+#'   and the ES as a result. By default \code{measure} is set to be \code{"both"}.
+#' @param weights A vector containing the weights. It is only needed if \code{variance} is a matrix, if it is not then \code{weights} is set to 1.
+#' @param model A character string indicating which probability model has to be used for computing the risk measures, it could only be a
+#' normal distribution or a t-student distribution with \mjteqn{v}{v}{} degrees of freedom. The normal distribution is the
+#' default model for this function. \code{model} default value is set to \code{'both'}
+#'  to show normal and t-student VaR and ES. See example below.
+#' @param df An integer (\code{df}>2) denoting the degrees of freedom, only required if \code{model='t-student'}. Otherwise it has to be \code{NULL}.
+#' @param percentage Logical indicating whether the file names in the VaR table should be presented in percentage or decimal.
+#'
+#' @return
+#' A \code{data.frame} containing each risk measure at its corresponding confidence level.
+#' @references
+#' Dhaene J., Tsanakas A., Valdez E. and Vanduffel S. (2011). \emph{Optimal Capital Allocation Principles}. The Journal of Risk and Insurance. Vol. 00, No. 0, 1-28.
+#'
+#' Urbina, J. (2013) \emph{Quantifying Optimal Capital Allocation Principles based on Risk Measures.} Master Thesis, Universitat Politècnica de Catalunya.
+#'
+#' Urbina, J. and Guillén, M. (2014). \emph{An application of capital allocation principles to operational risk and the cost of fraud}. Expert Systems with Applications. 41(16):7023-7031.
+#'
+#' @seealso
+#' \code{\link{VaR}}, \code{\link{ES}}
+#'
+#'@author Jilber Urbina
+#' @noMd
+#' @export
+#' @importFrom mathjaxr preview_rd
+#' @importFrom stats cov dnorm dt qnorm qt var
+#'@examples
+#'# Reproducing Table 2.1 in page 47 of
+#'# McNeal A., Frey R. and Embrechts P (2005).
+#'alpha <- c(.90, .95, .975, .99, .995)
+#'(Risk(variance=(0.2/sqrt(250))^2, alpha=alpha, measure='both', model='both', df=4))*10000
+#'
+#'# only VaR results
+#'(Risk(variance=(0.2/sqrt(250))^2, alpha=alpha, measure='VaR', model='both', df=4))*10000
+#'
+#'
+#'# only SE based on a 4 degrees t-student.
+#'(Risk(variance=(0.2/sqrt(250))^2, alpha=alpha, measure='ES', model='t-student', df=4))*10000
+
+
+
+
+
+
+Risk <- function(variance, alpha=0.95, measure=c('both', 'VaR', 'ES'),
+         weights=NULL, model=c('both', 'normal', 't-student'),
+         df=NULL, percentage = FALSE){
+
+  measure <- match.arg(measure)
+
+  if(measure=='VaR' | measure=='both'){
+    VaR. <- VaR(variance=variance, alpha=alpha, weights=weights, model=model, df=df, percentage = percentage)
+  }
+
+  if(measure=='ES' | measure=='both'){
+    ES. <- ES(variance=variance, alpha=alpha, weights=weights, model=model, df=df, percentage = percentage)
+  }
+
+  if(measure=='VaR'){
+    return(VaR.)
+  }
+  if(measure=='ES'){
+    return(ES.)
+  }
+  if(measure=='both'){
+    return(rbind(VaR., ES.))
+  }
+}
