@@ -1,0 +1,74 @@
+#' A Convenient Version of is.integer
+#'
+#' This function checks if all elements of an object can be taken to be valid integers.
+#'
+#' The reasons to use \code{is_positive_integer} are: 
+#'
+#' \itemize{
+#'   \item (1) We often check if an object is a vector of positive integer. 
+#' But \code{is.numeric} cannot 
+#' do this because it also returns \code{TRUE} for a numeric matrix. 
+#'   \item (2) Sometimes \code{is.integer} 
+#' returns a too strict result. For example, \code{is.integer(3.0)} returns \code{FALSE},  
+#' but the number 3.0 is 
+#' valid in codes such as \code{rep(10, 3.0)}, that is to say, as long as a number can be taken 
+#' to be a valid integer, we take it to be a integer, even when \code{is.integer} 
+#' returns \code{FALSE}. 
+#'   \item (3) \code{is_positive_integer} returns \code{FALSE} for 
+#' length = 0 object, even when it is \code{integer(0)}. To let the function return this result is 
+#' because integer of length 0 is a invalid input for many functions. 
+#'   \item (4) \code{is_positive_integer} 
+#' returns \code{FALSE} for any object that contains \code{NA}, so that object that gets a 
+#' \code{TRUE} from this function is more likely to be a valid value to be passed to 
+#' other functions.
+#' }
+#' 
+#' @param x an object to be checked
+#' @param len numeric vector specifying the allowed length of the \code{x}. If the length 
+#' of the checked object is not in \code{len}, the function will return \code{FALSE}, even 
+#' when it is a positive integer vector. 
+#' The default is \code{NULL}, which means any length is OK.
+#'
+#' @return \code{TRUE} or \code{FALSE}
+#'
+#' @export
+#' @examples
+#' is_positive_integer(NULL)
+#' is_positive_integer(as.integer(NA))
+#' is_positive_integer(integer(0))
+#' is_positive_integer(3.0)
+#' is_positive_integer(3.3)
+#' is_positive_integer(1:5)
+#' is_positive_integer(1:5, len = c(2, 10))
+#' is_positive_integer(1:5, len = c(2:10))
+is_positive_integer <-
+function(x, len = NULL) {
+  if (!class(x) %in% c("numeric", "integer")) {
+    y <- FALSE
+  }
+  else if (length(x)==0){
+	y <- FALSE
+  } 
+  else {
+    as_int <- as.integer(x)
+    check_diff <- x - as_int
+    if (all(check_diff %in% c(0))) {
+      y <- ifelse(all(as_int > 0), TRUE, FALSE)
+    }
+    else {
+      y <- FALSE
+    }
+  }
+  if (y == FALSE) {
+    return(FALSE)
+  }
+  else {
+    if (is.null(len)) {
+      return(TRUE)
+    }
+    else {
+      y <- ifelse(length(x) %in% len, TRUE, FALSE)
+      return(y)
+    }
+  }
+}
