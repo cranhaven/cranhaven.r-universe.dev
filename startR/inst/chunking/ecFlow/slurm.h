@@ -1,0 +1,9 @@
+#!/bin/bash
+
+#SBATCH -n %CORES_PER_JOB%
+#SBATCH -t %JOB_WALLCLOCK%
+#SBATCH -J %ECF_NAME%
+#SBATCH -e %REMOTE_ECF_HOME%/%ECF_NAME%.%ECF_TRYNO%.err
+#SBATCH -o %REMOTE_ECF_HOME%/%ECF_NAME%.%ECF_TRYNO%.out
+include_extra_queue_params
+
