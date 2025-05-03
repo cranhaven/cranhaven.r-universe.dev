@@ -1,0 +1,44 @@
+#'Sample Of Observational And Experimental Data For Forecast Verification In Function Of Longitudes And Latitudes
+#'
+#'This data set provides data in function of longitudes and latitudes for the variable 'tos', i.e. sea surface temperature, over the mediterranean zone from the sample experimental and observational datasets attached to the package. See examples on how to use Load() for details.\cr\cr
+#'The data is provided through a variable named 'sampleMap' and is structured as expected from the 'Load()' function in the 's2dv' package if was called as follows:\cr\cr
+#'  \preformatted{
+#'data_path <- system.file('sample_data', package = 's2dv')
+#'exp <- list(
+#'         name = 'experiment',
+#'         path = file.path(data_path, 'model/$EXP_NAME$/monthly_mean',
+#'                          '$VAR_NAME$_3hourly/$VAR_NAME$_$START_DATES$.nc')
+#'       )
+#'obs <- list(
+#'         name = 'observation',
+#'         path = file.path(data_path, 'observation/$OBS_NAME$/monthly_mean',
+#'                          '$VAR_NAME$/$VAR_NAME$_$YEAR$$MONTH$.nc')
+#'       )
+#'# Now we are ready to use Load().
+#'startDates <- c('19851101', '19901101', '19951101', '20001101', '20051101')
+#'sampleData <- Load('tos', list(exp), list(obs), startDates,
+#'                   leadtimemin = 1, leadtimemax = 4, output = 'lonlat',
+#'                   latmin = 27, latmax = 48, lonmin = -12, lonmax = 40)
+#'  }
+#'Check the documentation on 'Load()' in the package 's2dv' for more information.
+#'
+#'@usage data(sampleMap)
+#'@format
+#'The data set provides with a variable named 'sampleMap'.\cr\cr
+#'
+#'sampleMap$mod is an array that contains the experimental data and the dimension meanings and values are:\cr
+#'  c(# of experimental datasets, # of members, # of starting dates, # of lead-times, # of latitudes, # of longitudes)\cr
+#'  c(1, 3, 5, 60, 2, 3)\cr\cr
+#'
+#'sampleMap$obs is an array that contains the observational data and the dimension meanings and values are:\cr
+#'    c(# of observational datasets, # of members, # of starting dates, # of lead-times, # of latitudes, # of longitudes)\cr
+#'    c(1, 1, 5, 60, 2, 3)\cr\cr
+#'
+#'  sampleMap$lat is an array with the 2 latitudes covered by the data (see examples on Load() for details on why such low resolution).\cr\cr
+#'
+#'  sampleMap$lon is an array with the 3 longitudes covered by the data (see examples on Load() for details on why such low resolution).
+#'
+#' @name sampleMap
+#' @docType data
+sampleMap <- function(){}
+
