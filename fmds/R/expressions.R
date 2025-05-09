@@ -1,0 +1,37 @@
+#' Facial Expressions Data
+#'
+#' Dissimilarities represent the correspondence in facial expressions.
+#' 30 students rated the dissimilarity between 13 female portraits (photographs) on a 9-point scale.
+#' The dissimilarities are the means of the re-scaled values obtained by the method of successive intervals.
+#'
+#' @name expressions
+#' @docType data
+#'
+#' @keywords dataset
+#'
+#' @format 13 x 16 matrix. The first 13 x 13 matrix is a dissimilarity matrix
+#' \itemize{
+#'   \item V1: dissimilarities for V1.
+#'   \item V2: dissimilarities for V2.
+#'   \item V3: dissimilarities for V3.
+#'   \item V4: dissimilarities for V4.
+#'   \item V5: dissimilarities for V5.
+#'   \item V6: dissimilarities for V6.
+#'   \item V7: dissimilarities for V7.
+#'   \item V8: dissimilarities for V8.
+#'   \item V9: dissimilarities for V9.
+#'   \item V10: dissimilarities for V10.
+#'   \item V11: dissimilarities for V11.
+#'   \item V12: dissimilarities for V12.
+#'   \item V13: dissimilarities for V13.
+#'   \item P1: Property 1.
+#'   \item P2: Property 2.
+#'   \item P3: Property 3.
+#' }
+#'
+#' @references Abelson and Sermat (1962). Multidimensional scaling of facial expressions. Journal of experimental psychology, 63(6), 546-554.
+#' Diederich, Messick, and Tucker (1957). A general least squares solution for successive intervals. Psychometrika, 22(2), 159-173.
+#' Woodworth (1938). Experimental psychology. New York, Holt.
+#' Engen, Levy, and Schlosberg (1958). The dimensional analysis of a new series of facial expressions. Journal of Experimental Psychology, 55(5), 454-458.
+#'
+"expressions"
