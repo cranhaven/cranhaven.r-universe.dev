@@ -1,0 +1,372 @@
+---
+title: "Advanced Options for `distfreereg` Package"
+output:
+  rmarkdown::html_vignette:
+    toc: true
+vignette: >
+  %\VignetteIndexEntry{Advanced Options for `distfreereg` Package}
+  %\VignetteEngine{knitr::rmarkdown_notangle}
+  %\VignetteEncoding{UTF-8}
+  linkcolor: blue
+link-citations: true
+csl: american-statistical-association.csl
+bibliography: bibliography.bib
+---
+
+
+
+\def\eqdef{\mathrel{\raise0.4pt\hbox{$:$}\hskip-2pt=}}
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = TRUE, out.width = "75%", fig.dim = c(6,5),
+                      fig.align = "center")
+is_check <- ("CheckExEnv" %in% search()) ||
+  any(c("_R_CHECK_TIMINGS_", "_R_CHECK_LICENSE_") %in% names(Sys.getenv()))
+knitr::opts_chunk$set(eval = !is_check)
+
+library(distfreereg)
+```
+
+<!-- https://kbroman.org/pkg_primer/pages/vignettes.html -->
+
+
+
+# Specifying the Test Mean Covariate Argument: Uppercase or Lowercase
+
+When `test_mean` is an `R` function, it has an (optional) argument for the
+covariates. This argument can be an uppercase `X` or a lowercase `x`.
+Most examples in other vignettes use the uppercase `X`, since this is the more
+efficient choice, and suffices in most cases. The uppercase `X` requires,
+though, that the expressions used in `test_mean` are vectorized.
+
+In the case in which some part of the function is not vectorized, a lowercase
+`x` can be used. Suppose, for example, that `integrate()` is required to define
+`test_mean`, and that the covariate value is used as the upper limit of
+integration. The example below illustrates this using the integral
+$$
+  \int_0^x2t\,dt,
+$$
+whose value is known to be $x^2$. We can therefore compare the results of the
+lowercase example with those of the uppercase example.
+
+```{r upperlower, message = FALSE}
+set.seed(20240913)
+n <- 1e2
+func_upper <- function(X, theta) theta[1] + theta[2]*X[,1] + theta[3]*X[,2]^2
+func_lower <- function(x, theta) theta[1] + theta[2]*x[1] +
+  theta[3]*integrate(function(x) 2*x, lower = 0, upper = x[2])$value
+theta <- c(2,5,1)
+X <- matrix(rexp(2*n, rate = 1), ncol = 2)
+Y <- distfreereg:::f2ftheta(f = func_upper, X)(theta) + rnorm(n)
+
+set.seed(20240913)
+dfr_upper <-  distfreereg(Y = Y, X = X, test_mean = func_upper,
+                          covariance = list(Sigma = 1), theta_init = c(1,1,1))
+set.seed(20240913)
+dfr_lower <-  distfreereg(Y = Y, X = X, test_mean = func_lower,
+                          covariance = list(Sigma = 1), theta_init = c(1,1,1))
+
+all.equal(dfr_upper$observed_stats, dfr_lower$observed_stats)
+all.equal(dfr_upper$p, dfr_lower$p)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+# Ordering the Observations
+
+The fundamental object involved in this testing procedure is the *empirical
+partial sum process* (EPSP); that is, the scaled vector of cumulative sums of
+transformed residuals. When the model includes only one covariate (that is, when
+the matrix $X$ of covariates has only one column), the order in which the
+residuals are added to form this process is determined by the natural linear
+order of the covariates. When more than one covariate is present, though, no
+single order is evidently the "correct" one.
+
+## Under the Null Hypothesis
+
+When the null hypothesis is true, the order does not affect the distribution of
+the statistics of the EPSP (see \S4 in @Khmaladze2021). To illustrate this,
+consider the following example with only one covariate.
+
+```{r ordering, message = FALSE}
+set.seed(20241001)
+n <- 1e2
+func <- function(X, theta) theta[1] + theta[2]*X[,1]
+theta <- c(2,5)
+X <- matrix(rexp(n))
+
+cdfr_simplex <- compare(true_mean = func,
+                        true_X = X,
+                        true_covariance = list(Sigma = 1),
+                        theta = theta,
+                        test_mean = func,
+                        covariance = list(Sigma = 1),
+                        X = X,
+                        theta_init = c(1,1),
+                        keep = 1)
+cdfr_asis <- update(cdfr_simplex, ordering = "asis")
+```
+
+The order in which the residuals are added is determined by the `ordering`
+argument of `distfreereg()`. The default method of determining the order is the
+"simplex" method. In the case of a single covariate, this method orders the
+observations in increasing order of covariate values. Another built-in option is
+to preserve to given order of the observations; that is, the order in which the
+residuals are added is the order of the observations specified in the input to
+`distfreereg()`. The CDF plots of each method are shown below, and both pairs of
+curves are mostly overlapping.
+
+```{r ordering_plots}
+plot(cdfr_simplex)
+plot(cdfr_asis)
+```
+
+
+## Under an Alternative Hypothesis
+
+When the null hypothesis is false, however, the order of the residuals can have
+a substantial effect on the power of the test. If the residuals are added in a
+random order (which they are in the "`asis`" objects, because `X` is randomly
+generated and not ordered), the test is generally less able to detect deviations
+from the expected null-hypothesis behavior of the EPSP. Ordering the covariates
+increases the power of the test to detect such deviations.
+
+To see this in practice, suppose we now change the previous example so that the
+true mean function has a quadratic term.
+
+```{r change_mean, message = FALSE}
+alt_func <- function(X, theta) theta[1] + theta[2]*X[,1] + 0.5*X[,1]^2
+cdfr_simplex_alt <- update(cdfr_simplex, true_mean = alt_func)
+cdfr_asis_alt <- update(cdfr_asis, true_mean = alt_func)
+```
+
+The plots below show that the CDFs for the `simplex` method are more separated
+than those for the `asis` method.
+
+```{r ordering_plots_alt}
+plot(cdfr_simplex_alt)
+plot(cdfr_asis_alt)
+```
+
+The estimated powers of these tests, as expected, highly favor the default
+`simplex` method:
+
+```{r powers}
+rejection(cdfr_simplex_alt, stat = "KS")
+rejection(cdfr_asis_alt, stat = "KS")
+```
+
+
+## Diagnostic Plots
+
+The previous plots are instructive regarding the importance of ordering, but are
+not useful when we want to explore model mis-specification. To do that, a plot
+of the EPSP itself can be helpful. Let us start with the plot from the example
+above in which the null hypothesis is true.
+
+```{r epsp_null}
+plot(cdfr_simplex$dfrs[[1]], which = "epsp")
+```
+
+This plot is a fairly typical representative sample from a Brownian bridge; that
+is, Brownian motion $B(t)$ on $[0,T]$ subject to the condition that $B(T)=0$.
+
+Now let us look at the plots when the alternative hypothesis is true. First, the
+plot with residuals ordered in the order of `X`:
+
+```{r epsp_alt_asis}
+plot(cdfr_asis_alt$dfrs[[1]], which = "epsp")
+```
+
+This does not show any patterns that are unexpected from a sample from a
+Brownian bridge. On the other hand, the plot with the residuals ordered by
+covariate value show a clear pattern.
+
+```{r epsp_alt_simplex}
+plot(cdfr_simplex_alt$dfrs[[1]], which = "epsp")
+```
+
+The slopes of this plot indicate that the residuals are positive, then negative,
+and then positive again as the covariate values increase. (This is a common
+trend when a linear function is used to model data with a quadratic mean
+function.) This patterns can also be seen by looking at the following plot.
+
+```{r fitted_and_observed}
+dfr_simplex <- cdfr_simplex_alt$dfrs[[1]]
+X <- dfr_simplex$data$X
+Y <- dfr_simplex$data$Y[order(X)]
+Y_hat <- fitted(dfr_simplex)[order(X)]
+X <- sort(X)
+ml <- loess(Y ~ X)
+plot(X, predict(ml), type = "l", col = "blue", ylab = "Y")
+points(X, Y, col = rgb(0,0,1,0.4))
+lines(X, Y_hat, col = "red", lty = "dashed")
+legend(x = "bottomright", legend = c("smoothed", "fitted"), col = c("blue", "red"),
+       lty = c("solid", "dashed"))
+```
+
+
+## Methods
+
+The `asis` option is included primarily for exploratory purposes, and for cases
+in which observations are given in the desired order. In general, the ordering
+should arise from a principled mapping of the observations onto the time
+domain. One such option is provided by the `simplex` method, which scales each
+covariate to the unit interval, and then orders the observations in increasing
+order of the sums of their scaled values.
+
+Another option is `optimal`, which orders observations using optimal transport.
+This is illustrated below. In this example, the power is comparable to the
+`simplex` method, but the patterns in the EPSP is not as clear.
+
+Note: this method is computationally expensive when the sample size is large.
+
+```{r optimal, message = FALSE}
+cdfr_optimal_alt <- update(cdfr_simplex_alt, ordering = "optimal")
+plot(cdfr_optimal_alt)
+rejection(cdfr_optimal_alt, stat = "KS")
+plot(cdfr_optimal_alt$dfrs[[1]], which = "epsp")
+```
+
+One more method of ordering is available, which is illustrated in the next
+section.
+
+
+# Natural Ordering and Grouping
+
+Another option available for ordering observations is the "natural" ordering,
+which can also be seen as analogous to a lexicographic ordering: the
+observations are ordered by covariate values from left to right. That is,
+observations are ordered in ascending order of the first covariate in the matrix
+or data frame containing the covariates; ties are broken by ordering by the
+second covariate; remaining ties are broken by the third; and so on.
+
+In the following example, `Y` is generated using an expression with a quadratic
+term, but the function being tested is linear in its covariates. We hope that
+the tests reject the null.
+
+```{r natural, message = FALSE}
+set.seed(20241003)
+n <- 1e2
+theta <- c(2,5,-1)
+X <- cbind(sample(1:5, size = n, replace = TRUE),
+           sample(1:10, size = n, replace = TRUE))
+Y <- theta[1] + theta[2]*X[,1] + theta[3]*X[,2] + (2e-1)*X[,2]^2 + rnorm(nrow(X))
+
+func <- function(X, theta) theta[1] + theta[2]*X[,1] + theta[3]*X[,2]
+
+dfr <- distfreereg(Y = Y, X = X, test_mean = func, theta_init = c(1,1,1),
+                   covariance = list(Sigma = 1), ordering = "natural")
+dfr
+```
+
+These results can be compared to the `simplex` method.
+
+```{r compare_with_simplex, message = FALSE}
+update(dfr, ordering = "simplex")
+```
+
+The results are slightly in favor of the natural ordering in this example.
+
+More flexibility is possible by specifying a list of column names or numbers
+that will result in the process above being used except only with the listed
+columns in the listed order.
+
+
+
+## Grouping
+
+The previous example's covariates contain many repeated observations. When using
+the natural ordering (or any other), these observations are indistinguishable,
+and their order among themselves is dependent on the order in which they happen
+to appear in `X`. To avoid this arbitrariness in the calculation of test
+statistics, a grouping option is available. When the `group` argument is `TRUE`,
+the transformed residuals for repeated covariate values are added before forming
+the EPSP. This avoids dependence on the order in which the observations enter
+the data. To implement this, we can update `dfr` as follows.
+
+```{r group, message = FALSE}
+dfr_grouped <- update(dfr, group = TRUE)
+```
+
+Note that the length of `epsp` is no longer the sample size. It is instead the
+number of unique combinations of values in the two columns of `X`.
+
+```{r length_of_epsp}
+length(dfr_grouped$epsp)
+length(which(table(X[,1], X[,2]) > 0))
+```
+
+The test results are similar, but not identical to, those in `dfr`.
+
+```{r dfr_grouped_results}
+dfr_grouped
+```
+
+
+
+
+# The `override` Argument
+
+The `override` argument of `distfreereg()` is used by `update.distfreereg()` to
+avoid unnecessary recalculation. This has particular benefits for the
+performance of `compare()`, which uses `update.distfreereg()`.
+
+This argument can be useful in other cases, too. For example, if the observations
+should be ordered in a way that is not among the available options for `ordering`,
+this order can be specified using `res_order`.
+
+The example below illustrates a more involved application. To access the `override`
+argument directly when using `compare()`, the `global_override` argument is used.
+Any values supplied to this argument are passed to `override` in each repetition's
+call to `update.distfreereg()`. Let us use this below to show the (possibly
+surprising) result of using the true value of $\theta$ instead of $\hat\theta$,
+even with a very simple setup.
+
+```{r override, message = FALSE}
+set.seed(20241003)
+n <- 2e2
+func <- function(X, theta) theta[1] + theta[2]*X[,1]
+theta <- c(2,5)
+X <- matrix(rexp(n))
+
+cdfr <- compare(true_mean = func, test_mean = func, true_X = X, X = X,
+                true_covariance = list(Sigma = 1), covariance = list(Sigma = 1),
+                theta = theta, theta_init = c(1,1))
+cdfr_theta <- update(cdfr, global_override = list(theta_hat = theta))
+```
+
+The first plot is what we expect, given that the true mean and test mean are the
+same in `cdfr`:
+
+```{r cdfr_plot}
+plot(cdfr)
+```
+
+However, the next plot shows that using $\theta$ does not yield good results:
+
+```{r cdfr_theta_plot}
+plot(cdfr_theta)
+```
+
+
+
+
+
+
+
+
+
+
+
+# References

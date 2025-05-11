@@ -1,0 +1,462 @@
+---
+title: "An Introduction to the `distfreereg` Package"
+output:
+  rmarkdown::html_vignette:
+    toc: true
+vignette: >
+  %\VignetteIndexEntry{An Introduction to the `distfreereg` Package}
+  %\VignetteEngine{knitr::rmarkdown_notangle}
+  %\VignetteEncoding{UTF-8}
+linkcolor: blue
+link-citations: true
+csl: american-statistical-association.csl
+bibliography: bibliography.bib
+---
+
+<!-- https://stackoverflow.com/questions/23957278/how-to-add-table-of-contents-in-rmarkdown -->
+
+\def\eqdef{\mathrel{\raise0.4pt\hbox{$:$}\hskip-2pt=}}
+\def\ev{{\rm E}}
+\def\given{\mathrel|}
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, out.width = "75%",
+                      fig.dim = c(6,5), fig.align = "center")
+is_check <- ("CheckExEnv" %in% search()) ||
+  any(c("_R_CHECK_TIMINGS_", "_R_CHECK_LICENSE_") %in% names(Sys.getenv()))
+knitr::opts_chunk$set(eval = !is_check)
+
+library(distfreereg)
+```
+
+<!-- https://kbroman.org/pkg_primer/pages/vignettes.html -->
+
+
+# Introduction
+
+This vignette introduces the basic functionality of the `distfreereg` package.
+The package has two main functions: `distfreereg()` and `compare()`. The former
+is introduced below; `compare()` is introduced
+[here](../doc/v2_compare.html).
+
+The function `distfreereg()` implements the distribution-free regression testing
+procedure introduced by @Khmaladze2021. Its purpose is to test whether or not a
+specified function $Y=f(X;\theta)$ is the conditional mean, $\ev(Y\given X)$.
+Specifically, the test is of the following type:
+\begin{equation}
+  H_0{:}\ \exists\theta\in\Theta\,|\,\ev(Y\given X)=f(X;\theta)
+  \quad\hbox{against}\quad
+  H_1{:}\ \forall\theta\in\Theta\,|\,\ev(Y\given X)\neq f(X;\theta).
+  \label{eqn:hypo1}
+\end{equation}
+
+This vignette starts by discussing the [testing of a linear
+model](#testing-a-linear-model) created using `lm()`. Following this is an
+analogous discussion of [testing a non-linear
+model](#testing-a-non-linear-model) created using `nls()`. Both scenarios can be
+replicated using the [formulas directly](#means-specified-by-formulas). In the
+[most general implementation](#means-specified-by-functions), the mean function
+is specified by an `R` function. To use `distfreereg()` with a mean function
+implemented in software other than `R`, see the section on the [default
+method](#the-default-method-using-the-algorithm-with-external-functions).
+
+
+
+
+
+
+# Testing a Linear Model
+
+Suppose that a linear model object `m` is created using `lm()`, and we want to
+test whether or not a linear model is appropriate; specifically, whether or not
+the true mean function follows a specified form that is linear in its
+parameters.
+
+In some cases, a residual plot suffices to show that the specified form is
+wrong. Below, the true mean function is $\ev(y|x)=x^{2.1}$, but the formula used
+to build the model is linear in $x$. The residuals plot clearly indicates model
+misspecification.
+
+```{r lm_testing_with_plots}
+set.seed(20240304)
+n <- 3e2
+form_lm <- y ~ x
+data_lm <- data.frame(x = runif(n, min = 0, max = 3))
+data_lm$y <- data_lm$x^2.1 + rnorm(n, sd = 0.3)
+m_1 <- lm(form_lm, data = data_lm)
+plot(m_1, which = 1)
+```
+
+If, however, we use a form that is quadratic in $x$, the residuals plot is
+suggestive, but it leaves us without a clear conclusion. How certain can we be
+that the specified form is wrong?
+
+```{r create_lm}
+form_lm_2 <- y ~ I(x^2)
+m_2 <- lm(form_lm_2, data = data_lm)
+plot(m_2, which = 1)
+```
+
+In this case, there appears to be evidence of a mis-specified mean, but we need
+a formal test to quantify our (un)certainty. The function `distfreereg()`
+implements such a test.
+
+```{r lm_method}
+set.seed(20240304)
+(dfr_lm_2 <- distfreereg(test_mean = m_2))
+```
+
+In fact, tests based on two statistics are included by default: a
+Kolmogorov--Smirnov (KS) statistic and a Cramér--von Mises (CvM) statistic,
+defined as $\max_i|w_i|$ and ${1\over n}\sum_iw_i^2$, respectively, where
+$w\eqdef(w_1,\ldots,w_n)$ is the partial sum process calculated by
+`distfreereg()`. The preceding output shows a table summarizing the tests'
+results, including p-values and Monte Carlo standard errors thereof. Both of the
+p-values are marginal, supplying a measure of our intuitive conclusion based on
+the residuals plot.
+
+
+
+
+
+
+# Testing a Non-Linear Model
+
+The procedure just illustrated applies to objects created with `nls()`, as well.
+Here, the data generating function has the form being tested, so we should not
+expect the null to be rejected. Note that the `weights` argument in `nls()` is
+set equal to the inverse of the variance vector.
+
+```{r create_nls}
+set.seed(20240304)
+n <- 3e2
+sds <- runif(n, min = 0.5, max = 5)
+data_nls <- data.frame(x = rnorm(n), y = rnorm(n))
+data_nls$z <- exp(3*data_nls$x) - 2*data_nls$y^2 + rnorm(n, sd = sds)
+form_nls <- z ~ exp(a*x) - b*y^2
+m_2 <- nls(form_nls, data = data_nls, weights = 1/sds^2, start = c(a = 1, b = 1))
+```
+
+Testing this form of the mean structure is done just as with an `lm` object:
+
+```{r nls_method}
+set.seed(20240304)
+(dfr_nls <- distfreereg(test_mean = m_2))
+```
+
+Both tests fail to reject the null.
+
+
+
+
+
+
+
+# Means Specified by Formulas
+
+If no `lm` or `nls` object has been created yet, the formula and data can be
+supplied directly to `distfreereg()`. Below, we recreate the examples from above
+without first creating the `lm` and `nls` objects.
+
+The most notable practical difference in implementing the tests in this context
+is that three arguments are required rather than just one:
+
+1. `test_mean`: a `formula` object specifying the mean function;
+
+1. `data`: a data frame containing the data;
+
+1. `method`: specifies whether to use `lm()` or `nls()`. Defaults to "`lm`".
+
+
+
+## Formulas with `lm()`
+
+The following call recreates the setup behind `dfr_lm_2` above.
+
+```{r formula_method_lm}
+set.seed(20240304)
+(dfr_form_lm_2 <- distfreereg(test_mean = form_lm_2, data = data_lm))
+```
+
+The key pieces of the output are identical to those of `dfr_lm`:
+
+```{r comparison_lm}
+identical(dfr_lm_2$observed_stats, dfr_form_lm_2$observed_stats)
+identical(dfr_lm_2$p, dfr_form_lm_2$p)
+```
+
+
+## Formulas with `nls()`
+
+Two additional arguments are used here:
+
+1. `method`: a character string specifying the method to use to fit the model.
+Its default value is "`lm`", so we must specify "`nls`" here.
+
+1. `covariance`: a list containing a named object specifying the error
+covariance structure. This ultimately supplies the weights values to `nls()`.
+This can be omitted if weights are not being used. (See
+[below](#specifying-the-covariance-structure) for more details.)
+
+1. `theta_init`: a numeric vector specifying the starting values for parameter
+estimation. (This is optional, since `nls()` will use default starting values
+with a warning if not supplied. See `nls()` documentation for further details.)
+
+The following call recreates the setup behind `dfr_nls`. The covariance
+structure is specified by, `P`, the precision matrix. This produces results
+identical, in the sense of `identical()`, to those from the example from above.
+Using any other option (e.g., `Sigma = diag(sds^2)`) would result in numerically
+equivalent results in the sense of `all.equal()`.
+
+```{r formula_method_nls}
+set.seed(20240304)
+(dfr_form_nls <- distfreereg(test_mean = form_nls, data = data_nls, method = "nls",
+                             covariance = list(P = diag(1/sds^2)),
+                             theta_init = c(a = 1, b = 1)))
+```
+
+The key pieces of the output are identical to those of `dfr_nls`:
+
+```{r comparison_nls}
+identical(dfr_nls$observed_stats, dfr_form_nls$observed_stats)
+identical(dfr_nls$p, dfr_form_nls$p)
+```
+
+
+
+
+
+
+# Means Specified by Functions
+
+The most general case that can be handled entirely within `R` is that in which
+the mean regression function is specified by an `R` function.
+
+Suppose that we want to replicate the situation in the `nls` examples above, but
+we want to account for errors that have a non-diagonal covariance matrix. (The
+`weights` argument of `nls()` limits that function's applicability to diagonal
+covariance matrices.) The example below illustrates how to do this.
+
+The function being tested is specified by `test_mean`, which is a function with
+two arguments, `X` and `theta`. Here, `X` represents the entire matrix of
+covariates. Therefore, to replicate the references to `x` and `y` in [this
+example](#testing-a-non-linear-model), we use `X[,1]` and `X[,2]`, respectively.
+The arguments `X` and `Y` supply the covariate matrix and the response vector,
+respectively, in lieu of the `data` argument.
+
+```{r dfr_1}
+set.seed(20240304)
+n <- 3e2
+true_mean <- function(X, theta) exp(theta[1]*X[,1]) - theta[2]*X[,2]^2
+test_mean <- true_mean
+theta <- c(3,-2)
+Sigma <- rWishart(1, df = n, Sigma = diag(n))[,,1]
+X <- matrix(rnorm(2*n), nrow = n)
+Y <- distfreereg:::f2ftheta(true_mean, X)(theta) +
+  distfreereg:::rmvnorm(n = n, reps = 1, SqrtSigma = distfreereg:::matsqrt(Sigma))
+
+(dfr_1 <- distfreereg(test_mean = test_mean, Y = Y, X = X,
+                      covariance = list(Sigma = Sigma),
+                      theta_init = rep(1, length(theta))))
+```
+
+
+
+
+
+# The Default Method: Using the Algorithm with External Functions
+
+All of the examples above illustrate how `distfreereg()` can be used when the
+mean function being tested is defined in `R`. If the mean function is not
+defined in `R`, `distfreereg()` can still be used as long as certain objects can
+be imported into `R`. Specifically, `distfreereg()` needs the model's fitted
+values and the Jacobian of the mean function, evaluated at the estimated
+parameter vector for each observation's covariate values.
+
+To illustrate this, we extract certain elements from the example
+[above](#means-specified-by-functions), and pretend that these were created
+using external software, and then imported into `R`.
+
+```{r default_inputs}
+J <- dfr_1$J
+fitted_values <- fitted(dfr_1)
+```
+
+These can be supplied to `distfreereg()` to implement the test. Note that
+`test_mean` is set to `NULL`, and since no parameter estimation is done here,
+no value for `theta_init` is specified.
+
+```{r default}
+distfreereg(test_mean = NULL, Y = Y, X = X, fitted_values = fitted_values,
+            J = J, covariance = list(Sigma = Sigma))
+```
+
+
+
+
+
+
+# Summary and Diagnostic Plots
+
+Below is an introduction to the three types of plots available for `distfreereg`
+objects. See the [plotting vignette](../doc/v3_plotting.html) for
+more details regarding plot customization.
+
+## A Summary Plot
+
+A summary of the results of the test can be plotted easily.
+```{r}
+plot(dfr_1)
+```
+
+The density of the simulated statistic is plotted, as is a vertical line
+showing the observed statistic. The upper tail is shaded, and the p-value (the
+area of that shaded region) is shown. Finally, a 95% confidence band of the
+density function is plotted, and the region is shaded in grey.
+
+## Diagnostic Plots
+
+Two diagnostic plots are also available. The first produces a time-series-like
+plot of the residuals in the order specified by `res_order` in the `distfreereg`
+object.
+
+```{r residuals_plot}
+plot(dfr_1, which = "residuals")
+```
+
+The second produces a plot of the empirical partial sum process.
+
+```{r epsp_plot}
+plot(dfr_1, which = "epsp")
+```
+
+
+
+
+
+# Specifying the Covariance Structure
+
+The covariance structure of the errors, conditional on the covariates, must be
+specified. For the `lm` and `nls` methods, the default behavior is to extract
+the covariance structure from the supplied model object. In general, the
+covariance structure is specified using the `covariance` argument. The value of
+`covariance` is a list with at least one named element that specifies one of
+four matrices:
+
+1. `Sigma`, the covariance matrix;
+
+1. `SqrtSigma`, the square root of `Sigma`;
+
+1. `P`, the precision matrix (that is, the inverse of `Sigma`); and
+
+1. `Q`, the square root of `P`.
+
+Internally, the algorithm only needs `Q`, so some efficiency can be gained by
+supplying this directly if it is known. Supplying more than one of the four
+matrices is not forbidden, but is strongly discouraged. In this case, no
+verification is done that the supplied matrices are consistent with each other,
+and `Q` will be calculated using the most convenient supplied element.
+
+Each of the four named elements can be one of three types of object:
+
+1. A positive-definite matrix, the most general way to specify a covariance
+structure;
+
+1. a numeric vector of positive values whose length is the sample size; and
+
+1. a length-1 numeric vector specifying a positive number.
+
+Specifying a numeric vector is theoretically equivalent to specifying a diagonal
+matrix with the given vector along the diagonal. Specifying a single number is
+theoretically equivalent to specifying a diagonal matrix with that value along
+the diagonal. Using the simplest possible expression in each case is recommended
+for conceptual and computational simplicity.
+
+The following code shows that supplying `Q` produces observed statistics
+identical to those in [the previous example](#means-specified-by-functions).
+
+```{r dfr_2}
+Q <- distfreereg:::matsqrt(distfreereg:::matinv(Sigma, tol = .Machine$double.eps))
+dfr_2 <- distfreereg(Y = Y, X = X, test_mean = test_mean,
+                     covariance = list(Q = Q),
+                     theta_init = rep(1, length(theta)))
+identical(dfr_1$observed_stats, dfr_2$observed_stats)
+```
+
+
+
+
+
+
+
+
+# Methods
+
+Several common generic functions have `distfreereg` methods, including `coef()`,
+`predict()`, and `update()`. See the documentation for the complete list.
+
+
+
+# Adding New Statistics
+
+The `stat` argument of `distfreereg()` allows the user to specify other
+statistics by specifying any function whose input is a numeric vector and whose
+output is a numeric vector of length one.
+
+```{r new_stat}
+new_stat <- function(x) sum(abs(x))
+update(dfr_1, stat = "new_stat")
+```
+
+If necessary, the default statistics can be selected using "`KS`" and "`CvM`" as
+explicit values in the character vector supplied to `stat`.
+
+```{r three_stats}
+update(dfr_1, stat = c("new_stat", "KS", "CvM"))
+```
+
+Checks are done to verify that the functions provided calculate legitimate
+statistics; that is, that they take a numeric vector as input and output a
+single number.
+
+```{r stats_checks}
+bad_stat <- function(x) x[1,2]
+try(update(dfr_1, stat = c("KS", "CvM", "bad_stat")))
+try(update(dfr_1, stat = c("KS", "CvM", "undefined_stat")))
+```
+
+
+
+# Non-Normal Errors
+
+One of the strengths of the test implemented by `distfreereg()` is that it makes
+only weak assumptions about the distribution of the errors. Specifically, it
+only requires that the error covariance matrix be finite and that the error
+distribution be strongly mixing (also known as $\alpha$-mixing). Below is an
+example illustrating that we get the expected results when the error
+distribution is the $t$ distribution. Note that the $t$ distribution with three
+degrees of freedom has variance 3.
+
+```{r t_dist}
+set.seed(20241003)
+n <- 1e2
+func <- function(X, theta) theta[1] + theta[2]*X[,1] + 0.5*X[,1]^2
+theta <- c(2,5)
+X <- matrix(rexp(n))
+Y <- theta[1] + theta[2]*X[,1] + 0.5*X[,1]^2 + rt(n, df = 3)
+
+dfr <- distfreereg(Y = Y, X = X, test_mean = func, theta_init = c(1,1),
+                   covariance = list(Sigma = 3))
+dfr
+
+alt_func <- function(X, theta) theta[1] + theta[2]*X[,1]
+update(dfr, test_mean = alt_func)
+```
+
+
+
+
+
+
+
+# References

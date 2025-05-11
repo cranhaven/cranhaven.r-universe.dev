@@ -1,0 +1,328 @@
+---
+title: "Parameter Estimation"
+output:
+  rmarkdown::html_vignette:
+    toc: true
+vignette: >
+  %\VignetteIndexEntry{Parameter Estimation}
+  %\VignetteEngine{knitr::rmarkdown_notangle}
+  %\VignetteEncoding{UTF-8}
+  linkcolor: blue
+link-citations: true
+csl: american-statistical-association.csl
+bibliography: bibliography.bib
+---
+
+<!-- https://stackoverflow.com/questions/23957278/how-to-add-table-of-contents-in-rmarkdown -->
+<!-- https://stackoverflow.com/questions/50428622/how-to-specify-different-cache-path-w-filename-in-r-markdown -->
+<!-- https://stackoverflow.com/questions/28961431/computationally-heavy-r-vignettes -->
+
+\def\eqdef{\mathrel{\raise0.4pt\hbox{$:$}\hskip-2pt=}}
+\def\ev{{\rm E}}
+\def\given{\mathrel|}
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, out.width = "75%",
+                      fig.dim = c(6,5), fig.align = "center")
+is_check <- ("CheckExEnv" %in% search()) ||
+  any(c("_R_CHECK_TIMINGS_", "_R_CHECK_LICENSE_") %in% names(Sys.getenv()))
+knitr::opts_chunk$set(eval = !is_check)
+
+library(distfreereg)
+```
+
+<!-- https://kbroman.org/pkg_primer/pages/vignettes.html -->
+
+
+
+# Introduction
+
+An essential part of the testing procedure implemented by `distfreereg()` is the
+estimation of the model's parameters. When using the `lm` or `nls` methods, or
+the corresponding `formula` methods, parameter estimation is handled using the
+modeling functions themselves. Below is the setup used as needed thereafter.
+
+```{r dfr_1}
+set.seed(20240926)
+n <- 3e2
+true_mean <- function(X, theta) exp(theta[1]*X[,1]) - theta[2]*X[,2]^2
+test_mean <- true_mean
+theta <- c(3,-2)
+Sigma <- rWishart(1, df = n, Sigma = diag(n))[,,1]
+X <- matrix(rnorm(2*n), nrow = n)
+Y <- distfreereg:::f2ftheta(true_mean, X)(theta) +
+  distfreereg:::rmvnorm(n = n, reps = 1, SqrtSigma = distfreereg:::matsqrt(Sigma))
+
+dfr_1 <- distfreereg(test_mean = test_mean, Y = Y, X = X,
+                     covariance = list(Sigma = Sigma),
+                     theta_init = rep(1, length(theta)))
+```
+
+
+# Modifying the Method
+
+For the `function` method, parameters are estimated using the `optim()` function
+by default. The default optimization method is `BFGS`, which works well for many
+cases. The method can be changed using the `control` argument of
+`distfreereg()`. For example, if we know beforehand that $\theta=(\theta_1,\theta_2)$
+satisfies $2\leq\theta_1\leq4$ and $-3\leq\theta_2\leq-1$,
+
+```{r dfr_2}
+set.seed(20240926)
+dfr_2 <- update(dfr_1, control = list(
+  optimization_args = list(method = "L-BFGS-B", lower = c(2,-3), upper = c(4,-1))))
+
+identical(dfr_1$theta_hat, dfr_2$theta_hat)
+all.equal(dfr_1$theta_hat, dfr_2$theta_hat)
+```
+
+The results are not identical, but are nearly so.
+
+
+
+# Estimating the Precision of Parameter Estimates
+
+To estimate the precision with which the parameters have been estimated,
+`vcov()` has a `distfreereg` method. When `test_mean` is a formula, an `lm`
+object, or an `nls` object, the model is supplied to `vcov()` for appropriate
+method dispatch. When `test_mean` is a function, then the method described in
+@Vaart2007 is applied.
+
+```{r vcov}
+vcov(dfr_1)
+```
+
+An analogous method exists for `confint()`, which uses this covariance matrix
+to calculate confidence intervals at a stated confidence level:
+
+```{r confint}
+confint(dfr_1, level = 0.9)
+```
+
+Note that this method returns the result of `vcov()` as well as the confidence
+intervals, since the calculations in `vcov()` can be computationally expensive,
+and since the covariance matrix is used to calculate the confidence intervals,
+it is included in this output to avoid requiring a separate call to `vcov()` in
+case its results are also desired.
+
+
+
+
+# Using a Different Optimization Function
+
+By default, `distfreereg.function()` uses `optim()` to estimate the model's
+parameters. Suppose, however, we wanted to use `nlminb()` instead. (This
+function is selected to illustrate the use of another optimization function
+only, and is not an implicit recommendation.) We can use `distfreereg()`'s
+`control` argument to do this.
+
+For a given optimization function, we need three things:
+
+1. The name of the argument that specifies the function to be minimized.
+
+1. The name of the argument that specifies the starting parameter values.
+
+1. The name of the element in the returned value that contains the parameter
+estimates.
+
+In the case of `nlminb()`, a review of the help page indicates that these are
+"`objective`", "`start`", and "`par`", respectively. We supply these three
+names, along with the function `nlminb` itself, to the `control` argument as
+follows.
+
+```{r nlm, message = FALSE}
+set.seed(20240926)
+dfr_3 <- update(dfr_1, control = list(optimization_fun = nlminb,
+                                      fun_to_optimize_arg = "objective",
+                                      theta_init_arg = "start",
+                                      theta_hat_name = "par"))
+```
+
+Once again, these are not identical, but are nearly so.
+
+```{r}
+identical(dfr_1$theta_hat, dfr_3$theta_hat)
+all.equal(dfr_1$theta_hat, dfr_3$theta_hat)
+```
+
+
+
+
+
+# Detailed Output from the Optimization Process
+
+Detailed output from `optim()`, helpful for diagnosing some parameter estimation
+problems, is found in the `optimization_output` element of the output:
+```{r}
+dfr_3$optimization_output
+```
+
+
+
+# Checking Compatibility of Arguments
+
+Before optimizing, `distfreereg.function()` verifies that the mean function can
+be evaluated at `theta_init`.  This will detect some problems but does not
+guarantee compatibility. This should be kept in mind when an opaque error
+message arises. In the first example below, the starting vector is too short.
+This error is caught by the initial validation. In the second example, though,
+the initial validation is passed, but a later step produces an error.
+
+```{r optim_bad_theta_init}
+try(update(dfr_1, theta_init = 1))# starting parameter vector too short!
+try(update(dfr_1, theta_init = rep(1, 3)))# starting parameter vector too long!
+```
+
+
+
+
+
+
+
+
+
+
+# The Importance of Normality of Parameter Estimates
+
+The theory behind the test implemented by `distfreereg()` requires that the
+parameter estimates be approximately normally distributed around the true
+parameter value. With regularity assumptions on the test mean function, this is
+true in theory, but it must also be sufficiently close to true in practice. This
+requires good optimization algorithms. In the example below, something goes
+awry.
+
+## The Setup
+
+In this example, we use a different error generating function from the default,
+specifically one that uses a block-diagonal covariance matrix and generates
+errors corresponding to each block using a multivariate $t$ distribution.
+Further, we use the default method for `optim()`, namely Nelder--Mead.
+
+First, define the function and true parameter vector.
+
+
+```{r block_diagonal_setup_func_pars}
+true_func <- function(X, theta) theta[1] + theta[2]*X[,1] + X[,1]^2
+theta <- c(2,5)
+```
+
+Next, define the error distribution function. This first specifies the dimension
+`matdim` of the blocks. The function `block_t()` generates the errors by
+repeated calls to `mvtnorm::rmvt()` with the appropriate scale matrix to obtain
+the correct covariance structure. (Recall that the errors for each repetition
+done by `compare()` are stored in the columns of the error matrix.)
+```{r block_diagonal_setup_err_dist}
+matdim <- 10
+block_t <- function(n, reps, blocks, df){
+  output <- matrix(NA, nrow = n, ncol = reps)
+  for(i in seq_len(reps))
+    output[,i] <- as.vector(sapply(blocks, function(x) mvtnorm::rmvt(1, df = df, sigma = x*(df-2)/df)))
+  return(output)
+}
+```
+
+Finally, define a function that extracts the parameter estimates from a
+`distfreereg` object, and a function that generates covariates, a covariance
+matrix, and then runs `compare()`.
+
+```{r block_diagonal_define_compare}
+get_theta_hat <- function(dfr) dfr$theta_hat
+
+create_cdfr <- function(n){
+  X <- as.matrix(rexp(n, rate = 1))
+  Sig_list <- lapply(1:(n/matdim), function(x) rWishart(1, df = matdim, diag(matdim))[,,1])
+  Sig <- as.matrix(Matrix::bdiag(Sig_list))
+  
+  return(compare(theta = theta,
+                 true_mean = true_func, test_mean = true_func,
+                 true_X = X, X = X,
+                 true_covariance = list(Sigma = Sig), covariance = list(Sigma = Sig),
+                 theta_init = c(1,1),
+                 err_dist_fun = block_t,
+                 err_dist_args = list(blocks = Sig_list, df = 4),
+                 reps = 1e3,
+                 prog = Inf,
+                 manual = get_theta_hat,
+                 control = list(optimization_args = list(method = "Nelder-Mead")))
+         )
+}
+```
+
+## The Simulation
+
+Now, we set the seed, run the simulation, and extract the saved parameter
+estimates.
+
+```{r run_with_14}
+set.seed(14)
+cdfr_seed14 <- create_cdfr(400)
+theta_seed14_1 <- sapply(cdfr_seed14$manual, function(x) x[[1]])
+theta_seed14_2 <- sapply(cdfr_seed14$manual, function(x) x[[2]])
+```
+
+Since we are using the same function for `true_mean` and `test_mean`, the
+cumulative distribution functions of the observed and simulated statistics
+should be nearly the same. The following plot is therefore alarming.
+
+```{r cdf_plot}
+plot(cdfr_seed14)
+```
+
+We can see that there is a problem with the parameter estimates, namely that
+their densities are not approximately normally distributed about the true
+parameter values.
+
+```{r density_plots}
+plot(density(theta_seed14_1))
+plot(density(theta_seed14_2))
+```
+
+## The Most Likely Source of the Problem
+
+The problem does seem to be the use of Nelder--Mead here, since the default
+method selected by `distfreereg()`, namely BFGS, does not result in such
+distributions in similar cases. This is, of course, no guarantee that BFGS will
+alway be better, but it does appear to be a more sensible default for this
+application.
+
+## Two Possible Objections
+
+The keen-eyed reader will note two possible objections to the analysis above:
+perhaps the sample size is insufficient, and perhaps the input of `set.seed()`
+was carefully selected to obtain these results.
+
+The first of these objections can be addressed by showing the results with a
+different seed, where the plots suggest no problems.
+
+```{r sample_size_not_the_problem}
+set.seed(1)
+cdfr_seed1 <- create_cdfr(400)
+theta_seed1_1 <- sapply(cdfr_seed1$manual, function(x) x[[1]])
+theta_seed1_2 <- sapply(cdfr_seed1$manual, function(x) x[[2]])
+plot(cdfr_seed1)
+plot(density(theta_seed1_1))
+plot(density(theta_seed1_2))
+```
+
+A formal test that the samples have come from the same distribution is also
+reassuring.
+
+```{r kstest}
+ks.test(cdfr_seed1)
+```
+
+The second possible objection, namely that the seed was carefully selected to
+produce these results, is only half true. It was selected, but not particularly
+carefully. Considering integers from 1 to 15 as inputs to `set.seed()`, at least
+7, 9, 10, and 13 produce poor results. The phenomenon is not difficult to
+reproduce.
+
+
+
+
+
+
+
+
+
+# References
