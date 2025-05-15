@@ -1,0 +1,114 @@
+---
+title: "Mini-batch jrSiCKLSNMF Tutorial"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Mini-batch jrSiCKLSNMF Tutorial}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\usepackage[UTF-8]{inputenc}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+# Set up
+For this walkthrough, we will be working with simulated data object SimData. These data were generated from GSE130399 using the packages SparSim and simATAC. The details for the simulations can be found in our paper. SimData has already gone through quality control (QC); however, when working with real data, you should QC your data and select features that appear in at least 10 cells for both modalities. After loading jrSiCKLSNMF into R, you should have access to SimData.
+
+Here, we set up our data as in the getting started and getting started L2 Norm vignettes. Please refer to these for details on setup.
+
+```{r loadjrSiCKLSNMF}
+library(jrSiCKLSNMF)
+
+DataMatrices<-SimData$Xmatrices
+cell_type<-SimData$cell_type
+SimSickleJr<-CreateSickleJr(DataMatrices,names=list("RNA","ATAC"))
+rm(DataMatrices,SimData)
+SimSickleJr<-AddSickleJrMetadata(SimSickleJr,cell_type,"true_cell_type")
+rm(cell_type)
+set.seed(10)
+SimSickleJr<-BuildKNNGraphLaplacians(SimSickleJr)
+SimSickleJr<-SetLambdasandRowReg(SimSickleJr,lambdaWlist=list(10,50),lambdaH=500,rowReg="None")
+SimSickleJr<-NormalizeCountMatrices(SimSickleJr)
+```
+Next, we will determine the number of latent factors by using IRLBA. By looking at all three
+plots generated, we see that 5 appears to correspond to a value close to the elbow for all modalities and for 
+the concatenated modality.
+```{r irlba}
+SimSickleJr<-DetermineDFromIRLBA(SimSickleJr)
+SimSickleJr<-GenerateWmatricesandHmatrix(SimSickleJr,d=5)
+```
+
+
+# Running mini-batch jrSiCKLSNMF
+
+Finally, we can run mini-batch jrSicKLSNMF. Please note that we store $\textbf{H}$ as $\textbf{H}^T$.  Note that because the mini-batch algorithm is stochastic, it has a higher convergence tolerance. Therefore, please specify the number of rounds in the "minrounds" variable.
+
+```{r runningjrsickls}
+start.time<-Sys.time()
+SimSickleJr<-RunjrSiCKLSNMF(SimSickleJr,rounds=200,differr=1e-6,minibatch=TRUE,random_W_updates=TRUE,batchsize=100,seed=8,minrounds = 200)
+stop.time<-Sys.time()
+stop.time-start.time
+```
+# Mini-batch Diagnostic Plots
+
+For the mini-batch algorithm, since it is a stochastic process, the loss tends to become unstable after a certain number of iterations but stays within a band. To ensure that you have reached this point of stability, you should check the plot of the loss. For this plot, we can see that the loss remains relatively stable after about 200 iterations.
+
+```{r minibatchplotdiagnostic}
+MinibatchDiagnosticPlot(SimSickleJr)
+```
+
+# Post-hoc Analyses
+
+After this, we can perform diagnostics to determine an appropriate number of cell clusters. 
+
+```{r determineclustering}
+SimSickleJr<-DetermineClusters(SimSickleJr,printclValid = FALSE)
+```
+
+We see that around 4 is an appropriate number of clusters.
+
+```{r clustering}
+SimSickleJr<-ClusterSickleJr(SimSickleJr,numclusts=4)
+```
+
+Finally, we can calculate and then plot the UMAP of our SickleJr. Note that if you would like to plot the UMAP of the compressed $\mathbf{W}^v\mathbf{H}$ matrix, please enter the number corresponding to the modality you wish to see. 
+```{r UMAPplots}
+SimSickleJr<-CalculateUMAPSickleJr(SimSickleJr)
+#Plotting based off of cluster
+SimSickleJr<-PlotSickleJrUMAP(SimSickleJr,title="K-means clusters")
+
+```
+
+After looking at the UMAP plots, we can see that perhaps 3 is a more appropriate number of clusters.
+
+```{r clustering2}
+SimSickleJr<-ClusterSickleJr(SimSickleJr,numclusts=3)
+```
+
+We re-plot our results with 3 clusters. Additionally, for the plots, you can either color based off of identified cluster or based off of metadata. 
+
+```{r UMAPplots2}
+#Plotting based off of cluster
+SimSickleJr<-PlotSickleJrUMAP(SimSickleJr,title="K-means clusters")
+#Plotting based off of true cell type metadata
+SimSickleJr<-PlotSickleJrUMAP(SimSickleJr,colorbymetadata="true_cell_type",title="True Cell Types",legendname="True Cell Types")
+```
+
+We can also visualize data in the RNA modality and the ATAC modality. This is not recommended for large datasets.
+
+```{r UMAPplotsWH}
+SimSickleJr<-CalculateUMAPSickleJr(SimSickleJr,modality=1)
+SimSickleJr<-PlotSickleJrUMAP(SimSickleJr,title="K-means clusters: RNA modality",
+                 umap.modality="W1H")
+SimSickleJr<-PlotSickleJrUMAP(SimSickleJr,colorbymetadata="true_cell_type",
+                 title="True Cell Type: RNA modality",legendname="True Cell Types",
+                 umap.modality="W1H")
+SimSickleJr<-CalculateUMAPSickleJr(SimSickleJr,modality=2)
+SimSickleJr<-PlotSickleJrUMAP(SimSickleJr,title="K-means clusters: ATAC modality",umap.modality="W2H")
+SimSickleJr<-PlotSickleJrUMAP(SimSickleJr,colorbymetadata="true_cell_type",
+                 title="True Cell Type:ATAC modality",legendname="True Cell Types",
+                 umap.modality="W2H")
+```
