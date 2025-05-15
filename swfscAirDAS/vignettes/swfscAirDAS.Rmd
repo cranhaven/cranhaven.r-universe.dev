@@ -1,0 +1,149 @@
+---
+title: "Introduction to swfscAirDAS"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Introduction to swfscAirDAS}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+  
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+  
+```{r setup, message=FALSE}
+library(dplyr)
+library(tibble) #For printing output
+library(stringr)
+library(swfscAirDAS)
+```
+
+This document introduces you to the swfscAirDAS package. This package is intended to standardize and streamline processing of aerial survey DAS (AirDAS) data collected using the PHOCOENA, TURTLE, or CARETTA programs from the Southwest Fisheries Science Center. In DAS data (and thus AirDAS data), an event is only recorded when something changes or happens, which can complicate processing. Thus, the main theme of this package is enabling analyses and downstream processing by 1) determining associated state and condition information for each event and 2) pulling out event-specific information from the Data columns. The following examples generally use the default function arguments; see the documentation for the individual functions for a complete description of all processing options.
+
+## Data
+
+This package includes a sample AirDAS file, which we will use in this document. This file is formatted as a DAS file created using the TURTLE program
+
+```{r data}
+y <- system.file("airdas_sample.das", package = "swfscAirDAS")
+head(readLines(y))
+```
+
+## Check data format
+
+The first step in processing AirDAS data is to ensure that the DAS file has expected formatting and values, which you can do using the `airdas_check` function. The checks performed by this function are detailed in the function documentation, which can be accessed by running `?airdas_check`. If you aren't sure of the file type (format) of your data, you can check the format PDFs. These PDFs are available online at https://swfsc.github.io/swfscAirDAS/, or see `?airdas_format_pdf` for how to access a local copy.
+
+```{r check, eval=FALSE}
+# Code not run
+y.check <- airdas_check(y, file.type = "turtle", skip = 0, print.transect = TRUE)
+```
+
+## Read and process data
+
+Once QA/QC is complete and you have fixed any data entry errors, you can begin to process the AirDAS data. The backbone of this package is the reading and processing steps: 1) the data from the DAS file are read into the columns of a data frame and 2) state and condition information are extracted for each event. This means that after processing, you can simply look at any event (row) and determine the Beaufort, viewing conditions, etc., at the time of the event. All other functions in the package depend on the AirDAS data being in this processed state.
+
+```{r readproc}
+# Read 
+y.read <- airdas_read(y, file.type = "turtle", skip = 0)
+head(y.read)
+
+# Process
+y.proc <- airdas_process(y.read, trans.upper = TRUE)
+head(y.proc)
+```
+
+Once you have processed the AirDAS data, you can easily access a variety of information. For instance, you can look at the different Beaufort values that occurred in the data, or filter for specific events to get the beginning and ending points of each effort section. 
+
+```{r readprocother}
+# The number of events per Beaufort value
+table(y.proc$Bft)
+
+# Filter for T/R and O/E events to extract lat/lon points
+y.proc %>% 
+  filter(Event %in% c("T", "R", "E", "O")) %>% 
+  select(Event, Lat, Lon, Trans)
+```
+
+## Sightings
+
+The `swfscAirDAS` package does contain specific functions for extracting and/or summarizing particular information from the processed data. First is `airdas_sight`, a function that returns a data frame with pertinent sighting data extracted to their own columns
+
+```{r sight}
+y.sight <- airdas_sight(y.proc)
+
+y.sight %>% 
+  select(Event, SightNo:TurtleTail) %>% 
+  head()
+```
+
+## Effort
+
+In addition, you can chop the effort data into segments, and summarize the conditions and sightings on those segments using `airdas_effort` and `airdas_effort_sight`. These effort segments can be used for line transect estimates using the Distance software, species distribution modeling, or summarizing the number of harbor porpoises on each transect, among other uses. `airdas_effort` chops continuous effort sections (the event sequence from T/R to E/O events) into effort segments using one of several different chopping methods: condition (a new effort segment every time a condition changes), equal length (effort segments of equal length), and section (each segment is a full continuous effort section, i.e. it runs from a T/R event to an E/O event). `airdas_effort_sight` takes the output of `airdas_effort` and returns the number of sightings and animals per segment for specified species codes. 
+
+Both functions return a list of three data frames: segdata, sightinfo, and randpicks. Briefly, as these data frames and the different chopping methodologies are described in depth in the function documentation (`?airdas_effort` and `?airdas_effort_sight`), segdata contains information about each effort segment, sightinfo contains information about the sightings on the segments, and randpicks contains information specific to the 'equal length' chopping method. These are separate functions to allow the user more control over the filters applied to determine which sightings should be included in the summaries (see `?airdas_effort`).
+
+```{r eff}
+# Chop the effort every time a condition changes
+y.eff <- airdas_effort(
+  y.proc, method = "condition", seg.min.km = 0, 
+  dist.method = "greatcircle", conditions = c("Bft", "CCover"), 
+  num.cores = 1, angle.min = 12, bft.max = 1
+)
+y.eff.sight <- airdas_effort_sight(y.eff, sp.codes = c("bm", "dc"))
+
+head(y.eff.sight$segdata)
+
+head(y.eff.sight$sightinfo)
+```
+
+If you wanted to determine the number of humpback whales on each transect with a sighting angle between -60 and 60 degrees, for instance, you could do the following
+
+```{r eff2}
+# 'Chop' the effort by continuous effort section
+y.eff.section <- airdas_effort(
+  y.proc, method = "section", dist.method = "greatcircle", conditions = NULL, 
+  num.cores = 1
+)
+y.eff.section$sightinfo <- y.eff.section$sightinfo %>% 
+  mutate(included = ifelse(.data$SpCode == "mn" & abs(.data$Angle > 60), FALSE, .data$included))
+
+y.eff.section.sight <- airdas_effort_sight(y.eff.section, sp.codes = c("mn"))
+
+y.eff.section.sight[[1]] %>% 
+  mutate(transect_id = cumsum(.data$event == "T")) %>% 
+  group_by(transect_id) %>% 
+  summarise(dist_sum = sum(dist), 
+            mn_count = sum(ANI_mn)) %>% 
+  as.data.frame() #for printing format
+```
+
+In this example you could also simply group by the `transect` column, but that structure is not robust to analyzing multi-year data sets where the same transects are flown multiple times.
+
+## Comments
+
+In AirDAS data, comments are a catch-all field, meaning they are used to record information that does not fit neatly into the AirDAS framework. For instance, users will often enter a comment indicating if they are or are not recording extra information such as mola mola sightings. Again, this information is not recorded in a systematic way, but you can still use swfscAirDAS functions to determine this information. 
+
+A comment indicating whether or not something is being recorded will likely contain "record" somewhere in the comment. Thus, you can use `airdas_comments` to extract comments, and then subset for comments that contain the pattern "record".
+
+```{r comm}
+y.comm <- airdas_comments(y.proc)
+head(y.comm)
+
+str_subset(y.comm$comment_str, "record") #Could also use grepl() here
+```
+
+You can extract data from 'systematic' comments, using `airdas_comments_process`. This function supports both the codes of TURTLE/PHOCOENA data, and the text string format of CARETTA data. Specifically, it includes a `comment.format` argument for users with CARETTA data, which allows you to provide a list specifying how the data was recorded, although the data must be separated by a delimiter. See below for the `comment.format` value for default CARETTA data. This function also by default looks for codes, e.g. "fb" or "cp", in TURTLE/PHOCOENA data; see `?airdas_comments_process` for more details.
+
+```{r comm2}
+# comment.format for default CARETTA data
+comment.format <- list(
+  n = 5, sep = ";", 
+  type = c("character", "character", "numeric", "numeric", "character")
+)
+
+# TURTLE/PHOCOENA comment-data
+head(airdas_comments_process(y.proc))
+```
