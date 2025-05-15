@@ -1,0 +1,342 @@
+---
+title: "LPWC: Lag Penalized Weighted Correlation for Clustering Short Time Series"
+author: "Thevaa Chandereng & Anthony Gitter"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Cluster time series data}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+
+
+```{r setup, echo=FALSE, results="hide"}
+knitr::opts_chunk$set(comment = "#>", collapse = TRUE)
+```
+
+
+# Introduction
+
+Time series data are a series of observations collected across different timepoints in which the ordering of the observations can convey important information.
+In biology, most time series data consist of a limited number of time points, complicating the analysis.
+An example of biological time series data is gene expression data, where the relative abundances of all genes are recorded over multiple minutes, hours, days, or weeks.
+
+One property of a good clustering method for time series data is that it groups similar temporal shapes.
+Similarity in expression patterns may correspond to similarity in biological function, which helps aid in the direction of future research.
+Lag Penalized Weighted Correlation (LPWC) is a distance-based clustering algorithm that builds upon weighted correlation.
+LPWC aligns time series data to accommodate lags, allowing two entities (for example, genes) that exhibit similar temporal behaviors that are not perfectly synchronized to be clustered together.
+Lags are penalized using a Gaussian kernel so that synchronized temporal patterns are preferred over lagged patterns.
+Unlike many other clustering approaches, LPWC also accounts for irregular time sampling in which there are non-uniform intervals between timepoints.
+
+If you use LPWC in published research, please cite our manuscript:
+
+Chandereng, T., Gitter, A. Lag penalized weighted correlation for time series clustering. *BMC Bioinformatics* 21, 21 (2020). <https://doi.org/10.1186/s12859-019-3324-1>
+
+
+If after reading through this vignette you have questions or problems
+using LPWC, please post them to https://github.com/gitter-lab/LPWC/issues.
+This will notify the package maintainers and benefit other users.
+
+
+You should **not** email your question to the package authors, as we will
+just reply that the question should be posted to the
+**Github support site**.
+
+
+
+# Running LPWC
+
+Prior to analyzing your data, the R package needs to be installed.
+
+The easiest way to install LPWC is through CRAN:
+```{r, eval = FALSE}
+install.packages("LPWC")
+```
+
+
+There are other additional ways to download LPWC.
+The first option is most useful if want to download a specific version of LPWC
+(which can be found at https://github.com/gitter-lab/LPWC/releases).
+```{r, eval = FALSE}
+devtools::install_github("gitter-lab/LPWC@vx.xx.x")
+#OR 
+devtools::install_version("LPWC", version = "x.x.x", repos = "http://cran.us.r-project.org")
+```
+
+
+The second option is to download through GitHub. 
+
+```{r, eval = FALSE}
+devtools::install_github("gitter-lab/LPWC")
+```
+
+
+After successful installation, the package must be loaded into the working space:
+
+```{r lib, results="asis", eval=TRUE}
+library(LPWC)
+```
+
+
+
+## Required input
+
+**Data**:  Input to LPWC is a matrix or data frame.
+We assume here that it is gene expression data, but other data types are suitable as well.
+The expression matrix should be n -by- p where n is the number of genes (in rows) and p is the number of timepoints.
+If **data** is a data frame, the gene names can be specified using the `row.names()`.
+
+The object **simdata** is a simulated dataset for 200 genes with 8 timepoints that follow the biological [impulse model](https://doi.org/10.1093/bioinformatics/btw665).
+This is stored as a data frame in the package with row names representing gene labels.
+
+
+
+```{r data, results='markup'}
+data(simdata)
+simdata[1:5, ]
+str(simdata)
+```
+
+
+
+**Timepoints:** The object **timepoints** should be a vector of timepoints that specify when the data were collected.
+This should match the column length in **Data**.
+This can be in any form (seconds, minutes, hours, or even days), but make sure the units are uniform throughout.
+
+The timepoints used in the example **simdata** are
+```{r time}
+timepoints <- c(0, 2, 4, 6, 8, 18, 24, 32, 48, 72)
+timepoints
+```
+
+
+**Data** and **Timepoints** are the main requirement to run LPWC, however, there are other optional parameters that affect the results.
+Our manuscript referenced above describes these parameters in more detail.
+
+**Max.lag:** The object **max.lag** should be an integer value that controls the maximum lag.
+This max.lag has to be less than the floor of length(timepoints) / 4.
+That is because longer lags lead to comparisons between two expression profiles that use less than half of the data points, which can lead to spurious correlations.
+
+**C:** The object **C** should be a numeric.
+This controls the width of the Gaussian kernel function used to penalize the lag and the weights in weighed correlation vector.
+The parameter **C** can be set automatically by setting **C** to the default NULL value and setting the **penalty** argument described below.
+If **C** is set to a specific value, the **penalty** is ignored.
+
+**penalty:** The object **penalty** only allows two values: "low" and "high".
+It is used to automatically set the value of **C**.
+High imposes a higher penalty on lags thus favoring grouping genes without introducing lags.
+The lower penalty leads to more lagged genes in the clusters.
+The default is set to the "high" penalty.
+This argument is ignored if **C** is set to a specific value.
+
+**iter:** The object **iter** should be a numeric.
+This controls the number of values of C that are tested when automatically setting the C parameter.
+The default is 10.
+Increasing iter increases computational time.
+This is only relevant for the low penalty because the high penalty uses a single C instead of searching over multiple C.
+
+## Interpreting lags
+
+Lags are taken with respect to the original timepoints vector.
+Lags can be positive or negative integers and specify the number of indices to shift the timepoints.
+The examples below demonstrate applying different lags to genes 1 and 2. 
+
+
+```{r, echo = FALSE, fig.height = 2, fig.width=4, warning = FALSE, fig.align='center'}
+library(ggplot2)
+
+set.seed(29876)
+
+
+a <- rbind(c(rep(0, 5), 8, 0), c(rep(0, 4), 4.3, 0, 0)) + rnorm(2, 0, 0.5)
+
+dat <- data.frame(intensity = as.vector(a), time = rep(c(0, 5, 15, 30, 45, 60, 75), each = 2), genes = factor(rep(c(1, 2), 7)))
+
+a2 <- a
+a2[1, ] <- c(a2[1, 2:7], NA)
+dat2 <- data.frame(intensity = as.vector(a2), time = rep(c(0, 5, 15, 30, 45, 60, 75), each = 2), genes = factor(rep(c(1, 2), 7)))
+
+a3 <- a
+a3[2, ] <- c(NA, a3[2, 1:6])
+a3[1, ] <- c(a3[1, 2:7], NA)
+dat3 <- data.frame(intensity = as.vector(a3), time = rep(c(0, 5, 15, 30, 45, 60, 75), each = 2), genes = factor(rep(c(1, 2), 7)))
+
+
+plot1 <- ggplot(dat, aes(x= time, y = intensity, group = genes)) + geom_line(aes(color = genes), size = 1.5) +  labs(x = "Time (min)") + labs(y = "Intensity") 
+plot1
+
+row1 <- c(0, 5, 15, 30, 45, 60, 75)
+knitr::kable(t(data.frame(Original = row1, Gene1 = row1, Gene2 = row1)), align = 'c')
+
+
+
+
+```
+
+```{r, echo = FALSE, fig.height = 2, fig.width=4, warning = FALSE, fig.align='center'}
+
+plot2 <- ggplot(dat2, aes(x= time, y = intensity, group = genes)) + geom_line(aes(color = genes), size = 1.5) + 
+  labs(x = "Time (min)") + labs(y = "Intensity") 
+plot2
+
+row2 <- c(5, 15, 30, 45, 60, 75, "-")
+
+knitr::kable(t(data.frame(Original = row1, Gene1 = row2, Gene2 = row1)), align = 'c')
+
+```
+
+
+```{r, echo = FALSE, fig.height = 2, fig.width=4, warning = FALSE, fig.align='center'}
+
+plot3 <- ggplot(dat3, aes(x= time, y = intensity, group = genes)) + geom_line(aes(color = genes), size = 1.5) + 
+  labs(x = "Time (min)") + labs(y = "Intensity") 
+plot3
+
+row3 <- c("-", 0, 5, 15, 30, 45, 60)
+
+knitr::kable(t(data.frame(Original = row1, Gene1 = row2, Gene2 = row3)), align = 'c')
+
+```
+
+The time series plots show aligned expression vectors, and the tables show the aligned timepoints.
+With no lags, the temporal profiles of genes 1 and 2 are not aligned so the gene pair will have a low LPWC similarity score (top row).
+When gene 1 has a lag of -1, the patterns are aligned, and the LPWC similarity score will be high (middle row).
+Finally, when gene 1 has a lag of -1 and gene 2 has a lag of 1, the temporal shapes are once again not aligned.
+In this case, the LPWC similarity score will be even lower than in the no lag case because the penalty for introducing lags is applied (bottom row).
+
+## Obtaining gene-gene similarities
+
+LPWC computes similarity (an adjusted weighted correlation) between genes and returns three outputs: correlation of genes in dist form (see as.dist), the best lag used for each gene, and the C used. The lags introduced are in reference to the original time points (i.e. lag of 0). 
+
+
+An example output of LPWC for 10 genes using high penalty follows:
+
+
+```{r}
+LPWC::corr.bestlag(simdata[49:58, ], timepoints = timepoints, max.lag = 2, penalty = "high", iter = 10)
+```
+
+However, many clustering algorithms, such as hierarchical clustering, take distances as input instead of similarities.
+We convert the similarities to distances by subtracting the similarities from 1.
+Initially
+
+$$ -1 \leq Corr \leq 1$$
+
+When we take Dist = 1 - Corr
+
+$$ 0 \leq Dist = (1 - Corr) \leq 2$$
+
+
+## Generating clusters using hierarchical clustering
+
+LPWC computes a similarity matrix and does not directly cluster the genes.
+A standard similarity-based clustering algorithm such as hierarchical clustering can be applied to the LPWC similarities.
+
+An example for 10 genes:
+
+```{r clust1, fig.width=5}
+dist <- 1 - LPWC::corr.bestlag(simdata[11:20, ], timepoints = timepoints, max.lag = 2, penalty = "low", iter = 10)$corr
+plot(hclust(dist))
+```
+
+
+The genes can also be assigned to clusters using cutree function.
+An example of cluster assignment with 3 clusters:
+
+```{r clust 2}
+dist <- 1 - LPWC::corr.bestlag(simdata[11:20, ], timepoints = timepoints, max.lag = 2, penalty = "low", iter = 10)$corr
+cutree(hclust(dist), k = 3)
+```
+
+## Filtering genes
+
+Because $corr(x, y) = \frac{cov(x, y)}{\sqrt{var(x) var(y)}}$, the variance of genes x and gene y needs to be > 0.
+If any gene has 0 variance, the functions **corr.bestlag** and **best.lag** will stop with the error: `At least one of the genes has 0 variance!`
+This code can be used to filter **data** and remove genes with 0 variance before running LPWC.
+
+
+```{r, eval = FALSE}
+indexnon0 <- apply(data, 1, function(x){which(var(x) != 0)})
+subset.data <- data[indexnon0, ]
+```
+
+Ideally, it is better to run LPWC only with genes that are significantly differentially expressed over time.
+
+
+# Contributors
+
+Our development of LPWC benefited from help and
+feedback from many individuals, including but not limited to:
+
+Wenzhi Cao,
+Karl Broman, 
+Jen Birstler,
+James Dowell,
+Ron Stewart,
+John Steill,
+leungi (Github user), 
+Gitter Lab members.
+
+
+# Session info
+
+```{r sessionInfo}
+sessionInfo()
+```
+
+
+# FAQ
+
+- How can I speed up LPWC for the low penalty with a large dataset?
+
+We recommend parallelizing parts of the analysis, as shown below:
+
+```{r, eval = FALSE}
+
+
+# This function stores two different list separately 
+comb <- function(x, ...) {
+  lapply(seq_along(x),
+         function(i) c(x[[i]], lapply(list(...), function(y) y[[i]])))
+}
+
+
+# adding the data
+data <- simdata[1:10, ]
+# number of iterations
+iter <- 10
+# C values that are used in the algorithm
+allC <- findC(timepoints = timepoints, iter = iter)
+
+# setting the clusters 
+core <- parallel::detectCores() - 1
+cl <- parallel::makeCluster(core)
+
+# assigning the parallelization
+doParallel::registerDoParallel(cl)
+
+
+## running the algorithm for different C 
+result <- foreach(i = 1:iter, .combine='comb', .multicombine=TRUE,
+                .init=list(list(), list())) %dopar% {
+            lags <- best.lag(data, max.lag = 3, timepoints = timepoints, C = allC[i])
+            new.data <- prep.data(data = data, lags = lags, timepoints = timepoints)
+            corr <- comp.corr(new.data$data, new.data$time, C = allC[i])
+            return(list(corr, lags))
+                }
+
+
+# dividing the list into two different list: one for lags and one for all the correlations
+allcorr <- result[[1]]
+alllags <- result[[2]]
+
+# picking best C
+val <- rep(NA, (length(iter) - 1))
+for(i in 1:(iter - 1)){
+  val[i] <- sum((as.vector(allcorr[[i + 1]]) - as.vector(allcorr[[i]]))^2)
+}
+
+# returning the results for the best C
+result <- list(corr = allcorr[[which.min(val) + 1]], lags = alllags[[which.min(val) + 1]], C = values[which.min(val) + 1])
+
+```
