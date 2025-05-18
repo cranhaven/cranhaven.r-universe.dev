@@ -1,0 +1,703 @@
+---
+title: "Manipulating STICS XML files"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Manipulating STICS XML files}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+#params:
+#  javastics: "/home/plecharpent/tmp/TEST_UPDATE_XML_V9_V10/JavaSTICS-1.41-stics-9.2"
+---
+
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  tidy = TRUE
+)
+```
+
+```{r eval=FALSE}
+library(SticsRFiles)
+```
+
+```{r include=FALSE}
+suppressWarnings(library(SticsRFiles))
+suppressWarnings(library(tibble))
+
+load_param_names <- function() {
+  tibble::as_tibble(
+    read.csv2(file = "param_names.csv", stringsAsFactors = FALSE)
+    )
+}
+```
+
+```{r echo=FALSE}
+stics_version <- get_stics_versions_compat()$latest_version
+examples_path <- get_examples_path("xml", stics_version = stics_version)
+```
+
+```{r setup, results="hide", echo=FALSE}
+xml_root <- normalizePath(tempdir(), winslash = "/", mustWork = FALSE)
+xml_loc_dir <- file.path(xml_root, "XML")
+if (!dir.exists(xml_loc_dir)) dir.create(xml_loc_dir)
+
+```
+
+
+```{r rm_files, results='hide', echo=FALSE}
+files_list <- list.files(path = xml_loc_dir, pattern = "\\.xml$",
+                         full.names = TRUE)
+files_list
+if (length(files_list))  {
+  print("Removing files")
+  file.remove(files_list)
+}
+```
+
+# Introduction
+
+The purpose of this document is to provide starting information about:
+
+* how parameters are defined/structured in STICS XML files
+* how to find information about parameters among an XML files set
+* how to use functions for extracting data from XML STICS input files
+* how to use functions for replacing data into them
+
+Simple reproducible use cases based on 3 essential functions **get_param_info**, **get_param_xml** and **set_param_xml** are described in this document.
+
+For the moment, queries for selecting information among `usms`, `soils` are limited.
+For example, getting soil parameters for a list of soils is possible, as getting usms informations using a usms list.
+
+Queries inspecting elements downwards are not available yet; as for example, getting soil names/parameters using a criterion like `argi` values > 20.
+
+Exploring files content for files sets are also possible, but not replacing parameters values.
+
+This document has been generated using the latest STICS version **`r stics_version`**.
+
+
+# Understanding what are parameters in STICS XML files
+
+## XML files structures describing parameters
+
+XML files are self documented files and hierarchically structured. Syntaxic rules are based on what we call nodes (i.e. nodes names, similar to html tags) and attributes (nodes attributes values).
+
+STICS XML files are filled with different kinds of parameters description
+structures according to their type/role in the model formalisms.
+
+As we can see in the above XML file extract from a general parameter file:
+
+* Parameters are grouped according to formalisms (in a `xml <formalisme>...</formalisme>` block)
+
+* Parameters may be defined by single values
+This kind of definition is common for all files types and the parameter name is stored in the `nom` attribute of a `param` XML node. So the first parameter name in the example is `beta` and its value is `1.40000` (inside `param` tags).
+
+* Option parameters (with or without attached parameters, eventually with sub-option)
+The corresponding parameter name for an **option** node is stored in an attribute named `nomParam` and the corresponding value is given in the attribute `choix` of the option node. For example, the value of the parameter `codesymbiose` is `2` in the example (*choix="2"*).
+
+```{r , eval = TRUE, echo = FALSE, class.output="xml"}
+par_xml <- file.path(examples_path, "param_gen.xml")
+par <- readLines(par_xml)
+idx_water <- grep(pattern = "formalisme", par)[9:10]
+```
+
+````{r results='asis', echo = FALSE}
+cat("```xml\n")
+cat(paste(par[idx_water[1]:idx_water[2]], collapse = "\n"))
+cat("\n```\n")
+````
+
+* Parameters with several values (for soil layers, technical operations,...)
+Several values may be defined for example relatively to soil parameters (different layers) or for crop management operations (with time repetitions).
+
+* Example from soil files
+In the above file extract for soil parameters, each set of parameters (included in `tableau` nodes) is repeated for each soil layer (layers names are set in the `nom` attributes from *layer 1* to *layer 5*). The parameters names are defined in a `nom` attribute in each `colonne` XML tag.
+
+```{r , eval = TRUE, echo = FALSE, class.output="xml"}
+sol_xml <- file.path(examples_path, "sols.xml")
+sol <- readLines(sol_xml)
+lines_sol <- c(sol[3], "...", sol[70:79], "...", sol[110:119], "...")
+```
+
+````{r results='asis', echo = FALSE}
+cat("```xml\n")
+cat(paste(lines_sol, collapse = "\n"))
+cat("\n```\n")
+````
+
+* Example from tec files
+In the above file extract for crop management parameters, each set of parameters is repeated for each operation (undefined number) corresponding to an `intervention` node . Inside each `intervention` node, parameters names are defined in a `nom` attribute for each `colonne` XML tag.
+
+```{r , eval = TRUE, echo = FALSE, class.output="xml"}
+tec_xml <- file.path(examples_path, "file_tec.xml")
+tec <- readLines(tec_xml)[3:22]
+tec <- c(tec, "...", tec[12:20], "...")
+tec[23] <- gsub(pattern = "112", replacement = "220", tec[23])
+```
+
+````{r results='asis', echo = FALSE}
+cat("```xml\n")
+cat(paste(tec, collapse = "\n"))
+cat("\n```\n")
+````
+
+
+## Functions for XML files manipulations
+
+Rules have been defined to easily search and extract information from XML files in order to simplify the way of using functions dedicated to XML files manipulations.
+
+In some cases, information relative to upward dependence are needed for extracting parameters values, but in most cases only the parameters names are mandatory in functions arguments.
+
+# Getting XML files examples from the `SticsRFiles` library
+
+Several XML examples files have bee included  in the package in order to use them in `reproducible`
+**manipulations** and **results** described in this document. These examples files are extracted from the JavaSTICS
+standard distribution (some of them have been renamed).
+
+## Getting the XML files source directory
+
+In xml_dir, we store the directory path of the XML files available in the SticsRFiles installation directory.
+
+```{r set_xml_dir, echo = FALSE}
+xml_dir <- get_examples_path(file_type = "xml", stics_version = stics_version)
+
+```
+
+```{r, eval=FALSE}
+xml_dir <- get_examples_path(file_type = "xml", stics_version = stics_version)
+
+# For linux
+#> "/path/to/user/R/x86_64-pc-linux-gnu-library/3.6/SticsRFiles/
+#> extdata/xml/examples/V10.2.0"
+
+# For windows
+#> "C:/Users/username/Documents/R/win-lib/3.6/SticsRFiles/
+#> extdata/xml/examples/V10.2.0"
+
+```
+
+## Examples files
+
+```{r}
+
+xml_files <- list.files(path = xml_dir, pattern = ".xml$", full.names = TRUE)
+
+# Listing only the first three files of the entire list
+
+# For linux
+#> [1] "/path/to/user/R/x86_64-pc-linux-gnu-library/3.6/SticsRFiles/extdata/xml
+#> /examples/V10.2.0/file_ini.xml"
+#> [2] "/path/to/user/R/x86_64-pc-linux-gnu-library/3.6/SticsRFiles/extdata/xml
+#> /examples/V10.2.0/file_plt.xml"
+#> [3] "/path/to/user/R/x86_64-pc-linux-gnu-library/3.6/SticsRFiles/extdata/xml
+#> /examples/V10.2.0/file_sta.xml"
+
+# For windows
+#> [1] "C:/Users/username/Documents/R/win-lib/3.6/SticsRFiles/extdata/xml/
+#> examples/V10.2.0/file_ini.xml"
+#> [2] "C:/Users/username/Documents/R/win-lib/3.6/SticsRFiles/extdata/xml/
+#> examples/V10.2.0/file_plt.xml"
+#> [3] "C:/Users/username/Documents/R/win-lib/3.6/SticsRFiles/extdata/xml/
+#> examples/V10.2.0/file_sta.xml"
+
+```
+
+``` {r, echo=FALSE, results="hide"}
+files_list <- list.files(path = xml_dir, pattern = ".xml$")
+legend <- c("initializations", "plant", "station", "crop management",
+            "general", "general (new formalisms)", "soils", "usms")
+dt <- data.frame(files = files_list, groups = legend)
+
+```
+
+The corresponding files types to file names is given in the above table:
+
+``` {r, echo = FALSE}
+knitr::kable(dt)
+#, caption = "Correspondence between XML example files names
+# and parameters groups")
+
+```
+
+## Copying files in a local directory
+
+### A specific file
+
+```{r}
+# Setting a local directory path
+# xml_loc_dir <- "/path/to/local/directory"
+
+file.copy(from = file.path(xml_dir, "sols.xml"),
+          to = file.path(xml_loc_dir, "sols.xml"), overwrite = TRUE)
+```
+
+### All files
+
+```{r}
+
+file.copy(from = xml_files, to = xml_loc_dir)
+```
+
+# Getting information about parameters
+
+## Searching parameters names from files
+
+The `get_param_info` function search is performed in a parameter table stored internally in the SticsRFiles library with respect to the model version (`r stics_version` as default one).
+
+This function uses 2 optional arguments i.e.:
+* `param` a name or a part of a parameter name (or a vector of) for searching in parameters names
+* and/or `keyword` for searching in the parameters description information.
+
+The information columns in the returned tibble are:
+
+* `name`: parameter name
+* `file`: file type of the parameter (keyword), see above table for correspondence
+with files
+
+
+```{r echo=FALSE}
+knitr::kable(read.csv(file = "param_files_keywords.csv", sep = ";"), col.names = c("keyword", "xml file", "parameter kind"))
+```
+
+* `min`: minimal bound
+* `max`: maximal bound
+* `definition`: parameter description
+
+
+Whatever the arguments list is when calling the function, the returned tibble always contains all of these columns.
+
+Information about `bounds` may be missing according to parameters kind.
+
+> For example, for initialization or usm parameters and/or character type parameters (files names, residues type,...), bounds dont make any sense and `NA` is used as missing values.
+
+### Getting all STICS parameters information
+
+Using the `get_param_info` function without any argument, or with specifying the desired `STICS` version, allows to get a table containing all input parameters.
+
+In the above code block, an extract of the returned information table is shown:
+
+```{r, eval = FALSE}
+
+param_names <- get_param_info()
+
+head(param_names)
+
+```
+```{r echo = FALSE}
+param_names <- get_param_info()
+
+head(param_names)
+```
+
+
+The full parameters data.frame content is presented in the above paged table.
+
+```{r echo=FALSE}
+# Displaying the returned data as a paged table
+rmarkdown::paged_table(param_names)
+```
+
+### Getting information about one or more parameters
+
+If parameters names are known and are given with the right syntax, information can be retrieved as follows
+
+```{r, eval = FALSE}
+
+get_param_info(param = "albedo")
+
+get_param_info(param = c("albedo", "latitude", "humcapil"))
+
+```
+```{r echo = FALSE}
+param_names[grep("albedo", param_names$name), ]
+
+idx <- grepl("albedo", param_names$name) |
+  grepl("latitude", param_names$name) |
+  grepl("humcapil", param_names$name)
+
+param_names[idx, ]
+
+```
+
+### Getting parameters information using partial names matching
+
+A search with incomplete names may be done as follows
+
+```{r}
+
+get_param_info(param = "hum")
+
+
+param_names <- get_param_info(param = c("alb", "hum"))
+
+```
+
+The found parameters data.frame content is presented in the above paged table.
+
+```{r echo=FALSE}
+# Displaying the returned data as a paged table
+rmarkdown::paged_table(param_names)
+```
+
+
+## Searching parameters using keywords
+
+The `keyword` argument (one or several possible strings) may be used to search in all textual columns as `name` or `description`.
+
+```{r, warning = FALSE, eval = FALSE}
+
+get_param_info(keyword = "hum")
+
+
+param_names <- get_param_info(keyword = c("alb", "hum"))
+
+
+```
+```{r echo = FALSE}
+param_names <- get_param_info(keyword = c("alb", "hum"))
+
+```
+
+The found parameters data.frame content is presented in the above paged table.
+
+```{r, warning=FALSE, echo = FALSE}
+# Displaying the returned data as a paged table
+rmarkdown::paged_table(param_names)
+
+```
+
+# Getting parameters values from XML files
+
+The `get_param_xml` function is used for extracting parameters values in XML files (for one file or a list of), optionally providing it a parameter name or a names list.
+
+The result of the function call is a named list (with files names), and each element of the list contains a named list of the parameters values (see examples below).
+
+For usms or soils parameter, a conditional selection may be used to filter parameter values respectively through a list of usms or soils.
+
+Among STICS parameters files types, XML structure may be different, and they can contain either one/several occurrence(s) of parameters with scalar values (soils or usms description), or one/several occurrence(s) of parameters with vector values (along soil depth, crop management operations,...).
+
+So parameters values extraction with the `get_param_xml` requires different input arguments combination to do so.
+
+## Scalar parameters extraction
+
+* For one parameter and one occurrence
+
+```{r}
+# Fixing files paths
+sols <- file.path(xml_loc_dir, "sols.xml")
+par_gen <- file.path(xml_loc_dir, "param_gen.xml")
+
+# A option parameter
+get_param_xml(par_gen, param = "codeactimulch")
+
+# A simple parameter
+get_param_xml(par_gen, param = "tnitopt")
+
+# Using a conditional selection
+get_param_xml(sols, param = "argi", select = "sol",
+              select_value = "solcanne")
+
+```
+
+* For one parameter and several occurences
+
+```{r}
+
+# For all soils
+
+get_param_xml(sols, param = "argi")
+```
+
+* For several parameters and several occurrences
+
+```{r}
+
+# For all soils
+get_param_xml(sols, param = c("argi", "pH"))
+```
+
+* For several parameters and one occurrence (conditional selection)
+
+```{r}
+
+# For one soil
+get_param_xml(sols, param = c("argi", "pH"), select = "sol",
+              select_value = "solcanne")
+```
+
+## Vector parameters extraction
+
+Vectors parameters are typically present in soils file or crop management files.
+
+* Getting all values for given parameters and all soils
+
+```{r}
+# For all soil layers
+get_param_xml(sols, param = c("epc", "infil"))
+```
+
+* Getting all values for given parameters (for a given soil, or crop management operation)
+
+```{r}
+# For all soil layers
+get_param_xml(sols, param = c("epc", "infil"), select = "sol",
+              value = "solcanne")
+```
+
+```{r}
+# For all irrigation supplies
+tec <- file.path(xml_loc_dir, "file_tec.xml")
+get_param_xml(tec, param = c("julapI_or_sum_upvt", "amount"))
+
+```
+
+* Selecting with values index (among 5 soil layers, several irrigations supply)
+
+```{r}
+# For soil layers 1 to 3
+get_param_xml(sols, param = c("epc", "infil"), select = "sol",
+              select_value = "solcanne", ids = 1:3)
+```
+
+```{r}
+
+# For irrigation operations 1 to 5
+get_param_xml(tec, param = c("julapI_or_sum_upvt", "amount"), ids = 1:5)
+
+```
+
+## Getting all parameters values from files
+
+Using the function without any argument produces a list of all parameters values of a file.
+
+```{r}
+tec_param_values <- get_param_xml(tec)[[1]]
+#
+# Displaying only a subset of the list
+head(tec_param_values, n = 10)
+
+```
+
+A files list may be used also to get all parameters as follows in the same list
+
+```{r}
+param_values <- get_param_xml(c(tec, sols))
+
+# Files list names
+names(param_values)
+
+# param_values extract of 5 elements from each file sub-list
+head(param_values$file_tec.xml, n = 5)
+
+head(param_values$sols.xml, n = 5)
+```
+
+# Replacing parameters values in XML files
+
+## Defining the output file using function arguments
+
+The **set_param_xml** function allows to set the output file with the following optional arguments as follows:
+
+* For overwriting the existing file: use ```overwrite = TRUE```
+
+* For specifying a new file name and directory: use  `save_as` for giving the new xml file path (including the .xml extension)
+
+In the following examples, the original file is always overwritten. Before and after each `set_param_xml` call, the original and new written values are checked with a `get_param_xml` call.
+
+## Scalar parameters
+
+* For one parameter and one occurrence
+
+```{r}
+
+
+## An option parameter
+
+# Initial value
+get_param_xml(par_gen, param = "codeactimulch")
+
+# Setting a new one
+set_param_xml(par_gen, param = "codeactimulch", values = 2, overwrite = TRUE)
+
+# Controlling the written value
+get_param_xml(par_gen, param = "codeactimulch")
+
+
+
+## A simple parameter
+
+# Initial value
+get_param_xml(par_gen, param = "tnitopt")
+
+# Setting a new one
+set_param_xml(par_gen, param = "tnitopt", values = 29.5, overwrite = TRUE)
+
+# Controlling written value
+get_param_xml(par_gen, param = "tnitopt")
+
+
+## Using a conditional selection
+
+# Initial value
+get_param_xml(sols, param = "argi", select = "sol",
+              select_value = "solcanne")
+
+# Setting a new one
+set_param_xml(sols, param = "argi", values = 33, select = "sol",
+              select_value = "solcanne", overwrite = TRUE)
+
+# Controlling written value
+get_param_xml(sols, param = "argi", select = "sol",
+              select_value = "solcanne")
+
+```
+
+* For one parameter and several occurences
+
+For passing several parameters values (for one or more parameters) or single values for several parameters, the `param_value` argument must contain a list of vectors of values with the same length as `param` vector.
+
+```{r}
+
+## For all soils
+soils_number <- length(get_soils_list(sols))
+
+# Initial values
+get_param_xml(sols, param = "argi")
+
+# One value per occurence
+set_param_xml(sols, param = "argi", values = list(1:soils_number),
+              overwrite = TRUE)
+
+# Controlling written values
+get_param_xml(sols, param = "argi")
+
+# Setting the same value for all occurences
+set_param_xml(sols, param = "argi", values = 40, overwrite = TRUE)
+
+# Controlling written values
+get_param_xml(sols, param = "argi")
+
+
+```
+
+* For several parameters and several occurrences
+
+```{r}
+
+## For all soils
+soils_number <- length(get_soils_list(sols))
+
+# Initial values
+
+# Setting one value per parameters occurence
+set_param_xml(sols, param = list("argi", "pH"),
+              values = list(1:soils_number, soils_number:1),
+              overwrite = TRUE)
+
+# Controlling written values
+get_param_xml(sols, param = c("argi", "pH"))
+
+# Setting the same value for all occurences
+set_param_xml(sols, param = c("argi", "pH"), values = list(50, 8),
+              overwrite = TRUE)
+
+# Controlling written values
+get_param_xml(sols, param = c("argi", "pH"))
+
+
+```
+
+* For several parameters and one occurrence (conditional selection)
+
+```{r}
+
+## For one soil
+
+# Initial values
+get_param_xml(sols, param = c("argi", "pH"), select = "sol",
+              select_value = "solcanne")
+
+# Setting new values
+set_param_xml(sols, param = c("argi", "pH"), values = list(50, 8),
+              select = "sol", select_value = "solcanne", overwrite = TRUE)
+
+# Controlling written values
+get_param_xml(sols, param = c("argi", "pH"), select = "sol",
+              select_value = "solcanne")
+```
+
+## Vector parameters
+
+* All values (for all soil layers, or crop management operations)
+
+```{r}
+## For all soil layers
+
+# Initial values
+get_param_xml(sols, param = c("epc", "infil"), select = "sol",
+              select_value = "solcanne")
+
+# Setting new values
+set_param_xml(sols, param = c("epc", "infil"), values = list(18:22, 48:52),
+              select = "sol", select_value = "solcanne", overwrite = TRUE)
+
+# Controlling written values
+get_param_xml(sols, param = c("epc", "infil"), select = "sol",
+              select_value = "solcanne")
+```
+
+```{r}
+## For all irrigation operations
+tec <- file.path(xml_loc_dir, "file_tec.xml")
+
+# Initial values
+get_param_xml(tec, param = c("julapI_or_sum_upvt", "amount"))
+
+# Setting new values
+set_param_xml(tec, param = c("julapI_or_sum_upvt", "amount"),
+              values = list(200:215, 20:35), overwrite = TRUE)
+
+# Controlling written values
+get_param_xml(tec, param = c("julapI_or_sum_upvt", "amount"))
+
+```
+
+* Some values
+
+In the examples below, `ids` contains the position of the parameters values in the vector, for a given soil (5 layers) name or for irrigation supplies operations amounts. In that case, used values in `ids` are contiguous, but they do not need to be.
+
+A vector of logical values may be used instead of position values for queries or replacement.
+
+```{r}
+## For soil layers 1 to 3
+
+# Initial values
+get_param_xml(sols, param = c("epc", "infil"), select = "sol",
+              select_value = "solcanne", ids = 1:3)
+
+# Setting new values
+set_param_xml(sols, param = c("epc", "infil"), values = list(20:18, 50:48),
+              select = "sol", select_value = "solcanne", overwrite = TRUE,
+              ids = 1:3)
+
+# Controlling written values
+
+get_param_xml(sols, param = c("epc", "infil"), select = "sol",
+              select_value = "solcanne", ids = 1:3)
+```
+
+```{r}
+
+## For irrigation operations 1 to 5 (same indices for all parameters)
+
+# Initial values
+get_param_xml(tec, param = c("julapI_or_sum_upvt", "amount"))
+
+# Setting new values
+set_param_xml(tec, param = c("julapI_or_sum_upvt", "amount"),
+              values = list(204:200, 24:20), overwrite = TRUE, ids = 1:5)
+
+# Controlling written values
+get_param_xml(tec, param = c("julapI_or_sum_upvt", "amount"))
+```
