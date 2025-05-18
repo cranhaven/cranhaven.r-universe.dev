@@ -1,0 +1,16 @@
+#' Simulated example data
+#'
+#' Simulated example data required by PRS-DIS and PRS-PGx functions.
+#' @docType data
+#' @usage data(PRSPGx.example)
+#' @format A list with 8 sublists:
+#' \describe{
+#'   \item{PGx_GWAS}{PGx GWAS including SNP ID, MAF, position, \eqn{\beta}, \eqn{\alpha}, 2-df p-value, and N; SD(Y), and mean(T)}
+#'   \item{DIS_GWAS}{disease GWAS including SNP ID, MAF, position, \eqn{\beta}, SE(\eqn{\beta}), p-value, and N}
+#'   \item{G_reference}{simulated individual-level genotype from the reference panel matched with the simulated sample PGx genotype}
+#'   \item{Y}{simulated phenotype (continuous)}
+#'   \item{T}{simulated treatment assignment, 1 = treatment, 0 = placebo}
+#'   \item{G}{simulated sample PGx genotype with 100 SNPs and 4000 subjects}
+#'   \item{beta}{simulated prognostic effect sizes (i.e., the underlying true prognostic effect sizes)}
+#'   \item{alpha}{simulated predictive effect sizes (i.e., the underlying true predictive effect sizes)}}
+"PRSPGx.example"
