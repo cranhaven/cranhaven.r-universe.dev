@@ -1,0 +1,734 @@
+---
+title: "Simulation from species 1 life history"
+output: 
+  rmarkdown::html_vignette:
+    toc: true
+vignette: >
+  %\VignetteIndexEntry{species_1_simulation}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+```{r setup, message=FALSE}
+library(tidyverse)
+library(CKMRpop)
+```
+
+
+For this first example, we use the hypothetical life history of species 1.
+First we have to set spip up to run with that life history.
+
+## Setting the spip parameters 
+
+`spip` has a large number of demographic parameters.  Typically `spip` is run as
+a command-line program in Unix.  In CKMRpop, all that action goes on under the
+hood, but you still have to use the `spip` parameters.  This vignette is not about
+using `spip`.  For a short listing of all the `spip` options, do this:
+```r
+library(CKMRpop)
+spip_help()
+```
+If you want a full, complete, long listing of all the `spip` options, then you
+can do:
+```r
+library(CKMRpop)
+spip_help_full()
+```
+
+
+All of the "long-form" options to `spip` are given on the Unix command line starting
+with two dashes, like `--fem-surv-probs`.  To set parameters within `CKMRpop` to send
+to spip, you simply make a named list of input values. The names of the items in the
+list are the long-format option names _without the leading two dashes_.  For an example,
+see the package data object `species_1_life_history`, as described below.
+
+
+### Basic life history parameters 
+
+These parameters are included in the package in the variable `species_1_life_history`.
+It is named list of parameters to send to spip.  The list names are the names of the
+spip options.  It looks like this:
+```{r}
+species_1_life_history
+```
+
+We want to add instructions to those, telling spip how long to run the simulation,
+and what the initial census sizes should be.  
+
+So, first, we copy `species_1_life_history` to a new variable, `SPD`:
+```{r}
+SPD <- species_1_life_history
+```
+Now, we can add things to SPD.
+
+###  Setting Initial Census, New Fish per Year, and Length of Simulation
+
+The number of new fish added each year is called the "cohort-size".  Once we know
+that, we can figure out what the stable age distribution would be given the survival
+rates, and we can use that as our starting point.  There is a function
+in the package that helps with that:
+```{r}
+# before we tell spip what the cohort sizes are, we need to 
+# tell it how long we will be running the simulation
+SPD$`number-of-years` <- 100  # run the sim forward for 100 years
+
+# this is our cohort size
+cohort_size <- 300
+
+# Do some matrix algebra to compute starting values from the
+# stable age distribution:
+L <- leslie_from_spip(SPD, cohort_size)
+
+# then we add those to the spip parameters
+SPD$`initial-males` <- floor(L$stable_age_distro_fem)
+SPD$`initial-females` <- floor(L$stable_age_distro_male)
+
+# tell spip to use the cohort size
+SPD$`cohort-size` <- paste("const", cohort_size, collapse = " ")
+
+
+```
+
+
+### Specifying the fraction of sampled fish, and in different years
+
+Spip let's you specify what fraction of fish of different ages should be
+sampled in different years.  Here we do something simple, and instruct
+spip to sample 1% of the fish of ages 1, 2, and 3 (after the episode of 
+death, see the spip vignette...) every year from year 50 to 75.
+```{r}
+samp_frac <- 0.03
+samp_start_year <- 50
+samp_stop_year <- 75
+SPD$`discard-all` <- 0
+SPD$`gtyp-ppn-fem-post` <- paste(
+  samp_start_year, "-", samp_stop_year, " ", 
+  samp_frac, " ", samp_frac, " ", samp_frac, " ",
+  paste(rep(0, SPD$`max-age` - 3), collapse = " "),
+  sep = ""
+)
+SPD$`gtyp-ppn-male-post` <- SPD$`gtyp-ppn-fem-post`
+```
+
+## Running spip and slurping up the results
+
+There are two function that do all this for you.  The function `run_spip()` runs spip in
+a temporary directory.  After running spip, it also processes the output
+with a few shell scripts.  The function returns the path to the temporary
+directory.  You pass that temporary directory path into the function `slurp_spip()`
+to read the output back into R.  It looks like this:
+```{r, echo=FALSE, results='hide', message=FALSE}
+# NOTE the following if()...else() blocks are here
+# to test whether spip has been installed yet.
+# If spip is not available (for example, on CRAN's build machines) this
+# is noted and stored package data are used for the variable
+# "slurped" to build the remainder of the vignette.
+if(spip_exists()) {
+  message("spip is installed and will be used")
+  set.seed(5)
+  spip_dir <- run_spip(pars = SPD)
+  
+  # now read that in and find relatives within the grandparental range
+  slurped <- slurp_spip(spip_dir, 2)
+} else {
+  message("Using stored package data because spip is not installed")  
+  slurped <- species_1_slurped_results
+}
+```
+```{r, eval=FALSE}
+set.seed(5)  # set a seed for reproducibility of results
+spip_dir <- run_spip(pars = SPD)  # run spip
+slurped <- slurp_spip(spip_dir, 2) # read the spip output into R
+```
+Note that setting the seed allows you to get the same results from spip.
+If you don't set the seed, that is fine.  spip will be seeded by the next
+two integers in current random number sequence.
+
+If you are doing multiple runs and you want them to be different, you should
+make sure that you don't inadvertently set the seed to be the same each time.
+
+
+
+
+## Some functions to summarize the runs
+
+Although during massive production simulations, you might not go back to every run
+and summarize it to see what it looks like, when you are parameterizing demographic
+simulations you will want to be able to quickly look at observed demographic rates
+and things.  There are a few functions in CKMRpop that make this quick and easy to do.
+
+### Plot the age-specific census sizes over time
+
+This is just a convenience function to make a pretty plot so you can check to
+see what the population demographics look like:
+```{r, fig.width = 7, fig.height = 5.5}
+ggplot_census_by_year_age_sex(slurped$census_postkill)
+```
+This shows that the function `leslie_from_spip()` does a good job of finding the
+initial population numbers that accord with the stable age distribution.
+
+### Assess the observed survival rates
+
+We can compute the survival rates like this:
+```{r}
+surv_rates <- summarize_survival_from_census(slurped$census_postkill)
+```
+
+That returns a list.  One part of the list is a tibble with observed survival fractions.
+The first 40 rows look like this:
+```{r}
+surv_rates$survival_tibble %>%
+  slice(1:40)
+```
+The second part of the list holds a plot with histograms of age-specific,
+observed survival rates across all years.  The blue line is the mean over
+all years.
+```{r, fig.width = 9, fig.height=7.5, out.height=600, out.width=700}
+surv_rates$plot_histos_by_age_and_sex
+```
+
+To compare these values to the parameter values for the simulation, you must
+pass those to the function:
+```{r, fig.width = 9, fig.height=7.5, out.height=600, out.width=700}
+surv_rates2 <- summarize_survival_from_census(
+  census = slurped$census_prekill,
+  fem_surv_probs = SPD$`fem-surv-probs`, 
+  male_surv_probs = SPD$`male-surv-probs`
+)
+
+# print the plot
+surv_rates2$plot_histos_by_age_and_sex
+```
+
+Here, the red dashed line is the value chosen as the parameter for
+the simulations. The means are particularly different for the older
+age classes, which makes sense because there the total number of
+individuals in each of those year classes is smaller.
+
+## The distribution of offspring number
+
+It makes sense to check that your simulation is delivering a reasonable distribution
+of offspring per year.  This is the number of offspring that survive to just before the
+first prekill census.  Keep in mind that, for super high-fecundity species, we won't model
+every single larva, we just don't start "keeping track of them" until they reach a stage
+that is recognizable in some way. 
+
+We make this summary from the pedigree information. 
+In order to get the number of adults that were present, but did not produce any offspring,
+we also need to pass in the postkill census information.  Also, to get lifetime
+reproductive output, we need to know how old individuals were when they died, so 
+we also pass in the information about deaths.  
+
+To make all the summaries, we do:
+```{r}
+offs_and_mates <- summarize_offspring_and_mate_numbers(
+  census_postkill = slurped$census_postkill,
+  pedigree = slurped$pedigree,
+  deaths = slurped$deaths, lifetime_hexbin_width = c(1, 2)
+)
+```
+
+Note that we are setting the lifetime reproductive output hexbin width to be suitable
+for this example.  
+
+The function above returns a list of plots, as follows:
+
+### Age and sex specific number of offspring
+
+```{r, fig.width = 7, fig.height = 5.5}
+offs_and_mates$plot_age_specific_number_of_offspring
+```
+
+Especially when dealing with viviparous species (like sharks and mammals) it is
+worth checking this to make sure that there aren't some females having far too many
+offspring.
+
+
+### Lifetime reproductive output as a function of age at death
+
+Especially with long-lived organisms, it can be instructive to see how lifetime
+reproductive output varies with age at death.
+
+```{r, fig.height = 6, fig.width = 7}
+offs_and_mates$plot_lifetime_output_vs_age_at_death
+```
+
+Yep, many individuals have no offspring, and you have more kids if you live longer.
+
+
+### Fractional contribution of each age class to the year's offspring
+
+Out of all the offspring born each year, we can tabulate the fraction that
+were born to males (or females) of each age.  This summary shows a histogram
+of those values.  The represent the distribution of the fractional contribution
+of each age group each year.
+```{r, fig.width=7, fig.height=7}
+offs_and_mates$plot_fraction_of_offspring_from_each_age_class
+```
+
+The blue vertical lines show the means over all years.
+
+## The distribution of the number of mates
+
+Some of the parameters in `spip` affect the distribution of the number
+of mates that each individual will have.  We can have a quick look
+at whether the distribution of number of mates (that produced at least
+one offspring) appears to be what we might hope it to be.  
+```{r}
+mates <- count_and_plot_mate_distribution(slurped$pedigree)
+```
+That gives us a tibble with a summary, like this:
+```{r}
+head(mates$mate_counts)
+```
+
+And also a plot:
+```{r, fig.width=7, fig.height=5}
+mates$plot_mate_counts
+```
+
+## Compiling the related pairs from the samples
+
+From the samples that we slurped up from the spip output we 
+compile all the related pairs that we found in there with a single
+function.  It is important to note that this finds all the related pairs
+that share ancestors back within `num_generations` generations. Recall, that
+we ran `slurp_spip()` with `num_generations = 2` which means that we
+check for matching ancestors up to and including the grandparents of the sample.
+```{r}
+crel <- compile_related_pairs(slurped$samples)
+```
+The result that comes back has a single row for each pair. The individuals appear in
+each pair such that the first name comes before the second name, alphabetically,
+in each pair.  There is information in list columns about the year(s) that each
+member of the pair was sampled in and also years in which they were born, and also
+the indices of the populations they were sampled from.  (Knowing the population
+will become useful when/if we start simulating multiple populations connected
+by gene flow).  Here we show the first 10 pairs in the samples:
+```{r}
+crel %>%
+  slice(1:10)
+```
+Because some pairs might be related in multiple ways (i.e., they might be paternal half-sibs,
+but, through their mother's lineage, they might also be half-first cousins), things can 
+get complicated.  However, `CKMRpop` has an algorithm to categorize pairs according to
+their "most important" relationship.  
+
+The column `dom_relat` gives the "dominant" or "closest" relationship between the pair.
+The possibilities, when considering up to two generations of ancestors are:
+
+- `Se`: self. 
+- `PO`: parent-offspring
+- `Si`: sibling. 
+- `GP`: grandparental
+- `A` : avuncular (aunt-niece)
+- `FC`: first cousin. 
+
+The `max_hit` column can be interpreted as the number of shared ancestors at the
+level of the dominant relationship.  For example a pair of half-siblings are of
+category `Si` and have `max_hit = 1`, because they share one parent. On the other
+hand, a pair with category `Si` and `max_hit = 2` would be full siblings.  
+Likewise, `A` with `max_hit = 1` is a half-aunt-niece or half-uncle-nephew pair,
+while `A` with `max_hit = 2` would be a full-aunt-niece or full-uncle-nephew pair.
+
+The column `dr_hits` gives the number of shared ancestors on the upper vs lower
+diagonals of the ancestry match matrices (see below).  These are meaningful primarily
+for understanding the "directionality" of non-symmetrical relationships.  Some explanation
+is in order: some relationships, like Se, Si, and FC are _symmetrical_ relationships, because,
+if, for example Greta is your sibling, then you are also Greta's sibling.  Likewise, if you are
+Milton's first cousin, then Milton is also your first cousin.  Other relationships, like
+PO, A, and GP, are not symmetrical:  If Chelsea is your mother, then you are not Chelsea's
+mother, you are Chelsea's child.  In the non-symmetrical relationships there is always one
+member who is typically expected to be older than the other.  This is a requirement
+in a direct-descent relationship (like parent-offspring, or grandparent-grandchild),
+but is not actually required in avuncular relationships (i.e. it is possible to have an
+aunt that is younger than the nephew...).  We refer to the "typically older" member
+of non-symmetrical pairs as the "upper member" and the `upper_member` column of the output
+above tells us whether `id_1` or `id_2` is the upper member in such relationships,
+when `upper_member` is 1 or 2, respectively.  `upper_member` is NA for symmetrical
+relationships and it can be 0 for weird situations that should rarely arise where,
+for example a pair A and B is related such that A is B's half-uncle, but B is A's half-aunt.
+
+
+Often the dominant relationship is the only relationship between the pair. However,
+if you want to delve deeper into the full relationship out to `num_generations` 
+generations, you can analyze the ancestry match matrix for the pair, which is stored in the
+the `anc_match_matrix` column.  This matrix holds a TRUE
+for each shared ancestor in the two individual's ancestry (out to `num_generations`).
+If this seems obtuse, it should become more understandable when we look at some figures, later.
+
+### Tallying relationships
+
+Here, we count up the number of pairs that fall into different relationship types:
+```{r}
+relat_counts <- count_and_plot_ancestry_matrices(crel)
+```
+
+The first component of the return list is a tibble of the relationship counts in a highly summarized form
+tabulating just the `dom_relat` and `max_hit` over all the pairs.
+```{r}
+relat_counts$highly_summarised
+```
+This is telling us there are 194 half-first-cousin pairs, 130 half-avuncular (aunt/uncle with niece/nephew) pairs,
+and so forth. 
+
+
+### A closer look within the dominant relationships
+
+As noted before, the table just lists the dominant relationship of
+each pair.  If you want to quickly assess, within those dominant categories,
+how many specific ancestry match matrices underlie them, you can
+look at the `dr_counts` component of the output:
+```{r}
+relat_counts$dr_counts
+```
+Each of these distinct ancestry match matrices for each dominant relationship can
+be visualized in a series of faceted plots, which are also returned.  For example,
+the ancestry match matrices seen amongst the FC relationships are:
+```{r, fig.width=7, fig.height=7}
+relat_counts$dr_plots$FC
+```
+Within each dominant relationship, the distinct ancestry matrices in each
+separate panel are named according to their number
+(`001`, `002`, `003`, etc), relationship and the
+`dr_hits` vector, (`FC[1,2]`) and the number of times this ancestry match matrix
+was observed amongst pairs in the sample (like ` - 4`).  So `006-FC[1,1] - 24` was
+observed in 24 of the sampled pairs.
+
+It is worth pointing out that the `014-FC[2,2] - 2` plot shows two pairwise relationships
+in which individual 2 is inbred, because its father's father (pp) and mother's father
+(mp) are the same individual. 
+
+Let's look at the distinct ancestry match matrices from the siblings:
+```{r, fig.width=7, fig.height=7}
+relat_counts$dr_plots$Si
+```
+Here in `005` we see an interesting case where ind_1 and ind_2 are maternal half sibs,
+put also individual 2's father is also his/her uncle.
+
+### Tallying all the ancestry match matrices
+
+At times, for example, when looking for the more bizarre relationships,
+you might just want to visualize all the ancestry match matrices in order
+of the number of times that they occur.  The number of different ancestry
+match matrices (and the matrices themselves) can be accessed with:
+```{r}
+relat_counts$anc_mat_counts
+```
+But more useful for visualizing things is `relat_counts$anc_mat_plots` which is a list that
+holds a series of pages/plots showing all the different
+ancestry matrices seen. Here are the first 30:
+```{r, fig.width=7, fig.height=7}
+relat_counts$anc_mat_plots[[1]]
+```
+
+And here are the remaining 14 relationship types:
+```{r, fig.width=7, fig.height=7}
+relat_counts$anc_mat_plots[[2]]
+```
+
+These are worth staring at for a while, and making sure you understand what
+they are saying.  I spent a lot of time staring at these, which is how I
+settled upon a decent algorithm for identifying the dominant relationship
+in each.
+
+## A Brief Digression: downsampling the sampled pairs
+
+When using `spip` within `CKMRpop` you have to specify the fraction of
+individuals in the population that you want to sample at any particular time.
+You must set those fractions so that, given the population size, you end up with
+roughly the correct number of samples for the situation you are trying to
+simulate.  Sometimes, however, you might want to have sampled exactly 5,000
+fish. Or some other number.  The function `downsample_pairs` lets you randomly
+discard specific instances in which an individual was sampled so that the
+number of individuals (or sampling instances) that remains is the exact number
+you want.
+
+For example, looking closely at `slurped$samples` shows that `r nrow(slurped$samples)` distinct individuals were sampled:
+```{r}
+nrow(slurped$samples)
+```
+However, those `r nrow(slurped$samples)` individuals represent multiple distinct sampling instances, because
+some individuals may sampled twice, as, in this simulation scenario,
+sampling the individuals does not remove them from the population:
+```{r}
+slurped$samples %>% 
+  mutate(ns = map_int(samp_years_list, length)) %>% 
+  summarise(tot_times = sum(ns))
+```
+
+Here are some individuals sampled at multiple times
+```{r}
+SS2 <- slurped$samples %>%
+  filter(map_int(samp_years_list, length) > 1) %>%
+  select(ID, samp_years_list)
+
+SS2
+```
+And the years that the first two of those individuals were sampled are as follows:
+```{r}
+# first indiv:
+SS2$samp_years_list[[1]]
+
+# second indiv:
+SS2$samp_years_list[[2]]
+```
+
+Great! Now, imagine that we wanted to see how many kin pairs we found when
+our sampling was such that we had only 100 instances of sampling (i.e., it could
+have been 98 individuals sampled in total, but two of them were sampled in
+two different years).  We do like so:
+```{r}
+subsampled_pairs <- downsample_pairs(
+  S = slurped$samples,
+  P = crel,
+  n = 100
+)
+```
+Now there are only `r nrow(subsampled_pairs$ds_pairs)` pairs
+instead of `r nrow(crel)`.  
+
+We can do a little calculation to see if that makes sense: because the number of pairs 
+varies roughly quadratically, we would expect that  the number of pairs to decrease by a
+quadratic factor of the number of samples:
+```{r}
+# num samples before downsampling
+ns_bd <- nrow(slurped$samples)
+
+# num samples after downsampling
+ns_ad <- nrow(subsampled_pairs$ds_samples)
+
+# ratio of sample sizes
+ssz_rat <- ns_ad / ns_bd
+
+# square of the ratio
+sq_rat <- ssz_rat ^ 2
+
+# ratio of number of pairs found amongst samples
+num_pairs_before <- nrow(crel)
+num_pairs_after_downsampling = nrow(subsampled_pairs$ds_pairs)
+
+ratio <- num_pairs_after_downsampling / num_pairs_before
+
+# compare these two things
+c(sq_rat, ratio)
+```
+That checks out.
+
+## Uncooked Spaghetti Plots
+
+Finally, in order to visually summarize all the kin pairs that were found,
+with specific reference to their age, time of sampling, and sex, I find it
+helpful to use what I have named the "Uncooked Spaghetti Plot".  There are multiple
+subpanels on this plot.  Here is how to read/view these plots:
+
+- Each row of subpanels is for a different dominant relationship, going from
+closer relationships near the top and more distant ones further down.  You can
+find the abbreviation for the dominant relationship at the right edge of the panels.
+- In each row, there are four subpanels: `F->F`, `F->M`, `M->F`, and `M->M`.  These
+refer to the different possible combinations of sexes of the individuals in the pair.
+    + For the non-symmetrical relationships these are naturally defined with the
+    first letter (`F` for female or `M` for male) denoting the sex of the "upper_member"
+    of the relationship.  That is, if it is PO, then the sex of the parent is the first letter.
+    The sex of the non-upper-member is the second letter.  Thus a `PO` pair that consists of
+    a father and a daughter would appear in a plot that is in the `PO` row in the `M->F` column.
+    + For the symmetrical relationships, there isn't a comparably natural way of
+    ordering the individuals' sexes for presentation.  For these relationships, the
+    first letter refers to the sex of the individual that was sampled in the earliest
+    year.  If both individuals were sampled in the same year, and they are of different
+    sexes, then the female is considered the first one, so those all go on the `F->M` subpanel.
+- On the subpanels, each straight line (i.e., each piece of uncooked spaghetti) represents
+a single kin pair.  The two endpoints represent the year/time of sampling (on the x-axis)
+and the age of the individual when it was sampled (on the y-axis) of the two members of
+the pair.  
+    + If the relationship is non-symmetrical, then the line is drawn as an arrow pointing
+    from the upper member to the lower member.
+    + The color of the line gives the number of shared ancestors (`max_hits`) at the level
+    of the dominant relationship. This is how you can distinguish full-sibs from half-sibs, etc.
+
+
+We crunch out the data and make the plot like this:
+```{r}
+# because we jitter some points, we can set a seed to get the same
+# result each time
+set.seed(22)
+spag <- uncooked_spaghetti(
+  Pairs = crel, 
+  Samples = slurped$samples
+)
+```
+
+Now, the plot can be printed like so:
+```{r, fig.width=7.5, fig.height=9.5}
+spag$plot
+```
+
+## Identifying connected components
+
+One issue that arises frequently in CKMR is the concern (especially in small
+populations) that the pairs of related individuals are not independent. The
+simplest way in which this occurs is when, for example, A is a half-sib of B, 
+but B is also a half-sib of C, so that the pairs A-B and B-C share the
+individual B.  These sorts of dependencies can be captured quickly by thinking
+of individuals as vertices and relationships between pairs of individuals as
+edges, which defines a _graph_.  Finding all the connected components of such a graph
+provides a nice summary of all those pairs that share members and hence are certainly
+not independent.
+
+The `CKMRpop` package provides the connected component of this graph for every
+related pair discovered. This is in column `conn_comp` of the output from 
+`compile_related_pairs()`. Here we can see it from our example, which shows that
+the first 10 pairs all belong to the same connected component, 1.
+```{r}
+crel %>%
+  slice(1:10)
+```
+It should clearly be noted that the size of the connected
+components will be affected by the size of the population (with smaller populations,
+more of the related pairs will share members) and the number of generations back in time
+over which generations are compiled (if you go back for enough in time, all the pairs
+will be related to one another). In our example case, with a small population (so it can
+be simulated quickly for building the vignettes) and going back `num_generations = 2`
+generations (thus including grandparents and first cousins, etc.) we actually find that
+_all_ of the pairs are in the same connected component.  Wow!
+
+Because this simulated population is quite small, at this juncture we will reduce
+the number of generations so as to create more connected components amongst these pairs
+for illustration.  So, let us compile just the pairs with `num_generations = 1`.  To
+do this, we must slurp up the spip results a second time
+```{r, echo=FALSE, results='hide', message=FALSE}
+# NOTE the following if()...else() blocks are here
+# to test whether spip has been installed yet.
+# If spip is not available (for example, on CRAN's build machines) this
+# is noted and stored package data are used for the variable
+# "slurped" to build the remainder of the vignette.
+if(spip_exists()) {
+  # read the spip output in and find relatives within the parental range
+  slurped_1gen <- slurp_spip(spip_dir, num_generations = 1)
+} else {
+  message("Using stored package data for 1gen results because spip is not installed")  
+  slurped_1gen <- species_1_slurped_results_1gen
+}
+```
+
+```{r, eval=FALSE}
+slurped_1gen <- slurp_spip(spip_dir, num_generations = 1)
+```
+
+
+And after we have done that, we can compile the related pairs:
+```{r}
+crel_1gen <- compile_related_pairs(slurped_1gen$samples)
+```
+Look at the number of pairs:
+```{r}
+nrow(crel_1gen)
+```
+That is still a lot of pairs, so let us downsample to 150 samples so that our figures
+are not overwhelmed by connected components.
+```{r}
+set.seed(10)
+ssp_1gen <- downsample_pairs(
+  S = slurped_1gen$samples,
+  P = crel_1gen,
+  n = 150
+)
+```
+
+And also tally up the number of pairs in different connected components:
+```{r}
+ssp_1gen$ds_pairs %>%
+  count(conn_comp) %>%
+  arrange(desc(n))
+```
+There are some rather large connected components there.  Let's plot them. 
+```{r, fig.width=6, fig.height=6}
+# for some reason, the aes() function gets confused unless
+# ggraph library is loaded...
+library(ggraph)
+
+one_gen_graph <- plot_conn_comps(ssp_1gen$ds_pairs)
+one_gen_graph$plot
+
+
+```
+
+Note that if you want to attach labels to those nodes, to see which individuals
+we are talking about, you can do this (and also adjust colors...):
+```{r, fig.width=6, fig.height=6}
+one_gen_graph + 
+  ggraph::geom_node_text(aes(label = name), repel = TRUE, size = 1.2) +
+  scale_edge_color_manual(values = c(`PO-1` = "tan2", `Si-1` = "gold", `Si-2` = "blue"))
+```
+
+
+And, for fun, look at it with 2 generations and all of the samples:
+```{r, fig.width=6, fig.height=6}
+plot_conn_comps(crel)$plot
+
+```
+
+What a snarl!  With a small population, several generations, and large samples,
+in this case...everyone is connected!
+
+
+## Simulating Genotypes
+
+We can simulate the genotypes of the sampled individuals at unlinked
+markers that have allele frequencies (amongst the founders) that we specify.
+We provide the desired allele frequencies in a list.  Here we simulate
+uniformly distributed allele frequencies at 100 markers, each with
+a random number of alleles that is 1 + Poisson(3):
+```{r}
+set.seed(10)
+freqs <- lapply(1:100, function(x) {
+  nA = 1 + rpois(1, 3)
+  f = runif(nA)
+  f/sum(f)
+})
+```
+
+Then run spip with those allele frequencies:
+```{r, echo=FALSE, results='hide', message=FALSE}
+# now we can run spip with those as input
+if(spip_exists()) {
+  message("spip is installed and will be used")
+  set.seed(5)
+  spip_dir <- run_spip(
+    pars = SPD, 
+    allele_freqs = freqs
+  )
+  
+  # now read that in and find relatives within the grandparental range
+  slurped <- slurp_spip(spip_dir, 2)
+} else {
+  message("Using stored package data because spip is not installed")  
+  slurped <- species_1_slurped_results_100_loci
+}
+```
+
+```{r, eval=FALSE}
+set.seed(5)
+spip_dir <- run_spip(
+  pars = SPD, 
+  allele_freqs = freqs
+)
+# now read that in and find relatives within the grandparental range
+slurped <- slurp_spip(spip_dir, 2)
+```
+Now, the variable `slurped$genotypes` has the genotypes we requested.
+The first column, (`ID`) is the ID of the individual (congruent with the `ID`
+column in `slurped$samples`) and the remaining columns are for the markers.
+Each locus occupies one column and the alleles are separated by a slash. 
+
+Here are the first 10 individuals at the first four loci:
+```{r}
+slurped$genotypes[1:10, 1:5]
+```
