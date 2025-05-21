@@ -1,0 +1,93 @@
+#!/bin/sh
+
+# Anticonf (tm) script by Pacha (2024)
+# This script will query 'pkg-config' for the required cflags and ldflags.
+# If pkg-config is unavailable or does not find the library, try setting
+# INCLUDE_DIR and LIB_DIR manually via e.g:
+# R CMD INSTALL --configure-vars='INCLUDE_DIR=/.../include LIB_DIR=/.../lib'
+
+# Library settings
+PKG_CONFIG_NAME="tesseract"
+PKG_DEB_NAME="libtesseract-dev libleptonica-dev"
+PKG_RPM_NAME="tesseract-devel leptonica-devel"
+PKG_BREW_NAME="tesseract leptonica"
+PKG_CFLAGS="-I/usr/include/leptonica"
+PKG_LIBS="-ltesseract"
+
+# Use pkg-config if available
+pkg-config --version >/dev/null 2>&1
+if [ $? -eq 0 ]; then
+  PKGCONFIG_CFLAGS=`pkg-config --cflags --silence-errors ${PKG_CONFIG_NAME}`
+  PKGCONFIG_LIBS=`pkg-config --libs ${PKG_CONFIG_NAME}`
+fi
+
+# Note that cflags may be empty in case of success
+if [ "$INCLUDE_DIR" ] || [ "$LIB_DIR" ]; then
+  echo "Found INCLUDE_DIR and/or LIB_DIR!"
+  PKG_CFLAGS="-I$INCLUDE_DIR $PKG_CFLAGS"
+  PKG_LIBS="-L$LIB_DIR $PKG_LIBS"
+elif [ "$PKGCONFIG_CFLAGS" ] || [ "$PKGCONFIG_LIBS" ]; then
+  echo "Found pkg-config cflags and libs!"
+  PKG_CFLAGS="${PKGCONFIG_CFLAGS}"
+  PKG_LIBS="${PKGCONFIG_LIBS}"
+else
+  echo "--------------------------- [ANTICONF] --------------------------------"
+  echo "Configuration failed to find system libraries. Try installing:"
+  echo " * deb: $PKG_DEB_NAME (Debian, Ubuntu, etc)"
+  echo " * rpm: $PKG_RPM_NAME (Fedora, CentOS, RHEL)"
+  echo " * brew: $PKG_BREW_NAME (Mac OSX)"
+  echo "If the libraries are already installed, check that 'pkg-config' is in your"
+  echo "PATH and PKG_CONFIG_PATH contains the necessary .pc files. If pkg-config"
+  echo "is unavailable you can set INCLUDE_DIR and LIB_DIR manually via:"
+  echo "R CMD INSTALL --configure-vars='INCLUDE_DIR=... LIB_DIR=...'"
+  echo "-------------------------- [ERROR MESSAGE] ---------------------------"
+  exit 1
+fi
+
+# Print debug information
+echo "PKG_CFLAGS: $PKG_CFLAGS"
+echo "PKG_LIBS: $PKG_LIBS"
+
+# Check if the compiler is clang
+if [ "$CC" = "clang" ] || [ "$CXX" = "clang++" ]; then
+  CXX=clang++ -stdlib=libstdc++
+  CXXFLAGS += -stdlib=libstdc++
+  LDFLAGS += -stdlib=libstdc++
+fi
+
+# Tesseract 4 enforces C++11 in the headers but R does not have CXX11CPP
+CPPFLAGS=`${R_HOME}/bin/R CMD config CPPFLAGS`
+CXX11STD=`${R_HOME}/bin/R CMD config CXX11STD`
+if [ $? -eq 0 ]; then
+CXX11=`${R_HOME}/bin/R CMD config CXX11`
+CXX11CPP="$CXX11 -E $CXX11STD"
+else
+CXX11CPP=`${R_HOME}/bin/R CMD config CXXCPP`
+fi
+
+# Create a temporary C++ file to test the compatibility with Tesseract
+cat <<EOF > conftest.cpp
+#include <tesseract/baseapi.h>
+#include <allheaders.h>
+int main() {
+    tesseract::TessBaseAPI api;
+    return 0;
+}
+EOF
+
+# Test Tesseract
+# Tesseract enforces C++11
+if ! ${CXX11} -std=gnu++11 -c conftest.cpp -o conftest.o ${PKG_CFLAGS}
+then
+    echo "Tesseract requires C++11 support"
+    rm -rf conftest.cpp conftest.o
+    exit 1
+else
+    rm -rf conftest.cpp conftest.o
+fi
+
+# Write to Makevars
+sed -e "s|@cflags@|$PKG_CFLAGS|" -e "s|@libs@|$PKG_LIBS|" src/Makevars.in > src/Makevars
+
+# Success
+exit 0
