@@ -1,0 +1,480 @@
+\documentclass[article,nojss]{jss} %
+\usepackage{graphicx}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{mathptmx}
+\usepackage[latin1]{inputenc}      % á,é,ë,...
+
+\title{\code{xsample()}: an \proglang{R} Function for Sampling Linear Inverse Problems}
+\Plaintitle{xsample(): an R Function for Sampling Linear Inverse Problems}
+\Shorttitle{Sampling Linear Inverse Problems} %% a short title (if necessary)
+
+
+\Keywords{linear modeling, underdetermined systems, Markov chain, \proglang{R}}
+\Plainkeywords{linear modeling, underdetermined systems, Markov chain, R}
+
+
+\author{Karel Van den Meersche\\ Universiteit Gent \And Karline
+  Soetaert\\NIOZ Yerseke \And Dick Van Oevelen\\NIOZ Yerseke}
+
+\Plainauthor{Karel Van den Meersche, Karline Soetaert, Dick Van Oevelen} %% comma-separated
+
+\Abstract{The \proglang{R} function \code{xsample()} uses Markov
+  Chain Monte Carlo (MCMC) algorithms to uniformly sample the feasible region
+  of constrained linear problems. It contains two hit-and-run sampling
+  algorithms, together with a ``mirror'' algorithm where an
+  MCMC step reflects on the inequality constraints.   }
+
+
+\Address{
+  Karline Soetaert, Karel Van den Meersche, Dick van Oevelen\\
+  Royal Netherlands Institute of Sea Research (NIOZ)\\
+  4401 NT Yerseke, Netherlands
+  E-mail: \email{karline.soetaert@nioz.nl}\\
+  URL: \url{http://www.nioz.nl}\\
+}
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% R/Sweave specific LaTeX commands.
+%% need no \usepackage{Sweave}
+%\VignetteIndexEntry{Sampling Linear Inverse Models in R}
+%\VignetteDepends{limSolve, quadprog, lpSolve, MASS}
+%\VignetteKeywords{Linear inverse models, linear programming, quadratic programming}
+%\VignettePackage{limSolve}
+
+\begin{document}
+\SweaveOpts{engine=R,eps=FALSE}
+\SweaveOpts{keep.source=TRUE}
+
+<<preliminaries,echo=FALSE,results=hide>>=
+library("limSolve")
+options(prompt = "> ")
+
+@
+
+%%%\begin{frontmatter}
+
+
+\maketitle
+
+\section{Introduction}
+This vignette is based on a publication with the same title in Journal
+of Statistical Software \citep{Meersche+Soetaert+Oevelen:2009}. It
+includes parts of the introduction and the method section of that
+publication, omitting the examples. It may be updated and extended in
+the future as the package develops. For now we refer to the
+publication for the most up-to-date and complete documentation of the
+function \code{xsample()}.
+
+\code{xsample()} is an \proglang{R} function that instead of
+optimizing a linear problem, returns a sample set that has a uniform
+or a truncated normal distribution bounded by a set of inequality
+constraints.
+
+
+In linear programming and system theory, a linear model is
+conventionally written in matrix notation as\footnote{notations:
+  vectors and matrices are in bold; scalars in normal
+  font. Vectors are indicated with a small letter; matrices with
+  capital letter. Indices between brackets indicate elements of
+  vectors (as in $\mathbf{a}_{(i)}$) or matrices (as in
+  $\mathbf{A}_{(i,j)}$). Rows or columns of matrices are indicated as
+  $\mathbf{A}_{(i,)}$ (rows) or $\mathbf{A}_{(,j)}$ (columns). Indices
+  without brackets ($\mathbf{q_1}$, $\mathbf{q_2}$) indicate vectors
+  that are subsequent in a random walk. } $\mathbf{Ax} = \mathbf{b} +
+\mathbf{\epsilon} $, with $\mathbf{x}$ a vector of
+unknowns, and $\mathbf{\epsilon}$ an error vector. Additional equality
+and inequality constraints can be present, leading to a general
+formulation:
+
+\begin{equation}
+  \label{eq:1}
+  \begin{cases}		
+    \mathbf{Ax} = \mathbf{b+\epsilon}\\
+    \mathbf{Ex} = \mathbf{f} \\
+    \mathbf{Gx}\geq\mathbf{h}
+  \end{cases}
+\end{equation}
+
+This kind of problems are usually overdetermined, meaning that there
+is no solution for which $\epsilon=0$. They can then be solved with
+quadratic programming \citep{Lawson1995} techniques, in which case a
+norm of the error term $\epsilon=\mathbf{Ax-b}$ is minimized, for
+example the sum of squares $\sum{\epsilon^2}$. This is a constrained
+linear regression problem: parameters $\mathbf{x}$ are subject to the
+constraints $\mathbf{Ex=F}$ and $\mathbf{Gx\geq h}$.
+
+In many real-life applications with a general lack of data, the linear
+model (\ref{eq:1}) is underdetermined. Some examples include
+metabolic flux analysis in systems biology \citep{Edwards2002}, food web
+modeling \citep{Vezina1988}, biogeochemical modeling of the oceans,
+and the identification of food sources in a grazer's diet using stable
+isotope data \citep{Phillips2003}. Applications in other fields may be
+found as well.
+
+We define the feasible region of linear problem (\ref{eq:1}), $L$, as the
+part of the parameter space that contains all solutions of the reduced
+problem 
+\begin{equation}
+  \label{eq:2}
+  \begin{cases}		
+    \mathbf{E}\mathbf{x}=\mathbf{f} \\
+    \mathbf{G}\mathbf{x}\geq\mathbf{h}
+  \end{cases}
+\end{equation}
+
+Algorithms that sample the feasible region of an underdetermined linear
+problem in a uniform way, have already been described in the literature
+\citep{Smith1984}. Here we introduce an \proglang{R} function
+that includes these algorithms in addition to an algorithm developed
+by the authors, that is more stable in high-dimensional
+situations. The implemented function returns a sample set that is
+uniformly distributed over the feasible region of equation set
+(\ref{eq:2}) when $\mathbf{A}$ and $\mathbf{b}$ are lacking.
+
+The model can also contain a number of linear equations
+$\mathbf{Ax=b+\epsilon}$ with an error $\epsilon$ in
+the data vector \textbf{b}
+%% , provided that the model remains underdetermined
+. In that case, the generated sample set is restricted to the feasible
+region defined by (\ref{eq:2}), but is not uniformly distributed.
+
+When equation (\ref{eq:1}) is underdetermined, there
+exist solutions for which $\epsilon=0$, i.e. the model $\mathbf{Ax}$ can
+fit the data $\mathbf{b}$ exactly. Here, we assume that $\epsilon$ is
+normally distributed, i.e. $\epsilon\sim N(0,\mathbf{s})$.
+
+In the absence of inequality conditions, it is straightforward to
+construct a series of samples $\mathbf{x}$ for which
+$\mathbf{Ax-b}=\epsilon$ has the proposed distribution. However, when
+$\mathbf{x}$ is subject to inequality constraints ($\mathbf{Gx\geq
+  h}$), $\epsilon$ cannot be normally distributed.
+
+Instead, a truncated normal distribution is proposed for $\mathbf{x}$:
+
+\begin{equation}
+  \label{eq:7}
+  p(\mathbf{x})\propto
+  e^{-\frac{1}{2}(\mathbf{Ax-b})^\top\mathbf{W}^2(\mathbf{Ax-b})}
+  \quad \mathrm{if} \quad \mathbf{x} \in L \quad ; \quad
+  p(\mathbf{x})=0 \quad \mathrm{if} \quad \mathbf{x} \notin L 
+\end{equation}
+
+where the weight matrix $\mathbf{W}=diag(\mathbf{s}^{-1})$. This
+formulation penalizes samples $\mathbf{x}$ when $||\mathbf{Ax-b}||$
+increases, and leads to a normal distribution of $\mathbf{Ax-b}\sim
+N(0,\mathbf{s})$ when there are no constraints.
+
+Equation (\ref{eq:1}) is overdetermined when there is no exact fit
+$\mathbf{Ax=b}$. $\epsilon$ then represents a model error term rather
+than uncertainties in the data:
+
+\begin{equation}
+  \label{eq:20}
+  p(\mathbf{x})\propto
+  e^{-\frac{1}{2}\sigma^{-2}(\mathbf{Ax-b})^\top\mathbf{W}^2(\mathbf{Ax-b})}
+  \quad \mathrm{if} \quad \mathbf{x} \in L \quad ; \quad
+  p(\mathbf{x})=0 \quad \mathrm{if} \quad \mathbf{x} \notin L 
+\end{equation}
+
+Here the model standard deviation $\sigma$ is a scalar parameter that
+is estimated together with the other parameters $\mathbf{x}$
+\citep{Gelman2004}. In the absence of inequality constraints, the
+mean estimate of $\sigma$ equals the standard deviation of the
+residuals of a weighted linear regression.
+
+The \proglang{R} \citep{R2008} function \code{xsample()} is currently
+part of the \pkg{limSolve} package \citep{Soetaert2009}, available
+under the GPL (General Public License) from the Comprehensive \proglang{R}
+Archive Network (CRAN, \url{http://CRAN.R-project.org/}). \pkg{limSolve}
+contains several tools for linear inverse modeling. Function
+\code{xsample()} takes the matrices $\mathbf{A}$, $\mathbf{E}$,
+$\mathbf{G}$ and the vectors $\mathbf{b}$, $\mathbf{f}$, $\mathbf{h}$
+as input, together with a vector of standard deviations for
+$\mathbf{b}$ and a number of technical input parameters. In the next
+sections, the function and contained algorithms are explained, and
+some examples are provided.
+
+
+\section{Method}
+The \code{xsample()} function aims to produce a sample set of vectors
+$\mathbf{x}$ that fulfill a number of equality constraints, and are
+confined by a number of inequality constraints. They are either
+uniformly distributed within their feasible region, or their
+distribution depends on the value of linear
+combinations $\mathbf{Ax}$. This is done in two steps: (1) eliminate the
+equality constraints $\mathbf{Ex=f}$ and (2) perform a random walk on
+the reduced problem. 
+
+\subsection{Step 1: Eliminate equality constraints} %transform x to q
+The elements $x_{(i)}$ of $\mathbf{x}$ are not linearly independent;
+they are coupled through the equations in
+$\mathbf{Ex}=\mathbf{f}$. They are first linearly transformed to a
+vector $\mathbf{q}$ for which all elements $q_{(i)}$ are linearly
+independent. If solutions exist for the equations in (\ref{eq:2})
+and a vector $\mathbf{x_0}$ is a particular solution of
+$\mathbf{Ex}=\mathbf{f}$, then all solutions $\mathbf{x}$ can be
+written as:
+\begin{equation}
+  \label{eq:3}
+  \mathbf{x}= \mathbf{x_0} + \mathbf{Z}\mathbf{q}
+\end{equation}
+$\mathbf{Z}$ is an orthonormal matrix, obtained from the
+QR-decomposition or singular value decomposition of $\mathbf{E}$
+\citep{Press1992}, and serves as a basis for the null space of $\mathbf{E}$:
+$\mathbf{Z}^\top\mathbf{Z}=\mathbf{I}$ and
+$\mathbf{E}\mathbf{Z}=\mathbf{0}$.
+
+There are no equality constraints for the elements in
+$\mathbf{q}$. Thus, the
+problem is reduced to: 
+
+\begin{equation}
+  \label{eq:6}
+  \begin{cases}		
+    \mathbf{A'q}-\mathbf{b'} = \mathbf{\epsilon} \\
+    \mathbf{G'q}-\mathbf{h'} \geq 0
+  \end{cases}
+\end{equation}
+
+with $\mathbf{A'=AZ}$, $\mathbf{b'=Ap-b}$, $\mathbf{G'=GZ}$ and
+$\mathbf{h'=Gx_0-h}$. 
+In \code{xsample()}, a particular solution $\mathbf{x_0}$ of
+$\mathbf{Ex}=\mathbf{f}$ can either be provided as one of the input
+parameters or be calculated by \code{xsample()} as a
+particular solution using the Least Squares with Equalities and
+Inequalities (LSEI) algorithm \citep{Haskell1981}, available in the
+\pkg{limSolve} package as \code{lsei()}.
+
+Because $\mathbf{p}$ meets the inequality constraints $\mathbf{Gp}\geq
+\mathbf{h}$, there is already one trivial solution of $\mathbf{q}$:
+the null vector $\mathbf{0}$. From this point, new points are
+sequentially sampled.
+
+We want to know which distribution of $\mathbf{q}$ is necessary to
+obtain the targeted distribution of the sample set $\mathbf{x}$. If a
+vector $\mathbf{x(q)}$ is a function of $\mathbf{q}$, the PDF
+(probability density function) of $\mathbf{q}$ is a product of the PDF
+of $\mathbf{x}$ and the Jacobian determinant:
+\begin{equation}
+  \label{eq:5}
+  p(\mathbf{q}) = p(\mathbf{x}) ||\frac{\partial \mathbf{x}}{\partial \mathbf{q}}||
+\end{equation}
+In this case, as $\mathbf{Z}$ is orthonormal, the Jacobian is
+$||\frac{\partial \mathbf{x}}{\partial \mathbf{q}}||=|\mathbf{Z}|=1$. Therefore $p(\mathbf{x})=p(\mathbf{q})$. This means
+that if $\mathbf{q}$ is sampled uniformly, then $\mathbf{x}$ is too.
+
+
+\subsection{Step 2: Random walk}
+
+\subsubsection{Markov chain Monte Carlo (MCMC)}
+What's left to do, is to properly sample $\mathbf{q}$. This can be
+done numerically using an MCMC random walk. Especially for
+high-dimensional problems, this is more efficient than a grid-based
+approach. The Metropolis algorithm \citep{Roberts1996} produces a
+series of samples whose distribution approaches an underlying target
+distribution. In \code{xsample()}, new samples $\mathbf{q_2}$ are
+drawn randomly from a jump distribution with PDF $j(.|\mathbf{q_1})$ 
+that only
+depends on the previously accepted point $\mathbf{q_1}$. The new
+sample point $\mathbf{q_2}$ is either accepted or rejected based on the following
+criterion:
+\begin{equation}
+  \label{eq:9}
+  \mathrm{if} \quad  r \le \frac{p(\mathbf{q_2})}{p(\mathbf{q_1})}
+  \quad \mathrm{accept} \; \mathbf{q_2}
+  \quad  \mathrm{else} \quad \mathrm{keep} \; \mathbf{q_1}
+\end{equation}
+with $0 < r \le 1$ and $p(\cdot)$ the PDF of the target
+distribution. The only prerequisite for the sample distribution to
+converge to the target distribution with PDF $p(\cdot)$, is that the
+jump distribution from which a new sample is drawn, is symmetrical in
+the following sense: the probability to jump from $\mathbf{q_1}$ to
+$\mathbf{q_2}$, $j(\mathbf{q_2}|\mathbf{q_1})$, has to be the same as
+the probability to jump from $\mathbf{q_2}$ to $\mathbf{q_1}$,
+$j(\mathbf{q_1}|\mathbf{q_2})$. Three different jump distributions are
+implemented and are discussed further below.
+
+In absence of matrix $\mathbf{A}$ and vector $\mathbf{b}$, the target
+distribution of $\mathbf{q}$ is uniform and thus:
+\begin{gather}
+  \label{eq:10}
+  \mathrm{if} \quad \mathbf{G'q_2\geq h} \quad (\frac{p(\mathbf{q_2})}{p(\mathbf{q_1})}=1  \quad \Rightarrow \quad \mathrm{accept}\; \mathbf{q_2}\\
+  \mathrm{else}  \quad p(\mathbf{q_2})=0 \quad
+  \Rightarrow \quad \mathrm{reject}\; \mathbf{q_2} \nonumber
+\end{gather}
+
+If $\mathbf{A}$ and $\mathbf{b}$ are present, combining
+equations (\ref{eq:20}), (\ref{eq:6}) and (\ref{eq:5}):
+\begin{gather}
+  \mathrm{if} \quad \mathbf{G'q\geq h} \quad
+  p(\mathbf{q})\propto
+  e^{-\frac{1}{2}\sigma^{-2}(\mathbf{A'q-b'})^\top W^2(\mathbf{A'q-b'})}\\
+  \mathrm{else} \quad p(\mathbf{q})=0 \nonumber
+\end{gather}
+The expression for fixed standard deviations is easily obtained from
+(\ref{eq:7}) by setting $\sigma=1$ and
+$\mathbf{W}=diag(\mathbf{s}^{-1})$. Otherwise, $\sigma$ is estimated
+from fitting of the unconstrained model $\mathbf{Ax-b}\sim N(0,\sigma)$.
+
+
+\subsubsection{Sampling the feasible region}
+New samples in the MCMC are taken from a symmetric jump distribution.
+A major challenge is to only sample points that fulfill the inequality
+constraints. Three algorithms that ensure this, are discussed in the
+next paragraphs. As a consequence, the sample set of vectors
+$\mathbf{q}$ and the derived sample set of vector $\mathbf{x}$, has a
+distribution that is bounded by the inequality constraints.
+
+In a euclidean space, every inequality constraint defines a boundary
+of the feasible subspace.  Each boundary can be considered a
+multidimensional plane (a hyperplane). One side of the hyperplane is
+the feasible range, where the inequality is fulfilled. The other side
+of the hyperplane is non-feasible. The hyperplanes are defined by
+the following set of equations:
+\begin{equation}
+  \label{eq:11}
+  \mathbf{G'}_{(,i)}\mathbf{q} - h'_{(i)}=0 \quad \forall i
+\end{equation}
+
+Three jump algorithms for selecting new points $\mathbf{q_2}$ were implemented: Two
+hit-and-run algorithms \citep{Smith1984}: the random directions and
+coordinates directions algorithms and a novel mirror algorithm that
+uses the inequality bounds as reflective planes. All three algorithms
+produce sample points that fulfill all inequality constraints, and
+they fulfill the symmetry prerequisite for the metropolis algorithm.
+
+
+\subsubsection{Random Directions Algorithm (rda) }
+
+The random directions algorithm \citep{Smith1984} consists of two steps:
+first a random direction is selected by drawing and
+normalizing a randomly distributed vector. Starting point and
+direction define a line in solution space. Then the
+intersections of this line with the hyperplanes defined by the
+inequality constraints are determined. A new point is then sampled
+uniformly along the line segment that fulfills all inequalities.
+
+\subsubsection{Coordinates Directions Algorithm (cda) }
+
+The only difference with the random directions algorithm, is that the
+coordinates directions algorithm \citep{Smith1984} starts with
+selecting a direction along one of the coordinate axes. This leads to
+a simpler formulation of the algorithm. 
+
+\subsubsection{The mirror algorithm}
+
+The mirror algorithm was inspired by the reflections in mirrors and
+uses the inequality constraints as reflecting planes. New samples are
+taken from a normal jump distribution with $\mathbf{q_1}$ as average
+and a fixed standard deviation, called the jump length. With an
+increasing number of inequality constraints, more and more samples
+from an unmodified normal distribution will be situated outside of the
+feasible region and have to be rejected based on criterion
+(\ref{eq:9}). While this is a correct approach and the sample
+distribution will also converge to the targeted distribution, it is
+inefficient because many points are rejected.  We propose an
+alternative sampling routine that uses the inequalities to ensure that
+every newly sampled point is situated in the feasible region.
+
+\begin{figure}[ht]
+  \centering
+  \includegraphics[width=0.8\textwidth]{JSS-373-fig1}
+  \caption{MCMC jump with inequality constraints functioning as mirrors. See text for explanation.}
+  \label{Fig:1}
+\end{figure}
+
+
+\begin{figure}[!hb]
+  \centering
+  \includegraphics{JSS-373-fig2}
+  \caption{A good random walk of a parameter x$_i$, using
+    \code{xsample()} with 1000 iterations.}
+  \label{fig:7}
+\end{figure}
+
+If $\mathbf{q_1}$ is a point for which the inequality constraints are
+fulfilled, a new point $\mathbf{q_2}$ can be sampled in the following
+way: first $\mathbf{q_{2-0}}$ is sampled from a normal
+distribution in the unrestricted space, ignoring all inequality
+constraints:
+\begin{equation}
+  \label{eq:4}
+  \mathbf{q_{2-0}}=\mathbf{q_1}+\mathbf{\eta}
+\end{equation}
+with $\eta$ drawn from a normal distribution with mean $0$ and a fixed
+standard deviation. If $\mathbf{q_{2-0}}$ is in the feasible range
+(all inequalities are met), $\mathbf{q_{2-0}}$ is accepted as a sample
+point $\mathbf{q_2}$ and evaluated in the metropolis algorithm
+(\ref{eq:9}).
+
+If some inequalities are violated (Figure~\ref{Fig:1}), then the new
+point $\mathbf{q_{2-0}}$ is mirrored consecutively in the hyperplanes
+representing the unmet inequalities: the line segment $\mathbf{q_1}
+\rightarrow \mathbf{q_{2-0}}$ crosses these hyperplanes. For each
+hyperplane, a scalar $\alpha_{(i)}$ can be calculated for which
+
+\begin{equation}
+  \label{eq:8}
+  (\mathbf{G'})_{(,i)}( \mathbf{q_1}+\alpha_{(i)}\mathbf{\eta}) + h'_{(i)}=0
+\end{equation}
+
+with $\mathbf{\eta}=\mathbf{q_{2-0}}-\mathbf{q_1}$. The hyperplane
+with the smallest non-negative $\alpha_{(i)}$, call it $\alpha_{(s)}$,
+is the hyperplane that is crossed first by the line segment.
+$\mathbf{q_{2-0}}$ is mirrored around this hyperplane.  If the new
+point ($\mathbf{q_{2-1}}$ in Figure~\ref{Fig:1}) still has unmet
+inequalities, a new set of $\alpha_{(i)}$'s is calculated from the
+line segment between the new point and the intersection of the
+previous line segment and the first hyperplane, i.e.,
+$\mathbf{q_1}+\alpha_{(s)}\mathbf{\eta}$.  $\mathbf{q_{2-1}}$ is again
+reflected in the hyperplane with smallest non-negative
+$\alpha_{(i)}$. This is repeated until all inequalities are met. The
+resulting point $\mathbf{q_2}$ is in the feasible subspace and is
+accepted as a new sample point.
+
+In most cases, the directional algorithms and the mirror algorithm
+converge to the same distributional result. However, we found that
+especially in high-dimensional problems, the mirror algorithm is still
+able to move away from the initial particular solution when the
+directional algorithms fail to do so. One possible explanation for
+this can be found in the initialisation of the MCMC with LSEI. LSEI
+often returns a solution in a corner of the feasible region, at the
+intersection of inequality constraints. In some circomstances, the
+line segment used by a  random directions algorithm has then length
+zero and the algorithm fails to move away from the initial point.
+
+In the mirror algorithm, $\mathbf{\eta}$ is drawn from a normal
+distribution with zero mean and a set of fixed standard deviations,
+which we call the jump lengths of the Markov Chain. These jump
+lengths have a significant influence on the efficiency of the mirror
+algorithm, as they define the distance covered within the solution
+space in one iteration, but also the number of reflections in the
+solution boundaries. They can be set manually with the parameter
+\code{jmp} in \code{xsample()}. When sampling the feasible region
+uniformly, a suitable jump length is often in the same order of magnitude
+as the ranges of the unknowns. 
+
+When the default parameter setting \code{jmp = NULL} is used, a jump
+length is calculated internally, which gives quick and suitable
+results in most cases.  Sometimes, these internally calculated jump
+lengths are too large, and the calculation time is too long. One can
+then turn to manually setting small jump lengths and gradually
+increasing them, until all elements in $\mathbf{x}$ are properly
+sampled. This can be checked by looking at the trace of the elements
+$\mathbf{x}_{(i)}$, which need to have an obviously random pattern, as
+illustrated in Figure~\ref{fig:7}.
+
+Note that the hit-and-run algorithms rda and cda only work if G and H
+define a bounded feasible region. In an open or half open space, these
+algorithms will generate error messages because they draw from a
+uniform distribution confined by this feasible region.The mirror
+algorithm is not affected by this problem because new samples are
+drawn from a normal distribution instead of a uniform distribution.
+
+
+
+\bibliography{vignettes}
+
+\end{document}
+
