@@ -1,0 +1,101 @@
+#!/bin/sh
+
+# Inspired from: https://cloud.r-project.org/doc/manuals/r-devel/R-exts.html#Using-cmake-1
+
+# Define project
+repoName=birp_cpp
+commit=5ca6352b868b0d8f69918628c99f1d1afacd35c3
+
+# Find C++
+CXX17=`"${R_HOME}/bin/R" CMD config CXX17`
+echo $CXX17
+if test -z "$CXX17"; then
+  echo "No C++17 compiler is available"
+fi
+CXX17STD=`"${R_HOME}/bin/R" CMD config CXX17STD`
+CXX="${CXX17} ${CXX17STD}"
+CXXFLAGS=`"${R_HOME}/bin/R" CMD config CXX17FLAGS`
+
+# Find R
+: ${R_HOME=`R RHOME`}
+if test -z "${R_HOME}"; then
+  echo "could not determine R_HOME"
+  exit 1
+fi
+
+# Set compilation path
+CC=`"${R_HOME}/bin/R" CMD config CC`
+CFLAGS=`"${R_HOME}/bin/R" CMD config CFLAGS`
+CPPFLAGS=`"${R_HOME}/bin/R" CMD config CPPFLAGS`
+LDFLAGS=`"${R_HOME}/bin/R" CMD config LDFLAGS`
+
+# Find CMake (for Mac)
+if test -z "$CMAKE"; then CMAKE="`which cmake`"; fi
+if test -z "$CMAKE"; then CMAKE=/Applications/CMake.app/Contents/bin/cmake; fi
+if [ ! -f "$CMAKE" ]; then echo "no ‘cmake’ command found"; exit 1; fi
+
+cd src/
+
+# Download into libs directory (if necessary)
+mkdir -p libs && cd libs/
+
+if [ -z "$( ls -A )" ]; then
+  # Download repo, using wget or curl
+  if command -v wget > /dev/null; then
+    wget https://bitbucket.org/wegmannlab/${repoName}/get/${commit}.tar.gz
+  elif command -v curl > /dev/null; then
+    curl -O https://bitbucket.org/wegmannlab/${repoName}/get/${commit}.tar.gz
+  else
+    echo "Error: Neither curl nor wget is available"
+    exit 1
+  fi
+
+  tar -xvzf ${commit}.tar.gz
+
+  # Move contents to libs
+  extracted_dir=$(tar -tzf ${commit}.tar.gz | head -n1)
+  mv ${extracted_dir}* ./
+  rm -r $extracted_dir ${commit}.tar.gz
+fi
+cd .. # leave libs
+
+# Get Rcpp include directory
+RCPP_INCLUDE=$("${R_HOME}/bin/Rscript" --vanilla --slave -e "stopifnot(require('Rcpp', quietly=TRUE));cat(Rcpp:::Rcpp.system.file('include'))")
+if [ -z "$RCPP_INCLUDE" ]; then
+  echo "Failed to determine Rcpp include path"
+  exit 1
+fi
+
+# Get RcppArmadillo include directory
+RCPP_ARMADILLO_INCLUDE=$("${R_HOME}/bin/Rscript" --vanilla --slave -e \
+  "stopifnot(require('RcppArmadillo', quietly=TRUE)); cat(system.file('include', package = 'RcppArmadillo'))")
+if [ -z "$RCPP_ARMADILLO_INCLUDE" ]; then
+  echo "Failed to determine RcppArmadillo include path"
+  exit 1
+fi
+
+# Run CMake from build directory
+mkdir build && cd build
+${CMAKE} -S ../libs/ \
+-DCMAKE_BUILD_TYPE=Release \
+-DBUILD_SHARED_LIBS:bool=OFF \
+-DCMAKE_POSITION_INDEPENDENT_CODE:bool=ON \
+-DRCPP=ON \
+-DRCPP_INCLUDE_DIRS="${RCPP_INCLUDE}" \
+-DRCPP_ARMADILLO_INCLUDE_DIRS="${RCPP_ARMADILLO_INCLUDE}" \
+-DR_HOME="${R_HOME}"
+
+# Make
+make coreLib
+cd .. # leave build
+
+# Delete unneeded files and directories that cause warnings in check
+find build -name Makefile -delete
+rm -rf libs/coretools/fast_float/tests/
+rm -rf libs/coretools/fast_float/benchmarks/
+rm -rf libs/coretools/fast_float/fuzz/
+rm -rf libs/coretools/tests/
+rm -rf libs/stattools/tests/
+rm -rf build/CMakeFiles/
+
+cd .. # leave src
