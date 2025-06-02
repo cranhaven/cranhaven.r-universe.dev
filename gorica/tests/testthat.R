@@ -1,0 +1,5 @@
+library(testthat)
+library(lavaan)
+library(bain)
+library(gorica)
+test_check("gorica")
