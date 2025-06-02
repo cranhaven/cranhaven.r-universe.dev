@@ -1,0 +1,197 @@
+#' Ensemble of Binary Relevance for multi-label Classification
+#'
+#' Create an Ensemble of Binary Relevance model for multilabel classification.
+#'
+#' This model is composed by a set of Binary Relevance models. Binary Relevance
+#' is a simple and effective transformation method to predict multi-label data.
+#'
+#' @family Transformation methods
+#' @family Ensemble methods
+#' @param mdata A mldr dataset used to train the binary models.
+#' @param base.algorithm A string with the name of the base algorithm. (Default:
+#'  \code{options("utiml.base.algorithm", "SVM")})
+#' @param m The number of Binary Relevance models used in the ensemble.
+#'    (Default: 10)
+#' @param subsample A value between 0.1 and 1 to determine the percentage of
+#'    training instances that must be used for each classifier. (Default: 0.75)
+#' @param attr.space A value between 0.1 and 1 to determine the percentage of
+#'    attributes that must be used for each classifier. (Default: 0.50)
+#' @param replacement Boolean value to define if use sampling with replacement
+#'    to create the data of the models of the ensemble. (Default: TRUE)
+#' @param ... Others arguments passed to the base algorithm for all subproblems.
+#' @param cores The number of cores to parallelize the training. Values higher
+#'  than 1 require the \pkg{parallel} package. (Default:
+#'  \code{options("utiml.cores", 1)})
+#' @param seed An optional integer used to set the seed. This is useful when
+#'  the method is run in parallel. (Default: \code{options("utiml.seed", NA)})
+#' @return An object of class \code{EBRmodel} containing the set of fitted
+#'   BR models, including:
+#' \describe{
+#'   \item{models}{A list of BR models.}
+#'   \item{nrow}{The number of instances used in each training dataset.}
+#'   \item{ncol}{The number of attributes used in each training dataset.}
+#'   \item{rounds}{The number of interactions.}
+#' }
+#' @references
+#'    Read, J., Pfahringer, B., Holmes, G., & Frank, E. (2011). Classifier
+#'    chains for multi-label classification. Machine Learning, 85(3), 333-359.
+#'
+#'    Read, J., Pfahringer, B., Holmes, G., & Frank, E. (2009).
+#'    Classifier Chains for Multi-label Classification. Machine Learning and
+#'    Knowledge Discovery in Databases, Lecture Notes in Computer Science,
+#'    5782, 254-269.
+#' @note If you want to reproduce the same classification and obtain the same
+#'  result will be necessary set a flag utiml.mc.set.seed to FALSE.
+#' @export
+#'
+#' @examples
+#' model <- ebr(toyml, "RANDOM")
+#' pred <- predict(model, toyml)
+#'
+#' \donttest{
+#' # Use C5.0 with 90% of instances and only 5 rounds
+#' model <- ebr(toyml, 'C5.0', m = 5, subsample = 0.9)
+#'
+#' # Use 75% of attributes
+#' model <- ebr(toyml, attr.space = 0.75)
+#'
+#' # Running in 2 cores and define a specific seed
+#' model1 <- ebr(toyml, cores=2, seed = 312)
+#' }
+ebr <- function(mdata,
+                base.algorithm = getOption("utiml.base.algorithm", "SVM"),
+                m = 10, subsample = 0.75, attr.space = 0.5, replacement = TRUE,
+                ..., cores = getOption("utiml.cores", 1),
+                seed = getOption("utiml.seed", NA)) {
+  # Validations
+  if (!is(mdata, "mldr")) {
+    stop("First argument must be an mldr object")
+  }
+
+  if (m < 2) {
+    stop("The number of iterations (m) must be greater than 1")
+  }
+
+  if (subsample < 0.1 || subsample > 1) {
+    stop("The subset of training instances must be between 0.1 and 1 inclusive")
+  }
+
+  if (attr.space <= 0.1 || attr.space > 1) {
+    stop(paste("The attribbute space of training instances must be between ",
+          "0.1 and 1 inclusive"))
+  }
+
+  if (cores < 1) {
+    stop("Cores must be a positive value")
+  }
+
+  # EBR Model class
+  ebrmodel <- list(rounds = m, call = match.call())
+  ebrmodel$nrow <- ceiling(mdata$measures$num.instances * subsample)
+  ebrmodel$ncol <- ceiling(length(mdata$attributesIndexes) * attr.space)
+  ebrmodel$cardinality <- mdata$measures$cardinality
+
+  if (!anyNA(seed)) {
+    set.seed(seed)
+  }
+  idx <- lapply(seq(m), function(iteration) {
+    list(
+      rows = sample(mdata$measures$num.instances, ebrmodel$nrow, replacement),
+      cols = sample(mdata$attributesIndexes, ebrmodel$ncol)
+    )
+  })
+
+  ebrmodel$models <- lapply(seq(m), function(iteration) {
+    ndata <- create_subset(mdata, idx[[iteration]]$rows, idx[[iteration]]$cols)
+
+    brmodel <- br(ndata, base.algorithm, ..., cores = cores, seed = seed)
+    brmodel$attrs <- colnames(ndata$dataset[, ndata$attributesIndexes])
+    rm(ndata)
+
+    brmodel
+  })
+
+  class(ebrmodel) <- "EBRmodel"
+  ebrmodel
+}
+
+#' Predict Method for Ensemble of Binary Relevance
+#'
+#' This method predicts values based upon a model trained by \code{\link{ebr}}.
+#'
+#' @param object Object of class '\code{EBRmodel}'.
+#' @param newdata An object containing the new input data. This must be a
+#'  matrix, data.frame or a mldr object.
+#' @param vote.schema Define the way that ensemble must compute the predictions.
+#'  The default valid options are: c("avg", "maj", "max", "min"). If \code{NULL}
+#'  then all predictions are returned. (Default: \code{'maj'})
+#' @param probability Logical indicating whether class probabilities should be
+#'  returned. (Default: \code{getOption("utiml.use.probs", TRUE)})
+#' @param ... Others arguments passed to the base algorithm prediction for all
+#'   subproblems.
+#' @param cores The number of cores to parallelize the training. Values higher
+#'  than 1 require the \pkg{parallel} package. (Default:
+#'  \code{options("utiml.cores", 1)})
+#' @param seed An optional integer used to set the seed. This is useful when
+#'  the method is run in parallel. (Default: \code{options("utiml.seed", NA)})
+#' @return An object of type mlresult, based on the parameter probability.
+#' @seealso \code{\link[=ebr]{Ensemble of Binary Relevance (EBR)}} \code{
+#'    \link[=compute_multilabel_predictions]{Compute Multi-label Predictions}}
+#' @export
+#'
+#' @examples
+#' \donttest{
+#' # Predict SVM scores
+#' model <- ebr(toyml)
+#' pred <- predict(model, toyml)
+#'
+#' # Predict SVM bipartitions running in 2 cores
+#' pred <- predict(model, toyml, prob = FALSE, cores = 2)
+#'
+#' # Return the classes with the highest score
+#' pred <- predict(model, toyml, vote = 'max')
+#' }
+predict.EBRmodel <- function(object, newdata, vote.schema = "maj",
+                             probability = getOption("utiml.use.probs", TRUE),
+                             ..., cores = getOption("utiml.cores", 1),
+                             seed = getOption("utiml.seed", NA)) {
+  # Validations
+  if (!is(object, "EBRmodel")) {
+    stop("First argument must be an EBRmodel object")
+  }
+
+  if (cores < 1) {
+    stop("Cores must be a positive value")
+  }
+
+  utiml_ensemble_check_voteschema(vote.schema)
+
+  newdata <- utiml_newdata(newdata)
+  allpreds <- lapply(seq(object$models), function(imodel) {
+    brmodel <- object$models[[imodel]]
+    predict.BRmodel(brmodel, newdata[, brmodel$attrs], ...,
+                    cores = cores, seed = seed)
+  })
+
+  prediction <- utiml_predict_ensemble(allpreds, vote.schema, probability)
+  if (!is.null(vote.schema)) {
+    prediction <- lcard_threshold(prediction, object$cardinality, probability)
+  }
+  prediction
+}
+
+#' Print EBR model
+#' @param x The ebr model
+#' @param ... ignored
+#'
+#' @return No return value, called for print model's detail
+#'
+#' @export
+print.EBRmodel <- function(x, ...) {
+  cat("Ensemble of Binary Relevance Model\n\nCall:\n")
+  print(x$call)
+  cat("\nDetails:")
+  cat("\n ", x$rounds, "Iterations")
+  cat("\n ", x$nrow, "Instances")
+  cat("\n ", x$ncol, "Attributes\n")
+}
