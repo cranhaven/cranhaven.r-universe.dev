@@ -1,0 +1,15 @@
+#' flifo: don't get stuck with stacks in R
+#' 
+#' flifo provides functions to create and manipulate 
+#' FIFO (First In First Out), LIFO (Last In First Out), 
+#' and NINO (Not In or Never Out) stacks in R, most notably: 
+#' \itemize{
+#'   \item \code{\link{fifo}}, \code{\link{lifo}}, and 
+#'   \code{\link{nino}} to create empty stacks; 
+#'   \item \code{\link{push}} to insert an object into a stack; 
+#'   \item \code{\link{pop}} to retrieve an object from a stack. 
+#' }
+#' 
+#' @docType package
+#' @name flifo
+NULL
