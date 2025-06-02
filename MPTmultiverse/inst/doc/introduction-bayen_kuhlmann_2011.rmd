@@ -1,0 +1,267 @@
+---
+title: "Overview of MPT Multiverse: An Example Application"
+author: "Marius Barth and Henrik Singmann"
+date: "`r Sys.Date()`"
+show_toc: true
+output:
+  knitr:::html_vignette:
+    toc: yes
+vignette: >
+  %\VignetteEncoding{UTF-8}
+  %\VignetteIndexEntry{Overview of MPT Multiverse: An Example Application}
+  %\VignetteEngine{knitr::rmarkdown}
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE
+  , comment = "#>"
+  , warning = FALSE
+  , message = FALSE
+  , fig.width = 8
+)
+```
+
+# Package Overview
+
+`MPTmultiverse` provides a single function, `fit_mpt()`, that performs a *multiverse analysis* for multinomial processing tree models. The idea of a multiverse analysis (Steegen, Tuerlinckx, Gelman, & Vanpaemel, 2016) is to perform and report all possible combinations of reasonable modeling choices. This contrasts with a more common analysis approach in which only one specific analysis (i.e., one path through a garden of forking paths) is reported. 
+
+`fit_mpt` performs a multiverse analysis combining two different factors.
+
+- First, it performs analyses within a *Bayesian* or a *frequentist/maximum-likelihood* statistical framework. 
+- Second, it performs analyses across different levels of *pooling*, that is, different levels of data aggregation. Overall, three different levels of pooling are explored: complete pooling (i.e., data completely aggregated across participants), no pooling (i.e., separate models are fitted to the individual-level data and the results are combined after fitting), and partial pooling (i.e., hierarchical models that combine group-level parameters with individual-level parameters as random-effects). 
+
+For the frequentist approaches, no pooling (with and without parametric or nonparametric bootstrap) and complete pooling are implemented using [`MPTinR`](https://cran.r-project.org/package=MPTinR) (Singmann & Kellen, 2013). For the Bayesian approaches, no pooling, complete pooling, and three different variants of partial pooling are implemented using [`TreeBUGS`](https://cran.r-project.org/package=TreeBUGS) (Heck, Arnold, & Arnold, 2017).
+
+# Prerequisites
+
+First of all, make sure that you have installed the *latest* version of `R`, of all necessary `R` packages, *and* of `JAGS`. To install `JAGS`, go to [mcmc-jags.sourceforge.net](http://mcmc-jags.sourceforge.net/) and follow installation instructions. After that, install or update the required `R` packages:
+
+```{r update-packages, eval = FALSE}
+install.packages("MPTmultiverse")
+update.packages(ask = FALSE)
+```
+
+
+# Example Data: Bayen & Kuhlmann (2011)
+
+Here we use parts of the data from Experiment 1 reported in Bayen and Kuhlmann (2011) investigating source-memory of participants under two different cognitive load conditions. The 24 participants in the `load` condition generated a random number between one and nine every time they heard a tone, which happened every 2 s during the entire study phase, and said it out loud. The 24 participants in the `no_load` condition performed the study phase without a secondary task. Participants and both conditions performed the test phase in the same manner. 
+
+We use the same model as Bayen and Kuhlman (2011), model variant 4 of the 2-high threshold source-memory model (2HTSM) introduced by Bayen, Murnane, and Erdfelder (1996). Model variant 4 of the 2HTSM separates observed source-memory data into 4 parameters: Parameter $D$ (item recognition); parameter $d$ (source memory); parameter $b$ (probability of guessing that an item is old); and parameter $g$ (probability of guessing that an item comes from source A versus source B).
+
+Both data and model come with package `MPTmultiverse` so their location can be obtained using function `system.file`. In other applications, the file paths need to be provided by the user to match the location of data and model on their file system. It often makes sense to set the working directory to the directory in which the data and model file resides, either via `setwd()` or via the menu.
+
+```{r model-and-data, fig.height=5}
+# load packages
+library("MPTmultiverse")
+
+# If you're running the analysis from an .rmd file, you only need to ensure that
+# the .rmd, .eqn, and .csv files are all in the same directory.
+
+# ------------------------------------------------------------------------------
+# MPT model definition & data
+
+EQN_FILE <- system.file("extdata", "2HTSM_Submodel4.eqn", package = "MPTmultiverse")
+DATA_FILE <- system.file("extdata", "Kuhlmann_dl7.csv", package = "MPTmultiverse")
+
+# if .csv format uses semicolons ";" (German format):
+data <- read.csv2(DATA_FILE, fileEncoding = "UTF-8-BOM")  ## use correct encoding if necessary
+
+# if .csv format uses commata "," (international format):
+# data <- read.csv(DATA_FILE, fileEncoding = "UTF-8-BOM")
+
+# We first take a look at the data using head()
+head(data)
+
+## We then plot the response frequencies using plotFreq from the TreeBUGS package
+TreeBUGS::plotFreq(data, boxplot = FALSE, eqn = EQN_FILE)
+```
+
+The look at the `data.frame` tells us which columns contain the subject identifier and the variable encoding group membership. We need to record these variables for the use in `fit_mpt`. 
+
+The plot of the individual response frequencies shows quite some individual variability, but nothing concerning. 
+
+Next, we prepare the data for the fitting.
+
+```{r}
+COL_ID <- "Subject"         # name of the variable encoding subject ID
+COL_CONDITION <- "ExpCond"  # name of the variable encoding group membership
+
+
+# Experimental conditions should be labeled in a meaningful way. To accomplish
+# this, you may want to use the `factor` function:
+unique(data[, COL_CONDITION])
+
+data[[COL_CONDITION]] <- factor(
+  data[[COL_CONDITION]]
+  , levels = c(1:2)
+  , labels = c("no_load", "load")
+)
+
+### check input data frame
+head(data)
+```
+
+
+## Options
+
+Every time the package `MPTmultiverse` is loaded, it automatically sets some more
+or less useful defaults for model estimation, usage of multiple processor cores,
+number of posterior predictive samples, etc.
+By calling `mpt_options()` without any parameters, you can inspect these default values.
+If you want to change them, call `mpt_options` with the respective parameter specified, i.e. `mpt_options(n.iter = 1000)`.
+For testing purposes, you can also specify `mpt_options("test")`, which is a shorthand for setting fast, but highly unreliable settings.
+You can set options to defaults, again, by typing the shorthand `mpt_options("default")`. 
+
+```{r options, results = 'hide'}
+# How to change a single option:
+mpt_options(n.iter = 1e3)
+
+# For testing purposes, you can use this shorthand to set fast, but unreliable options:
+mpt_options("test")
+
+# List all options that were set for the different analysis approaches:
+mpt_options()
+```
+
+## Model Fitting 
+
+The main computations are performed with a call to `fit_mpt`. In the default settings, the ten analysis options offered by `MPTmultiverse` are performed. Type `?fit_mpt` in the R console if you want to see what these options are and find out more about the parameters of the function. The help page also contains a comprehensive overview of the results object returned by `fit_mpt`.
+
+Before fitting, we set a seed to make the analysis reproducible and set the options to the default settings. 
+
+```{r analysis, results = 'hide', eval = FALSE}
+set.seed(42)
+mpt_options("default")
+
+results <- fit_mpt(
+  model = EQN_FILE
+  , dataset = DATA_FILE
+  , data = data
+  , id = COL_ID
+  , condition = COL_CONDITION
+  , core = c("D", "d")
+)
+```
+
+After fitting it is a good idea to save the results as a binary `R` data file for later. This is easiest done using `save()`. To save all information necessary to recreate the analysis we only need to save the results `tibble` as it contains both data and model as attributes (see `str(results, 1)`).
+
+We can automatically create a file name for the file holding the results based on the model and data file.
+
+```{r eval = FALSE}
+save(results, file = paste0(EQN_FILE, "-", DATA_FILE, ".RData"))
+```
+
+In the current example this would usually lead to quite a long filename (e.g., see `EQN_FILE`), so one can also use a custom filename.
+
+```{r eval = FALSE}
+save(results, file = "results_bayen_kuhlmann_2HTSM4.RData")
+```
+
+One can also directly save in a subfolder of the current working directory (if the subfolder exists).
+
+```{r eval=FALSE}
+save(results, file = "fits/results_bayen_kuhlmann_2HTSM4.RData")
+```
+
+
+## Checking the Fit
+
+After computations finished, which may take between a couple of hours to days, check if model estimation worked by using the function `check_results`.
+
+```{r echo = FALSE, eval = FALSE}
+save(results, file = "../inst/extdata/results_bayen_kuhlmann.RData", 
+     version = 2, compress = "xz")
+```
+
+```{r echo = FALSE, eval = TRUE}
+load(file = system.file("extdata", "results_bayen_kuhlmann.RData", package = "MPTmultiverse"))
+mpt_options("default")
+```
+
+```{r}
+check_results(results)
+```
+
+In this example, for the no-pooling asymptotic approaches the rate of participants with non-identified parameters is very low. For the bootstrap-based approaches the results pattern is different. Here we see that the rate of participants with non-identified parameters in the `load` condition is considerably higher, around .17 versus .03 in the `no_load` condition. Particularly, the $d$ parameter shows problematic behavior.
+
+For the Bayesian approaches, the `betacpp` did not reach an effective sample size $\mathit{ESS} > 2{,}000$. Increasing the number of iterations by typing `mpt_options(n.iter = 2e5)`, and re-running, should solve this problem.
+
+## Returned Object
+
+`fit_mpt` returns a `tibble` with an additional class, `multiverseMPT`, with one row per estimation method. When using the default setting and if all methods succeed, `fit_mpt` uses ten estimation methods and thus this `tibble` contains ten rows. The first five columns contain information about data and method and the remaining columns contain the results. Most of the results columns are `list` columns and inspection of the content is performed most conveniently using packages `dplyr` and `tidyr`. We therefore load these packages before taking a glimpse at the columns. 
+
+```{r}
+library("dplyr")
+library("tidyr")
+glimpse(results)
+```
+
+Bayen and Kuhlman (2011) report a difference in the $g$ parameter across conditions (they actually report an interaction with a further within-subjects factor, but this is not considered here). Thus, we can take a look at the difference in $g$ parameter across conditions and methods in the following manner: We first select the column containing the results of the between-condition tests, `unnest` this column, and then select only data containing the relevant parameter.
+
+```{r}
+results %>% 
+  select(pooling:method, test_between) %>% 
+  unnest(cols = test_between) %>% 
+  filter(parameter == "g") %>% 
+  print(width = 150)
+```
+
+Inspecting the differences across the analysis multiverse shows that the estimated difference is negative in each case and the 95% credibility/confidence intervals around the estimate do not include zero for 6 out of the 10 methods. Only the CIs for the no-pooling frequentist methods as well as the most sophisticated model, the latent trait model, include 0. However, the 80% CIs do not include zero for all methods. Taken together, this provides evidence that the $g$ parameter is larger in the `load` compared to the `no_load` condition.
+
+In a similar manner, it is also possible to examine differences between parameter estimates *within* each group:
+We first `select` the column containing within-condition tests, `unnest` this column, and then `select` only data containing the relevant parameters.
+
+```{r}
+results %>%
+  select(pooling:method, test_within) %>%
+  unnest(cols = test_within) %>%
+  filter(condition == "no_load") %>%
+  filter(parameter1 == "d" & parameter2 == "D") %>% 
+  print(width = 150)
+```
+
+In this example, these comparisons are probably not meaningful,
+but for other designs this column may be used for within-subjects comparisons.
+
+
+## Plotting Results
+
+The analysis output `results` is an object of class `multiverseMPT`, that has its own `plot()` method. The `plot` method returns `ggplot2` objects, which allows further customization (such as using `themes`).
+Type `?plot.multiverseMPT` to see the documentation of possible arguments to this method.
+
+To plot group-level parameter estimates use:
+
+```{r}
+plot(results, save = FALSE, "est")
+```
+
+To plot between-subjects comparisons across all parameters:
+
+```{r}
+plot(results, save = FALSE, "test_between")
+```
+
+To plot overall goodness-of-fit use:
+
+```{r}
+plot(results, save = FALSE, "gof1")
+```
+
+To plot group-wise goodness-of-fit use:
+
+```{r}
+plot(results, save = FALSE, "gof2")
+```
+
+# References
+
+- Bayen, U. J., & Kuhlmann, B. G. (2011). Influences of source–item contingency and schematic knowledge on source monitoring: Tests of the probability-matching account. *Journal of Memory and Language*, 64(1), 1–17. https://doi.org/10.1016/j.jml.2010.09.001
+- Bayen, U. J., Murnane, K., & Erdfelder, E. (1996). Source discrimination, item detection, and multinomial models of source monitoring. *Journal of Experimental Psychology: Learning, Memory, and Cognition*, 22(1), 197–215. https://doi.org/10.1037/0278-7393.22.1.197
+- Heck, D. W., Arnold, N. R., & Arnold, D. (2017). TreeBUGS: An R package for hierarchical multinomial-processing-tree modeling. *Behavior Research Methods*, 1–21. https://doi.org/10.3758/s13428-017-0869-7
+- Singmann, H., & Kellen, D. (2013). MPTinR: Analysis of multinomial processing tree models in R. *Behavior Research Methods*, 45(2), 560–575. https://doi.org/10.3758/s13428-012-0259-0
+- Steegen, S., Tuerlinckx, F., Gelman, A., & Vanpaemel, W. (2016). Increasing Transparency Through a Multiverse Analysis. *Perspectives on Psychological Science*, 11(5), 702–712. https://doi.org/10.1177/1745691616658637
+
+
