@@ -1,0 +1,3 @@
+## Generate situation for voting simulation - R package
+
+The package voteSim  aims at providing several  models for simulating distributions of evaluations given by voters on candidates concerning a voting situation within an evaluation-based perspective. The proposed simulation functions cover Uniform, Truncated Normal, Beta, Dirichlet, Multinormal, copula-based and spatial models as developed in the reference article. Basically a function is proposed for each model which produces a matrix with candidates in rows and voters in columns. 
