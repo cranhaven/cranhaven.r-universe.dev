@@ -1,0 +1,35 @@
+#' Cell cycle data
+#' 
+#' A list of two matrices used in Lee (2002).
+#' 
+#' Matrix X, the chromatin immunoprecipitation (ChIP) data contain complete binding 
+#' information of a subset of 1790 genes for a total of 113 transcription 
+#' factors.
+#' 
+#' Matrix Y, the Eukariotic cell cycle data were generated using alpha factor arrest method,
+#' consisting of RNA levels measured every 7 minutes for 119 minutes with a total 
+#' of 18 time points covering two cell cycle of 1790 genes.
+#'
+#' @docType data
+#'
+#' @usage data(CellCycle)
+#'
+#' @format A list with two components: 
+#' \describe{
+#'   \item{X}{Chromatin immunoprecipitation data, a matrix of 1790 rows and 113 columns.}
+#'   \item{Y}{Eukariotic cell cycle data, a matrix of 1790 rows and 18 columns.}
+#' }
+#'
+#' @keywords datasets
+
+#' @examples
+#' # data(CellCycle)
+#' # X <- CellCycle$X;Y <- CellCycle$Y
+#' # n <- nrow(Y); p <- ncol(X); q <-  ncol(Y)
+#' # control <- secure.control(spU=160/p,spV=1)
+#' # fit.cycle <- secure.path(Y, X, nrank = 10, nlambda = 100,
+#' #                   control = control)
+#' @references Lee, T. I., Rinaldi, N. J., Robert, F., Odom, D. T., Bar-Joseph, Z., Gerber, G. K., 
+#' Hannett, N. M., Harbison, C. T., Thompson, C. M., Simon, I. et al. (2002) \emph{Transcriptional
+#' regulatory networks in saccharomyces cerevisiae. Science, 298, 799-804}.
+"CellCycle"
