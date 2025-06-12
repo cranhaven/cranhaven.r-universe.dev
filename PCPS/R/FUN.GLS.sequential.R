@@ -1,0 +1,17 @@
+#' @rdname pcps.sig
+#' @include pcps.sig.R
+#' @include matrix.p.sig.R
+#' @encoding UTF-8
+#' @export
+FUN.GLS.sequential <- function(x, envir, formula, ..., return.model = FALSE){
+  mod.obs <- nlme::gls(formula, data = data.frame(x,envir), ...)
+  statistic.obs <- anova(mod.obs, type = "sequential")$"F-value"
+  if(return.model){
+    res <- list()
+    res$mod.obs <- mod.obs
+    res$statistic.obs <- statistic.obs
+  } else{
+    res <- statistic.obs
+  }
+  return(res)
+}
