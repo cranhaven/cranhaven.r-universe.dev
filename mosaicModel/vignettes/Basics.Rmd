@@ -1,0 +1,355 @@
+---
+title: "Using mosaicModel"
+author: "Daniel Kaplan"
+date: "`r Sys.Date()`"
+output: 
+  rmarkdown::html_vignette:
+    fig_caption: yes
+vignette: >
+  %\VignetteIndexEntry{Using mosaicModel}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+library(ggformula)
+library(MASS)
+library(tidyverse)
+library(mosaicModel)
+library(randomForest)
+library(caret)
+library(splines)
+theme_update(legend.position = "top")
+knitr::opts_chunk$set(fig.align = "center", fig.show = "hold", out.width = "45%")
+```
+
+The `mosaicModel` package provides a basic interface for interpreting and displaying models. From the early beginnings of R, methods such as `summary()`, `plot()`, and `predict()` provided a consistent vocabulary for generating model output and reports, but the format and contents of those reports depended strongly on the specifics of the model architecture. For example, for architectures such as `lm()` and `glm()`, the `summary()` method produces a regression table showing point estimates and standard errors on model coefficients. But other widely used architectures such as random forests or k-nearest neighbors do not generate coefficients and so need to be displayed and interpreted in other ways. 
+
+To provide a general interface for displaying and interpreting models, the `mosaicModel` package provides an alternative structure of operations that make sense for a wide range of model architectures, including those typically grouped under the term "machine learning." 
+
+The package implements operations that can be applied to a wide range of model architectures producing reports  interface consists of a handful of high-level functions that operate in a manner independent of model architecture.
+
+* `mod_eval()` -- evaluate a model, that is, turn inputs into model values and standard errors on those values. 
+* `mod_plot()` -- produce a graphical display of the "shape" of a model. There can be as many as 4 input variables shown, along with the output.
+* `mod_effect()` -- calculate effect sizes, that is, how a change in an input variable changes the output
+* `mod_error()` -- find the mean square prediction error (or the log likelihood)
+* `mod_ensemble()` -- create an ensemble of bootstrap replications of the model, that is, models fit to resampled data from the original model.
+* `mod_cv()` -- carry out cross validation on one or more models. 
+* `mod_fun()` -- extract a function from a model that implements the inputs-to-output relationship.
+
+`mosaicModel` stays out of the business of training models. You do that using functions, e.g.
+
+- the familiar `lm` or `glm` provided by the `stats` package
+- `train()` from the `caret` package for machine learning
+- `rpart()`, `randomForest`, `rlm`, and other functions provided by other packages
+
+The package authors will try to expand the repertoire as demand requires. (See the section on [adding new model architectures](#new-architectures).)
+
+## Introductory examples
+
+This vignette is intended to be a concise introduction to the use of `mosaicModel` rather than a systematic introduction to modeling. To that end, we'll use short, "simple," and readily available data sets, `mtcars` and `iris`, which come already installed in R.
+
+`mtcars` records fuel consumption (`mpg`) of 1973-74 model cars along with a variety of other attributes such as horsepower (`hp`), weight (`wt`), and transmission type (`am`). We'll use `mtcars` for a *regression* problem: How do the different aspects of a car relate to its fuel consumption?
+
+`iris` records sepal width and length and petal width and length for 50 flowers of each of 3 species of iris. We'll use `iris` for a *classification* problem: Given sepal and petal characteristics for a flower, which species is the flower likely to be?
+
+We are not going to concern ourselves here with building good models, just demonstrating how models can be built and evaluated: the techniques you would need for building and refining models to serve your own purposes.
+
+For both the fuel-consumption and iris-species problems, we'll build two models. Refining and improving models is generally a matter of comparing models.
+
+### Fuel consumption
+
+
+To indicate some of the relationships in the `mtcars` data, here's a simple graphic along with the command to make it using the `ggformula` package. (Note: in the first line of the command, we're adding a categorical variable, `transmission`, to the existing quantitative variables in `mtcars` so that the examples can show both quantitative and categorical variables. 
+
+```{r fuel_intro, fig.cap = "A simple display of the `mtcars` data used in the example."}
+mtcars <- mtcars %>% mutate(transmission = ifelse(am, "manual", "automatic"))
+gf_point(mpg ~ hp, color = ~ transmission, data = mtcars)
+```
+
+
+```{r}
+fuel_mod_1 <- lm(mpg ~ hp * transmission, data = mtcars)
+fuel_mod_2 <- lm(mpg ~ ns(hp, 2) * transmission, data = mtcars)
+```
+
+The second model includes a nonlinear dependence on horsepower. You can think of `ns()` as standing for "not straight" with the integer describing the amount of "curviness" allowed.
+
+For models involving only a very few explanatory variables, a plot of the model can give immediate insight. The `mod_plot()` function reduces the work to make such a plot.
+
+```{r out.width = "30%"}
+mod_plot(fuel_mod_1) 
+mod_plot(fuel_mod_2) 
+```
+
+Two important additional arguments to `mod_plot` are
+
+- a formula specifying the role of each explanatory variable. For instance, the formula `~ transmission + hp` would put the categorical transmission variable on the x-axis and use `hp` for color. Additional variables, if any, get used for faceting the graphic.
+- An `interval=` argument, which, for many regression model types, can be set to `"prediction"` or `"confidence"`.
+
+
+
+### Iris species
+
+The `iris` dataset has four explanatory variables. Here's species shown as a function of two of the variables:
+
+```{r}
+theme_update(legend.position = "top")
+gf_point(Sepal.Length ~ Petal.Length, color = ~ Species, data = iris) 
+```
+For later comparison to the models that we'll train, note that when the petal length and sepal length are both large, the flowers are almost always *virginica*. 
+
+Again, to illustrate how the `mosaicModel` package works, we'll build two classifiers for the iris species data: a random forest using two of the available explanatory variables and a k-nearest neighbors classifier. (The period in the formula `Species ~ .` indicates that all variables should be used except the outcome variable.)
+
+```{r}
+library(randomForest)
+iris_mod_1 <- randomForest(Species ~ Sepal.Length + Petal.Length, data = iris)
+library(caret)
+iris_mod_2 <- knn3(Species ~., data = iris, k = 15)
+```
+
+
+Notice that the model architectures used to create the two models come from two different packages: `caret` and `randomForest`. In general, rather than providing model-training functions, `mosaicModel` lets you use model-training functions from whatever packages you like.
+
+Again, we can plot out the form of the function:
+```{r}
+mod_plot(iris_mod_1)
+```
+
+Since this is a classifier, the plot of the model function shows the *probability* of one of the output classes. That's *virginica* here. When the petal length is small, say around 1, the flower is very unlikely to be *virginica*. But for large petal lengths, and especially for large petal lengths and large sepal lengths, the flower is almost certain to be *virginica*. 
+
+If your interest is in a class other than *virginica*, you can specify the class you want with an additional argument, e.g. `class_level = "setosa"`.
+
+The second iris model has four explanatory variables. This is as many as `mod_plot()` will display:
+
+```{r out.width = "80%", fig.width = 8, fig.height = 8}
+mod_plot(iris_mod_2, class_level = "setosa")
+```
+The plot shows that the flower species does not depend on either of the two variables displayed on the x-axis and with color: the sepal width and the sepal length. This is why the line is flat and the colors overlap. But you can easily see a dependence on petal width and, to a very limited extent, on petal length.
+
+The choice of which role in the plot is played by which explanatory variable is up to you. Here the dependence on petal length and width are emphasized by using them for x-position and color:
+
+```{r fig.out="40%", fig.keep = "hold"}
+mod_plot(iris_mod_2, ~ Petal.Length + Petal.Width)
+mod_plot(iris_mod_2, ~ Petal.Length + Petal.Width + Sepal.Width)
+```
+
+## Model outputs
+
+The `mod_plot` function creates a graphical display of the output of the model for a range of model inputs. The `mod_eval()` function (which `mod_plot()` uses internally), produces the output in tabular form, e.g.
+
+```{r}
+mod_eval(fuel_mod_1, transmission = "manual", hp = 200)
+```
+`mod_eval()` tries to do something sensible if you don't specify a value (or a range of values) for an explanatory variable.
+```{r}
+mod_eval(fuel_mod_1)
+```
+
+Another interface to evaluate the model is available in the form of a "model function." This interface may be preferred in uses where the objective of modeling is to develop a function that can be applied in, say, calculus operations.
+
+```{r}
+f1 <- mod_fun(fuel_mod_1)
+f1(hp = 200:203, transmission = "manual")
+```
+
+You can also evaluate classifiers using the model-function approach, e.g.
+```{r}
+mod_eval(iris_mod_1, nlevels = 2)
+```
+
+
+## Effect sizes
+
+It's often helpful in interpreting a model to know how the output changes with a change in one of the inputs. Traditionally, model coefficients have been used for this purpose. But not all model architectures produce coefficients (e.g. random forest) and even in those that do use of interactions and nonlinear terms spreads out the information across multiple coefficients. As an alternative, `mod_effect` calculates a model input at one set of values, repeats the calculation after modifying a selected input, and combines the result into a "rate-of-change/slope" or a finite-difference. 
+
+Here, `mod_effect()` is calculating the rate of change of fuel consumption (remember, the output of `fuel_mod_1` is in term of `mpg`) with respect to `hp`:
+
+```{r}
+mod_effect(fuel_mod_2, ~ hp)
+```
+Since no specific inputs were specified, `mod_effect()` attempted to do something sensible.
+
+You can, of course, specify the inputs you want, for instance:
+```{r}
+mod_effect(fuel_mod_2, ~ hp, hp = c(100, 200), transmission = "manual")
+mod_effect(fuel_mod_2, ~ hp, nlevels = 3)
+```
+
+By default, the step size for a quantitative variable is approximately the standard deviation. You can set the step to whatever value you want with the `step = ` argument.
+
+```{r}
+mod_effect(fuel_mod_2, ~ hp, step = 0.1, nlevels = 1)
+```
+
+Advice: Whatever you may have learned in calculus about limits, a finite step size is generally what you want, particularly for jagged kinds of model functions like random forests or knn. For instance, compare the effect size of `Sepal.Length` in `iris_mod_2` using a "small" step size and a step size on the order of the
+standard deviation of `Sepal.Length`.
+
+```{r}
+mod_effect(iris_mod_2, ~ Sepal.Length, step = 0.01, class_level = "virginica" )
+mod_effect(iris_mod_2, ~ Sepal.Length, step = 1, class_level = "virginica")
+```
+The zero effect size for the small step is an artifact. The k-nearest neighbors model is piecewise constant.
+
+
+## Model error
+
+Sometimes you want to know how the model performs. The `mod_error()` function will compute the mean square error for a regression model and the log likelihood for a classification model.
+```{r}
+mod_error(fuel_mod_2)
+```
+
+Use the `testdata = ` argument to do the calculations on specified testing data, as in cross validation.
+
+```{r}
+mod_error(fuel_mod_2, testdata = mtcars[1:10,])
+```
+
+You have your choice of several measures of error. (See the documentation for `mod_error()`.) For instance, the following two commands calculate for the second iris model the classification error rate (about 3%) and the log-likelihood. (Of course, these two measures of error are on entirely different scales, so there's no point in comparing them to each other. Generally, you compare the same error measure across two or more models.) 
+```{r}
+mod_error(iris_mod_2, error_type = "class_error")
+mod_error(iris_mod_2, error_type = "LL")
+```
+
+## Bootstrapping
+
+Bootstrapping provides a broadly applicable way to characterize the sampling uncertainty in model output or effect sizes. To use bootstrapping, use `mod_ensemble()` to create an ensemble of models all with the same architecture and parameters as the original but trained to individual resampling trials.
+
+```{r}
+ensemble_fuel_1 <- mod_ensemble(fuel_mod_1, nreps = 10)
+ensemble_iris_1 <- mod_ensemble(iris_mod_1, nreps = 10)
+```
+
+Now you can use other functions from the package, but putting the ensemble in the argument slot for the model, for instance:
+
+```{r}
+mod_plot(ensemble_fuel_1)
+mod_effect(ensemble_iris_1, ~ Petal.Length)
+mod_eval(ensemble_iris_1, nlevels = 1)
+```
+
+For effect sizes, the interest is often in knowing the standard error (just as it is for the coefficients of linear regression models). A shortcut for this is to use the original model, but specify a number of bootstrap replications as an argument to `mod_effect()` or `mod_eval()` or `mod_plot()`.
+
+```{r}
+mod_effect(fuel_mod_2, ~ transmission, bootstrap = 10, hp = c(50,150,250))
+mod_eval(fuel_mod_2, bootstrap = 50, hp = c(50,150))
+```
+
+## Cross validation
+
+Cross validation refers to a process of dividing the available data into two parts: 
+
+1. A *training* set used to construct the model.
+2. A *testing* set used to evaluate model performance.
+
+This division between training and testing produces an unbiased estimate of error (as opposed to the traditional methods such as R^2 that need to be adjusted for degrees of freedom, etc.).
+
+The `mod_cv()` function automates this process, using a method called *k-fold cross validation*. A common use is to compare the performance of models.
+
+```{r}
+performance <- mod_cv(fuel_mod_1, fuel_mod_2, ntrials = 10)
+performance
+performance %>%
+  gf_point(mse ~ model)
+```
+The result suggests a lower bias but higher variance for the second fuel model compared to the first.
+
+## Available model architectures
+
+"Architecture" is used to refer to the class of model. For instance, a linear model, random forests, recursive partitioning. Use the model training functions, such as `lm()`, `glm()`, `rlm()` in the `stats` package or in other packages such as `caret` or `zelig`. 
+
+You can find out which model architectures are available with the command 
+```{r}
+methods(mod_eval_fun)
+```
+
+Note that the `train` method refers to models built with the `caret` package's function `train()`. One of the major points of `caret` is to allow the user to optimize the parameters for the training. If you do this in constructing a model, be aware that the training and optimizing will occur every time a bootstrap replication or cross-validation run is made. This can dramatically expand the time required for the operations. One way to find out how much the required time is expanded is to make a small bootstrap ensemble with `mod_ensemble()`. Or, to avoid the retraining with `caret` models, you can pull the `finalModel` component out of the object created by `train()`. But while the train object will often work, the `finalModel` may be of a type not recognized by this package. See the section on [new model architectures]{#new-architectures}.
+
+## Adding new model architectures {#new-architectures}
+
+The package authors would like to have this package ready-to-run with commonly used model architectures. If you have a suggestion, please forward it.
+
+R programmers can add their own model architectures by adding S3 methods for these functions:
+
+
+- `formula_from_mod()`
+- `data_from_mod()`
+- `mod_eval_fun()` evaluates the model at specified values of the input variables. This is much like `predict()`, from which it is often built.
+- `construct_fitting_call`
+
+The code for the generic and some methods are in the source .R files of the same name. This may give you some idea of how to write your own methods.
+
+It often happens that there is a sensible default method that covers lots of model architectures. You can try this out directly by running `mosaicModel:::data_from_mod.default()` (or a similar name) on the model architecture you want to support.
+
+To illustrate, let's add a set of methods for the `MASS` package's `lda()` and `qda()` model architectures for classification.
+
+Step 1 is to create a model of the architecture you're interested in. Remember that you will need to attach any packages needed for that kind of model.
+
+```{r}
+library(MASS)
+my_mod <- lda(Species ~ Petal.Length + Petal.Width, data = iris)
+```
+
+Sometimes, the author of a package has uses a model object that follows conventions. If so, the default method will work. For `lda`/`qda` both of these methods work. Try it out like this:
+
+```{r}
+formula_from_mod(my_mod)
+data_from_mod(my_mod) %>% head(2)
+```
+
+Since these two are working for `lda`/`qda`, the `response_var`, `explanatory_vars` and `response_values` will automatically work.
+
+This leaves two methods:
+
+```{r error = TRUE}
+construct_fitting_call(my_mod, data_name = "placeholder")
+```
+This function returns a "call," which is unfamiliar to many R users. That we didn't get an error and that the call is analogous to the way the original `my_mod` was built means that things are working using the default methods. 
+
+Last one. At the time this vignette was being written there was no appropriate `mod_eval_fun` method, so calling the generic generated an error.
+```{r eval=FALSE}
+mod_eval_fun(my_mod)
+```
+```
+Error in mod_eval_fun.default(my_mod) : The modelMosaic package doesn't have access to an evaluation function for this kind of model object.
+```
+
+Now, of course, there is a `mod_eval_fun()` method for models of class `knn3`. How did we go about implementing it? 
+
+To start, let's see if there is a `predict` method defined. This is a pretty common practice among those writing model-training functions. Regretably, there is considerable variety in the programming interface to `predict()` methods, so it's quite common to have to implement a wrapper to interface any existing `predict()` method to `mosaicModel`.
+```{r}
+methods(class = "lda")
+```
+
+Refer to the help page for `predict.lda()` to see what the argument names are. `newdata =` is often the name of the argument for specifying the model inputs, but sometimes it's `x` or `data` or whatever.
+
+Since `lda`/`qda` is a classifier, the form of output we would like to produce is a table of probabilities for each class level for each input class. This is the standard expected by `mosaicModel`. Let's look at the output of `predict()`:
+
+```{r}
+predict(my_mod) %>% str()
+```
+
+This is something of a detective story, but a person very familiar with `lda()` and with R will see that the `predict` method produces a list of two items. The second one called `posterior` and is a matrix with 150 rows and 3 columns, corresponding to the size of the training data.
+
+Once located, do what you need in order to coerce the output to a data frame and remove row names (for consistency of output).  Here's the `mod_eval_fun.lda()` function from `mosaicModel`.
+
+```{r}
+mosaicModel:::mod_eval_fun.lda
+```
+
+The arguments to the function are the same as for all the `mod_eval_fun()` methods. The body of the function pulls out the `posterior` component, coerces it to a data frame and removes the row names.  It isn't always this easy. But once the function is available in your session, you can test it out. (Make sure to give it a data set as inputs to the model)
+
+```{r error = TRUE}
+mod_eval_fun(my_mod, data = iris[c(30, 80, 120),])
+```
+
+Now the high-level functions in `mosaicModel` can work on LDA models.
+
+```{r}
+mod_effect(my_mod, ~ Petal.Length, bootstrap = 10,  
+           class_level = "virginica")
+```
+
+```{r}
+mod_plot(my_mod, bootstrap = 10, class_level = "virginica")
+```
