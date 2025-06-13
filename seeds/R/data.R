@@ -1,0 +1,22 @@
+#' UVB signal pathway
+#' 
+#' A data frame containing simulated values of the UVB Signaling pathway. The error
+#' of the system is synthetic and is added to the states x3 and x11. The model
+#' is taken from the works of Ouyang et al. \url{https://doi.org/10.1073/pnas.1412050111}
+#' 
+#' @details A data frame with 8 rows and 11 columns
+#' \describe{
+#'     \item{t}{time in fractions of an hour}
+#'     \item{y1}{total amounts of UVR8 monomers}
+#'     \item{y2}{total amounts of COP1 monomers}
+#'     \item{y3}{total amounts of UVR8 dimers}
+#'     \item{y4}{concentration of elongated hypocotyl 5 (HY5) protein}
+#'     \item{y5}{concentration measured of UVR8 monomers}
+#'     \item{y1std}{standard deviation of the first measurement}
+#'     \item{y2std}{standard deviation of the second measurement}
+#'     \item{y3std}{standard deviation of the third measurement}
+#'     \item{y4std}{standard deviation of the fourth measurement}
+#'     \item{y5std}{standard deviation of the fifth measurement}
+#' }
+#' @source \url{https://doi.org/10.1073/pnas.1412050111}
+"uvbData"
