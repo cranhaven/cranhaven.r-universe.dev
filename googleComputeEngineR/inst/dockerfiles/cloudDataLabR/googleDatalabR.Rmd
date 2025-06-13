@@ -1,0 +1,228 @@
+---
+title: "R Datalab"
+output:
+  html_document: default
+  html_notebook: default
+---
+
+This is an example of running an R version of [Google Datalab](https://cloud.google.com/datalab/)
+
+Google Datalab is a service that lets you easily interact with your data in the Google Cloud.  This document is an excercise in trying to replicate the same functionality:
+
+* Runs on Google Cloud infrastructure using `googleComputeEngineR` within its own Docker container
+* Uses RStudio and its [RMarkdown Notebooks](http://rmarkdown.rstudio.com/r_notebooks.html) to replicate the Jupyter/iPython functionality
+* Auto authentication with the Google cloud services to work with BigQuery and Cloud Storage data
+* Cross language support of python, SQL and bash via R Notebooks
+* Python data analysis libraries [pandas](http://pandas.pydata.org/) and [NumPy](http://www.numpy.org/)
+* Visualisation via R libraries such as the [htmlwidgets family](http://gallery.htmlwidgets.org/)
+* Installation of [Tensorflow](https://www.tensorflow.org) and RStudio's [tensorflow](https://rstudio.github.io/tensorflow/) package
+* Installation of `tensorflow` helper library [`tflearn`](http://tflearn.org)
+* Installation of [feather](https://blog.rstudio.org/2016/03/29/feather/) to help R and python share data nicely.
+
+## Setup
+
+```{r, echo=TRUE}
+library(googleAuthR)
+## this reuses the authentication of the GCE instance we are on
+gar_gce_auth()
+
+library(bigQueryR)
+## list authenticated projects
+myproject <- bqr_list_projects()
+
+library(googleCloudStorageR)
+## list Cloud Storage buckets
+gcs_list_buckets(myproject$id[[1]])
+
+```
+
+Demo of running python in same document:
+
+```{python, echo=TRUE}
+hiss = 'sssssssss'
+print "Pythons go %s." % hiss
+```
+
+Also works with `SQL` and `bash`
+
+```{bash, echo=TRUE}
+pip freeze
+```
+
+## Transfer data between R and Python with feather
+
+From the [example intro blogpost](https://blog.rstudio.org/2016/03/29/feather/) for feather:
+
+```{r, echo=TRUE}
+library(feather)
+df <- mtcars
+path <- "my_data.feather"
+write_feather(df, path)
+```
+
+
+```{python, echo=TRUE}
+import feather
+path = 'my_data.feather'
+df = feather.read_dataframe(path)
+df.head
+```
+
+## Tensorflow
+
+### Hello world Python
+
+```{python, echo=TRUE}
+from __future__ import print_function
+
+import tensorflow as tf
+
+# Simple hello world using TensorFlow
+
+# Create a Constant op
+# The op is added as a node to the default graph.
+#
+# The value returned by the constructor represents the output
+# of the Constant op.
+hello = tf.constant('Hello, TensorFlow!')
+
+# Start tf session
+sess = tf.Session()
+
+# Run the op
+print(sess.run(hello))
+```
+
+### Hello world R
+
+```{r, echo=TRUE}
+library(tensorflow)
+sess = tf$Session()
+hello <- tf$constant('Hello, TensorFlow!')
+sess$run(hello)
+```
+
+## tflearn Titanic example
+
+From the [tflearn quickstart](http://tflearn.org/tutorials/quickstart.html)
+
+```{python, echo = TRUE}
+from __future__ import print_function
+
+import numpy as np
+import tflearn
+
+# Download the Titanic dataset
+from tflearn.datasets import titanic
+titanic.download_dataset('titanic_dataset.csv')
+
+# Load CSV file, indicate that the first column represents labels
+from tflearn.data_utils import load_csv
+data, labels = load_csv('titanic_dataset.csv', target_column=0,
+                        categorical_labels=True, n_classes=2)
+
+# Preprocessing function
+def preprocess(data, columns_to_ignore):
+    # Sort by descending id and delete columns
+    for id in sorted(columns_to_ignore, reverse=True):
+        [r.pop(id) for r in data]
+    for i in range(len(data)):
+      # Converting 'sex' field to float (id is 1 after removing labels column)
+      data[i][1] = 1. if data[i][1] == 'female' else 0.
+    return np.array(data, dtype=np.float32)
+
+# Ignore 'name' and 'ticket' columns (id 1 & 6 of data array)
+to_ignore=[1, 6]
+
+# Preprocess data
+data = preprocess(data, to_ignore)
+
+# Build neural network
+net = tflearn.input_data(shape=[None, 6])
+net = tflearn.fully_connected(net, 32)
+net = tflearn.fully_connected(net, 32)
+net = tflearn.fully_connected(net, 2, activation='softmax')
+net = tflearn.regression(net)
+
+# Define model
+model = tflearn.DNN(net)
+# Start training (apply gradient descent algorithm)
+model.fit(data, labels, n_epoch=10, batch_size=16, show_metric=True)
+
+# Let's create some data for DiCaprio and Winslet
+dicaprio = [3, 'Jack Dawson', 'male', 19, 0, 0, 'N/A', 5.0000]
+winslet = [1, 'Rose DeWitt Bukater', 'female', 17, 1, 2, 'N/A', 100.0000]
+# Preprocess data
+dicaprio, winslet = preprocess([dicaprio, winslet], to_ignore)
+# Predict surviving chances (class 1 results)
+pred = model.predict([dicaprio, winslet])
+print("DiCaprio Surviving Rate:", pred[0][1])
+print("Winslet Surviving Rate:", pred[1][1])
+```
+
+## Build details
+
+This was run in a local R session to start up this RStudio instance with the right libraries installed:
+
+```r
+library(googleComputeEngineR)
+
+## make an RStudio instance to base upon
+vm <- gce_vm(template = "rstudio", 
+             name = "r-datalab-build", 
+             username = "mark", password = "mark1234", 
+             predefined_type = "n1-standard-1")
+
+## once RStudio loaded at the IP, build the Dockerfile below on instance
+## this takes a while
+docker_build(vm, dockerfolder = get_dockerfolder("cloudDataLabR"), new_image = "r-datalab")
+
+
+## send to the Container Registry
+gce_push_registry(vm, save_name = "datalab-r-image", image_name = "r-datalab")
+
+## Can now launch instances using this image via:
+vm2 <- gce_vm(template = "rstudio", 
+              name = "r-datalab", 
+              predefined_type = "n1-standard-1", 
+              dynamic_image = gce_tag_container("datalab-r"), 
+              username = "mark", password = "mark1234")
+
+```
+
+The Dockerfile used is below:
+
+```
+FROM rocker/hadleyverse
+MAINTAINER Mark Edmondson (r@sunholo.com)
+
+# install cron and nano and tensorflow and tflearn
+RUN apt-get update && apt-get install -y \
+    cron nano \
+    python-pip python-dev \
+    && pip install numpy \
+    && pip install pandas \
+    && export TF_BINARY_URL=https://storage.googleapis.com/tensorflow/linux/cpu/tensorflow-0.11.0-cp27-none-linux_x86_64.whl \
+    && pip install --upgrade $TF_BINARY_URL \
+    && pip install git+https://github.com/tflearn/tflearn.git \
+    && pip install cython \
+    && pip install feather-format \
+    ## clean up
+    && apt-get clean \ 
+    && rm -rf /var/lib/apt/lists/ \ 
+    && rm -rf /tmp/downloaded_packages/ /tmp/*.rds
+    
+## Install packages from CRAN
+RUN install2.r --error \ 
+    -r 'http://cran.rstudio.com' \
+    googleAuthR googleAnalyticsR searchConsoleR googleCloudStorageR bigQueryR htmlwidgets feather rPython \
+    ## install Github packages
+    && Rscript -e "devtools::install_github(c('MarkEdmondson1234/youtubeAnalyticsR', 'MarkEdmondson1234/googleID', 'MarkEdmondson1234/googleAuthR'))" \
+    && Rscript -e "devtools::install_github(c('bnosac/cronR'))" \
+    && Rscript -e "devtools::install_github(c('rstudio/tensorflow'))" \
+    ## clean up
+    && rm -rf /tmp/downloaded_packages/ /tmp/*.rds \
+
+```
+
+
