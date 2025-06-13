@@ -1,0 +1,206 @@
+---
+title: "medicalrisk: Calculating risk and comorbidities from ICD-9-CM codes"
+author: "Patrick McCormick <patrick.mccormick@alum.mit.edu>"
+date: "`r Sys.Date()`"
+output: 
+  rmarkdown::html_vignette
+bibliography:
+   - medicalrisk.bib
+vignette: >
+  %\VignetteIndexEntry{medicalrisk: Calculating risk and comorbidities from ICD-9-CM codes}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteDepends{plyr}
+---
+Introduction
+------------
+
+The routines in the **medicalrisk** package [@R-medicalrisk]
+are designed to help determine comorbidity and medical risk status of a given patient
+using several popular models published in the peer-reviewed literature.
+
+Administrative healthcare data is frequently the only available source for determining 
+individual risk of mortality when looking at thousands or millions of patient records.
+Medical chart abstraction just isn't feasible for projects of this scale.
+
+In the United States, the records for every inpatient and outpatient encounter is 
+reviewed by a qualified medical coder who assigns a set of diagnosis and procedural codes based
+on phrases within the medical record.  The coding system currently in use is 
+[ICD-9-CM](http://en.wikipedia.org/wiki/ICD-9-CM).
+ICD-9-CM is an adaptation of the venerable ICD-9 standard which was developed in 1978.
+The 
+[U.S. National Center for Health Statistics (NCHS)](http://www.cdc.gov/nchs/) 
+developed ICD-9-CM, which has been required for Medicare and Medicaid claims 
+since 1979.  ICD-9-CM is updated annually.
+
+At some point, perhaps as soon as October 2015, [ICD-10-CM codes](http://www.cdc.gov/nchs/icd/icd10cm.htm)
+will need to be used instead.
+It is likely that "dual coding" of claims in both sets will continue for some time.
+
+In the meantime, there is a wealth of administrative data available within the ICD-9-CM 
+diagnostic and procedural codes stored within US healthcare systems. 
+
+Working with ICD-9-CM Data
+------------
+
+In order to demonstrate this package, this package includes data on 100 patients 
+from the [Vermont Uniform Hospital Discharge Data Set for 2011, Inpatient](http://healthvermont.gov/research/hospital-utilization/RECENT_PU_FILES.aspx).
+
+```{r}
+library(medicalrisk)
+library(plyr)
+data(vt_inp_sample)
+x <- count(vt_inp_sample, c('id'))
+cat("average count of ICD codes per patient is: ", mean(x$freq))
+y <- count(vt_inp_sample, c('icd9cm'))
+```
+```{r, results='asis'}
+library(knitr)
+kable(head(y[order(-y$freq),], n=5), row.names=F,
+      caption='Top 5 most popular ICD-9-CM codes in this dataset')
+```
+
+Within this package, ICD-9-CM codes are presented as a string where the first letter 
+is "P" or "D" depending on whether the code is Procedure or Diagnosis.  The rest of
+the code is present as a string of numbers.  Periods are omitted.  In the list above, the
+code "D4019" is diagnostic code 401.9 which corresponds to Hypertension.
+
+Comorbidity Maps
+--------------
+
+The package includes a set of mapping functions that transform a list of ICD-9-CM
+codes into a comorbidity matrix:
+
+* icd9cm_charlson_deyo
+* icd9cm_charlson_romano
+* icd9cm_charlson_quan
+* icd9cm_elixhauser_ahrq37
+* icd9cm_elixhauser_quan
+* icd9cm_rcri
+
+"Charlson" refers to the Charlson Comorbidity Index[@Charlson1987].  
+The names 
+"Deyo"[@Deyo1992], 
+"Romano"[@Romano1993], and 
+"Quan"[@Quan2005]
+refer to the primary authors of different methods of determining Charlson 
+comorbidities from ICD-9-CM codes.
+
+"Elixhauser" refers to the Elixhauser comorbidity map, 
+which is a more detailed list than 
+Charlson.  "AHRQ37" is an adapation of the 
+AHRQ version 37 software[@AgencyforHealthcareResearchQuality2013].  
+"Quan" refers to the same paper by Quan mentioned above.
+
+"RCRI" is the Revised Cardiac Risk Index[@Lee1999] 
+set of categories using a 
+method published by Boersma[@Boersma2005].
+
+For example, the #5 ICD-9-CM code above is D25000, or "250.00", which is for
+"Diabetes Mellitus Unspecified Type".  Here's what happens when that code is passed
+to a few of the mapping functions listed above:
+
+```{r, results='asis'}
+kable(
+  icd9cm_charlson_quan(c('D25000')))
+kable(
+  icd9cm_elixhauser_ahrq37(c('D25000')))
+kable(
+  icd9cm_rcri(c('D25000')))
+```
+
+For each of these maps the "dm" column becomes TRUE.
+
+The most efficient way to use these maps for a set of patients is to 
+generate a single map for all ICD-9-CM codes in the set and then
+apply that map to each patient.  Here's an example that
+generates a comorbidity matrix for the first five patients in the Vermont dataset:
+
+```{r, results='asis'}
+cases <- vt_inp_sample[vt_inp_sample$id %in% 1:5, c('id','icd9cm')]
+cases_with_cm <- merge(cases, icd9cm_charlson_quan(levels(cases$icd9cm)), 
+   by.x="icd9cm", by.y="row.names", all.x=TRUE)
+ 
+# generate crude comorbidity summary for each patient
+kable(
+  ddply(cases_with_cm, .(id), 
+   function(x) { data.frame(lapply(x[,3:ncol(x)], any)) }),
+  row.names=F)
+```
+
+The above process is encapsulated in a single function `generate_comorbidity_df`.
+This function also includes an optimization from Van Walraven that
+reduces `dmcx` to `dm` if the specific diabetic complication is separately coded.
+
+```{r, results='asis'}
+kable(
+  generate_comorbidity_df(cases, icd9mapfn=icd9cm_charlson_quan))
+```
+
+This function only considers each ICD-9-CM code once and then merges the
+resulting comorbidity flags together for each patient.  This makes the function 
+quite fast for large data sets.
+
+Given appropriate arguments, the `generate_comorbidity_df` function will 
+use the parallel backend provided by `foreach` to improve performance.
+
+Comorbidity Index
+--------------
+
+It is common in the medical literature to see a set of comorbidities reduced to an index.
+When the Charlson Comorbidity Index was first published it had the following weights
+for each comorbidity:
+
+```{r, results='asis'}
+data(charlson_weights_orig)
+kable(
+  t(charlson_weights_orig))
+```
+
+However, these weights have not stood the test of time.  For example, the
+prognosis for HIV/AIDS has dramatically improved.  
+The medicalrisk package offers the 
+revised Charlson weights developed by Schneeweiss[@Schneeweiss2003]:
+
+```{r, results='asis'}
+data(charlson_weights)
+kable(
+  t(charlson_weights))
+```
+
+The `generate_charlson_index_df` function will sum the weights for each patient 
+to generate a final index:
+
+```{r, results='asis'}
+kable(
+  generate_charlson_index_df(generate_comorbidity_df(cases)), row.names=F)
+```
+
+Risk Stratification Index
+--------------
+
+The Risk Stratification Index uses ICD-9-CM codes to determine four risk estimates:
+
+* 1 Year Mortality
+* 30 Day Mortality
+* In-Hospital Mortality
+* 30 Day Length of Stay
+
+The author of the paper (Sessler) published SPSS code to perform the calculation. 
+The medicalrisk implements the RSi calculation using a method based on the SPSS code.
+
+```{r}
+ddply(cases, .(id), function(x) { icd9cm_sessler_rsi(x$icd9cm) } )
+```
+
+Conclusion
+----------
+
+The medicalrisk package can be used to generate risk data from ICD-9-CM codes 
+in large datasets.  The above discussion describes basic use of the package.
+There are some additional helper functions not described above which are included
+in the per function documentation.  
+
+The aim of this package is to include future medical risk estimation procedures as
+they are published in the literature.
+
+## References
