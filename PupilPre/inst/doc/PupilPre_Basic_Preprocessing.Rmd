@@ -1,0 +1,585 @@
+---
+title: "Basic Preprocessing of Pupil Size Data"
+author: "Aki Kyröläinen and Vincent Porretta"
+date: "`r Sys.Date()`"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Basic Preprocessing of Pupil Size Data}
+  %\VignetteEngine{knitr::rmarkdown}
+  \usepackage[utf8]{inputenc}
+---
+
+This vignette provides a guideline for preprocessing pupil size data, specifically for timeseries analysis (as well as window-based analyses). 
+It is recommended that you follow the order of steps laid out in this document to ensure that all necessary preprocessing steps are completed.
+This serves as a pipeline for preprocessing pupil size data.
+Please note that this package relies on and shares some functionality provided in our other package [VWPre](https://cran.r-project.org/package=VWPre) designed for preprocessing gaze data from the Visual World Paradigm. 
+
+
+## Before using PupilPre
+
+Before using this package a number of steps are required:
+First, your pupil size data must have been collected using an SR Research Eyelink eye tracker.
+Second, your data must have been exported using SR Research Data Viewer software, i.e., a sample report.
+For this basic example, it is assumed that you have specified an interest period relative to the onset of the critical stimulus in Data Viewer (i.e., aligned to a specific sample message).
+However, this package is also able to preprocess data without a specified relative interest period.
+If you have not aligned your data to a particular message in Data Viewer, please refer to the [Message Alignment](PupilPre_Message_Alignment.html) vignette for functions related to this.
+
+The Sample Report should be exported along with all available columns. 
+This will ensure that you have all of the necessary columns for the functions contained in this package to work.
+The presence of necessary columns will also be checked internally when processing the data. 
+Additionally, it is preferable to export to a .txt (UTF-8) file rather than a .xlsx file.
+
+Lastly, the functions included here, internally make use of `dplyr` for manipulating and restructuring data. For more information about [dplyr](https://cran.r-project.org/package=dplyr), please refer to its reference manual and extensive collection of vignettes.
+
+
+```{r global_options, include=FALSE}
+knitr::opts_chunk$set(fig.width=6, fig.height=4, warning=FALSE)
+```
+
+```{r, echo=FALSE, eval=TRUE, message=FALSE}
+library(PupilPre)
+library(ggplot2)
+``` 
+
+## Loading the package and the data
+
+First, load the sample report. By default, Data Viewer will assign "." to missing values; therefore it is important to include this in the na.strings parameter, so R will know how to handle any missing data.
+
+```{r, eval= FALSE, echo=TRUE, results='asis'}
+library(PupilPre)
+Pupildat <- read.table("1000HzData.txt", header = T, sep = "\t", na.strings = c(".", "NA"))
+```
+
+However, for the purposes of this vignette we will use the sample dataset included in the package.
+Above, the base function `read.table` was used to read the data. However, this function is known to be slow when reading large data set such as pupil size data. It is advisable to use, for example, the functions in the package [readr](https://readr.tidyverse.org/).
+
+```{r, eval= TRUE, echo=TRUE, results='asis'}
+data(Pupildat)
+```
+
+## Preparing the data
+
+### Verifying and creating necessary columns
+
+In order for the functions in the package to work appropriately, the data must be in a specific format, i.e., SR sample report.
+The `ppl_prep_data` function examines the presence and class of specific columns (e.g., `LEFT_PUPIL_SIZE`, `RIGHT_PUPIL_SIZE`, `LEFT_IN_BLINK`, `RIGHT_IN_BLINK`, `TIMESTAMP`, and `TRIAL_INDEX`) to ensure they are present in the data and appropriately assigned (e.g., categorical variables are encoded as factors). 
+It also checks for columns which are not required for basic preporcessing (e.g., `SAMPLE_MESSAGE`), but are needed to use the extra functions such as `align_msg`.
+
+Additionally, the `Subject` parameter is used to specify the column corresponding to the subject identifier.
+Typical Data Viewer output contains a column called `RECORDING_SESSION_LABEL` which is the name of the column containing the subject identifier. 
+The function will rename it `Subject` and will ensure it is encoded as a factor. 
+
+If your data contain a column corresponding to an item identifier please specify it in the `Item` parameter.
+In doing so, the function will standardize the name of the column to `Item` and will ensure it is encoded as a factor. 
+If you don't have an item identifier column, by default the value of this parameter is NA.
+
+Lastly, a new column called `Event` will be created which indexes each unique recording sequence and corresponds to the combination of `Subject` and `TRIAL_INDEX`. This Event variable is required internally for subsequent operations. Should you choose to define the Event variable differently, you can override the default; however, do so cautiously as this may impact the performance of subsequent operations because it must index each time sequence in the data uniquely.
+Upon completion, the function prints a summary indicating the results.
+
+```{r, eval=TRUE, echo=TRUE, results='asis'}
+dat0 <- ppl_prep_data(data = Pupildat, Subject = "RECORDING_SESSION_LABEL", Item = "item")
+``` 
+
+
+### Remove unnecessary columns
+
+At this point, it is safe to remove certain columns (which were output by Data Viewer, but that are not needed for preprocessing using this package). 
+Removing these will reduce the amount of system memory consumed and also result in a final dataset that consume less disk space.
+This is done straightforwardly using the function `ppl_rm_extra_DVcols`.
+By default it will remove all the Data Viewer columns that are not needed for preprocessing (if they are present in the data).
+However, if desired, it is possible to keep specific columns from this set using the `Keep` parameter, which accommodates a string or character vector. 
+If using the sample data set included in this package, it is not necessary to do this step, as these columns have already been removed.
+
+```{r, eval= FALSE, echo=TRUE, results='asis'}
+dat0 <- ppl_rm_extra_DVcols(dat0)
+```
+
+
+## Creating the Time series column
+
+The function `create_time_series` creates a time series (a new column called `Time`) which is required for subsequent processing, plotting, and modeling of the data.
+It is common to export a period of time prior to the onset of the stimulus as a baseline. In this case, an adjustment (equal to the duration of the baseline period) must be applied to the time series, specified in the `Adjust` parameter. 
+In effect, the adjustment simply subtracts the given value to each time point.
+So, a positive value will shift the zero point forward (making the initial zero a negative time value), while a negative value will shift the zero point backward (making the initial zero a positive time value). 
+An example illustrating this can be found in the [Message Alignment](PupilPre_Message_Alignment.html) vignette.
+In the example below, the data were exported with a 500 ms pre-stimulus interval.
+
+
+```{r, eval= TRUE, echo=TRUE, results='asis'}
+dat1 <- create_time_series(data = dat0, Adjust = 500)
+```
+
+```{r, eval= TRUE, echo=FALSE, results='hide'}
+rm(Pupildat, dat0)
+gc()
+```
+
+Note that if you have used the `align_msg` function (illustrated in the [Message Alignment](PupilPre_Message_Alignment.html) vignette), you may need to specify a column name in `Adjust`. 
+That column can be used to apply the recording event specific adjustment to each event. 
+Consult the vignette [Message_Alignment](PupilPre_Message_Alignment.html) for further details.
+
+The function `check_time_series` can be used to verify the time series.
+It outputs the unique start times present in the data.
+These will be the same standardized time point relative to the stimulus if you have exported your data from Data Viewer with pre-defined interest period relative to a message.
+By specifying the parameter `ReturnData = T`, the function can return a summary data frame that can be used to inspect the start time of each event.
+As you can see below, by providing `Adjust` with a postive value, we have effectively shifted the zero point forward along the number line, causing the first sample to have a negative time value. 
+
+```{r, eval= TRUE, echo=TRUE, results='asis'}
+check_time_series(data = dat1)
+```
+
+Another way to check that your time series has been created correctly is to use the `check_msg_time` function. 
+By providing the appropriate message text, we can see that the onset of our target now occurs at Time = 0.
+Note that the `Msg` parameter can handle exact matches or matches based on regular expressions. 
+As with `check_time_series`, the parameter `ReturnData = T` will return a summary data frame that can be used to inspect the message time of each event.
+
+```{r, eval= TRUE, echo=TRUE, results='asis'}
+check_msg_time(data = dat1, Msg = "PLAY_target")
+```
+
+If you do not remember the messages in your data, you can output all existing messages and their corresponding timestamps using `check_all_msgs`.
+Additionally and optionally, the output of the function can be saved using the parameter `ReturnData = T`.
+
+```{r, eval= TRUE, echo=TRUE, results='asis'}
+check_all_msgs(data = dat1)
+```
+
+## Selecting which eye to use
+
+Depending on the design of the study, right, left, or both eyes may have been recorded during the experiment. 
+Data Viewer outputs pupil size data by placing it in separate columns for each eye (`LEFT_PUPIL_SIZE` and `RIGHT_PUPIL_SIZE`).
+However, it is preferable to have pupil data in a single set of columns, regardless of which eye was recorded during the experiment.
+The function `ppl_select_recorded_eye` provides the functionality for this purpose, returning new columns (e.g., `Pupil`, `Gaze_X`, and `In_Blink`).
+
+The function `ppl_select_recorded_eye` requires that the parameter `Recording` be specified.
+This parameter instructs the function about which eye(s) was used to record the gaze data.
+It takes one of four possible strings: "LandR", "LorR", "L", or "R".
+"LandR" should be used when any participant had both eyes recorded.
+"LorR" should be used when some participants had their left eye recorded and others had their right eye recorded
+"L" should be used when all participant had their left eye recorded.
+"R" should be used when all participant had their right eye recorded.
+
+If in doubt, use the function `ppl_check_eye_recording` which will do a quick check to see if `LEFT_PUPIL_SIZE` and `RIGHT_PUPIL_SIZE` contain data. It will then suggest the appropriate Recording parameter setting.
+When in complete doubt, use "LandR".
+The "LandR" setting requires an additional parameter (`WhenLandR`) to be specified. 
+This instructs the function to select either the right eye or the left eye when data exist for both.
+
+```{r, eval= TRUE, echo=TRUE, results='asis'}
+ppl_check_eye_recording(data = dat1)
+```
+
+After executing, the function prints a summary of the output.
+While the function `ppl_check_eye_recording` indicated that the parameter `Recording` should be set to "R", the example below sets the parameter to "LandR", which can act as a "catch-all". 
+Consequently, in the summary, it can be seen that there were only recordings in the right eye.
+
+```{r, eval= TRUE, echo=TRUE, results='asis'}
+dat2 <- ppl_select_recorded_eye(data = dat1, Recording = "R", WhenLandR = "Right")
+```
+
+```{r, eval= TRUE, echo=FALSE, results='hide'}
+rm(dat1)
+gc()
+```
+
+## Off-screen data
+
+It is possible that a given sample has a pupil size value, but the sample was recorded while the participant was not looking at the screen.  
+For reasons of data validity, the user may choose to recode those data with NA values.
+The function `recode_off_screen` will recode the data when provided with the dimensions (in pixels) of the computer monitor used in the experiment.
+The argument `ScreenSize` should be specified as a numeric vector of length 2, indicating the x and y dimensions. 
+In the example below, a standard 1920x1080 monitor was used.
+
+```{r, eval= TRUE, echo=TRUE, results='asis'}
+dat3 <- recode_off_screen(data = dat2, ScreenSize = c(1920, 1080))
+```
+
+```{r, eval= TRUE, echo=FALSE, results='hide'}
+rm(dat2)
+gc()
+# saveRDS(dat3, file = "PartialProcess_dat3.rds", compress = "xz")
+```
+
+## Check for blinks and missing data
+
+The function `blink_summary` examines the column `In_Blink` (i.e., blinks parsed by the SR eyetracker) and summarizes the information by Event, Subject, or Item.
+The summary indicates if a marked blink exists and/or how many trials contain marked blinks.
+Additionally and optionally, the output of the function can be saved using the parameter `ReturnData = T`.
+This could be helpful if one choses to exclude trials that contain blinks.
+
+```{r, eval= TRUE, echo=TRUE, results='asis'}
+blink_summary(dat3, Summary = "Event")
+```
+
+The function `NA_summary` examines a column containing pupil size data (here we use the `Pupil` column) and summarizes the information by Event, Subject, or Item.
+The summary indicates how much of the data is missing at the specified level (i.e., Event, Subject, or Item).
+Again, the output of the function can be saved using the parameter `ReturnData = T`.
+
+```{r, eval= TRUE, echo=TRUE, results='asis'}
+NA_summary(dat3, Summary = "Event", PupilColumn = "Pupil")
+```
+
+Take for example Event 16892.8, seen in the figure below.  
+There is one marked blink (the first) and one un-marked artifact (the second).
+```{r, eval= TRUE, echo=FALSE, results='asis'}
+# Take for example Event 16892.8 has one marked blink and one unmarked blink
+pac_theme <- function(base_size = 12, base_family = ""){
+  theme_bw(base_size = base_size, base_family = base_family) %+replace%
+    theme(panel.grid.major.x = element_blank(),
+          panel.grid.minor.x = element_blank(),
+          panel.grid.major.y = element_blank(),
+          panel.grid.minor.y = element_blank(),
+          plot.title = element_text(hjust = 0.5, vjust = 1)
+    )
+}
+dat3 %>% filter(Event %in% c("16892.8")) %>% 
+  select(Event, Pupil, Time) %>%
+  tidyr::gather(Column, PUPIL, -Time, -Event) %>% 
+  ggplot(aes(x=Time, y=PUPIL)) + 
+  geom_point(na.rm = T) +
+  ylab("Pupil Dilation") +
+  facet_wrap(. ~ Event) + pac_theme()
+```
+
+## Blink and artifact cleanup
+
+For detailed examples of all the functionality related to blink and artifact cleanup, please consult the [Blink and Artifact Cleanup](PupilPre_Cleanup.html) vignette. Below we illustrate the basic functions.
+
+## Automatic cleanup
+
+There are two functions (`clean_blink` and `clean_artifact`) for detecting and removing artifacts related to blinks and other eye movement. 
+The functions, which can be used independently or sequentially, implement differential and distributional detection algorithms (explained in more detail below). The detected data points are then marked with NA. In both cases, the algorithm can be adjusted using parameters which control the scope and sensitivity of the detection.
+Note that the two functions can either be used in conjunction with one another sequentially, or completely independently.  The example below shows how to use them sequentially
+
+### Marked blinks
+
+The first function `clean_blink` operates only on blinks marked by the SR eyetracking software. It first identifies the marked blinks and adds padding around them to create a marked time window within which data may be removed.  This padding is given in `BlinkPadding` specifying the number of milliseconds to pad on either side of the blink. 
+
+Within this padded window the data are examined in two passes. 
+The first pass calculates a difference in pupil size between subsequent data points. 
+If the difference is larger than the value specified in `Delta`, the data point is marked for removal.
+The second pass attempts to identify remaining data points or islands of data points (small runs surrounded by NAs) which remain in the window.
+This is done using `MaxValueRun` and `NAsAroundRun`. `MaxValueRun` controls the longest run (i.e., sequence) of data points flanked by NAs that could be marked for removal `NAsAroundRun` controls the number of NAs required on either side of the run in order for it to be removed. 
+For the purposes of this vignette we are saving the log file into the vignette's temporary folder; however, most users will want to save into their working directory by setting `LogFile = "BlinkCleanupLog.rds"`.
+
+```{r, eval= TRUE, echo=TRUE, results='asis'}
+dat4 <- clean_blink(dat3, BlinkPadding = c(100, 100), Delta = 5,
+                    MaxValueRun = 5, NAsAroundRun = c(2,2),
+                    LogFile = paste0(tempdir(),"/BlinkCleanupLog.rds"))
+```
+
+Looking again at Event 16892.8, we can see that the function `clean_blink` successfully cleaned the marked blink using the default values. The removed data points are marked in red.
+
+```{r, eval= TRUE, echo=FALSE, results='asis'}
+# The function successfully cleaned the marked blink
+compareNA <- function(v1,v2) {
+  same <- (v1 == v2) | (is.na(v1) & is.na(v2))
+  same[is.na(same)] <- FALSE
+  return(same)
+}
+pac_theme <- function(base_size = 12, base_family = ""){
+  theme_bw(base_size = base_size, base_family = base_family) %+replace%
+    theme(panel.grid.major.x = element_blank(),
+          panel.grid.minor.x = element_blank(),
+          panel.grid.major.y = element_blank(),
+          panel.grid.minor.y = element_blank(),
+          plot.title = element_text(hjust = 0.5, vjust = 1)
+    )
+}
+dat4 %>% filter(Event %in% c("16892.8")) %>% 
+  mutate(Compared = !(compareNA(Pupil_Previous, Pupil))) %>% 
+  select(Event, Pupil, Pupil_Previous, Time, Compared) %>%
+  tidyr::gather(Column, PUPIL, -Time, -Event, -Compared) %>% 
+  mutate(Datapoint = ifelse(Compared==F, "Same", "Different")) %>% 
+  ggplot(aes(x=Time, y=PUPIL, colour = Datapoint)) + 
+  geom_point(na.rm = T) +
+  scale_color_manual(values=c("Different" = "red", "Same" = "black")) +
+  ylab("Pupil Dilation") +
+  facet_wrap(. ~ Event) + pac_theme()
+```
+
+### Unmarked artifacts
+
+Not all artifacts related to blinks are automatically detected by the SR eyetracking software, see figure above.
+To detect these unmarked blinks and other artifacts, a second function, `clean_artifact`, is provided.  
+It implements a distributional method (described in more detail below) to detect potentially extreme data points.
+
+This algorithm first divides the times series into windows, the size of which is specified in milliseconds using `MADWindow`.
+Within each window the median absolute deviation (MAD) of the pupil size data is calculated.  This is used to detect which windows contain extreme variability (potentially containing outliers). This is determined based on the value provided in `MADConstant`, which controls the sensitivity threshold.  The higher the constant the more extreme value is needed to trigger cleaning.
+Next the identified extreme windows have padding added around them using `MADPadding` (again in milliseconds). Within this padded window, a multidimensional distributional distance (specifically Mahalanobis distance) is calculated.
+This distance can be calculated using one of two methods: Basic or Robust.
+The Basic method uses the standard Mahalanobis distance and the Robust uses a robust version of the Mahalanobis distance. The latter is based on Minimum Covariance Determinant (as implemented in the package [robustbase](https://cran.r-project.org/package=robustbase)), which uses a sampling method for determining multivariate location and scatter.
+Both the basic and robust calculations are based on multiple variables covarying with pupil size.  By default, the calcuation uses the following columns: `Pupil`, `Velocity_Y`, and `Acceleration_Y`. 
+However, the parameter `XandY` can be set to TRUE in which case the calculation will additionally include the X-axis: `Velocity_X` and `Acceleration_X`. This is intended to capture potential horizontal eye movement affecting pupil size.
+N.B., missing values are automatically excluded from the distance calculation. 
+
+The function will inform the user if a particular window is skipped as there are safeguards built in which will skip a given window if: 1) there are not enough data points or 2) there are not enough columns with non-zero data to estimate covariance.
+To determine whether a given pupil size is extreme, the argument `MahaConstant` is used to set the sensitivity. The default value of the parameter is 2 (standard deviations). The higher the constant, the more extreme value of the parameter is needed to trigger cleaning. Lastly, this function can optionally perform a second pass (setting `Second` to TRUE), which is identical to the second pass in `clean_blink`. This attempts to identify remaining data points or islands of data points (small runs surrounded by NAs) which remain.  The arguments `MaxValueRun` and `NAsAroundRun` are identical in function and meaning. 
+For the purposes of this vignette we are saving the log file into the vignette's temporary folder; however, most users will want to save into their working directory by setting `LogFile = "ArtifactCleanupLog.rds"`.
+
+```{r, eval= TRUE, echo=TRUE, results='asis'}
+dat4a <- clean_artifact(dat4, MADWindow = 100, MADConstant = 2,
+                      MADPadding = c(200, 200), MahaConstant = 2,
+                      Method = "Robust", XandY = TRUE, Second = T, 
+                      MaxValueRun = 5, NAsAroundRun = c(2,2),
+                      LogFile = paste0(tempdir(),"/ArtifactCleanupLog.rds"))
+```
+
+Looking, yet again, at Event 16892.8, we can see that the function `clean_artifact` successfully detected and partially cleaned the un-marked artifact, using the default values. Below, we will describe how to manually clean the remainder of the artifact using the functionality provided in the package.
+```{r, eval= TRUE, echo=FALSE, results='asis'}
+# The function partially cleaned the unmarked blink using default settings
+compareNA <- function(v1,v2) {
+  same <- (v1 == v2) | (is.na(v1) & is.na(v2))
+  same[is.na(same)] <- FALSE
+  return(same)
+}
+pac_theme <- function(base_size = 12, base_family = ""){
+  theme_bw(base_size = base_size, base_family = base_family) %+replace%
+    theme(panel.grid.major.x = element_blank(),
+          panel.grid.minor.x = element_blank(),
+          panel.grid.major.y = element_blank(),
+          panel.grid.minor.y = element_blank(),
+          plot.title = element_text(hjust = 0.5, vjust = 1)
+    )
+}
+dat4a %>% filter(Event %in% c("16892.8")) %>% 
+  mutate(Compared = !(compareNA(Pupil_Previous, Pupil))) %>% 
+  select(Event, Pupil, Pupil_Previous, Time, Compared) %>%
+  tidyr::gather(Column, PUPIL, -Time, -Event, -Compared) %>% 
+  mutate(Datapoint = ifelse(Compared==F, "Same", "Different")) %>% 
+  ggplot(aes(x=Time, y=PUPIL, colour = Datapoint)) + 
+  geom_point(na.rm = T) +
+  scale_color_manual(values=c("Different" = "red", "Same" = "black")) +
+  ylab("Pupil Dilation") +
+  facet_wrap(. ~ Event) + pac_theme()
+```
+
+Please note that it is possible that this automated cleaning procedure, depending on the parameters specified, can remove more or less data points that appear to be "good". This is part and parcel of automatic detection and cleaning. However, the algorithm is designed to detect extreme values based on the data in as targeted a way as possible.  Based on our experience and testing, we have set default values which perform well in most scenarios.
+
+In order to help evaluate the results of the cleanup, we provide a data visualization tool that explicitly displays the difference in the pupil data *before* and *after* carrying out the automatic cleanup. The function `plot_compare_app` opens an interactive Shiny app for viewing the results of the cleanup.  It plots each event and shows which data points are now different.  Additionally, it states how much of the data (as a percentage) is missing, i.e., was removed by the cleaning procedure.
+
+```{r, eval=FALSE, echo=TRUE, results='asis'}
+plot_compare_app(dat4a)
+```
+
+<style>
+im {
+width: 100%;
+text-align: center;
+}
+</style>
+
+<div id='im'>
+ <img src="plotcompareapp.PNG" alt="Plot Compare App" height="442" width="650"> 
+</div>
+
+Alternatively, the function `compare_summary` produces a summary output of the comparison by Event. The data can be returned by setting the argument ReturnData = TRUE.
+
+```{r, eval=TRUE, echo=TRUE, results='asis'}
+compare_summary(dat4a)
+```
+
+## Manual cleanup
+
+Automatic cleanup may not capture and clean all artifacts. Thus a manual cleanup function (`user_cleanup_app`) is provided. 
+This function opens an interactive Shiny app for viewing Events and specifying which data points to remove.
+Data can be removed either by specifying a point in time (i.e., removing one specific data point) or a range of time (i.e., removing a sequence of data points), or any combination of these.
+For example, type in `1550` to remove a data point at time 1550 ms; type in `1600:1700` to remove all data points between 1600 ms and 1700 ms (inclusive); or type in `1550, 1600:1700` to remove the data point at 1550 ms *and* all data points between 1600 ms and 1700 ms (inclusive).
+The user-specified data points are automatically saved into a log file. 
+For the purposes of this vignette we are saving the log file into the vignette's temporary folder; however, most users will want to save into their working directory by setting `LogFile = "UserCleanupLog.rds"`.
+This allows the user to clean part of the data in one session, and return to cleaning at later point.  The function will read the log file from the working directory the next time the app is opened. Additionally, this log file ensures that the manual preprocessing step can be repeated if necessary as long as the log file exists. In the example below we will finish cleaning Event 16892.8.
+
+```{r, eval=FALSE, echo=TRUE, results='asis'}
+user_cleanup_app(dat4a, LogFile = paste0(tempdir(),"/UserCleanupLog.rds"))
+```
+
+<style>
+im {
+width: 100%;
+text-align: center;
+}
+</style>
+
+<div id='im'>
+ <img src="usercleanupapp.PNG" alt="User Cleanup App" height="483" width="650"> 
+</div>
+
+Here is a brief example of how the Shiny app works.
+
+1. Open the app specifying the data set you would like to clean.
+2. Navigate to a specific event using the dropdown menu or the "Previous"/"Next"" buttons.
+3. Once, the event is selected you will see it plotted in left-most panel ("Original").
+4. In the Time points box input the data points that require cleaning.  In this example, we would like to remove all data points between 1835 ms and 1995 ms, so we will enter a range of values `1835:1995`.  The selected data points will be highlighted in red in the middle panel ("Preview").
+5. When you are satified with the result, press the "Commit Current Event Cleanup" button to save the cleanup information to the log file.
+6. If you make a mistake or would like to re-do a particular event cleanup, you can press the "Reset Current Event Cleanup" button.
+7. When cleaning is complete, press the "Exit and Save" button.
+
+Note that, while the example above uses the cleanup app to further clean the data already processed with the automatic cleaning functions, the app can be used completely independently (i.e., without first doing automatic cleanup) if the user wishes to manually clean all events.
+
+Once manual cleanup is done, the user *must* apply the cleanup to the data based on the contents of the log file.
+This is done with the function `apply_user_cleanup`.
+Note that it is also possible to visualize the results of the applied manual cleanup using `plot_compare_app`.
+
+
+```{r, eval=FALSE, echo=TRUE, results='asis'}
+dat5 <- apply_user_cleanup(dat4a, LogFile = paste0(tempdir(),"/UserCleanupLog.rds"))
+```
+
+```{r, eval= TRUE, echo=FALSE, results='hide'}
+UserCleanupLog <- vector("list", length = length(unique(dat4a$Event)))
+names(UserCleanupLog) <- unique(dat4a$Event)
+UserCleanupLog[1:length(UserCleanupLog)] <- NA
+UserCleanupLog[["16892.8"]] <- c(1835:1995)
+saveRDS(UserCleanupLog, file = paste0(tempdir(),"/UserCleanupLog.rds"))
+dat5 <- apply_user_cleanup(dat4a, LogFile = paste0(tempdir(),"/UserCleanupLog.rds"))
+rm(dat4, dat4a)
+gc()
+```
+
+Looking, one last time, at Event 16892.8, we can see that both the marked blink and the un-marked artifact are now both fully cleaned. 
+```{r, eval= TRUE, echo=FALSE, results='asis'}
+# The event after automatic and manual cleaning
+pac_theme <- function(base_size = 12, base_family = ""){
+  theme_bw(base_size = base_size, base_family = base_family) %+replace%
+    theme(panel.grid.major.x = element_blank(),
+          panel.grid.minor.x = element_blank(),
+          panel.grid.major.y = element_blank(),
+          panel.grid.minor.y = element_blank(),
+          plot.title = element_text(hjust = 0.5, vjust = 1)
+    )
+}
+dat5 %>% filter(Event %in% c("16892.8")) %>% 
+  select(Event, Pupil, Time) %>%
+  tidyr::gather(Column, PUPIL, -Time, -Event) %>% 
+  ggplot(aes(x=Time, y=PUPIL)) + 
+  geom_point(na.rm = T) +
+  ylab("Pupil Dilation") +
+  facet_wrap(. ~ Event) + pac_theme()
+```
+
+## Plot events
+
+It can be helpful to view all the events in groups in order to determine if blinks or artifacts remain.
+The function `plot_events` will create image files of the events by a grouping factor and save them to a specified directory.
+In the example below we ask the function to plot events by subject and save them into pdf files in the folder called "Manual".
+Using the arguments `Nrow` and `Ncol`, ask for 6 plots per page.
+We have also specifed the desired dimensions of the images. Because this function relies on `ggplot2::ggsave`, the device options such as size and resolution can be passed to the function. 
+
+```{r, eval=FALSE, echo=TRUE, results='asis'}
+plot_events(dat5, Column = "Pupil", Device = "pdf", Grouping = "Subject", path = "Manual", Nrow = 2, Ncol = 3, width = 11, height = 8.5)
+```
+
+## Removing events with sparse data
+
+It is possible that upon cleaning, some events no longer contain a sufficient amount of data to be included in further processing or analysis.
+This may not be relevant if the user intends to interpolate missing data (see below).
+However, if the user does not intend to interpolate, there are two important considerations when removing events.
+
+The first is the quality of the data in the period of time taken as the baseline.
+Without sufficient data, it is not possible to accurately calculate the average of the baseline.
+The second is the quality of the data in the critical window of time taken for statistical analysis.
+Again without a sufficient amount of data, it is possible to mis-estimate an effect.
+
+The function `rm_sparse_events` will remove events that do not meet the inclusion critera for the baseline and critical windows.
+For both `BaselineWindow` and `CriticalWindow`, the starting and ending time values are specified using a numeric vector of length 2.
+In the example below, the baseline is the 500 ms preceeding the onset of the stimulus and the analysis window runs between 200 ms and 2000 ms.
+We further specify that each window should contain at least 50\% data.
+
+```{r, eval=TRUE, echo=TRUE, results='asis'}
+dat6 <- rm_sparse_events(data = dat5, 
+                         BaselineWindow = c(-500, 0), 
+                         CriticalWindow = c(200, 2000),
+                         BaselineRequired = 50, 
+                         CriticalRequired = 50)
+```
+
+```{r, eval= TRUE, echo=FALSE, results='hide'}
+rm(dat5)
+gc()
+```
+
+The function returns output summaries how many events were removed.
+
+## Interpolation and filtering
+
+For detailed examples of all the functionality related to interpolation and filtering, please consult the [Interpolation and Filtering](PupilPre_Interpolation_and_Filtering.html) vignette. 
+
+## Baseline
+
+In order for pupil saze data to be comparable across subjects and trials it is necessary to perform a baseline correction.
+Baselining calculates an average pupil size value over a specified segment of time to serve as a baseline value. 
+This value can then be used to baseline the critical pupil size data.
+Before calculating the baseline value, it is prudent to verify the data in the baseline period (i.e., there are no blinks or missing data).
+The function `check_baseline` summarizes the quality of the data in a specified baseline window. 
+Again, the output of the function can be saved using the parameter `ReturnData = T`.
+
+```{r, eval=TRUE, echo=TRUE, results='asis'}
+check_baseline(dat6, BaselineWindow = c(-500, 0))
+```
+
+The function `baseline` supports three methods for baselining speficied in `BaselineType`: Subtraction, Division, and Normalization.
+The Subtraction method subtracts the average baseline value from the pupil size values in a given event.
+The Division method divides the pupil size values by the average baseline value in a given event.
+The Normalization method first subtracts the average baseline from the pupil size values and then divides by the standard deviation of the pupil size values in a given event.
+
+```{r, eval=TRUE, echo=TRUE, results='asis'}
+dat7 <- baseline(dat6, BaselineWindow = c(-500, 0), BaselineType = "Subtraction")
+```
+
+```{r, eval= TRUE, echo=FALSE, results='hide'}
+rm(dat6)
+gc()
+```
+
+## Downsample the data
+
+It is often advantageous to downsample the pupil size data.
+The function `downsample` can be used to accomplish this. 
+It requires specifying the current sampling rate and the new, desired sampling rate.
+For Eyelink trackers, sampling rate is typically 250Hz, 500Hz, or 1000Hz.
+If in doubt, use the function `check_samplingrate` to determine the current sampling rate of the data. 
+
+```{r, eval= TRUE, echo=TRUE, results='asis'}
+check_samplingrate(dat7)
+```
+
+Note that the `check_samplingrate` function returns a printed message indicating the sampling rate(s) present in the data. 
+Optionally, it can return a new column called `SamplingRate` by specifying the parameter `ReturnData` as TRUE. In the event that data were collected at different sampling rates, this column can be used to subset the dataset by the sampling rate before proceeding to the next processing step.
+
+Not all downsampling rates work for a given sampling rate.
+If unsure which are appropriate for your current sampling rate, use the `ds_options` function. 
+When provided with the current sampling rate in `SamplingRate` (see above), the function will return a printed summary of the options. By default, this returns the whole number downsampling rates users are likely to want; however, it can also return all possible (valid) downsampling rates, even if they are not whole numbers.
+
+```{r, eval= TRUE, echo=TRUE, results='asis'}
+ds_options(SamplingRate = 250)
+```
+
+The `SamplingRate` and `NewRate` parameters of `downsample` should be specified in Hertz (see `check_samplingrate`)
+
+```{r, eval= TRUE, echo=TRUE, results='asis'}
+dat8 <- downsample(dat7, SamplingRate = 250, NewRate = 25)
+```
+
+```{r, eval= TRUE, echo=FALSE, results='hide'}
+rm(dat7)
+gc()
+```
+
+To check this and to know the new sampling rate, simply call the function `check_samplingrate` again.
+
+```{r, eval= TRUE, echo=TRUE, results='asis'}
+check_samplingrate(dat8)
+```
+
+
+## Saving the data
+
+Save the resulting dataset to a .rds file and use compression to make it more compact (though this will add to the amount of time it takes to save).
+
+```{r, eval=FALSE, echo=TRUE, results='asis'}
+saveRDS(dat8, file = "FinalDat.rds", compress = "xz")
+```
+
+## Plotting
+
+You are now ready to plot your data. 
+Please refer to the [Plotting](PupilPre_Plotting.html) vignette for details on the various plotting functions contained in this package.

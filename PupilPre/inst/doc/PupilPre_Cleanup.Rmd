@@ -1,0 +1,359 @@
+---
+title: "Blink and Artifact Cleanup (Detailed)"
+author: "Aki Kyröläinen and Vincent Porretta"
+date: "`r Sys.Date()`"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Blink and Artifact Cleanup (Detailed)}
+  %\VignetteEngine{knitr::rmarkdown}
+  \usepackage[utf8]{inputenc}
+---
+
+
+```{r global_options, include=FALSE}
+knitr::opts_chunk$set(fig.width=6, fig.height=4, warning=FALSE)
+```
+
+```{r, echo=FALSE, eval=TRUE, message=FALSE, results='hide'}
+library(PupilPre)
+library(ggplot2)
+data(Pupilex3)
+dat <- recode_off_screen(data = Pupilex3, ScreenSize = c(1920, 1080))
+# This is the same as dat3 within the basic processing
+```
+
+This vignette contains detailed information regarding the automatic and manual cleanup of blinks and artifacts in the pupil size data. 
+The package contains functions which are meant to provide cleaning that is reproducible and that can be done across multiple sessions.
+
+
+## Automatic cleanup
+
+There are two functions (`clean_blink` and `clean_artifact`) for detecting and removing artifacts related to blinks and other eye movement. 
+The functions, which can be used independently or sequentially, implement differential and distributional detection algorithms (explained in more detail below). 
+The detected data points are then marked with NA. 
+In both cases, the algorithm can be adjusted using parameters which control the scope and sensitivity of the detection.
+Note that the two functions can either be used in conjunction with one another sequentially, or completely independently.  
+The example below shows how to use them sequentially
+
+Here will we will focus on Event 16892.8, seen in the figure below.  
+There is one marked blink (the first) and one un-marked artifact (the second).
+
+```{r, eval= TRUE, echo=FALSE, results='asis'}
+# Take for example Event 16892.8 has one marked blink and one unmarked blink
+pac_theme <- function(base_size = 12, base_family = ""){
+  theme_bw(base_size = base_size, base_family = base_family) %+replace%
+    theme(panel.grid.major.x = element_blank(),
+          panel.grid.minor.x = element_blank(),
+          panel.grid.major.y = element_blank(),
+          panel.grid.minor.y = element_blank(),
+          plot.title = element_text(hjust = 0.5, vjust = 1)
+    )
+}
+dat %>% filter(Event %in% c("16892.8")) %>% 
+  select(Event, Pupil, Time) %>%
+  tidyr::gather(Column, PUPIL, -Time, -Event) %>% 
+  ggplot(aes(x=Time, y=PUPIL)) + 
+  geom_point(na.rm = T) +
+  ylab("Pupil Dilation") +
+  facet_wrap(. ~ Event) + pac_theme()
+```
+
+
+### Marked blinks
+
+The first function `clean_blink` operates only on blinks marked by the SR eyetracking software. 
+It first identifies the marked blinks and adds padding around them to create a marked time window within which data may be removed.  
+This padding is given in `BlinkPadding` specifying the number of milliseconds to pad on either side of the blink. 
+Within this padded window the data are examined in two passes. 
+
+The first pass calculates a difference in pupil size between subsequent data points. 
+If the difference is larger than the value specified in `Delta`, the data point is marked for removal.
+Note that if `Delta` is not specified, the function will attempt to estimate a reasonable value based on the 95th percentile of differences in the data.
+
+The second pass attempts to identify remaining data points or islands of data points (small runs surrounded by NAs) which remain in the window.
+This is done using `MaxValueRun` and `NAsAroundRun`. `MaxValueRun` controls the longest run (i.e., sequence) of data points flanked by NAs that could be marked for removal `NAsAroundRun` controls the number of NAs required on either side of the run in order for it to be removed. 
+The argument `LogFile` specifies the path and name of the file into which information will be saved about cleaning status.
+Please note, for the purposes of this vignette we are saving the file into the vignette's temporary folder; however, users will likely want to save the file into their working directory by simply specifying `LogFile = "BlinkCleanupLog.rds"`.
+
+```{r, eval= TRUE, echo=TRUE, results='asis'}
+datblink <- clean_blink(dat, BlinkPadding = c(100, 100), Delta = 5,
+                    MaxValueRun = 5, NAsAroundRun = c(2,2),
+                    LogFile = paste0(tempdir(),"/BlinkCleanupLog.rds"))
+```
+
+Looking again at Event 16892.8, we can see that the function `clean_blink` successfully cleaned the marked blink using the default values. The removed data points are marked in red.
+
+```{r, eval= TRUE, echo=FALSE, results='asis'}
+# The function successfully cleaned the marked blink
+compareNA <- function(v1,v2) {
+  same <- (v1 == v2) | (is.na(v1) & is.na(v2))
+  same[is.na(same)] <- FALSE
+  return(same)
+}
+pac_theme <- function(base_size = 12, base_family = ""){
+  theme_bw(base_size = base_size, base_family = base_family) %+replace%
+    theme(panel.grid.major.x = element_blank(),
+          panel.grid.minor.x = element_blank(),
+          panel.grid.major.y = element_blank(),
+          panel.grid.minor.y = element_blank(),
+          plot.title = element_text(hjust = 0.5, vjust = 1)
+    )
+}
+datblink %>% filter(Event %in% c("16892.8")) %>% 
+  mutate(Compared = !(compareNA(Pupil_Previous, Pupil))) %>% 
+  select(Event, Pupil, Pupil_Previous, Time, Compared) %>%
+  tidyr::gather(Column, PUPIL, -Time, -Event, -Compared) %>% 
+  mutate(Datapoint = ifelse(Compared==F, "Same", "Different")) %>% 
+  ggplot(aes(x=Time, y=PUPIL, colour = Datapoint)) + 
+  geom_point(na.rm = T) +
+  scale_color_manual(values=c("Different" = "red", "Same" = "black")) +
+  ylab("Pupil Dilation") +
+  facet_wrap(. ~ Event) + pac_theme()
+```
+
+### Verifying the cleanup
+
+Because `clean_blink` is an automatic cleaning function, users may want to verify the effect of the cleaning.
+This may be helpful in determining if cleaning was effective, or to selective revert events for which cleaning was overly aggressive.
+The function `verify_cleanup_app` opens and interactive app and loads the desired log file.
+The user can quickly scan through the events, and if desired, can click the `Revert Event Cleanup` button to revert the event back to its most recent previous state (prior to running the cleanup function). 
+Upon clicking the revert button, the status of the event in the log file will be changed and the file will be rewritten into the working directory.
+
+```{r, eval=FALSE, echo=TRUE, results='hide'}
+verify_cleanup_app(datblink, LogFile = paste0(tempdir(),"/BlinkCleanupLog.rds"))
+```
+
+<style>
+im {
+width: 100%;
+text-align: center;
+}
+</style>
+
+<div id='im'>
+ <img src="verifycleanupapp1.PNG" alt="Verify Cleanup App" height="462" width="650"> 
+</div>
+
+Importantly, this app only modifies the entry in the log file, not the pupil size data in the data frame.
+This is to provide both a record of changes as well as control over the processing.
+In order to carry out any modifications to the cleanup, it is necessary to use the function `apply_cleanup_change`.
+As the changes are based solely on the log file, the specific filename must be provided.
+
+```{r, eval=TRUE, echo=TRUE, results='asis'}
+datblink <- apply_cleanup_change(datblink, LogFile = paste0(tempdir(),"/BlinkCleanupLog.rds"))
+```
+
+### Unmarked artifacts
+
+Not all artifacts related to blinks are automatically detected by the SR eyetracking software, see figure above.
+To detect these unmarked blinks and other artifacts, a second function, `clean_artifact`, is provided.  
+It implements a distributional method (described in more detail below) to detect potentially extreme data points.
+
+This algorithm first divides the times series into windows, the size of which is specified in milliseconds using `MADWindow`.
+Within each window the median absolute deviation (MAD) of the pupil size data is calculated.  This is used to detect which windows contain extreme variability (potentially containing outliers). This is determined based on the value provided in `MADConstant`, which controls the sensitivity threshold.  The higher the constant the more extreme value is needed to trigger cleaning.
+
+Next the identified extreme windows have padding added around them using `MADPadding` (again in milliseconds). Within this padded window, a multidimensional distributional distance (specifically Mahalanobis distance) is calculated.
+This distance can be calculated using one of two methods: Basic or Robust.
+
+The Basic method uses the standard Mahalanobis distance and the Robust uses a robust version of the Mahalanobis distance. The latter is based on Minimum Covariance Determinant (as implemented in the package [robustbase](https://cran.r-project.org/package=robustbase)), which uses a sampling method for determining multivariate location and scatter.
+Both the basic and robust calculations are based on multiple variables covarying with pupil size.  By default, the calcuation uses the following columns: `Pupil`, `Velocity_Y`, and `Acceleration_Y`. 
+However, the parameter `XandY` can be set to TRUE in which case the calculation will additionally include the X-axis: `Velocity_X` and `Acceleration_X`. This is intended to capture potential horizontal eye movement affecting pupil size.
+N.B., missing values are automatically excluded from the distance calculation. 
+
+The function will inform the user if a particular window is skipped as there are safeguards built in which will skip a given window if: 1) there are not enough data points or 2) there are not enough columns with non-zero data to estimate covariance.
+To determine whether a given pupil size is extreme, the argument `MahaConstant` is used to set the sensitivity. 
+The default value of the parameter is 2 (standard deviations). 
+The higher the constant, the more extreme value of the parameter is needed to trigger cleaning. 
+
+Lastly, this function can optionally perform a second pass (setting `Second` to TRUE), which is identical to the second pass in `clean_blink`. 
+This attempts to identify remaining data points or islands of data points (small runs surrounded by NAs) which remain.  
+The arguments `MaxValueRun` and `NAsAroundRun` are identical in function and meaning. 
+As with `clean_blink`, the argument `LogFile` specifies the path and name of the file into which information about the cleaning status is written.
+Again, please note that for the purposes of this vignette we are saving the file into the vignette's temporary folder; however, users will likely want to save the file into their working directory by simply specifying `LogFile = "ArtifactCleanupLog.rds"`.
+
+
+```{r, eval=TRUE, echo=TRUE, results='asis'}
+datart <- clean_artifact(datblink, MADWindow = 100, MADConstant = 2,
+                      MADPadding = c(200, 200), MahaConstant = 2,
+                      Method = "Robust", XandY = TRUE, Second = T, 
+                      MaxValueRun = 5, NAsAroundRun = c(2,2),
+                      LogFile = paste0(tempdir(),"/ArtifactCleanupLog.rds"))
+```
+
+Looking, yet again, at Event 16892.8, we can see that the function `clean_artifact` successfully detected and partially cleaned the un-marked artifact, using the default values. Below, we will describe in detail how to manually clean the remainder of the artifact using the functionality provided in the package.
+
+```{r, eval=TRUE, echo=FALSE, results='asis'}
+# The function partially cleaned the unmarked blink using default settings
+compareNA <- function(v1,v2) {
+  same <- (v1 == v2) | (is.na(v1) & is.na(v2))
+  same[is.na(same)] <- FALSE
+  return(same)
+}
+pac_theme <- function(base_size = 12, base_family = ""){
+  theme_bw(base_size = base_size, base_family = base_family) %+replace%
+    theme(panel.grid.major.x = element_blank(),
+          panel.grid.minor.x = element_blank(),
+          panel.grid.major.y = element_blank(),
+          panel.grid.minor.y = element_blank(),
+          plot.title = element_text(hjust = 0.5, vjust = 1)
+    )
+}
+datart %>% filter(Event %in% c("16892.8")) %>% 
+  mutate(Compared = !(compareNA(Pupil_Previous, Pupil))) %>% 
+  select(Event, Pupil, Pupil_Previous, Time, Compared) %>%
+  tidyr::gather(Column, PUPIL, -Time, -Event, -Compared) %>% 
+  mutate(Datapoint = ifelse(Compared==F, "Same", "Different")) %>% 
+  ggplot(aes(x=Time, y=PUPIL, colour = Datapoint)) + 
+  geom_point(na.rm = T) +
+  scale_color_manual(values=c("Different" = "red", "Same" = "black")) +
+  ylab("Pupil Dilation") +
+  facet_wrap(. ~ Event) + pac_theme()
+```
+
+### Verifying the cleanup, part II
+
+Again, because `clean_artifact` is an automatic cleaning function, users may want to verify the effect of the cleaning. It is possible that this automated cleaning procedure, depending on the parameters specified, can remove more or less data points that appear to be "good". This is part and parcel of automatic detection and cleaning. However, the algorithm is designed to detect extreme values based on the data in as targeted a way as possible.  Based on our experience and testing, we have set default values which perform well in most scenarios.
+
+The function `verify_cleanup_app` can be used to scan through the events, and if desired, revert an event back to its most recent previous state (in this case to the state of the data in data frame `dat4a`, i.e., prior to having run `clean_artifact`, but after having run `clean_blink`). 
+
+```{r, eval=FALSE, echo=TRUE, results='hide'}
+verify_cleanup_app(datart, LogFile = paste0(tempdir(),"/ArtifactCleanupLog.rds"))
+```
+
+<style>
+im {
+width: 100%;
+text-align: center;
+}
+</style>
+
+<div id='im'>
+ <img src="verifycleanupapp2.PNG" alt="Verify Cleanup App" height="459" width="650"> 
+</div>
+
+Again, any changes made using `verify_cleanup_app` must be applied to the data using `apply_cleanup_change` and specifying "ArtifactCleanupLog" as the log file.
+
+```{r, eval=TRUE, echo=TRUE, results='asis'}
+datart <- apply_cleanup_change(datart, LogFile = paste0(tempdir(),"/ArtifactCleanupLog.rds"))
+```
+
+
+### Further evaluation of the cleanup
+
+In order to help evaluate the results of the cleanup, we provide a data visualization tool that explicitly displays the difference in the pupil data *before* and *after* carrying out the automatic cleanup. The function `plot_compare_app` opens an interactive Shiny app for viewing the results of the cleanup.  It plots each event and shows which data points are now different.  Additionally, it states how much of the data (as a percentage) is missing, i.e., was removed by the cleaning procedure.
+
+```{r, eval=FALSE, echo=TRUE, results='asis'}
+plot_compare_app(datart)
+```
+
+<style>
+im {
+width: 100%;
+text-align: center;
+}
+</style>
+
+<div id='im'>
+ <img src="plotcompareapp.PNG" alt="Plot Compare App" height="368" width="650"> 
+</div>
+
+Alternatively, the function `compare_summary` produces a summary output of the comparison by Event. The data can be returned by setting the argument ReturnData = TRUE.
+
+```{r, eval=TRUE, echo=TRUE, results='asis'}
+compare_summary(datart)
+```
+
+
+## Manual cleanup
+
+Automatic cleanup may not capture and clean all artifacts. Thus a manual cleanup function (`user_cleanup_app`) is provided. 
+This function opens an interactive Shiny app for viewing Events and specifying which data points to remove.
+Data can be removed either by specifying a point in time (i.e., removing one specific data point) or a range of time (i.e., removing a sequence of data points), or any combination of these.
+For example, type in `1550` to remove a data point at time 1550 ms; type in `1600:1700` to remove all data points between 1600 ms and 1700 ms (inclusive); or type in `1550, 1600:1700` to remove the data point at 1550 ms *and* all data points between 1600 ms and 1700 ms (inclusive).
+
+The user-specified data points are saved into a log file.  The path and filename are specified in `LogFile`. 
+Again, please note that for the purposes of this vignette we are saving the file into the vignette's temporary folder; however, users will likely want to save the file into their working directory by simply specifying `LogFile = "UserCleanupLog.rds"`.
+
+This allows the user to clean part of the data in one session, and return to cleaning at later point. 
+The function will read the log file from the working directory the next time the app is opened. 
+Additionally, this log file ensures that the manual preprocessing step can be repeated if necessary as long as the log file exists. 
+In the example below we will finish cleaning Event 16892.8.
+
+```{r, eval=FALSE, echo=TRUE, results='asis'}
+user_cleanup_app(datart, LogFile = paste0(tempdir(),"/UserCleanupLog.rds"))
+```
+
+<style>
+im {
+width: 100%;
+text-align: center;
+}
+</style>
+
+<div id='im'>
+ <img src="usercleanupapp.PNG" alt="User Cleanup App" height="509" width="650"> 
+</div>
+
+Here is a brief example of how the Shiny app works.
+
+1. Open the app specifying the data set you would like to clean.
+2. Navigate to a specific event using the dropdown menu or the "Previous"/"Next"" buttons.
+3. Once, the event is selected you will see it plotted in left-most panel ("Original").
+4. In the Time points box input the data points that require cleaning.  In this example, we would like to remove all data points between 1835 ms and 1995 ms, so we will enter a range of values `1835:1995`.  The selected data points will be highlighted in red in the middle panel ("Preview").
+5. When you are satified with the result, press the "Commit Current Event Cleanup" button to save the cleanup information to the log file.
+6. If you make a mistake or would like to re-do a particular event cleanup, you can press the "Reset Current Event Cleanup" button.
+7. When cleaning is complete, press the "Exit and Save" button.
+
+Note that, while the example above uses the cleanup app to further clean the data already processed with the automatic cleaning functions, the app can be used completely independently (i.e., without first doing automatic cleanup) if the user wishes to manually clean all events.
+
+Once manual cleanup is done, the user *must* apply the cleanup to the data based on the contents of the log file.
+This is done with the function `apply_user_cleanup`.
+Note that it is also possible to visualize the results of the applied manual cleanup using `plot_compare_app`.
+
+```{r, eval=TRUE, echo=FALSE, results='hide'}
+UserCleanupLog <- vector("list", length = length(unique(datart$Event)))
+names(UserCleanupLog) <- unique(datart$Event)
+UserCleanupLog[1:length(UserCleanupLog)] <- NA
+UserCleanupLog[["16892.8"]] <- c(1835:1995)
+saveRDS(UserCleanupLog, file = paste0(tempdir(),"/UserCleanupLog.rds"))
+```
+
+```{r, eval = FALSE, echo = FALSE, results='asis'}
+datclean <- apply_user_cleanup(datart, LogFile = "UserCleanupLog.rds")
+saveRDS(datclean, file = "Partial_datclean.rds", compress = "xz")
+```
+
+```{r, eval=TRUE, echo=TRUE, results='asis'}
+datclean <- apply_user_cleanup(datart, LogFile = paste0(tempdir(),"/UserCleanupLog.rds"))
+```
+
+Looking, one last time, at Event 16892.8, we can see that both the marked blink and the un-marked artifact are now both fully cleaned. 
+
+```{r, eval=TRUE, echo=FALSE, results='asis'}
+# The event after automatic and manual cleaning
+#datclean <- readRDS(file = "Partial_datclean.rds")
+pac_theme <- function(base_size = 12, base_family = ""){
+  theme_bw(base_size = base_size, base_family = base_family) %+replace%
+    theme(panel.grid.major.x = element_blank(),
+          panel.grid.minor.x = element_blank(),
+          panel.grid.major.y = element_blank(),
+          panel.grid.minor.y = element_blank(),
+          plot.title = element_text(hjust = 0.5, vjust = 1)
+    )
+}
+datclean %>% filter(Event %in% c("16892.8")) %>% 
+  select(Event, Pupil, Time) %>%
+  tidyr::gather(Column, PUPIL, -Time, -Event) %>% 
+  ggplot(aes(x=Time, y=PUPIL)) + 
+  geom_point(na.rm = T) +
+  ylab("Pupil Dilation") +
+  facet_wrap(. ~ Event) + pac_theme()
+```
+
+
+
+## Proceed with preprocessing
+
+At this point it is possible to proceed with preprocessing as usual. 
+Please refer back to the [Basic Preprocessing](PupilPre_Basic_Preprocessing.html) vignette and continue by removing events with sparse data.
+
