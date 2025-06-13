@@ -1,0 +1,619 @@
+% File apc/vignettes/apc_indiv.Rnw
+% Part of the apc package, http://www.R-project.org
+% Copyright 2020 Zoe Fannon, Bent Nielsen
+% Distributed under GPL 3
+
+%\VignetteIndexEntry{Introduction: analysis of individual data}
+
+\documentclass[a4paper,twoside,12pt]{article}
+
+\usepackage[english]{babel}
+\usepackage{booktabs,rotating,graphicx,amsmath,verbatim,fancyhdr,Sweave}
+\usepackage[colorlinks,linkcolor=red,urlcolor=blue]{hyperref}
+\newcommand{\R}{\textsf{\bf R}}
+\renewcommand{\topfraction}{0.95}
+\renewcommand{\bottomfraction}{0.95}
+\renewcommand{\textfraction}{0.1}
+\renewcommand{\floatpagefraction}{0.9}
+\DeclareGraphicsExtensions{.pdf,.jpg}
+\setcounter{secnumdepth}{1}
+\setcounter{tocdepth}{1}
+
+\oddsidemargin 1mm
+\evensidemargin 1mm
+\textwidth 160mm
+\textheight 230mm
+\topmargin -5mm
+\headheight 8mm
+\headsep 5mm
+\footskip 15mm
+
+\begin{document}
+\SweaveOpts{concordance=TRUE}
+
+\raggedleft
+\pagestyle{empty}
+\vspace*{0.1\textheight}
+\Huge
+{\bf Introduction to\\analysis of individual data\\using the \texttt{apc.indiv} functions\\in the package\texttt{apc} }
+\noindent\rule[-1ex]{\textwidth}{5pt}\\[2.5ex]
+\Large
+25 August 2020
+\vfill
+\normalsize
+\begin{tabular}{rl}
+ Zoe Fannon    & Department of Economics, University of Oxford 
+\end{tabular}
+\normalsize
+\newpage
+\raggedright
+\parindent 3ex
+\parskip 0ex
+\tableofcontents
+\cleardoublepage
+\setcounter{page}{1}
+\pagestyle{fancy}
+\renewcommand{\sectionmark}[1]{\markboth{\thesection #1}{\thesection \ #1}}
+\fancyhead[OL,ER]{\sl apc indiv}
+%\fancyhead[ER]{\sl \rightmark}
+\fancyhead[EL,OR]{\bf \thepage}
+\fancyfoot{}
+\renewcommand{\headrulewidth}{0.1pt}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Introduction}
+
+The purpose of this vignette is to demonstrate the use of some of the new commands available as part of the \texttt{apc.indiv} update to the R package \texttt{apc}.
+
+This code is designed to allow the user to study the effects of age, period, and cohort on an outcome of interest. The age-period-cohort identification problem is
+avoided because the code uses the reparametrization approach developed in
+Kuang, Nielsen and Nielsen (2008).
+This approach does not attempt to separate the
+linear effects of age, period, and cohort, which are unidentified due to the well-known identification problem. Instead, the focus is on estimation of the non-linear
+effects. The non-linear effects that are identified are ``double-differences'' in each of age, period, and cohort. These ``double-differences'' are the accelerations
+in each of age, period, and cohort. By cumulating these accelerations a picture of the non-linear part of the relationship between age, period, or cohort and the
+outcome of interest can be constructed. Further details of the reparametrization approach and how the double-differences and cumulated double-differences should be
+interpreted are available in
+Nielsen (2015).
+
+The new code allows for estimation of the reparametrized APC effects from the following:
+\begin{itemize}
+    \item Gaussian models using repeated cross-section data
+    \item Logistic models using repeated cross-section data
+    \item Both of the above with survey weights
+    \item Gaussian models using panel data (with POLS, random effects, and fixed effects options)
+    \item All of the above with covariates included in the model
+\end{itemize}
+
+The tools build on several other packages. In particular \texttt{plm}
+(Croissant and Millo, 2008)
+and \texttt{survey}
+(Lumley, 2019)
+are used to perform the estimation for panel data and survey data respectively, while
+\texttt{lmtest}
+(Zeileis and Hothorn, 2002)
+and \texttt{car}
+(Fox and Weisberg, 2019)
+are used for testing restrictions. The aggregate-data functions from the package
+\texttt{apc}
+Nielsen (2015)
+were cannibalised extensively to produce the \texttt{apc.indiv} functions. 
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Repeated Cross Section}
+
+To illustrate the use of the code for repeated cross-section data, I use the \texttt{Wage} data from the \texttt{ISLR} package
+(James et al, 2017).
+This data records information about 3000 male workers in the Mid-Atlantic region of the US, and was manually assembled from the March 2011 supplement to the
+American Current Population Survey. I examine the age, period, and cohort effects on the log wage of these workers (a continuous outcome), and on the probability
+that they hold a job classified as ``industrial'' rather than ``information'' (a binary outcome). There is 
+a concave non-linear relationship between age and the log wage, but no non-linear relationship with period or cohort. There is a sharp acceleration in the probability
+of holding an industrial job in 2008, followed by a compensating deceleration; this may indicate temporary layoffs in response to the financial crisis that are job
+class-specific. Note that this data does not contain weights and there is no evidence that the wage information has been corrected for inflation. 
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\subsection{Data assessment and cleaning}
+
+I begin by examining the age-period-cohort structure of the data
+
+%   Chunk 1
+<<include=FALSE>>=
+    library("plyr") 
+    library("reshape") 
+    library("ISLR")
+    data("Wage")
+    summary(Wage)
+    AP_count <- count(Wage, c("age", "year"))
+    AP_show <- cast(AP_count, age~year)
+    AP_show[1:10,]
+@
+
+The output of the above is a long table, with a column for each of the seven periods in the data and a row for each of the 61 ages. Each cell shows the number of
+observations in the data for that age-period combination. The \texttt{apc.indiv} functions require a contiguous dataset, and so it is necessary to restrict the
+data by age and period so that no cells have 0 observations. In this case I will omit some of the youngest and oldest ages, which are sparsely observed. 
+
+%   Chunk 2
+<<>>=
+    Wage2 <- Wage[Wage$age >= 25 & Wage$age <= 55, ]
+@
+need to change the names
+<<>>=
+    names(Wage2)[names(Wage2) %in% c("year","age")] <- c("period","age")
+@
+tidy some variables for the analysis
+<<>>=
+    cohort <- Wage2$period - Wage2$age
+    indust_job <- ifelse(Wage2$jobclass=="1. Industrial", 1, 0)
+    hasdegree <- ifelse(Wage2$education
+            %in% c("4. College Grad", "5. Advanced Degree"), 1, 0)
+    married <- ifelse(Wage2$maritl == "2. Married", 1, 0)
+    Wage3 <- cbind(Wage2, cohort, indust_job, hasdegree, married)
+@
+
+In the above, I have restricted the data to those aged between 25 and 55. Note that I have also renamed some of the variables; the \texttt{apc.indiv} functions
+require that at least two of the variables \texttt{age}, \texttt{period}, and \texttt{cohort} are present in the data. I have also tidied some of the other
+variables that are of interest in the analysis, creating indicators for whether the job is industrial (as opposed to informational), whether the worker has a
+college degree, and whether the worker is married. 
+
+I will be interested in how the wage of the worker and the nature of their job (industrial or otherwise) is related to their age, cohort, and period of observation.
+Before performing a formal analysis of these relationships using the \texttt{apc.indiv} functions, I can use a visualisation to conduct a preliminary search for
+patterns in these variables along age, period, or cohort. This is done using \texttt{ggplot2}
+(Wickham, 2016).
+
+%   Chunk 3
+<<>>=
+    library("ggplot2")
+    
+    mean_logwage <- ddply(Wage3, .variables=c("period", "age"),
+    function(dfr, colnm){mean(dfr[, colnm])}, "logwage")
+    names(mean_logwage)[3] <- "Mean_logwage"    
+    plot_mean_logwage <- ggplot(mean_logwage, aes(period, age)) + 
+    theme_bw() + 
+    xlab('\n Period') + 
+    ylab('Age\n') +
+    geom_tile(aes(fill = Mean_logwage)) +
+    scale_fill_gradientn(colours=c("red", "blue"),
+    space = 'Lab', name="Mean logwage \n") +
+    scale_x_continuous(expand=c(0,0)) + 
+    scale_y_continuous(expand=c(0,0)) + 
+    theme(axis.text=element_text(size=18),
+    axis.title=element_text(size=24, face="bold"),
+    legend.title=element_text(size=20, face="bold"),
+    legend.key.size = unit(1, "cm"),
+    legend.text=element_text(size=18))
+@
+    
+%   Chunk 4
+<<label=fig:mean_logwage_RCS>>=
+    plot_mean_logwage
+@
+
+The output of the above code is seen in
+figure \ref{fig:mean_logwage_RCS}.
+Each block shows the mean log wage among observations with that age-period combination in the data. The red colour corresponds to a lower mean log wage and
+the blue to a higher mean log wage. The concentration could be a combination of age and period effects: young people have lower wages, and in later years people
+have higher nominal wages (the data may not be adjusted for inflation).
+
+We can use similar code to produce an analagous graph, showing the mean value of the indicator \texttt{indust\_job} in each age-period cell. That mean indicates
+the proportion of people in that cell who have an industrial, rather than an information, role. This graph is not shown here; it has a similar pattern, with a
+higher probability of being in an industrial job concentrated among the young  in the early 2000s. 
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\subsection{Analysis of log wage}
+
+I now use the functions developed in \texttt{apc.indiv} to investigate the non-linear patterns in age, period, and cohort that can be identified from this data.
+These functions have a number of dependency packages which must be loaded if they are not already in the environment.
+
+%   Chunk 5
+<<>>=
+    library("apc")
+    library("plyr") 
+    library("lmtest") 
+    library("car") 
+    library("plm")
+    library("survey")
+@
+
+The first stage of the analysis is to estimate a table which can be used to determine how many of the elements of the age-period-cohort reparametrization are
+needed to describe the variation in this data. The relevant code is below: I specify the dataset, dependent variable, covariates I am including (in this case,
+I include the indicator for whether a person has a degree, as this is expected to influence their wage), the appropriate model family for this data, and which
+type of test I want to use.
+Here I chose a Wald test, compared against an F distribution; one could perform the Wald test using a Chi-squared distribution, or use a Likelihood Ratio test
+which must be compared with a Chi-squared distribution. 
+I also choose to include a ``TS'' model in the table. This Time-Saturated (TS) model is a more general model than the reparametrized age-period-cohort model;
+it includes an indicator for each age-period combination present in the data. It nests the age-period-cohort model and therefore allows us to test whether the
+age-period-cohort model is sufficient to describe the variation in the data.
+
+%   Chunk 6
+<<>>=
+    logwage_tab <- apc.indiv.model.table(Wage3, dep.var="logwage",
+    covariates="hasdegree", model.family="gaussian",
+    test="Wald", dist="F", TS=TRUE)
+@
+%   Chunk 7
+<<label=logwage_tab>>=
+    logwage_tab$table
+@
+
+The output of the above code is seen in table \ref{logwage_tab}. Look for the model which minimises the AIC; this is the model where the AIC takes the value
+$1010.99$, i.e. the Ad model. We can also see that the p-values of the Wald tests of this model against the more general TS and APC models are quite large,
+indicating support for the reduction from those more general models. The Ad model, or age-drift model, includes double-differences in age only; the
+double-differences in period and cohort are constrained to zero. Further details of the APC sub-models are available in
+Nielsen (2015).
+
+I now estimate the Ad model alone. I use a table to inspect the covariate coefficients, but the best way to examine the estimated time effects is by a
+visualisation. There are 30 ages in my dataset, which means 28 double-differences in age. Rather than looking at 28 estimates for double-differences, it is
+easier to understand their interpretation by plotting them.
+
+%   Chunk 8
+<<>>=
+    logwage_ad <- apc.indiv.est.model(Wage3, dep.var = "logwage",
+    covariates="hasdegree",
+    model.family="gaussian",
+    model.design="Ad")
+    
+    logwage_ad$coefficients.covariates
+    apc.plot.fit(logwage_ad, main.outer="")
+@
+
+As expected, the coefficient on having a degree is positive ($0.285$) and highly significant (p-value of $8.2e^{-105}$). The visual representation of the
+Ad part of the model is seen below. Subfigures (d) through (f) show the estimated linear plane, which combines the unidentified linear effects of age, period,
+and cohort. This is the ``drift'' part of the model. The first linear trend is plotted in the age dimension, while the second linear trend is plotted in the
+cohort dimension; respectively they combine the linear effects of age and period, and of cohort and period. The net effect of the three unidentifiable slopes
+then is that there is an increase in log wage with age and an increase in log wage with cohort, which may be used for forecasting purposes.
+
+Subfigures (a) and (g) are of greater interest. Subfigure (a) shows the estimated double-differences in age, of which there are 28. Subfigure (g) shows the
+result of cumulating these to get a picture of the non-linear relationship between age and log-wage. We see that this relationship is concave, which would be
+consistent with acceleration in log wage up to the mid-30s and a plateauing thereafter. 
+
+This concavity is of interest because we can use it to evaluate consistency with theoretical models of the evolution of log wages over the life-cycle. For
+example, we could imagine a theory model which predicted that log wage is not only concave over the life cycle but is also quadratic. That the concavity is
+quadratic is a testable restriction in our APC model. The advantage to testing this quadratic hypothesis in this reparametrized APC model rather than another
+form of model is that this model has isolated the non-linear portion of age from the non-linear portion of cohort and period; therefore the test of the quadratic
+age effect is not contaminated by period or cohort effects.
+
+We can perform this quadratic test as follows, using the \texttt{linearHypothesis} function from the package \texttt{car}
+(Fox and Weisberg, 2019).
+
+%   Chunk 9
+<<>>=
+    allageDD <- rownames(logwage_ad$coefficients.canonical)[grep("DD_age", 
+    rownames(logwage_ad$coefficients.canonical))]
+    
+    ageDD1 <- allageDD[-1]
+    ageDD2 <- allageDD[-length(allageDD)]
+    quadratic_hyp <- paste(ageDD2, ageDD1, sep = " = ")
+    rm(list=ls(pattern="ageDD"))
+    
+    linearHypothesis(logwage_ad$fit, quadratic_hyp, test="F")
+@
+
+Again, a Wald test is used, with comparison to an F distribution.
+The resulting test statistic of $1.297$, with degrees of freedom $(28, 2382)$, has a p-value of $0.14$. This indicates that the hypothesis of a quadratic
+relationship between the age of the worker and his log wage cannot be rejected.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\subsection{Analysis of industrial job}
+
+The code can be used in a very similar way to investigate the relationship between a binary variable and age, period, and cohort. I illustrate this by
+building a model for whether or not the worker has an industrial job. Again, the analysis begins with a table comparing the time-saturated (TS) model,
+the full APC model, and submodels of the APC model. 
+
+%   Chunk 9
+<<>>=
+    indust_job_tab <- apc.indiv.model.table(Wage3, dep.var="indust_job",
+    covariates="hasdegree",
+    model.family="binomial",
+    test="LR", dist= "Chisq", TS=TRUE)
+
+    indust_job_tab$table
+@
+
+Note that here the model family is binomial, and the test used is a likelihood ratio test. The time-saturated model here is estimated by a custom
+Newton-Rhapson iteration procedure, so part of the output of this table is a report on the behaviour of that algorithm. If the print statement does not report
+convergence, the Newton Rhapson parameters should be modified using the option \texttt{NR.controls} until convergence is achieved - for example by increasing
+the number of iterations.
+
+Looking at the estimated table, we see that the AIC is minimised towards the end of the table, by the tC model. However, the likelihood ratio tests comparing
+the tC model to the TS and APC models reject the restriction. Indeed most restrictions are rejected by the likelihood ratio test; the APC model itself is barely
+accepted as a restriction on the TS model. It is therefore difficult to select a model from this table. Ultimately I favour the PC model; it has one of the lower
+AIC values, is the most supported sub-model against the APC model, and is almost supported against the TS model. That said, this setting is one in which there is
+a strong argument that the APC model and its submodels do a poor job of capturing the time variation in the data, and some other reduction of the TS model should
+instead be used.
+
+%   Chunk 10
+<<>>=
+    indust_job_pc <- apc.indiv.est.model(Wage3, dep.var="indust_job",
+    covariates="hasdegree", 
+    model.family="binomial",
+    model.design="PC")
+    indust_job_pc$coefficients.covariates
+@    
+%   Chunk 11
+<<label=fig:indust_job_PC_RCS>>=
+    apc.plot.fit(indust_job_pc)
+@
+
+Again, I directly estimate the preferred model using \texttt{apc.indiv.est.model} and inspect the estimated non-linearities in period and cohort using
+\texttt{apc.plot.fit}. There is a somewhat interesting pattern in the period effects, where there appears to be a substantial acceleration in the
+probability of having an industrial job in 2008; given that these are shipping workers, this may reflect a streamlining of operations during the financial crisis.
+However, there is no clear pattern in the cohort non-linearities. The effect of having a degree on the probability of having an industrial job is, unsurprisingly,
+significant and negative.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\subsection{Extensions}\label{ss: RCS extensions}
+
+The data I have been using does not include survey weights. However if they were present in the data, they could be quite easily added to all of the above
+analysis by simply specifying the name of the weight variable using the option \texttt{wt.var} in all of the above commands. It should be noted that since
+models incorporating survey weights are not estimated by maximum likelihood, the likelihood column is omitted from the data and one must use Wald tests rather
+than likelihood ratio tests. A psuedo-AIC is reported; see
+Lumley (2004, 2019)
+for details. Additionally, estimation of the time-saturated
+model has not yet been implemented for survey data, and so that will not be reported.
+
+Sometimes the fact that the earliest and latest cohorts are only observed in one or two age-period cells can lead to instability in the estimates. This can be
+seen to some extent in the PC model for having an industrial job; the magnitude of the estimate for the earliest cohort is very large. This problem can be
+addressed by ``censoring'' those early and late cohorts out of the data, by first dropping them from the data using standard R techniques and then specifying
+the options \texttt{n.coh.excl.start} and \texttt{n.coh.excl.end}. The structure of this particular dataset is such that it can be displayed as a rectangle in
+age-period space. We say the data has an ``age-period'' format. In this case, it is the cohort double-differences where instability will appear and censoring
+should occur. However, not all data is of the ``age-period'' format. For example in the next section we will deal with data in ``period-cohort'' format; in
+that case, one would want to censor ages, using \texttt{n.age.excl.start} and \texttt{n.age.excl.end}. One might also have ``age-cohort'' data, in which case
+periods could be censored.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Panel data}
+
+To illustrate the use of the code for panel data, I use the \texttt{PSID7682} data from the \texttt{AER} package
+Kleiber and Zeileis (2008).
+This is an excerpt from the Panel Survey of Income Dynamics, covering 595 individuals over a seven-year period from 1976-1982 which has been used in economics
+textbooks such as
+Baltagi (2005)
+and
+Greene(2008).
+It is therefore an age-period dataset. Note that in this data the conflated variables are not age, period, and cohort, but rather years of work experience,
+period, and year of entering the workforce. There is an equivalent identification problem to the APC problem among these three variables, see for example
+Heckman and Robb (1985).
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\subsection{Data assessment and cleaning}
+
+I begin by inspecting the data. After initially displaying the data in an age-period format, it became clear that the period-cohort format was more appropriate. 
+
+%   Chunk 12
+<<>>=
+    library("plyr") 
+    library("reshape") 
+    library("AER")
+    data("PSID7682")
+    summary(PSID7682)
+
+    AP_count <- count(PSID7682, c("experience", "year"))
+    AP_show <- cast(AP_count, experience~year)
+    AP_show[1:10,]
+@
+The missing corners of the data show that this is actually cohort-period data (i.e. take a given set of people and follow them for X years, rather than observe
+people within an age group in a series of years).
+
+%   Chunk 13
+<<>>=
+    period <- as.numeric(PSID7682$year) + 1975
+    entry <- period - PSID7682$experience
+    psid <- cbind(PSID7682, period, entry)
+
+    CP_count <- count(psid, c("entry", "year"))
+    CP_show <- cast(CP_count, entry~year)
+    CP_show[1:10,]
+@
+
+It is easily seen from \texttt{CP\_show} that this is a balanced panel; the number of observations in a given cohort does not change over period. This makes it
+quite easy to see how we should restrict the data to ensure a sufficient number of observations in each cell. Again, I tidy some of the variables that will be used
+in the analysis, and rename the variables corresponding to \texttt{age}, \texttt{period}, and \texttt{cohort}.
+
+%   Chunk 14
+<<>>=
+    psid2 <- psid[psid$entry >= 1939, ]
+    
+    # which variables do we want to use?
+    logwage <- log(psid2$wage)
+    inunion <- ifelse(psid2$union == "yes", 1, 0)
+    insouth <- ifelse(psid2$south == "yes", 1, 0)
+    bluecollar <- ifelse(psid2$occupation == "blue", 1, 0)
+    # also education which is a continuous covariate
+    
+    psid3 <- cbind(psid2, logwage, inunion, insouth, bluecollar)
+    
+    names(psid3)[names(psid3) %in% c("experience","entry")] <- c("age","cohort")
+@
+
+It is important to visualise the data before estimating any models. This is done using \texttt{ggplot2} in the same way as for repeated cross-sectional data.
+However, since this is period-cohort data, I plot cohort (year of entry) instead of age (experience) on the Y-axis.
+
+%   Chunk 15
+<<>>=
+    library("ggplot2")
+    mean_logwage <- ddply(psid3, .variables=c("period", "cohort"),
+                      function(dfr, colnm){mean(dfr[, colnm])}, "logwage")
+    names(mean_logwage)[3] <- "Mean_logwage"
+    plot_mean_logwage <- ggplot(mean_logwage, aes(period, cohort)) + 
+      theme_bw() + 
+      xlab('\n Period') + 
+      ylab('Entry \n') +
+      geom_tile(aes(fill = Mean_logwage)) +
+      scale_fill_gradientn(colours=c("red", "blue"),
+                           space = 'Lab', name="Mean logwage \n") +
+      scale_x_continuous(expand=c(0,0)) + 
+      scale_y_continuous(expand=c(0,0)) + 
+      theme(axis.text=element_text(size=18),
+            axis.title=element_text(size=24, face="bold"),
+            legend.title=element_text(size=20, face="bold"),
+            legend.key.size = unit(1, "cm"),
+            legend.text=element_text(size=18))
+@
+%   Chunk 16
+<<label=fig:mean_logwage_panel>>=
+plot_mean_logwage
+@
+
+I display the visualization
+in figure \ref{fig:mean_logwage_panel}; note that in the labelling I have replaced ``cohort'' with ``entry''. There is a clear period effect; the colour becomes more
+blue towards the right of the graph, indicating higher wages in later years. There is also evidence of cohort effects, appearing as horizontal bands of colour. Those
+starting work around 1968, for instance, appear to have lower wages throughout their lives. That said, with a small panel we must be careful of confounding between
+cohort effects and individual fixed effects. Finally, age effects are evidenced by the predominance of red in the top-left corner of the graph; this is the area
+where individuals have the least work experience (those entering the workforce in the 1970s, observed in the 1970s), and we can unsurprisingly see that lack of
+experience means low wages.
+
+To begin with, I consider a model with no covariates, just to get a sense of how the patterns seen in the graph above are reflected in a formal analysis. As was
+the case with repeated cross-sectional data, I begin with a table containing the full APC model and all submodels. Note that the time-saturated (TS) model is not
+currently implemented for panel data. Additionally, since the panel data model I consider (the random effects model) is not estimated by maximum likelihood, I lose
+the likelihood and AIC columns. Therefore model selection is by Wald test only. 
+
+%   Chunk 17
+<<>>=
+    library(apc)
+    panel_tab <- apc.indiv.model.table(psid3, dep.var="logwage",
+    model.family = "gaussian", test="Wald", dist="F",
+    plmmodel="random", id.var="id")
+@    
+%   Chunk 18
+<<label=tab:panel_tab>>=
+    panel_tab$table
+@
+
+It is clear from the table, seen in
+\ref{tab:panel_tab},
+that none of the restrictions of the APC model pass muster. It is also worth noticing that some of the submodels seen in previous tables do not appear here.
+Those are: the C, tC, and 1 models. This is because random effects estimation requires at least one explanatory variable which changes over time within an individual,
+and these models do not satisfy this requirement. 
+
+The model selected by this analysis is, clearly, the APC model, and so I proceed to estimate and plot that using the standard tools.
+
+%   Chunk 19
+<<>>=
+    panel_apc <- apc.indiv.est.model(psid3, dep.var="logwage",
+    model.family="gaussian",
+    plmmodel="random", id.var="id")
+    
+    apc.plot.fit(panel_apc)
+@
+
+There is clear concavity in both age and period, while the non-linearity in cohort, despite being significant, lacks a clear pattern. 
+
+This model can also be estimated using fixed effects. This changes the set of models which are available, since the fixed effects are perfectly collinear with both
+the cohort double-differences and the combined slope that is estimated in the cohort dimension. The set of available models are as follows: FAP, FA, FP, Ft. These
+stand for ``fixed effects with age and period non-linearities'', ``fixed effects with age non-linearities'', ``fixed effects with period non-linearities'', and
+``fixed effects with trend''. Note that FAP, FA, and FP all also contain the single linear trend that can be identified in these models, which is represented in
+the age dimension and combines the linear effects of age and period.
+
+%   Chunk 20
+<<>>=
+    panel_tab_fe <- apc.indiv.model.table(psid3, dep.var="logwage",
+    covariates = c("inunion", "insouth",
+    "bluecollar"),
+    model.family = "gaussian", test="Wald", dist="F",
+    plmmodel="within", id.var="id")
+    
+    panel_tab_fe$table
+@
+Again, restrictions not accepted
+    
+%   Chunk 21
+<<>>=
+    panel_fap <- apc.indiv.est.model(psid3, dep.var="logwage",
+    covariates = c("inunion", "insouth",
+    "bluecollar", "education"),
+    model.family = "gaussian", 
+    plmmodel="within", id.var="id",
+    model.design="FAP")
+    
+    panel_fap$coefficients.covariates
+@
+
+%   Chunk 21
+<<label=fig:logwage_fap_panel>>=
+    apc.plot.fit(panel_fap)
+@
+
+The first step is to construct a table which compares all submodels to the most general model, which in the context of fixed effects is the FAP model.
+This table is not shown, as the conclusion is straightforward; even with the large set of covariates and the individual fixed effects, none of the submodel
+reductions is accepted. The FAP model is then estimated. The age and period non-linearities are largely unchanged from the random effects model, indicating
+that they are robust to the introduction of fixed effects and covariates. The covariate estimates are also shown. Most are not significant, which may be due to
+limited within-individual variation in those variables. Note that education was not included as a covariate: it has no within-individual variation and therefore
+its effect cannot be identified in a fixed effects model. 
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\subsection{Extensions}
+
+It should be noted that at present panel data analysis only works for OLS models, so binary outcomes must be analysed in a linear probability framework.
+The time-saturated model is also not implemented for panel data. The censoring of cohorts, ages, or periods to improve the stability of estimates, described in
+section \ref{ss: RCS extensions}, is available for panel data.
+
+In addition to the random and fixed effects models illustrated here, it is also possible to estimate panel data using pooled OLS. However, this is really no
+different to repeated cross section analysis.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{References}
+\begin{description}
+  \item
+      Baltagi, B. H. (2005).
+      \textit{Econometric Analysis of Panel Data} (3rd ed.).
+      Chichester, England: John Wiley \& Sons.
+  \item
+    Croissant, Y. and Millo, G. (2008)
+    Panel data econometrics in R: The plm package.
+    \textit{Journal of Statistical Software} 27.
+  \item
+     Greene, W. H. (2008).
+     \textit{Econometric Analysis}.
+     Upper Saddle River, NJ: Pearson Prentice Hall.
+  \item
+     Heckman, J. and Robb, R. (1985).
+     \textit{Using longitudinal data to estimate age, period and cohort effects in earnings equations},
+     pp. 137-150.
+     New York, NY: Springer New York.
+  \item
+    James, G., Witten, D., Hastie, T. and Tibshirani, R. (2017).
+    ISLR: Data for an Introduction to Statistical Learning with Applications in R.
+    R package version 1.2.
+  \item 
+      Kleiber, C. and Zeileis, A. (2008).
+      \textit{Applied Econometrics with R}.
+      New York: Springer-Verlag.
+  \item 
+    Kuang, D., Nielsen, B. and Nielsen, J.P. (2008)
+    Identification of the age-period-cohort model and the extended chain ladder model.
+    \textit{Biometrika} 95, 979-986.
+    \textit{Download}:
+    Earlier version:
+    \url{http://www.nuffield.ox.ac.uk/economics/papers/2007/w5/KuangNielsenNielsen07.pdf}.
+  \item
+    Lumley, T. (2004).
+    Analysis of complex survey samples.
+    \textit{Journal of Statistical Software},
+    9 (1), 1-19. R package verson 2.2.
+  \item
+    Lumley, T. (2019)
+    survey: analysis of complex survey samples.
+    R package version 3.35-1.
+  \item
+    Nielsen, B.\ (2015)
+    apc: An R package for age-period-cohort analysis.
+    \textit{R Journal} 7, 52-64.
+    \textit{Download}:
+    \url{https://journal.r-project.org/archive/2015-2/nielsen.pdf}.
+   \item
+     Wickham, H. (2016).
+     \textit{ggplot2: Elegant Graphics for Data Analysis}.
+     Springer Verlag, New York.
+  \item
+    Zeileis, A. and Hothorn, T. (2002).
+    Diagnostic checking in regression relationships.
+    \textit{R News}, 2 (3), 7-10.
+\end{description}
+  
+\end{document}
