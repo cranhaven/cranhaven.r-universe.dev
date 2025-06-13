@@ -1,0 +1,19 @@
+##' @title Heavy metal biomonitoring in Galicia
+##' @description This data-set relates to two studies on lead concentration in moss samples,
+##' in micrograms per gram dry weight, collected in Galicia, norther Spain. The data
+##' are from two surveys, one conducted in October 1997 and on in July 2000.
+##' The variables are as follows:
+##' \itemize{
+##'  \item x x-coordinate of the spatial locations.
+##'  \item y y-coordinate of the spatial locations.
+##'  \item lead lead concentration.
+##'  \item survey year of the survey (either 1997 or 2000).
+##' }
+##' @docType data
+##' @keywords datasets
+##' @name galicia
+##' @usage data(galicia)
+##' @format A data frame with 195 rows and 4 variables
+##' @source Diggle, P.J., Menezes, R. and Su, T.-L. (2010). Geostatistical analysis under preferential
+##' sampling (with Discussion). Applied Statistics, 59, 191-232.
+NULL
