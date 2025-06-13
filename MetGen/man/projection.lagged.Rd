@@ -1,0 +1,111 @@
+\name{projection.lagged}
+\alias{projection.lagged}
+%- Also NEED an '\alias' for EACH other topic documented here.
+\title{
+climatic variable simulation
+}
+\description{
+Projection of climatic variables for a specific period defined by the user. It forms a free simulation from fitted model constraining by covariates that must be available for the period of projection. 
+}
+\usage{
+projection.lagged(dstart, dend, fit, var.name, maxlag, coord, cov = NULL, 
+seasonal = TRUE, speriod = 365.25, diurnal = TRUE, dperiod = 24, 
+spatave = TRUE, movave = TRUE, bw = 48, na.proc = TRUE, 
+fam.glm = "gaussian", occ.cond = NULL, init.buff = 1440)
+}
+%- maybe also 'usage' for other objects documented here.
+\arguments{
+  \item{dstart}{
+Numeric that defines the first time step of the simulation
+}
+  \item{dend}{
+Numeric that defines the last time step of the simulation
+}
+  \item{fit}{
+fitted model derived from \code{\link{glm}} or \code{\link{fit.glm}}
+}
+  \item{var.name}{
+Character that defines the name of the climatic variable to be simulated
+}
+  \item{maxlag}{
+Numeric vector that specifies the maximum amount of lag defined for the fitted model
+}
+  \item{coord}{
+Data frame of two columns (x and y) that contains geographical coordinates of each site
+}
+  \item{cov}{
+Data frame that contains dates and all external covariates used to fit each climatic variables that will be simulated. These covariates must be available for a buffer period in addition of the period of simulation that start at "dstart" and finish at "dend".
+}
+  \item{seasonal}{
+A logical value indicating whether seasonal effects are among the covariates defined for the variable that will be simulated
+}
+  \item{speriod}{
+A vector that contains the lenght of seasonal cycles defined for the variable of interest 
+}
+  \item{diurnal}{
+A logical value indicating whether diurnal effects are among the covariates defined for the variable that will be simulated
+}
+  \item{dperiod}{
+A vector that contains the lenght of diurnal cycles defined for the variable of interest 
+}
+  \item{spatave}{
+A logical value indicating whether spatial average effects are among the covariates defined for the variable that will be simulated
+}
+  \item{movave}{
+A logical value indicating whether moving average effects are among the covariates defined for the variable that will be simulated
+}
+  \item{bw}{
+A numeric vector that contains the bandwidth defined for the moving average
+}
+  \item{na.proc}{
+A logical value indicating whether NA values should be stripped before simulation
+}
+  \item{fam.glm}{
+family objects to specify probability distribution that will be used for the simulation mode ("gaussian", "gaussian-hetero", "binomial" or "Gamma")
+}
+  \item{occ.cond}{
+Character that specify the name of the occurrence variable if that exists 
+}
+  \item{init.buff}{
+A buffer time is an extra time added before simulation to keep the simulation on track. 
+the init.buffer is numeric vector, defined according to the number of climatic observations per the day and the number of few days that we choose as a buffer time before starting the simulation
+}
+}
+
+\value{
+Returns a data frame that contains the covariates data frame with an additional column that contains the simulation of the variable of interest. If the covariates data frame is not specified among arguments, the function will create its own data frame of covariates that contains deterministic effects: geographical, diurnal and seasonal effects. 
+}
+
+\seealso{
+\code{\link{fit.glm}}
+}
+
+\examples{
+##Create a new data that contains climatic series and all effects that will be 
+##used as covariates for the variable to be projected or simulated
+temp.effects <- seasonal.effect(myclimatic_data, period=c(365,183))
+temp.effects <- diurnal.effect(temp.effects, period=24)
+temp.effects <- spatave.effect(temp.effects, "temp", nstat = 3, na.proc = TRUE) 
+temp.effects <- lagged.effect(temp.effects, "temp",2, nstat=3)
+temp.effects$t2m <- rnorm(length(myclimatic_data),mean=25,sd=1)
+
+coord <- data.frame(x=c(9.92,9.93,10.04),y=c(35.55,35.62,35.57))
+nstat=3
+init.buff=48*7 ##48 time step per day and 7 days will be considered as buffer time
+dstart=as.numeric(mycovariates[(init.buff*nstat)+1,1]) 
+dend=as.numeric(mycovariates$dates[nrow(mycovariates)])
+
+##fitted variable
+temp.fitted <- fit.glm("temp", dep.var = NULL, geocov=TRUE, large.var="t2m", 
+seasonal = TRUE, speriod = c(365, 183), diurnal = TRUE, dperiod = 24, 
+spatave = FALSE, movave = FALSE, spatmovave= FALSE, lagvar=2, add.cov = FALSE, 
+others = NULL, fam.glm = "gaussian", data= temp.effects)
+
+temp.projection <- projection.lagged(dstart, dend, temp.fitted, "temp", maxlag=2, 
+coord, cov=mycovariates, seasonal = TRUE, speriod = c(365,183),  diurnal = TRUE, 
+dperiod = 24, spatave = FALSE, movave=FALSE,bw = 0, fam.glm = "gaussian", 
+occ.cond = NULL)
+
+##Remove buffer
+temp.projection <- rm.buffer(temp.projection, nstat, bi.length=init.buff)
+}
