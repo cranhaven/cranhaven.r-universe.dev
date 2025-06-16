@@ -1,0 +1,22 @@
+extern "C" {
+void setulb_(const int* n,
+             const int* m,
+             double* x,
+             const double* l,
+             const double* u,
+             const int* nbd,
+             double* f,
+             double* g,
+             const double* factr,
+             const double* pgtol,
+             double* wa,
+             int* iwa,
+             char* task,
+             const int* iprint,
+             char* csave,
+             bool* lsave,
+             int* isave,
+             double* dsave,
+             size_t len_task,
+             size_t len_csave);
+}
