@@ -1,0 +1,104 @@
+## ---- include = FALSE---------------------------------------------------------
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+
+## ----setup, include=FALSE, warning = FALSE, message = FALSE, results = 'hide'----
+knitr::opts_chunk$set(echo = TRUE)
+
+## -----------------------------------------------------------------------------
+library(OOS)
+
+## -----------------------------------------------------------------------------
+# pull and prepare data from FRED
+quantmod::getSymbols.FRED(
+	c('UNRATE','INDPRO','GS10'), 
+	env = globalenv())
+Data = cbind(UNRATE, INDPRO, GS10)
+Data = data.frame(Data, date = zoo::index(Data)) %>%
+	dplyr::filter(lubridate::year(date) >= 1990) %>% 
+  na.omit()
+
+# make industrial production and 10-year Treasury stationary
+Data = Data %>%
+  dplyr::mutate(
+    GS10 = GS10 - dplyr::lag(GS10), 
+    INDPRO = (INDPRO - lag(INDPRO, 12))/lag(INDPRO, 12)) 
+
+# start data when all three variables are available
+# (this is not necessary, but it will suppress warnings for us)
+Data = dplyr::filter(Data, date >= as.Date('1954-01-01'))
+
+## ---- warning=FALSE-----------------------------------------------------------
+# run univariate forecasts 
+forecast.uni = 
+	forecast_univariate(
+		Data = dplyr::select(Data, date, UNRATE),
+		forecast.dates = tail(Data$date,5), 
+		method = c('naive'), #,'auto.arima', 'ets'),      
+		horizon = 1,                         
+		recursive = FALSE,      
+		rolling.window = NA,    
+		freq = 'month')
+
+## ---- warning=FALSE-----------------------------------------------------------
+# create multivariate forecasts
+forecast.multi = 
+	forecast_multivariate(
+		Data = Data,           
+		forecast.date = tail(Data$date,5),
+		target = 'UNRATE',
+		horizon = 1,
+		method = c('lasso'),       
+		rolling.window = NA,    
+		freq = 'month')
+
+## ---- warning=FALSE-----------------------------------------------------------
+# combine forecasts and add in observed values
+forecasts = 
+	dplyr::bind_rows(
+		forecast.uni,
+		forecast.multi) %>%
+	dplyr::left_join( 
+		dplyr::select(Data, date, observed = UNRATE),
+		by = 'date')
+
+# forecast combinations 
+forecast.combo = 
+	forecast_combine(
+		forecasts, 
+		method = c('uniform','median','trimmed.mean'))
+
+## ---- warning=FALSE-----------------------------------------------------------
+# merge forecast combinations back into forecasts
+forecasts = 
+	forecasts %>%
+	dplyr::bind_rows(forecast.combo)
+
+# calculate forecast errors
+forecast.error = forecast_accuracy(forecasts)
+
+# view forecast errors from least to greatest 
+#   (best forecast to worst forecast method)
+forecast.error %>% 
+	dplyr::mutate_at(vars(-model), round, 3) %>%
+	dplyr::arrange(MSE)
+
+# compare forecasts to the baseline (a random walk)
+forecast_comparison(
+	forecasts,
+	baseline.forecast = 'naive',  
+	test = 'ER',
+	loss = 'MSE') %>% 
+	dplyr::arrange(error.ratio)
+
+# chart forecasts
+chart = 
+	chart_forecast(
+		forecasts,              
+		Title = 'US Unemployment Rate',
+		Ylab = 'Index',
+		Freq = 'Monthly')
+
+
