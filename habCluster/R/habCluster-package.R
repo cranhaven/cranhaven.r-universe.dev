@@ -1,0 +1,43 @@
+#' @keywords internal
+"_PACKAGE"
+
+#' The habCluster Package: Detecting Spatial Clustering Based on Connection Cost between Grids
+#'
+#' @description
+#' Spatial explicitly identify the structure of landscape base on cost (weighted) connection at grid scale, using community detection algorithm from graph theory.
+#'
+#' @details Based on landscape connectivity, spatial boundaries were identified using community detection algorithm at grid level. Methods using raster as input and the value of each cell of the raster is the ‘smoothness’ to indicate how easy the cell connecting with neighbor cells. The method can be use to find habitat clusters for wildlife from a map of habitat suitability index, and thus can be used to detect the spatial boundaries among populations or other intraspecific units.
+#'
+
+#'
+#' Key content of the 'habCluster' package include:\cr
+#'
+#' \bold{Spatial Cluster Detection}
+#'
+#' \code{\link{cluster}} Clustering cells from a raster by Community Detection Algorithm according to the connections between them and return a cluster map.
+#'
+#' @name habCluster-package
+#' @aliases habCluster-package habCluster
+#' @docType package
+#'
+#' @section Dependencies: The 'habCluster' package relies heavily upon \code{\link{raster}}, \code{\link{Rcpp}}, and \code{\link{igraph}}.
+#'
+#' @author Qiang Dai\cr \emph{Chengdu Institute of Biology, Chinese Academy of Sciences.}\cr
+#'
+#' Maintainer: Qiang Dai \email{daiqiang@@cib.ac.cn}
+#'
+#' @keywords package
+#'
+#'
+## usethis namespace: start
+#' @importFrom igraph membership cluster_fast_greedy cluster_louvain cluster_optimal cluster_walktrap cluster_infomap
+#' @importFrom methods is
+#' @importFrom raster raster
+#' @importFrom Rcpp sourceCpp
+#' @importFrom sf st_as_sf st_crs
+#' @importFrom stars st_warp st_as_stars
+#' @useDynLib habCluster
+#' @useDynLib habCluster, .registration = TRUE
+## usethis namespace: end
+NULL
+
