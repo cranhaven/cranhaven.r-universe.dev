@@ -1,0 +1,25 @@
+#' mazeGen: A package for generating Elithorn Maze
+#' @description The mazeGen package provides a function to generate the Perceptual Elithorn Maze as well as the methods for calculating task difficulty without incorporating reponses.
+#'
+#' @details The \code{\link{mazeHTML}} or the \code{link{mazeObject}} function will allow you to generate the mazes according to certain specification. Currently the maximum number of row is 18. To get a summary of the maze parameters, users can use the \code{\link{mazeEst}}.  \cr
+#'
+#'For most functions to work, you need to first get the random distribution of the coloured nodes. Using the \code{\link{np}} function will allow you to do that. There are occasions where one might want to select the number of paths for a maximum score for a given maze with a known saturation. \cr
+#'
+#' Calculating the maximum score for the random coloured node distribution can be done using the \code{\link{maxScore}} function. At this stage, there is no way in generating a maze based on a pre-determined specific maximum score. The maze generation is largely depending on the rank, and the saturation of the coloured nodes.\cr
+#'
+#'The \code{\link{genPathSeed}} function will search for the seed that returns the specific paths for a given maximum score when using it in the \code{\link{np}} function. Alternatively, one may use the \code{\link{genEMLseed}} function to search for the seed that returns the specific paths for a maximum score, with the notion that the minimum number of steps to achieve maximum score is the same for all possible paths. Once the seed is return, one can use it in the \code{\link{np}} function. Bear in mind that the SEED is restricted to the local computer. \cr
+#'
+#' The difficulty of the maze can be calculated using the \code{\link{mazeDiff}}. Using this approch does not consider player's responses but just the parameters involve to create the maze. Three models are used to calculate the maze difficulty using the function. \cr
+#'
+#' The ability score of the participants can be calculated using the \code{\link{mazeAbility}}. There are 4 different models used to calcuate the participants' ability. \cr
+#'
+#' Use the \code{\link{mazeHTML}} function to generate the maze in a HTML template or the \code{\link{mazeObject}} function to generate the maze in an R object. To use it with concerto, it is better to generate the maze in the R object and push it into a HTML template. This will allow an immediate generation of the maze in test mode.
+#'
+#' @references
+#' Davies, A. D., & Davies, M. G. (1965). The difficulty and graded scoing of Elithorn\verb{'s} perceptual maze test. \emph{British Journal of Psychology, 56(2-3)}, 295-302. \cr
+#'
+#' Davies, M. G., & Davies, D. M. (1965). Some analytical properties of Elithorn\verb{'s} perceptual maze. \emph{Journal of Mathematical Psychology, 2(2)}, 371-380.
+#' @name mazeGen
+NULL
+
+
