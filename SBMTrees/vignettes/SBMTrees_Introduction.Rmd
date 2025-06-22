@@ -1,0 +1,179 @@
+---
+title: "SBMTrees: Introduction and Usage"
+output: html_vignette
+vignette: >
+  %\VignetteIndexEntry{SBMTrees: Introduction and Usage}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+
+# Introduction
+The R package SBMTrees (Sequential Imputation with Bayesian Trees Mixed-Effects Models) provides a powerful Bayesian non-parametric framework for imputing missing covariates and outcomes in longitudinal data under the Missing at Random (MAR) assumption. The package leverages centralized Dirichlet Process (CDP) Normal Mixture priors to model non-normal random effects and errors, offering robust handling of model misspecification and capturing complex relationships in longitudinal data.
+
+This vignette introduces the key functionalities of the package, including:
+
+* Prediction: Using `BMTrees_prediction` to predict longitudinal outcomes.
+* Imputation: Using `sequential_imputation` for imputing missing values.
+
+# Install and load the package
+```{r setup}
+library(SBMTrees)
+library(mitml)
+library(lme4)
+```
+
+# Prediction
+The `BMTrees_prediction` function is used to predict longitudinal outcomes based on Bayesian Mixed-Effects Models. Below is an example of how to generate data, split it into training and testing datasets, and run predictions.
+```{r prediction_sim}
+# Simulate data
+data <- simulation_prediction(
+  n_subject = 100, 
+  seed = 1234, 
+  nonlinear = TRUE, 
+  nonrandeff = TRUE, 
+  nonresidual = TRUE
+)
+
+# Extract training and testing datasets
+X_train <- data$X_train
+Y_train <- data$Y_train
+Z_train <- data$Z_train
+subject_id_train <- data$subject_id_train
+
+X_test <- data$X_test
+Z_test <- data$Z_test
+subject_id_test <- data$subject_id_test
+
+Y_test_true <- data$Y_test_true
+
+```
+
+We then run the prediction model `BMTrees`, with 3 burn-in iterations and 4 posterior samples. The number of burn-in and posterior iterations should be increase to 3000 and 4000, respectively. Here we only use the small numbers to simply debug.
+```{r prediction}
+# Fit the predictive model
+model <- BMTrees_prediction(
+  X_train, Y_train, Z_train, subject_id_train, 
+  X_test, Z_test, subject_id_test, 
+  model = "BMTrees", 
+  binary = FALSE, 
+  nburn = 3L, 
+  npost = 4L, 
+  skip = 1L, 
+  verbose = FALSE, 
+  seed = 1234
+)
+
+# Posterior expectation for the testing dataset
+posterior_predictions <- model$post_predictive_y_test
+head(colMeans(posterior_predictions))
+```
+
+To evaluate the model's predictive performance, we compute the Mean Absolute Error (MAE), and the Mean Square Error (MSE). We also calculate the 95% posterior predictive intervals to check coverage, and visualize the results using scatterplots of true versus predicted values. 
+
+```{r prediction_evaluation}
+point_predictions = colMeans(posterior_predictions)
+
+# Compute MAE
+mae <- mean(abs(point_predictions - Y_test_true))
+cat("Mean Absolute Error (MAE):", mae, "\n")
+
+# Compute MSE
+mse <- mean((point_predictions - Y_test_true)^2)
+cat("Mean Squared Error (MSE):", mse, "\n")
+
+# Compute 95% credible intervals
+lower_bounds <- apply(posterior_predictions, 2, quantile, probs = 0.025)
+upper_bounds <- apply(posterior_predictions, 2, quantile, probs = 0.975)
+
+# Check if true values fall within the intervals
+coverage <- mean(Y_test_true >= lower_bounds & Y_test_true <= upper_bounds)
+cat("95% Posterior Predictive Interval Coverage:", coverage * 100, "%\n")
+
+
+
+plot(Y_test_true, point_predictions, 
+     xlab = "True Values", 
+     ylab = "Predicted Values", 
+     main = "True vs Predicted Values")
+abline(0, 1, col = "red") # Add a 45-degree reference line
+
+```
+
+
+# Multiple Imputation
+The `sequential_imputation` function is used to impute missing covariates and outcomes in longitudinal data. Below is an example of how to generate longitudinal data with MAR missing, and run imputations.
+```{r imputation_sim}
+# Simulate data with missing values
+data <- simulation_imputation(
+  n_subject = 100, 
+  seed = 1234, 
+  nonrandeff = TRUE, 
+  nonresidual = TRUE, 
+  alligned = FALSE
+)
+
+# Extract components of the dataset
+X_mis <- data$X_mis   # Covariates with missing values
+Y_mis <- data$Y_mis   # Outcomes with missing values
+Z <- data$Z           # Random predictors
+subject_id <- data$subject_id
+
+```
+
+We then run the sequential imputation with `BMTrees`, with 3 burn-in iterations, 40 posterior iterations, and sample one posterior sample for every 2 posterior iterations, ensuring 20 multiply-imputed sets are generated. The number of burn-in and posterior iterations should be increase to 3000 and 4000, respectively. Here we only use the small numbers to simply debug.
+```{r imputation}
+# Run the sequential imputation
+imputed_model <- sequential_imputation(
+  X_mis, Y_mis, Z, subject_id, 
+  type = rep(0, ncol(X_mis)), 
+  binary_outcome = FALSE, 
+  model = "BMTrees", 
+  nburn = 3L, 
+  npost = 40L, 
+  skip = 2L, 
+  verbose = FALSE, 
+  seed = 1234
+)
+
+# Extract imputed data
+imputed_data <- imputed_model$imputed_data
+dim(imputed_data) # Dimensions: posterior samples x observations x variables
+```
+
+To evaluate the model's imputation performance, we apply Rubin`s rule to estimate linear mixed-effects model on the multiply-imputed sets.
+```{r imputation_evaluation}
+# create structure which can be used in mitml
+MI_data = list()
+for (i in 1:dim(imputed_data)[1]) {
+  MI_data[[i]] = cbind(as.data.frame(imputed_data[i,,]), Z, subject_id)
+  colnames(MI_data[[i]]) = c(colnames(X_mis), "Y", "Z1", "Z2", "Z3", "subject_id")
+}
+MI_data <- as.mitml.list(MI_data)  # Replace with actual datasets
+# Fit the model on each imputed dataset
+lmm_results <- with(MI_data, lmer(Y ~ X1 + X2 + X3 + X4 + X5 + X6 + X7 + X8 + X9 + (0 + Z1 + Z2 + Z3 | subject_id)))
+
+# Pool fixed effects using Rubin's Rules
+pooled_results <- testEstimates(lmm_results)
+
+# Print pooled results
+print(pooled_results)
+
+```
+
+# Summary
+The SBMTrees package provides flexible tools for handling missing values and making predictions in longitudinal data. By leveraging Bayesian non-parametric methods, it effectively addresses challenges associated with model misspecification, non-normal random effects, and non-normal errors.
+
+For further details, please refer to the package documentation and the paper: Nonparametric Bayesian Additive Regression Trees for Predicting and Handling Missing Covariates and Outcomes in Longitudinal Data.
+
+
+# License
+
+This vignette is part of the SBMTrees R package and is distributed under the terms of the GNU General Public License (GPL-2).
