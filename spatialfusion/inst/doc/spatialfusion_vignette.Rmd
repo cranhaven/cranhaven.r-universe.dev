@@ -1,0 +1,232 @@
+---
+title: "spatialfusion: short demo"
+author: "Craig Wang (craig.wang@math.uzh.ch)"
+date: "June 21, 2019"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteEncoding{UTF-8}
+  %\VignetteIndexEntry{spatialfusion: short demo}
+  %\VignetteEngine{knitr::rmarkdown}
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, cache = TRUE, fig.align = "center")
+Sys.setenv("OMP_THREAD_LIMIT" = 2)
+```
+This brief demo provides code and output for fitting spatial fusion models using R package **spatialfusion**. The first section analyze the built-in synthetic dataset with INLA implementation while the second section analyze a simulated dataset with Stan implementation. The `method` argument in `fusionData()` function decides on which implementation to use.
+
+# 1. Spatial fusion modelling with INLA on built-in synthetic data
+
+## Load libraries
+```{r}
+library(spatialfusion)
+library(tmap, quietly = TRUE)
+library(sp, quietly = TRUE)
+library(sf, quietly = TRUE)
+```
+
+## Load and view built-in synthetic data
+
+```{r}
+summary(dataGeo)
+summary(dataLattice)
+summary(dataPP)
+```
+
+## Plot data
+
+```{r, message = FALSE, out.width = '50%'}
+tm_shape(dataLattice) + tm_polygons(col = "white") +
+  tm_shape(dataGeo) + tm_dots(size = 0.1) +
+  tm_add_legend(type = "symbol", shape = 16, size = 0.3, col = "black", label = "geostatistical") +
+  tm_shape(dataPP) + tm_symbols(col = "red", shape = 4, size = 0.02) +  
+  tm_add_legend(type = "symbol", shape = 4, size = 0.2, col = "red", label = "point pattern") +
+  tm_layout(main.title = "dataGeo, dataPP", main.title.size = 1, 
+            frame = F, fontface = 2, legend.outside = T)
+```
+
+```{r, message = FALSE, out.width = '50%'}
+tm_shape(dataLattice) +
+  tm_fill(col = "mr", style = "fixed", breaks = c(0, 0.5, 2, 10, 30),
+          title = "Mortality rate \n(per thousand)", legend.reverse = T) + tm_borders() +
+  tm_layout(main.title = "dataLattice", main.title.size = 1, frame = F, fontface = 2,
+            legend.position = c(0.77,0.8), legend.text.size = 0.5, legend.title.size = 0.5)
+```
+
+## Data preparation
+```{r, message = FALSE}
+dat <- fusionData(geo.data = dataGeo, geo.formula = lungfunction ~ covariate,
+                  lattice.data = dataLattice,
+                  lattice.formula = mortality ~ covariate + log(pop),
+                  pp.data = dataPP, distributions = c("normal", "poisson"),
+                  method = "INLA")
+
+dat
+```
+
+## Fit a spatial fusion model
+```{r}
+if (require(INLA)){
+mod <- fusion(data = dat, n.latent = 1, bans = matrix(c(0,0,0), ncol = 1),
+              pp.offset = 400, prior.range = c(0.1, 0.5),
+              prior.sigma = c(1, 0.5),  mesh.locs = dat$locs_point,
+              mesh.max.edge = c(0.05, 0.5))
+}
+```
+
+## Inspect the fit
+```{r, fig.width = 8, fig.height = 5}
+if (require(INLA)){
+mod_fit <- fitted(mod, type = "link")
+oldpar <- par(mfrow = c(1,2))
+plot(dataGeo$lungfunction, mod_fit$point1,
+     xlab = "Observed", ylab = "Fitted")
+abline(0,1)
+plot(log(dataLattice$mortality), mod_fit$area1,
+     xlab = "Observed", ylab = "Fitted")
+abline(0,1)
+par(oldpar)
+}
+
+```
+
+## Check parameter estimates
+```{r}
+if (require(INLA)){
+summary(mod, digits = 3)
+}
+```
+
+## Diagnostic plots
+```{r, message = FALSE}
+if (require(INLA)){
+plot(mod, interactive = FALSE)
+}
+```
+
+```{r, message = FALSE, out.width = '50%'}
+if (require(INLA)){
+plot(mod, posterior = FALSE)
+}
+```
+
+## Predict latent surface
+```{r, out.width = '50%'}
+if (require(INLA)){
+pred.locs <- st_as_sf(spsample(as_Spatial(dataDomain), 20000, type = "regular"))
+mod.pred <- predict(mod, pred.locs)
+mod.pred <- st_set_crs(mod.pred, "+proj=longlat +ellps=WGS84")
+tm_shape(mod.pred) +
+  tm_symbols(col = "latent.s11", shape = 15, size = 0.05, style = "cont",
+             midpoint = NA, legend.col.reverse = TRUE, palette = "Oranges",
+             title.col = "Latent process") +
+  tm_shape(dataLattice) + tm_borders() +
+  tm_layout(frame = FALSE, legend.outside = TRUE)
+}
+```
+
+# 2. Spatial fusion modelling with Stan on simulated data
+
+## Simulate data
+
+```{r, message = FALSE}
+dat <- fusionSimulate(n.point = 200, n.area = 30, n.grid = 5, n.pred = 100,
+                      psill = 1.5, phi = 1, nugget = 0, tau.sq = 0.2,
+                      dimension = 10, domain = NULL, point.beta = list(rbind(1,5)),
+                      area.beta = list(rbind(1.5, 1.5)), nvar.pp = 1,
+                      distributions = c("normal","poisson"),
+                      design.mat = matrix(c(2, 0.5, 1), ncol = 1), 
+                      pp.offset = 0.5, seed = 1)
+
+geo.data <- st_as_sf(data.frame(y = dat$mrf[dat$sample.ind,"x"],
+                       x = dat$mrf[dat$sample.ind,"y"],
+                       cov.point = dat$data$X_point[,2],
+                       outcome =dat$dat$Y_point[[1]]), 
+                     coords = c("x","y"),
+                     crs = st_crs("+proj=longlat +ellps=WGS84"))
+            
+                               
+lattice.data <- cbind(dat$poly,
+                     (data.frame(outcome = dat$data$Y_area[[1]],
+                                 cov.area = dat$data$X_area[,2])))
+lattice.data <- st_set_crs(lattice.data, "+proj=longlat +ellps=WGS84")
+
+pp.data <- dat$data$lgcp.coords[[1]]
+pp.data <- st_set_crs(pp.data, "+proj=longlat +ellps=WGS84")
+```
+
+## Plot data
+
+```{r, out.width = '45%'}
+tm_shape(lattice.data) + tm_polygons(col = "white") + 
+  tm_shape(geo.data) + tm_dots(size = 0.1) +
+  tm_add_legend(type = "symbol", shape = 16, size = 0.3, col = "black", label = "geostatistical") +
+  tm_shape(pp.data) + tm_symbols(col = "red", shape = 4, size = 0.02) +
+  tm_add_legend(type = "symbol", shape = 4, size = 0.2, col = "red", label = "point pattern") +
+  tm_layout(main.title = "geo.data, pp.data", main.title.size = 1, 
+            frame = FALSE, fontface = 2, legend.outside = TRUE)
+```
+
+
+```{r, out.width = '35%'}
+tm_shape(lattice.data) + 
+  tm_fill(col="outcome", style="fixed", breaks=c(0, 10, 50, 200, 1200),
+          title = "Outcome", legend.reverse = T) + tm_borders() +
+  tm_layout(main.title="lattice.data", main.title.size = 1, frame = FALSE, fontface = 2,
+            legend.position = c(0.77,0.8), legend.text.size = 0.5, legend.title.size = 0.5)
+```
+
+
+## Data preparation
+```{r}
+dat2 <- fusionData(geo.data = geo.data, geo.formula = outcome ~ cov.point,
+                   lattice.data = lattice.data, lattice.formula = outcome ~ cov.area,
+                   pp.data = pp.data, distributions = c("normal","poisson"), 
+                   method = "Stan")
+dat2
+```
+
+## Fit a spatial fusion model
+```{r, results = "hide"}
+mod <- fusion(data = dat2, n.latent = 1, bans = matrix(c(0,0,0), ncol = 1),
+              pp.offset = 0.5, prior.phi = list(distr = "normal", pars = c(1, 1)),
+              nsamples = 1000, nburnin = 500, nchain = 1, ncore = 1)
+```
+
+## Inspect the fit
+```{r, fig.width = 8, fig.height = 5}
+mod_fit <- fitted(mod, type = "link")
+oldpar <- par(mfrow = c(1,2))
+plot(dat$data$Y_point[[1]], mod_fit$point1, xlab = "Observed", ylab = "Fitted")
+abline(0,1)
+plot(log(dat$data$Y_area[[1]]), mod_fit$area1, xlab = "Observed", ylab = "Fitted")
+abline(0,1)
+par(oldpar)
+```
+
+## Check parameter estimates
+```{r}
+summary(mod, digits = 2) 
+```
+
+## Diagnostic plots
+```{r, message = FALSE}
+plot(mod, interactive = FALSE)
+```
+
+```{r, message = FALSE}
+plot(mod, posterior = FALSE) 
+```
+
+## Predict latent surface and compare with simulated truth
+```{r, fig.width = 5, fig.height = 5}
+mod.pred <- predict(mod, new.locs = dat$pred.loc, type = "summary")
+oldpar <- par(mfrow = c(1,1))
+plot(dat$mrf[dat$pred.ind, c("sim1")], mod.pred$latent1, 
+     xlab = "Truth", ylab = "Predicted")
+abline(0,1)
+par(oldpar)
+```
+
