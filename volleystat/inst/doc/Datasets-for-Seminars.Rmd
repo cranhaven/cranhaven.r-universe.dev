@@ -1,0 +1,278 @@
+---
+title: "Datasets for Seminars"
+author: "Viktor Bozhinov"
+date: "`r Sys.Date()`"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Datasets for Seminars}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+```{r message=FALSE, warning=FALSE, include=FALSE, paged.print=FALSE}
+library(tidyr)
+library(dplyr)
+library(ggplot2)
+library(geosphere)
+library(diverse)
+library(tibble)
+library(foreign)
+
+data(matches, package = "volleystat")
+data(players, package = "volleystat")
+data(matchstats, package = "volleystat")
+data(staff, package = "volleystat")
+data(sets, package = "volleystat")
+data(team_adresses, package = "volleystat")
+data(match_adresses, package = "volleystat")
+```
+
+This vignette demonstrates how the volleystat package can be used to generate two datasets for the analysis of team diveristy and team performance and the demand for volleyball. Both datasets are used in a seminar on empirical sports economics in a bachelor degree programm. First, we generate a dataset which contains all matches with information on both teams, i.e., we split the matches dataset into a home and away dataset and join the corresponding away and home team information. In sum, we have then a dataset with information on each match from the home and away team perspective.
+
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+    # Select away team matches
+
+    df_1 <- matches %>% 
+            rename(team_id_2  = team_id,
+                   team_name_2 = team_name,
+                   set_won_team_2   = set_won) %>% 
+            filter(match == "away") %>%
+            select(-match)
+
+    # Select home team matches and join away team information
+    df_home <- matches %>% 
+               rename(team_id_1   = team_id,
+                      team_name_1 = team_name,
+                      set_won_team_1   = set_won) %>% 
+               filter(match == "home") %>% 
+               select(-match) %>% left_join(df_1) %>% mutate(match = "home")
+
+    # Select home team matches
+    df_1 <- matches %>% 
+            rename(team_id_2  = team_id,
+                   team_name_2 = team_name,
+                   set_won_team_2   = set_won) %>% 
+            filter(match == "home") %>%
+            select(-match)
+
+    # Select home team matches and join home team information
+    df_away <-  matches %>% 
+                rename(team_id_1   = team_id,
+                       team_name_1 = team_name,
+                       set_won_team_1   = set_won) %>% 
+                filter(match == "away") %>% 
+                select(-match) %>% left_join(df_1) %>% mutate(match = "away")
+
+    # Bind datasets
+    df <- bind_rows(df_home, df_away)
+
+    rm(df_away, df_1, df_home)
+
+```
+
+In the next step, we generate the variables match_points_team_1 and match_points_team_2. These variables are generated according to the offical VBL rules, i.e., a team is rewarded 3 points if it wins the match except in the case of a tie-break. In tie-breaks, the winning team is rewarded 2 points and the team which looses the match is rewarded 1 point. Note that we replace the match points with 0 in the play-off matches.
+
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+# Teams get 0 points if they win at most one set, 3 points of they win 3 sets
+# and the opponent wins at most one set. In case of tie-breaks, points are splitted.
+# The winning team gets 2 points and the other team 1 point.
+
+df <- df %>% 
+      mutate(match_points_team_1 = 
+             case_when(set_won_team_1 == 0 ~ 0, 
+                       set_won_team_1 == 1 ~ 0,
+                       set_won_team_1 == 2 ~ 1,
+                       set_won_team_1 == 3 & set_won_team_2 == 2 ~ 2,
+                       set_won_team_1 == 3 & set_won_team_2 == 1 ~ 3,
+                       set_won_team_1 == 3 & set_won_team_2 == 0 ~ 3)) %>% 
+      mutate(match_points_team_2 = 
+             case_when(set_won_team_2 == 0 ~ 0, 
+                       set_won_team_2 == 1 ~ 0,
+                       set_won_team_2 == 2 ~ 1,
+                       set_won_team_2 == 3 & set_won_team_1 == 2 ~ 2,
+                       set_won_team_2 == 3 & set_won_team_1 == 1 ~ 3,
+                       set_won_team_2 == 3 & set_won_team_1 == 0 ~ 3)) %>% 
+      mutate(match_points_team_1 = 
+               replace(match_points_team_1, competition_stage != "Main round", 0),
+             match_points_team_2 = 
+               replace(match_points_team_2, competition_stage != "Main round", 0))
+```
+
+It might be useful to measure the overall performance difference between teams. This can be done twofold. First, using the difference of points the team scored in previous matches. Second, sometimes a better measure might be the ratio or difference of won sets to lost sets. Both measures are computed by sorting the dataset by date, summing up the number of league points/sets won and substracting the corresponding value for each match to ensure that the measures are adjusted to the value before each match. Note that the league points in the play-off matches equal the number of points at the end of the main round. Finally,the difference between the league points, the quotient of the sets won by each team, and the set difference is computed.
+
+```{r echo=TRUE}
+# Generate league_points (sum of match_points before match) and 
+# league_sets (sum of sets won before match)
+
+df <- df %>% 
+      group_by(league_gender, season_id, team_id_1) %>%
+      arrange(date_time) %>%
+      mutate(league_points_team_1 = cumsum(match_points_team_1),
+             league_points_team_1 = league_points_team_1 - match_points_team_1) %>% 
+      mutate(league_sets_team_1 = cumsum(set_won_team_1),
+             league_sets_team_1 = league_sets_team_1 - set_won_team_1) %>% 
+      ungroup() %>% 
+      group_by(league_gender, season_id, team_id_2) %>%
+      arrange(date_time) %>%
+      mutate(league_points_team_2 = cumsum(match_points_team_2),
+             league_points_team_2 = league_points_team_2 - match_points_team_2)  %>%
+      mutate(league_sets_team_2 = cumsum(set_won_team_2),
+             league_sets_team_2 = league_sets_team_2 - set_won_team_2) %>% 
+      ungroup() %>% 
+      mutate(league_points_diff   = league_points_team_1 - league_points_team_2,
+             league_sets_quotient = league_sets_team_1/league_sets_team_2,
+             league_sets_diff     = league_sets_team_1 - league_sets_team_2) %>% 
+      select(-c(set_won_team_1, set_won_team_2))
+```
+
+For analyzing the probability to win a match it might be useful to measure the distance between the home sport facility of a team and the match location. To do so, we join the match adress to the dataset. Then we select the relevant information from the team_adresses dataset and join it twice to the dataset. Once for team 1 and once for team 2. Then we make use of the geosphere package to compute the distance between the home sport facility of each team and the sport facility where the match is played (distance_team_1 and distance_team_2). In this step we also join information on the capacity of of the sport facility, i.e., the maximum number of spectators for the home sport facility of team 1 and team 2 (max_spectators_team_1 and max_spectators_team_2).
+
+```{r message=FALSE, warning=FALSE, paged.print=FALSE}
+# Rename coordinates of the match location
+df <- df %>% left_join(match_adresses) %>% rename(lat_match = lat,
+                                                  lon_match = lon)
+
+# Select relevant information from team_adresses
+tmp <- team_adresses %>% select(season_id, team_id, gym_adress, max_spectators, lon, lat)
+
+# Join the dataset twice for team 1 and team 2
+df <- df %>% 
+      left_join(tmp, by = c("season_id" = "season_id", "team_id_1" = "team_id")) %>% 
+      rename(lon_team_1 = lon,
+             lat_team_1 = lat,
+             gym_adress_team_1 = gym_adress,
+             max_spectators_team_1 = max_spectators) %>% 
+      left_join(tmp, by = c("season_id" = "season_id", "team_id_2" = "team_id")) %>% 
+      rename(lon_team_2 = lon,
+             lat_team_2 = lat,
+             gym_adress_team_2 = gym_adress,
+             max_spectators_team_2 = max_spectators)
+
+# Compute the distance of team 1's home gym to match gym
+p1 <- as.matrix(df %>% select(lon_team_1, lat_team_1))
+p2 <- as.matrix(df %>% select(lon_match, lat_match))
+
+# Compute the distance in km to the dataset
+df$distance_team_1 <- distMeeus(p1, p2)/1000
+
+# Compute the distance of team 1's home gym to match gym
+p1 <- as.matrix(df %>% select(lon_team_2, lat_team_2))
+p2 <- as.matrix(df %>% select(lon_match, lat_match))
+
+# Compute the distance in km to the dataset
+df$distance_team_2 <- distMeeus(p1, p2)/1000
+
+rm(p1, p2, tmp)
+```
+
+Now we have to define the maximal number of spectators (gym_capacity) which can attend the match. To do so, we have to distinguish between home and away matches. For home matches, the variable max_spectators equals to the variable max_spectators_team_1. For away matches, the variable equals the variable max_spectators_team_2. In addition, if the adress of the match location does not equal to the gym adress of the home team, then the capacity of the gym is unknown. Then we have to change the value of the varable to NA.
+
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+df <- df %>% 
+      mutate(gym_capacity = 
+               case_when(match == "home" & (lon_match == lon_team_1 & lat_match == lat_team_1) ~ max_spectators_team_1, 
+                         match == "away" & (lon_match == lon_team_2 & lat_match == lat_team_2) ~ max_spectators_team_2
+                       )) %>% 
+      select(-starts_with("lon_"), -starts_with("lat"), -c(max_spectators_team_1, max_spectators_team_2,
+             adress, gym_adress_team_1, gym_adress_team_2))
+
+```
+
+Next we have to compute the national diversity, roster size and mean height of teams. Herefore, we join the players dataset to the matchstats dataset and compute several diversity measures for each match. We do this to ensure that we measure the diversity of these dimensions among the fielded players. National diversity is computed using the diverse package as the Blau index of diversity and the Herfindahl-Herschman-Index. Roster size is computed from the players dataset and equals the number of players which was on the roster of the team. Finally, the mean height of the fielded players is computed. In the last step, we generate a winning dummy.
+
+```{r}
+# Join nationality information to matchstats
+lineups <- matchstats %>% 
+           select(league_gender:player_id) %>% 
+           left_join(players, by = c("league_gender", "season_id", "team_id", "player_id")) %>% 
+           select(-c(team_name, lastname, firstname, gender, shirt_number, player_id))
+
+# Prepare dataset to compute diversity measures using diverse package
+nat_diversity <- lineups %>% 
+                 group_by(season_id, match_id, team_id, nationality) %>% 
+                 summarise(n = n()) %>% 
+                 unite(season_id, match_id, team_id, col = "id", sep = "_") %>% 
+                 mutate(id = factor(id)) %>% 
+                 ungroup()
+
+# Compute diversity measures, separate ids and select relevant measures
+nat_diversity <- diversity(as.data.frame(nat_diversity)) %>% 
+                 rownames_to_column(var = "id") %>% 
+                 separate(id, into = c("season_id", "match_id", "team_id"), sep = "_", convert = TRUE) %>% 
+                 select(season_id:team_id, HHI, blau.index) %>% 
+                 rename(herfindahl_herschman_index = HHI,
+                        blau_index = blau.index)
+
+# Roster size
+roster <- players %>% 
+          group_by(season_id, team_id) %>% 
+          summarise(roster_size_team_1 = n())  %>% 
+          ungroup()
+
+# Mean height
+height <- matchstats %>% 
+          select(league_gender:player_id) %>% 
+          left_join(players, by = c("league_gender", "season_id", "team_id", "player_id")) %>% 
+          select(-c(team_name, lastname, firstname, gender, shirt_number, player_id)) %>%
+          mutate(height = replace(height, height == 78, 178)) %>% 
+          group_by(season_id, match_id, team_id) %>% 
+          summarise(mean_height = mean(height, na.rm = TRUE)) %>% 
+          ungroup()
+
+# Join to final dataset
+df <- df %>% left_join(nat_diversity, by = c("season_id" = "season_id", 
+                                       "match_id" = "match_id", 
+                                       "team_id_1" = "team_id")) %>% 
+             left_join(roster, by = c("season_id" = "season_id", 
+                                       "team_id_1" = "team_id")) %>% 
+             left_join(height, by = c("season_id" = "season_id", 
+                                       "match_id" = "match_id", 
+                                       "team_id_1" = "team_id"))
+
+# Generate winning variable
+df <- df %>% mutate(win = case_when(match_points_team_1 == 3 ~ 1,
+                                    match_points_team_1 <= 2 ~ 0))
+
+rm(nat_diversity, roster, height, lineups)
+```
+
+Finally, we select all relevant variables for the analysis and create additional factor variables for time and day of the match.
+
+```{r}
+df <- df %>%
+      mutate(weekday = factor(weekdays(date_time)),
+             date    = format(date_time, '%d-%m-%Y'),
+             time    = strftime(date_time, format="%H:%M:%S"),
+             match   = factor(match),
+             league_gender = factor(league_gender),
+             competition_stage = factor(competition_stage)) %>%
+      select(league_gender:match_id, match_duration, gym,
+             spectators, gym_capacity, date, time, weekday, match, win,
+             team_name_1, team_name_2, team_id_1, team_id_2,
+             match_points_team_1, match_points_team_2, 
+             league_points_team_1, league_points_team_2,
+             league_sets_team_1, league_sets_team_2,
+             distance_team_1, distance_team_2,
+             roster_size_team_1, blau_index, 
+             herfindahl_herschman_index, mean_height)
+```
+
+Now we can split the dataset into a dataset for the analysis of the winning probability depending on varios team characteristics and a dataset for the analysis of the determinants of the number of spectators.
+
+```{r}
+df_1 <- df
+
+df_2 <- df %>%
+        filter(match == "home")
+
+# write.dta(df, "df_1.dta")
+# write.dta(df, "df_2.dta")
+```
