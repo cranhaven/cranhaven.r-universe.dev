@@ -1,0 +1,209 @@
+---
+title: "Getting started with ARUtools"
+output: rmarkdown::html_vignette
+description: >
+  If you're just digging into procesing your ARU files or want 
+  to plan your folder structure, start here. You'll get a sense of 
+  what you need to have prepared before you start and how to read in the
+  file metadata from your ARU files.
+vignette: >
+  %\VignetteIndexEntry{Getting started with ARUtools}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+options(tibble.print_min = 4L, tibble.print_max = 4L)
+```
+
+The ARUtools package aims to make processing of large quantities of acoustic 
+recordings easier through automation of metadata processing and sub-sampling of recordings.
+
+
+Prior to working on your ARU recordings or meta data you must:
+
+ * Know your goals of interpreting recordings
+ 
+ * Transferred your recordings to a suitable and organized location for processing
+ 
+ * Prepare your site information so it can be linked with the recordings
+ 
+
+This introduction will walk through the first few steps of extracting the metadata,
+adding site information, and calculating sunrise and sunset information.
+
+## Read file metadata 
+```{r}
+#| message: false
+library(ARUtools)
+```
+
+Let's use some example data to get started. 
+
+```{r}
+head(example_files)
+```
+
+This is a list of hypothetical ARU files from different sites, and using different
+ARUs. This is fairly messily organized data in that there is no clear structure to the folders and there appear to be unneeded characters in the files. However give the standard structure of site names, ARU ID codes, and datetime stamps, we can extract that information from the file structure alone.
+
+First things first, we'll clean up the meta data associated with the files.
+
+```{r}
+m <- clean_metadata(project_files = example_files)
+```
+
+Because our example files follow the standard formats for Site ID, ARU Id, and
+date/time, we can extract all the information without having to change any of the
+default arguments.
+
+```{r}
+m
+```
+
+
+If you were reading directly from files you would assign a base directory and then have 
+`clean_metadata` read the files in that folder and sub-folders.
+
+```{r eval=FALSE}
+base_directory <- "/path/to/project/files/"
+m <- clean_metadata(project_dir = base_directory)
+```
+
+
+## Add coordinates
+Next, we want to add our coordinates to this data. 
+
+If your data has GPS logs included, they would have been detected in the above step
+and you could now use `g <- clean_gps(m)` to create a list of GPS coordinates.
+
+However, many models of ARUs do not have an internal GPS and those that do, may not accurately record the location where the ARU is deployed to. Therefore we recommend that you
+create a site index file to manually record deployment locations, like this one.
+
+```{r}
+example_sites
+```
+
+While you can simply specify a single date, it is recommended that you use both
+a start date and an end date for the best matching. This is critical if you are moving
+your ARUs during a season.
+
+Now let's clean up this list so we can add these sites to our metadata.
+
+```{r, error = TRUE}
+sites <- clean_site_index(example_sites)
+```
+
+Ooops! We can see right away that `clean_site_index()` expects the data to be
+in a particular format. Luckily we can let it know if we've used a different 
+format.
+
+```{r}
+sites <- clean_site_index(example_sites,
+  name_aru_id = "ARU",
+  name_site_id = "Sites",
+  name_date_time = c("Date_set_out", "Date_removed"),
+  name_coords = c("lon", "lat")
+)
+```
+
+Hmm, that's an interesting message! This means that some of our deployment
+dates overlap. ARUtools assumes that if you set out an ARU on a specific day, 
+you probably didn't set it out at midnight (i.e. the very start of that day).
+Since we assume you are likely using ARUs for recording in the early morning or 
+late at night, we shift the dates start/end times to noon as an estimate of when
+the ARU was likely deployed.
+
+If your ARU was deployed at midnight, use `resolve_ovelaps = FALSE`. Or, if you
+know the exact time your ARU was deployed, use a date/time rather than just a
+date in your site index. 
+
+```{r}
+sites
+```
+
+Note that we've lost a couple of non-standard columns: `Plots` and `Subplot`. 
+
+We can retain these by specifying `cols_extra`. 
+
+```{r}
+sites <- clean_site_index(example_sites,
+  name_aru_id = "ARU",
+  name_site_id = "Sites",
+  name_date_time = c("Date_set_out", "Date_removed"),
+  name_coords = c("lon", "lat"),
+  name_extra = c("Plots", "Subplot")
+)
+sites
+```
+
+We can even be fancy and rename them for consistency by using named vectors.  
+
+```{r}
+sites <- clean_site_index(example_sites,
+  name_aru_id = "ARU",
+  name_site_id = "Sites",
+  name_date_time = c("Date_set_out", "Date_removed"),
+  name_coords = c("lon", "lat"),
+  name_extra = c("plot" = "Plots", "subplot" = "Subplot")
+)
+sites
+```
+
+
+
+Now let's add this site-related information to our metadata.
+
+
+```{r}
+m <- add_sites(m, sites)
+m
+```
+
+
+## Calculate times to sunrise and sunset
+
+Great! We have all the site-related information to describe that recording.
+
+Now to prepare for our selection procedure, the last thing we need to do is 
+calculate the time to sunrise or sunset. 
+
+Here we need to be clear about what timezone the ARU unit was recording times as.
+
+There are two options.
+
+The first option is that all ARUs were set up at home base before deployment.
+In this case it's possible they were deployed in a location with a different 
+timezone than what they were recording in. This doesn't matter, as long as you 
+specify the programmed timezone here. 
+In this case, use `tz = "America/Toronto"`, or whichever time
+zone was used. Note that timezones must be one of `OlsonNames()`.
+
+The second option is that each ARU unit was set up to record in 
+the local timezone where it was placed. If this is the case, specify `tz = "local"`
+and the `calc_sun()` function will use coordinates to determine local timezones.
+
+(See the Dealing with Timezones vignette for more details).
+
+In our example, let's assume that the ARUs were set up in each location they 
+were deployed. So we'll use `tz = "local"`, the default setting.
+```{r}
+m <- calc_sun(m)
+dplyr::glimpse(m)
+```
+
+Tada! Now we have a complete set of cleaned metadata associated with each recording.
+
+This is a very simple example and much of the pain in large projects comes from
+complications, so be sure to check out `vignette("customizing")` and `vignette("spatial")`
+to dig into some of these issues.
+
+## Next steps
+
+Now that we have a set of cleaned metadata the next step is to select recordings.
+To do this using a random sampling approach check out the subsampling article `vignette("SubSample")`.
+

@@ -1,0 +1,361 @@
+---
+title: "Customizing `clean_metadata()`"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Customizing `clean_metadata()`}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+
+```{r}
+#| message: false
+library(ARUtools)
+library(dplyr)
+```
+
+In our "Getting started" tutorial, we worked with a set of files that matched the
+expected metadata patterns. However, this is probably not going to be the case
+much of the time.
+
+Here we'll go over how to customize ARUtools functions to work with your data.
+
+For example, let's assume your files look like this, with two recordings, one
+at Site 100-a45 May 4th 2020 at 5:25 am with ARU unit S4A1234. The other at 
+Site 102-b56 on the same day but at 5:40 am with ARU unit S4A1111.
+
+```{r}
+f <- c(
+  "site100-a45/2020_05_04_05_25_00_s4a1234.wav",
+  "site102-b56/2020_05_04_05_40_00_s4a1111.wav"
+)
+```
+
+If we try to clean this with the default arguments, we're going to have some problems.
+
+```{r}
+clean_metadata(project_files = f)
+```
+
+## Regular expressions
+
+First let's talk a bit about how `clean_metadata()` extracts information.
+
+This function uses [regular expressions](https://stringr.tidyverse.org/articles/regular-expressions.html) 
+to match specific text patterns in the file path of each recording. 
+Regular expressions are really powerful, but also reasonably complicated and can
+be confusing. 
+
+For example, by default, `clean_metadata()` matches site ids with the expression 
+`r create_pattern_site_id()`.
+
+Yikes!
+
+Broken down, that means look for a "Q" *or* "P" (`((Q)|(P))`) 
+followed by two digits (`\\d{2}`)
+followed by a separator, either `_` *or* `-` (`_|-`)
+followed by a single digit (`\\d{1}`).
+
+This clearly doesn't define the sites in our example here.
+You can supply your own regular expression, instead.
+
+```{r}
+m <- clean_metadata(project_files = f, pattern_site_id = "site\\d{3}-(a|b)\\d{2}")
+m
+m$site_id
+```
+
+
+However, with sites that follow a reasonable pattern of a prefix, followed by digits
+and optionally a suffix with digits, it might be easier to use a helper
+function to create the regular expression for you.
+
+For example, to create a site id pattern we can use `create_pattern_site_id()`.
+
+We specify the `prefix` text as well as how many digits we might expect, a separator, 
+`suffix` text and how many suffix digits there might be.
+
+```{r}
+pat_site <- create_pattern_site_id(
+  prefix = "site", p_digits = 3,
+  sep = "-",
+  suffix = c("a", "b"), s_digits = 2
+)
+pat_site
+```
+
+```{r}
+m <- clean_metadata(project_files = f, pattern_site_id = pat_site)
+m$site_id
+```
+
+It can be useful to look at the default patterns in the functions to see what 
+might be different in your data. 
+
+See `?create_pattern_date` or any `create_pattern` function to pull up the documentation 
+and explore the defaults as well as examples. 
+
+It can also be useful to test out a pattern before running all your files.
+
+We can use the `test_pattern()` function to see if our pattern successfully 
+extracts the site id from the first file in our list.
+```{r}
+test_pattern(f[1], pat_site)
+```
+
+
+Let's continue customizing our metadata patterns by specifying ARU ids, dates and times.
+
+```{r}
+pat_aru <- create_pattern_aru_id(arus = "s4a", n_digits = 4)
+
+m <- clean_metadata(
+  project_files = f,
+  pattern_site_id = pat_site,
+  pattern_aru_id = pat_aru,
+  pattern_dt_sep = "_"
+)
+m
+```
+
+## Other options
+
+### Date order
+
+Depending on your date formatting, you may also need to specify the order of the 
+year, month and day, in addition to changing the pattern. 
+
+```{r}
+f <- c(
+  "P01-1/05042020_052500_S4A1234.wav",
+  "P01-1/05042020_054000_S4A1111.wav"
+)
+```
+
+```{r}
+clean_metadata(
+  project_files = f,
+  pattern_dt_sep = "_",
+  pattern_date = create_pattern_date(order = "mdy"),
+  order_date = "mdy"
+)
+```
+
+Note that you need to specify it once when making the pattern, and then again 
+when telling the function how to turn the extracted text into a date.
+
+You can specify more than one order with `c("mdy", "ymd")`, but only do this if
+you *know* you have multiple orders in the file names. 
+In particular, try to avoid using both `mdy` and `dmy`. Some of these dates can
+be ambiguous (for example, what order is 05/05/2020?) and may not be parsed 
+correctly in these situations.
+
+
+### Matching multiple patterns
+
+```{r}
+f <- c(
+  "P01-1/05042020_052500_S4A1234.wav",
+  "P01-1/05042020_054000_S4A1111.wav",
+  "Site10/2020-01-01T09:00:00_BARLT100.wav",
+  "Site10/2020-01-02T09:00:00_BARLT100.wav"
+)
+```
+
+Sometimes your files may use more than one pattern. You can address this problem
+in one of two ways. 
+
+**One option is to run `clean_metadata()` twice and then join the outputs**
+
+```{r}
+m1 <- clean_metadata(
+  project_files = f,
+  pattern_dt_sep = "_",
+  pattern_date = create_pattern_date(order = "mdy"),
+  order_date = "mdy"
+)
+m1 <- filter(m1, !is.na(date_time)) # omit ones that didn't work
+m1
+
+m2 <- clean_metadata(
+  project_files = f,
+  pattern_site_id = create_pattern_site_id(prefix = "Site", s_digits = 0),
+  pattern_aru_id = create_pattern_aru_id(n_digits = 3)
+)
+m2 <- filter(m2, !is.na(date_time)) # omit ones that didn't work
+m2
+
+m <- bind_rows(m1, m2)
+m
+```
+
+With this approach you should check that the number of files in the end matches
+the number you expect.
+
+```{r}
+nrow(m)
+```
+
+**Another option is to supply multiple patterns to `clean_metadata()` or to the
+`create_pattern_XXX()` functions**
+
+```{r}
+m <- clean_metadata(
+  project_files = f,
+  pattern_dt_sep = c("_", "T"),
+  pattern_date = create_pattern_date(order = c("ymd", "mdy")),
+  order_date = c("ymd", "mdy"),
+  pattern_aru_id = create_pattern_aru_id(n_digits = c(3, 4)),
+  pattern_site_id = create_pattern_site_id(
+    prefix = c("P", "Site"),
+    sep = c("-", ""),
+    s_digits = c(1, 0)
+  )
+)
+m
+```
+
+**Which approach you should use depends on the situation.**
+
+The first approach means that the patterns being matched are more rigid. 
+There is less of a chance of accidentally matching an incorrect pattern.
+However, there is a chance of omitting files that don't match either pattern.
+
+The second approach is more flexible in matching patterns and allows you to do
+so all in one step, which is convenient. 
+However, the more flexible a pattern is, the more opportunities there are to get
+incorrect matches and date parsing. 
+
+With both approaches, it is important to double check the results and make sure
+the ids and date/times make sense.
+
+```{r}
+check_meta(m)
+check_meta(m, date = TRUE)
+check_problems(m)
+
+unique(m$site_id)
+unique(m$aru_id)
+```
+
+
+### Subsetting files
+
+You may not want to extract meta data for every file in your list or directory.
+Possibly this is because they're not relevant recordings, or because you have
+some formatting issues that make it easier to split into separate groups first.
+
+You can omit files using the `subset` and `subset_type` arguments.
+
+To keep only certain files, use the default `subset_type = "keep"`. To omit
+certain files, use `subset_type = "omit"`.
+
+To keep only files with the "a" prefix (note that `^` means 'at the start')
+```{r}
+clean_metadata(project_files = example_files, subset = "^a")
+```
+
+To omit all files with the "a" prefix
+```{r}
+clean_metadata(project_files = example_files, subset = "^a", subset_type = "omit")
+```
+
+### Matching non-wave files
+
+By default `clean_metadata()` looks for .wav files. If you want it to match 
+something else, adjust the `file_type` argument.
+
+```{r}
+f <- c(
+  "a_BARLT10962_P01_1/P01_1_20200502T050000_ARU.mp4",
+  "a_BARLT10962_P01_1/P01_1_20200503T052000_ARU.mp4"
+)
+```
+
+Other wise we'll run into problems...
+```{r, error = TRUE}
+clean_metadata(project_files = f)
+```
+
+```{r}
+clean_metadata(project_files = f, file_type = "mp4")
+```
+
+
+### Look arounds
+
+In some cases identifying what lies before or after a string of interest can help with extracting the pattern of interest. 
+Details of look arounds can be found on the ["stringr"](https://stringr.tidyverse.org/articles/regular-expressions.html#look-arounds)
+package website.
+
+
+The following code shows a set of files that contain repeated patterns that match both site and project folders. If we run 
+`clean_metadata()` it fails to detect dates and times. 
+```{r}
+f <- c(
+  "//BARLTs/DeploymentProjectXYZsites_202223/XYZBrantAirstrip/20230519_RemoteTrip2223/00015998_20230519T210900-0400_SS23.wav",
+  "//BARLTs/DeploymentProjectXYZsites_202223/XYZPermafrostPFSC-SP1/20230415_RemoteTrip2223/00015321_20230415T214700-0400_Owls23.wav",
+  "//BARLTs/DeploymentProjectXYZsites_202223/XYZfoxden30/20230623_RemoteTrip2223/00015370_20230623T062000-0400_SR23.wav",
+  "//BARLTs/DeploymentProjectXYZsites_202223/XYZfoxden107/20220922_RemoteTrip2223/00016130_20220922T000200-0400_NFC22.wav",
+  "//BARLTs/DeploymentProjectXYZsites_00202223/XYZfoxden107/20230711_RemoteTrip2223/00016130_20230711T093600-0400_SR23.wav"
+)
+
+m <- clean_metadata(
+  project_files = f,
+  pattern_site_id = create_pattern_site_id(prefix = "XYZ\\w+", p_digits = 0:3, sep = c("", "-"), s_digits = 0:1),
+  pattern_aru_id = create_pattern_aru_id(arus = "", n_digits = 8), quiet = T
+)
+```
+Even worse, it returns the wrong `site_id` values.
+
+```{r}
+m$site_id
+```
+
+
+To tackle the `site_id` issue we can add a look behind to clue into the directory
+before the `site_id` always ends with "202223/".
+
+
+```{r}
+m_site_id_fix <- clean_metadata(
+  project_files = f,
+  pattern_site_id = create_pattern_site_id(
+    prefix = "XYZ\\w+", p_digits = 0:3, sep = c("", "-"), s_digits = 0:1,
+    look_behind = "202223/"
+  ),
+  pattern_aru_id = create_pattern_aru_id(arus = "", n_digits = 8), quiet = T
+)
+
+m_site_id_fix$site_id
+```
+This corrects the `site_id` values but the generic "pattern_aru_id" means that the `clean_metadata()` fails
+to detect dates and time as the "pattern_aru_id" is excluded when looking for dates and times.
+
+```{r}
+m_fix <- clean_metadata(
+  project_files = f,
+  pattern_site_id = create_pattern_site_id(
+    prefix = "XYZ\\w+", p_digits = 0:3, sep = c("", "-"), s_digits = 0:1,
+    look_behind = "202223/"
+  ),
+  pattern_aru_id = create_pattern_aru_id(arus = "", n_digits = 8, 
+                                         sep = "", 
+                                         look_behind = "RemoteTrip2223/", 
+                                         look_ahead = "_"),
+  quiet = T
+)
+```
+
+
+In the end the look arounds helped us pull out stubborn `site_id` vaules
+and separate overlapping patterns of `aru_id` and dates and times.
+
+

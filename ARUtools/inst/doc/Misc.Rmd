@@ -1,0 +1,160 @@
+---
+title: "Other useful functions"
+output: rmarkdown::html_vignette
+description: >
+  This article covers the aditional steps important in dealing with
+  ARU recordings, however they often fall outside the standard workflow.
+vignette: >
+  %\VignetteIndexEntry{Other useful functions}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+library(ARUtools)
+library(dplyr)
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+options(tibble.print_min = 4L, tibble.print_max = 4L)
+```
+
+
+## Setting up your folder structure
+
+While most of `ARUtools` focuses on processing recordings once they are 
+transferred from ARUs, setting up a folder structure can greatly increase efficiency
+in transferring files.
+
+To set up a folder structure you will need the hierarchical structure you wish to
+use and the list of sites/arus you are processing.
+
+```{r, eval=F}
+site_list <-
+  example_sites |>
+  tidyr::separate(Sites, into = c("plot", "site"), sep = "_", remove = F) |>
+  dplyr::select(site_id = Sites, plot, site)
+
+
+tmp_dir <- tempdir(check = T) |> paste0("/ARUtools/")
+dir.create(tmp_dir)
+
+create_directory_structure(
+  hexagons = site_list$plot,
+  units = site_list$site_id,
+  base_dir = tmp_dir
+)
+```
+This should create a series of folders with plot at the main level and site in 
+the subdirectory below that.
+
+```{r, eval=F}
+list.dirs(tmp_dir, full.names = F)
+```
+Note that this will not work for all project structures and you should think carefully about 
+how you want to set up your file names, folder structure and spatial information
+before you deploy any ARUs.
+
+## Wind processing
+
+One issue that can cause difficulty in interpretation of acoustic recordings is
+wind. Wind can mask bird songs and even is a potential danger to interpreters' ears.
+
+The University Of Salford Acoustics Research Centre developed a softare program [WindNoiseDetection](https://github.com/kenders2000/WindNoiseDetection?tab=readme-ov-file#university-of-salford-acoustics-research-centre) that detects wind in wave files. 
+
+I have developed a [fork of the software](https://github.com/dhope/WindNoiseDetection) 
+that has added the ability to run multiple files at once using parallel processing
+and to provide a list of files to process.
+
+Running the program requires fairly complex setup in Windows as is uses `C` and 
+`C++` and requires `Cygwin` to run.
+
+However if you do get it running, `ARUtools` includes a couple helper functions to
+process your metadata and set it up for running with WindNoiseDetection.
+
+```{r}
+wind_files <-
+  wind_detection_pre_processing(
+    wav_files = example_clean$path,
+    output_directory = "./wind_files/",
+    site_pattern = create_pattern_site_id(
+      p_digits = c(2, 3), sep = "_",
+      s_digits = c(1, 2)
+    ),
+    write_to_file = F, chunk_size = NULL
+  )
+```
+
+The output is a list of vectors that include the path to the wave files (`filePaths`),
+the input wave filenames (`filenames`), and the list of sites to append to the output
+results (`sites`).
+
+Once you have run `WindNoiseDetection` you can read the results in using 
+`wind_detection_summarize_json()`.
+
+```{r}
+example_json <- system.file("extdata", "P71-1__20210606T232500-0400_SS.json", package = "ARUtools")
+
+wind_summary <- wind_detection_summarize_json(example_json)
+dplyr::glimpse(wind_summary)
+```
+
+
+
+
+## Assign tasks
+
+
+To assign tasks you will need to either download the task template from 'WildTrax'
+or alternatively you can use the new `wildRtrax::wt_make_aru_tasks()` function.
+
+You will also need a template for observers with the number of hours they will
+be interpreting. This doesn't have to match exactly the time in a project as the 
+relative amounts are used.
+
+```{r, eval=F}
+in_tasks <- fs::file_temp("Input_task_file", ext = ".csv")
+task_template <- wildRtrax::wt_make_aru_tasks(
+  example_clean |>
+    dplyr::mutate(
+      recording_date_time = date_time,
+      file_path = path, location = site_id,
+      length_seconds = 300
+    ),
+  output = in_tasks,
+  task_method = "1SPT", task_length = 300
+)
+```
+
+
+```{r}
+template_observers
+```
+
+
+Once you have the files you need, you can run `wt_assign_tasks()` to randomly assign
+tasks to interpreters based on the amount of effort they can put in.
+
+```{r}
+task_output <- wt_assign_tasks(
+  wt_task_template_in = task_template,
+  wt_task_output_file = NULL,
+  interp_hours = template_observers,
+  interp_hours_column = hrs,
+  random_seed = 65416
+)
+
+task_output$task_summary
+```
+
+
+You can alternatively use the `Shiny` app [Shiny_select](https://github.com/dhope/Shiny_select) by running the following:
+
+```{r, eval=F}
+shiny::runGitHub("dhope/Shiny_select")
+```
+
+
+
+

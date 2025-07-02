@@ -1,0 +1,201 @@
+---
+title: "Dealing with Timezones"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Dealing with Timezones}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+```{r setup}
+#| message: false
+library(ARUtools)
+library(lubridate) # For working with date/times
+library(dplyr) # For manipulating data
+```
+
+Timezones can cause a lot of confusion, but, unfortunately are important descriptors of a moment in time.
+
+> **To deal with timezones in ARUtools you only need two things:**
+> 
+> - To make sure the timezones match between the recordings (`meta`) and your site index (`site`)
+> - And that you *know* what the timezones are (or at least that they can be derived from their coordinates).
+
+To explain this in more detail, let's talk about how ARUtools treats timezones.
+
+In R, a date/time column can only have *one* timezone specified.
+However, when working with sites around a timezone divide, it's possible that you 
+may occasionally have recordings made in different timezones which you would like to process together.
+
+To facilitate this we use the convention of 'local' times marked with "UTC". 
+Here we mean 'local' to reflect the timezone that the ARU is recording in.
+This means that the `date_time` column may contain a time recorded in Eastern Daylight savings, but the
+'official' timezone according to R is still UTC.
+
+If we were to try to use non-UTC times, we'll be warned off.
+
+To illustrate this, let's create a cleaned sites index data frame with the 
+`date_time`s in the America/Toronto timezone.
+```{r}
+s <- example_sites_clean
+
+# Force to a non-UTC timezones
+s$date_time_start <- force_tz(s$date_time_start, "America/Toronto")
+s$date_time_end <- force_tz(s$date_time_end, "America/Toronto")
+```
+
+If we try to add these sites to our cleaned metadata we can see that the timezones are removed
+```{r}
+m <- clean_metadata(project_files = example_files)
+m <- add_sites(m, s)
+```
+
+## What timezone are my data in?
+
+If we ask R what timezone these data are in, R will say "UTC"
+
+```{r}
+tz(m$date_time)
+```
+
+But that's probably not *really* the case.
+
+There are three possible options for what the timezones might look like:
+
+1) All times are in the same timezone that was programmed into the ARUs before
+they were set out. This would likely be either the timezone of the region to
+which they were being deployed, or the timezone of the lab or home base (it
+doesn't really matter which, as long as they're all the same and you know which
+one it is).
+
+2) There are several different timezones among these recordings, which correspond
+to where they were deployed. This would likely happen if ARUs were set to use
+GPS to get the timezone and if a study area straddled a timezone boundary. 
+
+3) There are several different timezones among these recordings, but they do **not**
+correspond to where they were deployed. This might happen if the timezones were
+set on the ARUs for different projects and were not corrected before deployment. 
+
+In ARUtools, we have options to deal withe the first two scenarios. 
+However, if you find yourself in the third scenario, the best thing would be to 
+split your files by timezone and run through the workflow individually with each batch.
+
+
+## Calculating time to sunrise/sunset
+For simplicity, we don't need to worry about the 'real' timezone except for when we calculate 
+the time to sunrise/sunset. 
+
+This is where it's important to know what timezone patterns you have in your data.
+
+In our first scenario, we know our our recordings all have the same timezone and we know what that timezone is.
+
+Here we can specify that timezone specifically:
+```{r}
+m_est <- calc_sun(m, aru_tz = "America/Toronto")
+```
+
+Alternatively, in our second scenario, we know that the timezones may be different, 
+but importantly, that they correspond to the location where the unit was deployed.
+Here we can use `aru_tz = "local"` and `calc_sun()` will use the recording 
+coordinates to figure out what the timezone was.
+```{r}
+m_local <- calc_sun(m, aru_tz = "local")
+```
+
+Finally, in our final scenario, we know what the timezones are, 
+but they are not all the same and they do not
+correspond to the location where the unit was deployed.
+
+In this case we'll split the data and use the specific timezones.
+Let's assume that we know the timezones and that sites P06_1 and P09_1 are in 
+Central, and the rest in Eastern. 
+
+```{r}
+# Split by timezone
+m1 <- filter(m, site_id %in% c("P06_1", "P09_1")) # Get P06_1 and P09_1
+m2 <- filter(m, !site_id %in% c("P06_1", "P09_1")) # Get all except the above
+
+# Calculate time to sunrise/sunset individually
+m1_cst <- calc_sun(m1, aru_tz = "America/Winnipeg")
+m2_est <- calc_sun(m2, aru_tz = "America/Toronto")
+
+# Join them back in
+m_joint <- bind_rows(m1_cst, m2_est)
+```
+
+Because we actually use the same timezone that the sites were located in,
+if you compare `m_joint` to `m_local` you'll see that with the exception of what
+the timezone is called they have the same results 
+("America/Detroit" is the same timezone as "America/Toronto").
+
+You'll also note that those with the Eastern timezone (America/Toronto or America/Detroit),
+all match those in `m_est`. 
+
+
+## Important things to note
+- The timezone of your recordings, must be the same as in your site index, or they won't
+  join properly with `add_sites()`
+  
+- Unless you know the timezones match the deployment location, you *must* know 
+  what timezone your recordings were made in. 
+  
+- Because `calc_sun()` returns *relative* time to sunrise and sunset, it's 
+  important that you know what the timezone of the recording is in, but it's 
+  **not** important that the timezone matches that of it's deployment area.
+
+
+## An example
+
+Let's assume we have two sites, one in the Eastern timezone, one in Western.
+However, they are both programmed to record at 4am, 5am and 6am *Eastern*.
+
+We'll first use some of our example data to create this mini meta data set.
+```{r}
+m_mini <- filter(m, site_id %in% c("P01_1", "P06_1")) |>
+  select(aru_id, site_id, longitude, latitude) |>
+  distinct() |>
+  cross_join(data.frame(date_time = c(
+    "2020-05-02 05:00:00",
+    "2020-05-02 06:00:00",
+    "2020-05-02 07:00:00"
+  ))) |>
+  mutate(
+    date = as_date(date_time),
+    path = paste0(aru_id, "_", site_id, "_", hour(date_time), ".csv")
+  )
+```
+
+If we now calculate the time to sunrise/sunset (`t2sr` and `t2ss`) we find that
+the difference between these sites is about 15min,
+accounting for the fact that site P06_1 is farther west than P01_1 and 
+so the recording at 6am occurs 28.8min before sunrise, 
+whereas P01_1's 6am recording occurs only 14.9 min before sunrise.
+
+```{r}
+calc_sun(m_mini, aru_tz = "America/Toronto") |>
+  arrange(date_time)
+```
+
+However, if we were to incorrectly assume that the ARU unit located in the central timezone
+was recording in that timezone, we would get very different results.
+
+```{r}
+calc_sun(m_mini, aru_tz = "local") |>
+  arrange(date_time)
+```
+
+Here all the times to sunrise/sunset for site P06_1 are offset by an hour, because we're assuming the
+wrong timezone (which is an hour different from the correct one). 
+
+
+**Therefore the take home is that you only need two things:**
+
+- To make sure the timezones match between the recordings and your site index
+- And that you *know* what the timezones are (or at least that they can be derived from their coordinates).
