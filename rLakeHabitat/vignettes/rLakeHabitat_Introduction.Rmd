@@ -1,0 +1,121 @@
+---
+title: "Introduction to rLakeHabitat"
+author: "Tristan Blechinger & Sean Bertalot"
+date: "March 14, 2025"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Introduction to rLakeHabitat}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, echo = F}
+knitr::opts_chunk$set(collapse = TRUE, comment = "#>")
+```
+
+
+## rLakeHabitat Introduction and Guide
+This user manual introduces the functions of the rLakeHabitat package and provides an example workflow for generating digital elevation models (DEMs) of waterbody bathymetry from multiple types of depth data. The goal of this package is to provide managers and researchers with a tool to quantify area and volume of physical aquatic habitats based on estimates of photic depth and thermocline temperature (e.g., littoral zone, epilimnion, and hypolimnion). Functions included in this package facilitate obtaining and formatting depth data (rarify, contourPoints), estimating average thermocline depths (estThermo), interpolating depths (interpBathy, crossValidate), quanitfying physical habitats (calcHyps, calcLittoral, calcSDI, calcVolume, littoralVol), and visualizing outputs (animBathy, bathyMap). Creation of this package relies on functions from [ggplot](https://CRAN.R-project.org/package=ggplot2), [terra](https://CRAN.R-project.org/package=terra), [sf](https://CRAN.R-project.org/package=sf), and [gstat](https://CRAN.R-project.org/package=gstat).
+
+
+## Step 1: Loading Data
+Depth data can either be in raw 'xyz' format or generated from contour shapefiles with known depths. Coordinates should be in decimal degrees. Depths can be in either meters or feet. If measured depth data has a high density of points, the rarify function can be used to reduce point density by averaging depths within raster cells of a specified resolution. A shapefile of the waterbody outline is required to bound rarification. Examples are included below.
+
+```{r, eval = F}
+library(rLakeHabitat)
+
+#load example depth data
+depths <- read.csv("data/example_depths.csv")
+#load example outline
+outline <- vect("data/example_outline.shp")
+
+#rarify input data -- example data won't change
+clean_depth <- rarify(outline, depths, "x", "y", "z", res = 5)
+
+#obtain xyz point data from depth contours
+contours <- read_sf("~/UW_Research/Project5_Habitat_Mapping/Repositories/rLakeHabitat/data/example_contour.shp")
+
+contour_depths <- contourPoints(contours, depths = "Z", geometry = "geometry", density = 50)
+```
+
+
+## Step 2: Interpolation
+Inverse Distance Weighted ("IDW") and Ordinary Kriging ("OK") interpolation methods are supported in the interpBathy function. Depth data and a shapefile outline to bound interpolation are required. To interpolate at a desired resolution, use the crsUnits and res parameters to define a cell size in meters. If a specified resolution is not desired, the fact parameter will increase output resolution by the specified factor. Interpolated DEMs will be in the same units as input depths and the same CRS as the input outline. DEMs generated using the OK method will have two layers, the interpolated values (1) and variance (2). The crossValidate function uses the interpBathy function on k number of folds to compare subsampled test and train datasets to quantify RMSE of the interpolated DEM. Prior to subsampling, points are stratified by depth and evenly sampled across five depth groups to ensure accurate representation of data. Examples are included below. 
+
+```{r, eval = F}
+#load example depth data
+depths <- read.csv("data/example_depths.csv")
+#load example outline
+outline <- vect("data/example_outline.shp")
+
+#interpolate using Inverse Distance Weighted method
+DEM <- interpBathy(outline, depths, "x", "y", "z", zeros = F, separation = 10, 
+                   crsUnits = "dd", res = 10, method = "IDW", nmax = 6, idp = 2)
+plot(DEM)
+
+#obtain RMSE for IDW interpolation
+crossValidate(outline, depths, "x", "y", "z", zeros = F, separation = 10, k = 5, 
+              crsUnits = "dd", res = 10, method = "IDW", nmax = 6, idp = 2)
+
+#Interpolate using Ordinary Kriging method
+DEM <- interpBathy(outline, depths, "x", "y", "z", zeros = F, separation = 10, 
+                   crsUnits = "dd", res = 50, nmax = 6, method = "OK", model = "Sph")
+plot(DEM)
+
+#obtain RMSE for OK interpolation
+crossValidate(outline, depths, "x", "y", "z", zeros = F, separation = 10, k = 5, 
+              crsUnits = "dd", res = 50, nmax = 6, method = "OK", model = "Sph")
+```
+
+
+## Step 3: Habitat Quantification
+Physical aquatic habitats from interpolated DEMs can be quantified using multiple functions. Habitats include littoral area, shoreline development index, and epilimnetic, hypolimnetic, metalimnetic, and littoral volume as well as hypsography data. Most functions require an average Secchi or photic depth (photic depth = Secchi x 2.6 when not specified). Average thermocline depth can be averaged across sites and/or dates using the estThermo function, which uses the thermo.depth function from [rLakeAnalyzer](https://CRAN.R-project.org/package=rLakeAnalyzer). Examples are included below. 
+
+```{r, eval = F}
+#load example temperature profile data
+thermo_data <- read.csv("data/example_profile_data.csv") %>% 
+  mutate(date = as.Date(date))
+
+#estimate average thermocline depth across sites and dates
+estThermo(thermo_data, site = "site", date = "date", depth = "depth", temp = "temp", combine = "all")
+
+#generate hypsography data, output = 'values' or 'plot'
+calcHyps(DEM, DEMunits = 'm', depthUnits = 'ft', by = 1, output = 'values')
+
+#calculate littoral area
+calcLittoral(DEM, secchi = 2, DEMunits = 'm', depthUnits = 'ft', by = 1)
+
+#calculate shoreline development index
+calcSDI(DEM, units = 'm', by = 1)
+
+#calculate volume of pelagic habitats
+calcVolume(DEM, thermo_depth = 4, DEMunits = 'm', depthUnits = 'm', by = 1)
+
+#calculate volume of pelagic vs. littoral habitat
+littoralVol(DEM, secchi = 2, DEMunits = 'm', depthUnits = 'm', by = 1)
+```
+
+
+## Step 4: Visualization
+There are two functions to visualize interpolated DEMs. The bathyMap function generates a ggplot object with the option to include contours and contour labels as well as the spacing between plotted contours. The animBathy function is an animated ggplot object meant to visualize changes in littoral or whole surface area of a waterbody across water levels. Examples are included below.
+
+```{r, eval = F}
+#generate bathymetry map
+bathyMap(DEM, contours = T, units = "m", by = 1)
+
+#generate animated bathymetry map of littoral area or whole waterbody area across water levels
+animBathy(DEM, units = 'm', littoral = T, secchi = 2, by = 1)
+```
+
+
+## Save DEM 
+The genStack function is a convenient way to generate raster stack objects with the option to save them as a file. When saving, the default filetype is cloud optimized geotiff (.COG), though this can be specified to other gdal accepted filetypes. Examples are included below. 
+
+```{r, eval = F}
+#generate raster stack from interpolated DEM
+raster_stack <- genStack(DEM, by = 1, save = F) #don't save
+plot(raster_stack)
+
+genStack(DEM, by = 1, save = T, file_name = "Example_stack") #save
+```
+
