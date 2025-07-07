@@ -1,0 +1,114 @@
+---
+title: "Using `computeError`"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Using `computeError`}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  fig.width = 7,
+  fig.height = 5,
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+The main function in the `cvwrapr` package is `kfoldcv` which performs K-fold cross-validation (CV). It does so in two parts: (i) computing the out-of-fold predictions, then (ii) using the resulting prediction matrix to compute CV error. The `computeError` function is responsible for the second task and is exposed to the user as well. (For those familiar with the `glmnet` package, `computeError` is similar in spirit to the `glmnet::assess.glmnet` function.) Sometimes you may only have access to the out-of-fold predictions; in these cases you can use `computeError` to compute the CV error for you (a non-trivial task!).
+
+Let's set up some simulated data:
+```{r}
+set.seed(1)
+nobs <- 100; nvars <- 10
+x <- matrix(rnorm(nobs * nvars), nrow = nobs)
+y <- rowSums(x[, 1:2]) + rnorm(nobs)
+biny <- ifelse(y > 0, 1, 0)
+```
+
+The code below performs 5-fold CV with the loss function being the default (deviance):
+```{r message=FALSE}
+library(glmnet)
+library(cvwrapr)
+
+foldid <- sample(rep(seq(5), length = nobs))
+cv_fit <- kfoldcv(x, biny, family = "binomial",
+                    train_fun = glmnet, predict_fun = predict,
+                    train_params = list(family = "binomial"),
+                    predict_params = list(type = "response"),
+                    foldid = foldid, keep = TRUE)
+plot(cv_fit)
+```
+
+The plot above is for binomial deviance. If we want the misclassification error for the out-of-fold predictions, we can compute it with `computeError`:
+```{r}
+misclass <- computeError(cv_fit$fit.preval, biny, cv_fit$lambda, foldid, 
+                         type.measure = "class", family = "binomial")
+misclass$cvm
+```
+
+The output returned by `computeError` has class "cvobj", and so can be plotted:
+```{r}
+plot(misclass)
+```
+
+To see all possible `type.measure` values for each family, run `availableTypeMeasures()`:
+```{r}
+availableTypeMeasures()
+```
+
+### The special case of `family = "cox"`, `type.measure = "deviance"` and `grouped = TRUE`
+
+There is one special case where `computeError` will not be able to compute the CV error from the prediction matrix, and that is when we set the options `family = "cox"`, `type.measure = "deviance"` and `grouped = TRUE`.
+
+Let's set up a survival response and perform cross-validation with the error metric being the C-index:
+```{r}
+library(survival)
+survy <- survival::Surv(exp(y), event = rep(c(0, 1), length.out = nobs))
+
+cv_fit <- kfoldcv(x, survy, family = "cox", type.measure = "C",
+                    train_fun = glmnet, predict_fun = predict,
+                    train_params = list(family = "cox"),
+                    predict_params = list(type = "response"),
+                    foldid = foldid, keep = TRUE)
+plot(cv_fit)
+```
+
+Now, let's say we want to compute the deviance arising from these predictions instead. We might call `computeError` as below:
+```{r error=TRUE}
+deviance_cvm <- computeError(cv_fit$fit.preval, survy, cv_fit$lambda, foldid, 
+                             type.measure = "deviance", family = "cox")
+```
+
+That threw an error. What happened? In this special case of `family = "cox"`, `type.measure = "deviance"` and `grouped = TRUE` (`grouped = TRUE` is the default for `computeError`), we actually need more than just the out-of-fold fits to compute the deviance. In this setting, deviance is computed as follows: for each fold,
+
+1. Fit the model on in-fold data.
+2. Make predictions for *both* in-fold and out-of-fold data.
+3. Compute the deviance for the full dataset, and compute the deviance for the *in-fold* data.
+4. The CV deviance associated with this fold is the deviance for the full dataset minus the deviance for the in-fold data.
+
+As you can see from the above, we need *both* in-fold and out-of-fold predictions for each of the CV model fits. The way out is to call `kfoldcv` with `type.measure = "deviance"`. Internally, `kfoldcv` calls `buildPredMat` which computes a `cvraw` attribute and attaches to the prediction matrix. `computeError` uses this `cvraw` attribute to compute the deviance.
+```{r}
+cv_fit2 <- kfoldcv(x, survy, family = "cox", type.measure = "deviance",
+                    train_fun = glmnet, predict_fun = predict,
+                    train_params = list(family = "cox"),
+                    predict_params = list(type = "response"),
+                    foldid = foldid, keep = TRUE)
+plot(cv_fit2)
+```
+
+This is a edge case that we don't expect to encounter often.
+
+This problem is not faced when `family = "cox"`, `type.measure = "deviance"` and `grouped = FALSE`. This is because computing deviance in this case only requires out-of-fold predictions: for each fold,
+
+1. Fit the model on in-fold data.
+2. Make predictions for out-of-fold data.
+3. The CV deviance associated with this fold is the deviance for the *out-of-fold* data.
+
+```{r}
+deviance_cvm <- computeError(cv_fit$fit.preval, survy, cv_fit$lambda, foldid, 
+                             type.measure = "deviance", family = "cox",
+                             grouped = FALSE)
+plot(deviance_cvm)
+```
