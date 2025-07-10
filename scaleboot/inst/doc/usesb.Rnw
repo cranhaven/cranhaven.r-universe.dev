@@ -1,0 +1,752 @@
+% scaleboot/src/vignettes/usesb.Rnw shimo@i.kyoto-u.ac.jp
+%%\VignetteIndexEntry{Multiscale Bootstrap using Scaleboot Package}
+
+\documentclass[a4paper]{amsart}
+\usepackage{url}
+
+\def\baselinestretch{1.0} 
+\begin{document}
+\SweaveOpts{concordance=TRUE}
+
+
+\title{Multiscale Bootstrap using Scaleboot Package}
+\author{Hidetoshi Shimodaira}
+\thanks{This document is a part of the {\tt scaleboot} package (Version 0.4-0 or newer). The source file is usesb.Rnw.
+I thank Paul A. Sheridan for his comments to improve the earlier version of the manuscript.}
+\address{Graduate School of Informatics, Kyoto University,
+Yoshida Honmachi, Sakyo-ku, Kyoto, 606-8501, Japan}
+\email{shimo@i.kyoto-u.ac.jp}
+
+
+\maketitle
+
+\section{Introduction}
+
+{\tt scaleboot} is an add-on package for R. It is for calculating
+approximately unbiased (AU) $p$-values for a general problem from a set
+of multiscale bootstrap probabilities (BPs). Scaling is equivalent to
+changing the sample size of a data in bootstrap resampling. We
+compute BPs at several scales, from which a very accurate $p$-value is
+calculated (Shimodaira 2002). This multiscale bootstrap method has
+been implemented in {\tt CONSEL} (Shimodaira and Hasegawa 2001) for
+phylogenetic inference and as the R add-on package {\tt pvclust}
+(Suzuki and Shimodaira 2006) for hierarchical clustering. The point of
+the {\tt scaleboot} package is to calculate an improved version of the
+AU $p$-value that is justified even for hypotheses with nonsmooth
+boundaries (Shimodaira 2008).
+
+The basic usage of this package is illustrated in a simple example
+below.  Then real applications in hierarchical clustering and
+phylogenetic inference are shown later.
+
+For the use of {\tt scaleboot}, Shimodaira (2008) may be referenced.
+
+New update in 2018: Selective inference is now implemented.
+The selective inference version of the approximately unbiased $p$-value
+is denoted as SI in {\tt scaleboot} and {\tt pvclust}. The original approximately unbiased 
+$p$-value, which is denoted as AU, is not designed for selective inference.
+The bootstrap probability (BP) is also not designed for selective inference.
+The theory and example of selective inference is described in Terada and Shimodaira (2017).
+
+\section{Install}
+
+{\tt scaleboot} is easily installed from CRAN online.  Windows users
+can install the package by choosing ``scaleboot'' from the pull-down
+menu.  Otherwise, run R on your computer and type
+<<eval=false>>=
+install.packages("scaleboot")
+@ 
+You can also download the package file from the URL below and
+install it manually.
+
+\url{http://stat.sys.i.kyoto-u.ac.jp/prog/scaleboot/}
+
+
+\section{Simple Example}
+
+\subsection{Simulation Data}
+
+We first generate a simulation data.
+<<echo=false>>=
+set.seed(100)
+@
+<<data1>>=
+simdata <- function(n,y,sd) {
+  m <- length(y)
+  x <- matrix(rnorm(m*n,0,sd),m,n)
+  t(x + (y - apply(x,1,mean)))
+}
+
+X <- simdata(100,c(0,1,1,1,1,1,1,1,1,1),10)
+round(X[1:3,],3)
+y <- apply(X,2,mean)
+round(y,3)
+@ 
+The matrix $X=(x_{ij})$ above is of size $n\times m$ with $n=100$,
+$m=10$. We consider $X$ as a data of sample size $n$, and rows
+$x_i = (x_{i1},\ldots,x_{im})$, $i=1,\ldots,n$, are observations of a
+random vector of $m$ dimensions.
+
+\subsection{Null Hypothesis}
+
+Let $\mu$ be the unknown population mean of the row vectors. An
+estimate of $\mu$ is the sample average of the rows defined as $y =
+\bar x = \tfrac{1}{n}\sum_{i=1}^n x_i $. Let $f(\mu)$ be a 0/1-valued
+(or false/true valued) function of $\mu$. The null hypothesis we are
+going to test is represented as $f(\mu)=1$. For example, $f(\mu)=1$ if
+$\mu_1$ is the largest among $\mu_1,\ldots,\mu_m$, and $f(\mu)=0$
+otherwise. This $f(\mu)$ is implemented as {\tt mc1(mu)} below.
+<<mc1>>=
+mc1 <- function(x) all(x[1] >= x[-1])
+mc1(y)
+@ 
+Although $f(y)=0$ gives a rough idea whether $f(\mu)=1$, we want to
+calculate a real number ranging between 0 and 1 which indicates the
+possibility of $f(\mu)=1$.
+This is what {\tt scaleboot} calculates as $p$-values. 
+
+\subsection{Bootstrap Probabilities}
+
+A naive way to calculate a $p$-value is by bootstrap resampling.  Let
+$X^*=(x^*_{ij})$ be a bootstrap sample of $X$; each row $x^*_i$ is
+obtained by resampling with replacement from the rows
+$x_1,\ldots,x_n$.  Let $n'$ be the size of the resampling so that
+$X^*$ is a matrix of size $n'\times m$. The bootstrap replicate is
+$y^* = \bar x^* = \tfrac{1}{n'} \sum_{i=1}^{n'} x_i^*$. The following
+code generates an $X^*$ with $n'=n$, and calculates $f(y^*)$. The
+resampling is made via a weight vector {\tt w}; $w_i$ is the number of
+times that $x_i$ is resampled in $X^*$.
+<<boot1>>=
+countw <- function(x,w,fn) {
+  y <- apply(w*x,2,sum)/sum(w)
+  fn(y)
+}
+
+w <- as.vector(rmultinom(1,100,rep(1,100)))
+w
+countw(X,w,mc1)
+@ 
+
+Let $B$ be the number of bootstrap samples we will generate, and
+$y^*_1,\ldots, y^*_B$ be the bootstrap replicates. Typically,
+$B=10,000$. The BP is computed as $\sum_{i=1}^B f(y^*_i)/B$, where the
+ordinary BP uses $n'=n$.  Since first introduced by Felsenstein
+(1985), it has been widely used as a $p$-value, but the bias is in
+fact rather large.
+
+
+\subsection{$P$-value Calculation}
+
+{\tt scaleboot} calculates corrected $p$-values for improving BPs.
+First load the package by
+<<load>>=
+library(scaleboot)
+@ 
+
+Below, {\tt sa} specifies the scales, and {\tt nb} specifies
+$B$ for each scale, so that $10,000\times13=130,000$ bootstrap samples
+are generated internally.  It takes a few minutes on a pc.
+<<sim1>>=
+sa <- 9^seq(-1,1,length=13)
+nb <- 10000
+
+X.sb <- scaleboot(X,nb,sa,countw,mc1)
+@ 
+The main result (for $k=3$) is shown by
+<<ans1>>=
+summary(X.sb)  # k = 3 (default)
+@ 
+The selective inference $p$-values (SI) are denoted as {\tt sk.3},
+and the non-selective AU $p$-values are denoted as {\tt k.3}.
+We can also see additional results by specifying $k$,
+<<eval=false>>=
+summary(X.sb, k=1:3)  # k = 1, 2, 3
+@
+{\tiny
+<<ans1b,echo=false>>=
+summary(X.sb, k=1:3)  # k = 1, 2, 3
+@ 
+}
+
+A class of AU $p$-values $p_k$ indexed by $k=1,2,3$, are calculated,
+and they are labelled as {\tt k.1}, {\tt k.2}, and {\tt k.3}.  The
+$p$-values are shown in percent, and the standard errors are given in
+parentheses.  We should look at the row of {\tt average} (the bottom
+line), and we can ignore the other rows.  $p_1\approx 1\%$ corresponds
+to the ordinary BP, and $p_2\approx 18\%$ corresponds to the AU
+$p$-value of Shimodaira (2002).  What we recommend to use here is
+$p_3\approx40\%$; this is the AU $p$-value of Shimodaira (2008).  For
+this particular example, the common practice for calculating a
+$p$-value is to use the multiple comparisons method. If it is applied
+to $y$, the $p$-value is $p=66\%$, which is rather close to $p_3$ in
+our example, whereas $p_1$ is obviously too small.
+
+Internally, as explained in the next section, several models are
+fitted to the observed bootstrap probabilities. They are sorted in
+increasing order of AIC, and the best model is {\tt sing.3}. The row
+of {\tt sing.3} is duplicated in the row {\tt best}, two lines from
+the bottom. The Akaike weights $\propto \exp(-{\rm AIC}/2)$ are also
+computed for models and the $p$-values are averaged using the weights
+so that we get the row of {\tt average}, the bottom line. Typically,
+the two bottom lines are almost identical, and {\tt average} is
+regarded as a smoothed version of {\tt best} for small changes in
+data.  I recommend to use {\tt average} instead of {\tt best}.
+
+\subsection{Internal Steps}
+
+We consider the following three steps (i)-(iii).
+Internally, the {\tt scaleboot} function (i) performs the multiscale
+bootstrap, and (ii) estimates coefficients for candidate models. Then
+the {\tt summary} method (iii) calculates the corrected $p$-values.
+These steps are explained below.
+
+The results of steps (i) and (ii) are shown here.
+<<coef1>>=
+X.sb
+
+@ 
+
+The results of (i) are the BPs for the 13 scales shown at first. Let
+$\alpha_{\sigma^2}$ denote the BP at scale $\sigma^2$. Each BP is
+calculated from 10,000 bootstrap samples of size $n'$ as the frequency
+of observing $f(y^*)=1$. In {\tt scaleboot}, $n'$ is {\tt
+round(n/sa[i])}, for $i=1,\ldots,13$. Then, the scale is recalculated
+as $\sigma^2=n/n'$ for taking account of the discreteness. 
+
+Step (ii) is performed by the {\tt sbfit} function called internally
+from the {\tt scaleboot} function for fitting parametric models to
+observed $\alpha_{\sigma^2}$'s.  By default, four models are
+considered as candidates; {\tt poly.1}, {\tt poly.2}, {\tt poly.3},
+and {\tt sing.3}. Each of these models is denoted as
+$\psi(\sigma^2|\beta)$. Let $z_{\sigma^2} = \Phi^{-1}( 1 -
+\alpha_{\sigma^2})$ be the bootstrap $z$-value at scale $\sigma^2$,
+where $\Phi^{-1}(p)$={\tt qnorm(p)}.  We work on $\sigma
+z_{\sigma^2}(y)$, which may be called a normalized bootstrap
+$z$-value.  Considering $\sigma z_{\sigma^2}$ as a function of
+$\sigma^2$, the coefficient vector $\beta$ is estimated by fitting
+$\sigma z_{\sigma^2} = \psi(\sigma^2 | \beta)$.  Let $\hat\beta$
+denote the estimated value; the details of fitting $\hat\beta$ are
+explained later.  We may choose the model which minimizes AIC
+value. The fitted curves are shown (Fig.~\ref{fig:diag1f}) by plotting
+$\psi(\sigma^2|\hat\beta)$ as
+<<diag1f,echo=true,fig=false>>=
+plot(X.sb,legend="topleft")
+@ 
+\begin{figure}
+\begin{center}
+<<echo=false,fig=true>>=
+<<diag1f>>
+@ 
+\caption{Model Fitting}\label{fig:diag1f}
+\end{center}
+\end{figure}
+The same plot but in other variables can be shown
+(Fig.~\ref{fig:diag1f2}) by, for example,
+<<diag1f2,echo=true,fig=false>>=
+plot(X.sb,xval="sigma",log="x",yval="pvalue",legend="topleft")
+@ 
+\begin{figure}
+\begin{center}
+<<echo=false,fig=true>>=
+<<diag1f2>>
+@ 
+\caption{Model Fitting ($x=\log \sigma$, $y=\alpha_{\sigma^2}$)}
+\label{fig:diag1f2}
+\end{center}
+\end{figure}
+
+
+
+{\tt poly.k} model is specified as a polynomial of $\sigma^2$;
+$\psi(\sigma^2|\beta) = \sum_{j=0}^{k-1} \beta_j \sigma^{2j}$ for
+$k\ge1$.  {\tt sing.k} model is specified as $\psi(\sigma^2|\beta) =
+\beta_0 + \sum_{j=1}^{k-2} \beta_j \sigma^{2j}/(1 +
+\beta_{k-1}(\sigma-1))$ for $k\ge3$, where $0\le\beta_{k-1}\le1$. The
+number {\tt k} for each model denotes the number of coefficients in
+$\beta$.
+
+The details of model fitting are as follows. Let $B_i$ and $C_i$ be
+the number of replicates and the observed number of times that
+$f(y^*)=1$, respectively, for the bootstrap resampling of scale
+$\sigma^2_i$, $i=1,\ldots,S$. Since each $C_i$ is binomially
+distributed, the log-likelihood is
+\[
+\ell(\beta) = \sum_{i=1}^S \Bigl\{
+C_i \log \Phi(-\psi(\sigma^2_i|\beta)/\sigma_i)+
+(B_i - C_i) \log \Phi(\psi(\sigma^2_i|\beta)/\sigma_i)
+\Bigr\},
+\]
+where $\Phi(q)$={\tt pnorm(q)}. The estimate $\hat\beta$ is obtained
+by maximizing $\ell(\beta)$ numerically.  The goodness of fit is
+measured by the difference of AIC values between the specified model
+and an unconstrained binomial model;
+\[
+{\rm AIC} = ( -2\ell(\hat\beta)+2k ) - (-2\hat\ell + 2S),
+\]
+where $\hat\ell = \sum_{i=1}^S ( C_i\log(C_i/B_i) +
+(B_i-C_i)\log(1-C_i/B_i)) $.
+
+
+Step (iii) is performed by the the {\tt summary} method as already
+mentioned. The first line shows the ``raw'' BP $\alpha_1$ (the BP
+obtained from the ordinary bootstrap resampling).  The main results
+are the corrected $p$-values, which follow next. For each model, we
+calculate $q_k$, $k=1,2,3$, by
+\[
+q_k = \sum_{j=0}^{k-1} \frac{(-1-\sigma_0^2)^j}{j!}
+\frac{\partial^j \psi(\sigma^2|\hat\beta)}{\partial (\sigma^2)^j}
+\Bigr|_{\sigma_0^2}.
+\]
+Then the corrected $p$-values are calculated by $p_k=1-\Phi(q_k)$.  By
+default $\sigma_0^2=1$. The calculation of $q_k$ is interpreted as
+extrapolation of $\sigma z_{\sigma^2}$ to $\sigma^2=-1$ by using the
+first $k$ terms of the Taylor series. According to the theory of
+Shimodaira (2008), the unbiased $p$-value is, if it exists, obtained
+by taking the limit $k\to\infty$. The extrapolated curves are shown
+(Fig.~\ref{fig:diag1s}) by
+<<diag1s,echo=true,fig=false>>=
+plot(summary(X.sb),legend="topleft")
+@ 
+\begin{figure}
+\begin{center}
+<<echo=false,fig=true>>=
+<<diag1s>>
+@ 
+\caption{Extrapolation}\label{fig:diag1s}
+\end{center}
+\end{figure}
+
+
+\section{Hierarchical Clustering}
+
+\subsection{Pvclust Package}
+
+The {\tt scaleboot} package includes an interface for the {\tt
+pvclust} package (Suzuki and Shimodaira 2006).  We use {\tt pvclust}
+to calculate multiscale BPs for clusters by bootstrapping hierarchical
+clustering, from which we calculate an improved version of AU
+$p$-values using {\tt scaleboot}. See {\tt help(lung73)} for further
+details of the following example.
+
+\subsection{Using Pvclust}
+
+This example uses the {\tt lung} dataset (Garber et al.~2001) included
+in {\tt pvclust}.  It is a DNA microarray data of 73 lung tissues
+(arrays) with 916 observations of genes.  To draw dendrograms in terms
+of the arrays, we resample genes in our analysis; this may be
+interpreted as assessing the uncertainty due to the variability of
+genes.  The function {\tt pvclust} first obtains a dendrogram by a
+hierarchical clustering method, and then calculates the multiscale BPs
+for each cluster of the dendrogram.
+<<eval=false>>=
+library(pvclust)
+data(lung)
+sa <- 9^seq(-1,1,length=13)
+nb <- 10000
+lung73.pvclust <- pvclust(lung,r=1/sa,nboot=nb)
+@ 
+The above code may take a day, so it would be a good idea to run
+with nb=1000 so that it would run 10 times faster. However, nb=1000
+should be used just for checking the program, and nb=10,000 (at least)
+is recommended for publishing the results.
+
+\subsection{Model Fitting}
+
+We next apply the {\tt sbfit} function of {\tt scaleboot} to the
+multiscale BPs. For each cluster of the dendrogram, parametric models
+are fitted to the BPs.
+<<eval=false>>=
+library(scaleboot)
+lung73.sb <- sbfit(lung73.pvclust)
+@ 
+
+\subsection{Lung73 Dataset}
+
+The results of the previous two sections ({\tt lung73.pvclust} and
+{\tt lung73.sb}) are in fact stored in the {\tt lung73} dataset of {\tt
+scaleboot}. For users who want to try the examples, just type as follows.
+<<lung73>>=
+library(scaleboot)
+data(lung73)
+@ 
+
+We have used a cluster computer of 40 cpus for parallel
+computing using the {\tt snow} package.
+The following code may run in under an hour.
+<<eval=false>>=
+library(snow)
+cl <- makeCluster(40)
+library(pvclust)
+data(lung)
+sa <- 9^seq(-1,1,length=13)
+nb <- 10000
+lung73.pvclust <- parPvclust(cl,lung,r=1/sa,nboot=nb)
+library(scaleboot)
+lung73.sb <- sbfit(lung73.pvclust,cluster=cl)
+@ 
+
+\subsection{$P$-value Calculation}
+
+To calculate AU $p$-values ($p_3$) from {\tt lung73.sb} and write them
+back to {\tt lung73.pvclust}, we do
+<<lungk3>>=
+lung73.k3 <- sbpvclust(lung73.pvclust,lung73.sb)
+@ 
+To see the results, we simply plot the dendrogram
+(Fig.~\ref{fig:lung73tree}) by
+<<lungplot,echo=true,fig=false>>=
+library(pvclust)
+plot(lung73.k3, cex=0.5, cex.pv=0.7)
+pvrect(lung73.k3, pv="si") # find clusters with p>0.95. Now use SI instead of AU.
+@ 
+\begin{figure}
+\begin{center}
+<<echo=false,fig=true>>=
+<<lungplot>>
+@ 
+\caption{Dendrogram of lung73 dataset ($k=3$)}\label{fig:lung73tree}
+\label{fig:lung73-pvclust}
+\end{center}
+\end{figure}
+There three types of $p$-values are printed at each edge of the cluster. SI is the selective inference version of approximately unbised $p$-value, which is newly introduced in Terada and Shimodaira (2017). AU is the non-selective inference version of approximately unbiased $p$-value, which has been used since Shimodaira (2002). BP is the original bootstrap probability. SI, AU, BP are denoted as {\tt sk.3}, {\tt k.3}, {\tt k.1}, respectively, in tables generated by scaleboot for $k=3$.
+When you know the cluster before looking at the data (such as cluster id=31, the left most cluster in Fig.~\ref{fig:lung73-pvclust}; it consists of normal cell and fetal cell, so no lung cancer at all), you may use AU.
+However, you should use SI for most of the clusters when they are identified by looking at the tree.
+
+To calculate $p_2$ instead of $p_3$, specify {\tt k=2},
+<<lungk2>>=
+lung73.k2 <- sbpvclust(lung73.pvclust,lung73.sb, k=2)
+@ 
+
+\subsection{Diagnostics of Fitting}
+
+The fitted curves are drawn by the plot method. For node 67, say, a
+plot with legend is obtained (Fig.~\ref{fig:lungplot67}) by
+<<lungplot67,echo=true,fig=false>>=
+plot(lung73.sb[[67]],legend="topleft")
+@ 
+\begin{figure}
+\begin{center}
+<<echo=false,fig=true>>=
+<<lungplot67>>
+@ 
+\caption{Model fitting for node 67}\label{fig:lungplot67}
+\end{center}
+\end{figure}
+All the calculated $p$-values for node 67 are given by
+<<lungpval67>>=
+summary(lung73.sb[[67]])
+@ 
+The extrapolation using the best models (averaged by the Akaike
+weights) is shown (Fig.~\ref{fig:lungext67}) by
+<<lungext67,echo=true,fig=false>>=
+plot(summary(lung73.sb[[67]]),legend="topleft")
+@ 
+\begin{figure}
+\begin{center}
+<<echo=false,fig=true>>=
+<<lungext67>>
+@ 
+\caption{Extrapolation for node 67}\label{fig:lungext67}
+\end{center}
+\end{figure}
+
+For a set of nodes, $p$-values are given by
+<<eval=false>>=
+summary(lung73.sb[c(62,67,69,71)])
+@
+{\small
+<<lungsummarys,echo=false>>=
+summary(lung73.sb[c(62,67,69,71)])
+@ 
+}
+Also plots are shown (Fig.~\ref{fig:lung73nodes}) by
+<<lungpvals,echo=true,fig=false>>=
+plot(lung73.sb[c(62,67,69,71)])
+@ 
+\begin{figure}
+\begin{center}
+<<echo=false,fig=true>>=
+<<lungpvals>>
+@ 
+\caption{Model fitting for a set of nodes} \label{fig:lung73nodes}
+\end{center}
+\end{figure}
+
+\section{Phylogenetic Inference}
+
+\subsection{CONSEL Software}
+
+{\tt scaleboot} has a front end for phylogenetic inference, and it may
+eventually replace the {\tt CONSEL} software (Shimodaira and Hasegawa
+2001) for testing phylogenetic trees. Currently, {\tt scaleboot} does
+not have a method for converting files obtained from other commonly
+used phylogenetic software packages, and so we must use {\tt CONSEL}
+for this purpose before applying {\tt scaleboot} to calculate an
+improved version of AU $p$-values for trees and edges.  See {\tt
+help(mam15)} for further details of the following example.
+
+\subsection{Mammal Dataset}
+
+We work on an example of phylogenetic analysis of six mammal species:
+Homo sapiens (human), Phoca vitulina (harbor seal), Bos taurus (cow),
+Oryctolagus cuniculus (rabbit), Mus musculus (mouse), Didelphis
+virginiana (opossum). The dataset was originally used in Shimodaira
+and Hasegawa (1999). 
+
+For Unix users, download {\tt mam15-files.tgz}, and for Windows users
+download {\tt mam15-files.zip}.  The details of dataset files are as
+follows.  {\tt mam15.aa}: amino acid sequences ($n=3414$) of mtDNA for
+the six mammals.  {\tt mam15.ass}: association vectors for edges and
+trees.  {\tt mam15.lnf}: site-wise log-likelihood values (output from
+PAML).  {\tt mam15.log}: detailed information for the associations.
+{\tt mam15.mt}: site-wise log-likelihood values (output from seqmt).
+{\tt mam15.tpl}: 15 tree topologies.
+
+\subsection{Likelihood Calculation of Trees}
+
+The main body of the dataset is the amino acid sequences ({\tt mam15.aa}).
+We  consider $m=15$ tree topologies of the six mammals ({\tt mam15.tpl});
+\begin{verbatim}  
+((Homsa,(Phovi,Bosta)),Orycu,(Musmu,Didvi)); t1
+(Homsa,Orycu,((Phovi,Bosta),(Musmu,Didvi))); t2
+(Homsa,((Phovi,Bosta),Orycu),(Musmu,Didvi)); t3
+(Homsa,(Orycu,Musmu),((Phovi,Bosta),Didvi)); t4
+((Homsa,(Phovi,Bosta)),(Orycu,Musmu),Didvi); t5
+(Homsa,((Phovi,Bosta),(Orycu,Musmu)),Didvi); t6
+(Homsa,(((Phovi,Bosta),Orycu),Musmu),Didvi); t7
+(((Homsa,(Phovi,Bosta)),Musmu),Orycu,Didvi); t8
+(((Homsa,Musmu),(Phovi,Bosta)),Orycu,Didvi); t9
+(Homsa,Orycu,(((Phovi,Bosta),Musmu),Didvi)); t10
+(Homsa,(((Phovi,Bosta),Musmu),Orycu),Didvi); t11
+((Homsa,((Phovi,Bosta),Musmu)),Orycu,Didvi); t12
+(Homsa,Orycu,(((Phovi,Bosta),Didvi),Musmu)); t13
+((Homsa,Musmu),Orycu,((Phovi,Bosta),Didvi)); t14
+((Homsa,Musmu),((Phovi,Bosta),Orycu),Didvi); t15
+\end{verbatim}
+The maximum likelihood estimates for these trees are calculated by
+PAML (Yang 1997).  Let $x_{ij}$ be the site-wise log-likelihood for
+sites $i=1,\ldots,n$, and trees $j=1,\ldots,m$. The log-likelihood of
+tree-$j$ is $\sum_{i=1}^n x_{ij}$. A large $n$ justifies the central
+limit theorem for $y=\bar x$, and allows us to resample $x_{ij}$
+directly without recalculation of the maximum likelihood
+estimates. The matrix $X=(x_{ij})$ is produced by PAML and stored in
+{\tt mam15.lnf}.  It is converted by CONSEL to a simpler format and
+stored in {\tt mam15.mt}. The command is
+
+\verb!seqmt --paml mam15.lnf!
+
+
+\subsection{$P$-value Calculation for Trees}
+
+The AU $p$-values for trees are calculated simply by
+<<eval=false>>=
+library(scaleboot)
+mam15.mt <- read.mt("mam15.mt")
+mam15.trees <- relltest(mam15.mt)
+summary(mam15.trees)
+@
+The {\tt relltest} function above may take a half hour. The next
+section can be skipped if only tree selection is of interest.
+
+\subsection{$P$-value Calculation for Clusters}
+
+We can also calculate AU $p$-values for clusters (edges) of trees.  We
+have to know, for each cluster, in which of the 15 trees it is
+included.  The file {\tt mam15.ass} has this information, which was
+generated using CONSEL by the command 
+
+\verb!treeass --outgroup 6 mam15.tpl > mam15.log!
+
+It also produces {\tt mam15.log} for human readable information.  A
+part of {\tt mam15.log} is as follows.
+\begin{verbatim}
+# leaves: 6
+6
+  1 Homsa
+  2 Phovi
+  3 Bosta
+  4 Orycu
+  5 Musmu
+  6 Didvi
+
+# base edges: 10
+10 6
+          
+    123456
+  1 +++---  ;
+  2 ++++--  ;
+  3 +--+--  ;
+  4 -+++--  ;
+  5 ---++-  ;
+  6 +--++-  ;
+  7 -++++-  ;
+  8 +++-+-  ;
+  9 +---+-  ;
+ 10 -++-+-  ;
+\end{verbatim}
+The clusters (edges) defined above are named e1,...,e10. For example,
+e1 = {\tt +++---} = (Homsa, Phovi, Bosta).
+
+The AU $p$-values for clusters as well as trees are calculated simply by
+<<eval=false>>=
+library(scaleboot)
+mam15.mt <- read.mt("mam15.mt")
+mam15.ass <- read.ass("mam15.ass")
+mam15.relltest <- relltest(mam15.mt,ass=mam15.ass)
+summary(mam15.relltest)
+@ 
+
+\subsection{Mam15 Dataset}
+
+The results of the previous sections (
+{\tt mam15.mt}, {\tt mam15.ass}, and
+{\tt mam15.relltest}) are in fact stored in {\tt mam15} dataset of {\tt
+scaleboot}. For users who want to try the examples, just type as follows.
+<<lung73>>=
+library(scaleboot)
+data(mam15)
+@ 
+
+The results for trees are extracted by
+<<eval=false>>=
+mam15.trees <- mam15.relltest[1:15]
+@ 
+
+We have used a cluster computer of 40 cpus for parallel computing
+using the {\tt snow} package.  The following code may take only 10
+minutes, although we have used the number of resamples 10 times
+larger than the default value.
+<<eval=false>>=
+library(snow)
+cl <- makeCluster(40)
+library(scaleboot)
+mam15.mt <- read.mt("mam15.mt")
+mam15.ass <- read.ass("mam15.ass")
+mam15.relltest <- relltest(mam15.mt,nb=100000,ass=mam15.ass)
+@ 
+
+\subsection{Interpreting the Results}
+
+First we sort the results in increasing order of log-likelihood difference,
+<<prepmam,echo=false>>=
+library(scaleboot)
+data(mam15)
+mam15.trees <- mam15.relltest[1:15]
+
+<<sortmam>>=
+stat <- attr(mam15.trees,"stat")
+o <- order(stat)
+mam15.trees <- mam15.trees[o]
+@
+<<eval=false>>=
+summary(mam15.trees, k=1:3)
+@
+{\tiny
+<<echo=false>>=
+summary(mam15.trees, k=1:3)
+@ 
+}
+
+Next we look at the $p$-values. We confirm that $p_1$ (the second
+column, indicated as {\tt k.1}) is almost the same as the raw BP (the first column); this
+should be so if the model fitting is good. Only two trees, i.e., {\tt t1}
+and {\tt t3}, have $p_1>0.05$. It is known that the bias of $p_1$ is large
+so that often leads to false positives for tree selection. $p_2$
+improves upon $p_1$ by correcting the bias. Six trees, i.e., {\tt t1}, {\tt t3},
+{\tt t2}, {\tt t5}, {\tt t6}, and {\tt t4}, have $p_2>0.05$. $p_3$ improves upon $p_2$ even
+more, although the trees of $p_3>0.05$ are the same six trees in this
+example. In general, the accuracy of $p_k$ (AU $p$-values, indicated as {\tt k.k} in the table) increases for larger $k$, but it tends to have larger variation, so typically $k=2$ or $k=3$ would be used.
+Terada and Shimodaira (2017) intoduced selective inference $p$-value, denoted as SI, or {\tt sk.k} in the table. In the phylogenetic tree selection, this may only apply to the tree selected by the algorithm. In our case, the maximum likelhiood tree ({\tt t1}), we can look at $p=0.36$ ({\tt sk.2}).  By taking this tree as the alternative hypothesis, we can interpret $1-p = 0.64$ as the selective $p$-value. So, we can reject the null ({\tt t1} is not true) and claim that {\tt t1} is the true tree when $p>0.95$ at $\alpha=0.05$. Unfortunately, $p=0.36$ is too small and we cannot say anything in this table.
+
+Next we look at $p$-values for clusters instead of trees.
+<<eval=false>>=
+mam15.edges <- mam15.relltest[16:25]  # 10 edges
+summary(mam15.edges,k=1:3)
+@
+{\tiny
+<<echo=false>>==
+mam15.edges <- mam15.relltest[16:25]  # 10 edges
+summary(mam15.edges,k=1:3)
+@
+}
+When we apply hypothesis testing to all the 10 clusters, we may use AU $p$-values. Let $p$ be {\tt k.2}. Then {\tt e8}, {\tt e9} and {\tt e10} have $p<0.05$, and {\tt e5}, {\tt e6}, {\tt e7} also have $p<0.10$. They may be rejected at either $\alpha=0.05$ or 0.10. However, people often want to look at only the clusters appearing in the top tree. In this table, only e1 and e2 are included in {\tt t1}. We should use SI $p$-values for testing each of these two clusters by taking it as the alternative hypothesis. Let $p$ be {\tt sk.2}. Then {\tt e2} has $p>0.90$, indicating that the null hypothesis ({\tt e2} is not true) is rejected as $1-p<0.10$ at $\alpha=0.10$.
+
+
+Finally we examine model fitting.  According to the AIC values, the
+fitting is good overall except for the top two trees; however note
+that the AIC values should be about 10 times smaller if the default
+value of nb=10,000 was used.  The fitting curves for the top four
+trees are shown (Fig.~\ref{fig:mamplots}) by
+<<mamplots,echo=true,fig=false>>=
+plot(mam15.trees[1:4])
+@ 
+\begin{figure}
+\begin{center}
+<<echo=false,fig=true>>=
+<<mamplots>>
+@ 
+\caption{Model fitting for the top four trees}\label{fig:mamplots}
+\end{center}
+\end{figure}
+According to the plots, the fitting is rather good even for the top two
+trees. 
+
+\begin{thebibliography}{9}
+
+\bibitem{bib:Fels:85:CLP}
+Felsenstein, J.
+(1985).
+\newblock Confidence limits on phylogenies: an approach using the bootstrap.
+\newblock {\em Evolution} {\bf 39} 783--791.
+
+\bibitem{bib:Garber2001}
+  Garber, M. E. et al. (2001)
+\newblock Diversity of gene expression in adenocarcinoma of the lung.
+\newblock \emph{Proceedings of the National Academy of Sciences}
+  {\bf 98} 13784--13789 (dataset is available from
+  \url{http://genome-www.stanford.edu/lung_cancer/adeno/}).
+
+\bibitem{bib:Shim:2002:AUT}
+Shimodaira, H.
+(2002).
+\newblock An approximately unbiased test of phylogenetic tree selection.
+\newblock {\em Syst. Biol.} {\bf 51} 492--508.
+
+\bibitem{bib:Shimo:2008:TRN}
+Shimodaira, H. (2008)
+\newblock Testing Regions with Nonsmooth Boundaries via Multiscale Bootstrap.
+\newblock \emph{Journal of Statistical Planning and Inference}
+{\bf 138} 1227-1241
+(\url{http://dx.doi.org/10.1016/j.jspi.2007.04.001}).
+
+\bibitem{bib:SH1999} 
+Shimodaira, H. and Hasegawa, M. (2001)
+\newblock CONSEL: for assessing the
+  confidence of phylogenetic tree selection.
+\newblock \emph{Bioinformatics} {\bf 17} 1246--1247 (software is available from
+  \url{http://stat.sys.i.kyoto-u.ac.jp/prog/consel/}).
+
+\bibitem{bib:SS2006}
+Suzuki, R. and Shimodaira, H. (2006)
+\newblock pvclust: An R package for hierarchical clustering with $p$-values.
+\newblock \emph{Bioinformatics} {\bf 22} 1540--1542 (software is available from
+\url{http://stat.sys.i.kyoto-u.ac.jp/prog/pvclust/}).
+
+\bibitem{bib:TS2017}
+Terada, R. and Shimodaira, H. (2017)
+\newblock Selective inference for the problem of regions via multiscale bootstrap.
+\newblock \emph{arXiv:1711.00949}.
+
+\bibitem{bib:Yang1997}
+Yang, Z. (1997)
+\newblock  PAML: a program package for phylogenetic analysis by
+  maximum likelihood.
+\newblock \emph{Computer Applications in BioSciences}
+{\bf 13} 555--556 (software is available from
+  \url{http://abacus.gene.ucl.ac.uk/software/paml.html}).
+
+
+\end{thebibliography}
+
+@ 
+\end{document}
