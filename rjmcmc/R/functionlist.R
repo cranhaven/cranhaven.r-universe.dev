@@ -1,0 +1,22 @@
+#' The rjmcmc Package
+#' 
+#' Performs reversible-jump MCMC (Green, 1995), specifically the reformulation 
+#' introduced by Barker & Link (2013). Using a 'universal parameter' space, 
+#' RJMCMC is treated as Gibbs sampling making it simpler to implement. The 
+#' required Jacobian matrices are calculated automatically, utilising the 
+#' \code{madness} package.
+#' 
+#' @section Functions: \code{\link{rjmcmcpost}} \code{\link{defaultpost}} \code{\link{adiff}}
+#'   \code{\link{getsampler}}
+#'   
+#' @section Methods: \code{\link{rjmethods}}
+#'       
+#' @references Green, P. J. (1995) Reversible jump Markov chain Monte Carlo
+#'   computation and Bayesian model determination. \emph{Biometrika, 711-732}.
+#' @references Barker, R. J. and Link, W. A. (2013) Bayesian multimodel
+#'   inference by RJMCMC: A Gibbs sampling approach. \emph{The American
+#'   Statistician, 67(3), 150-156}.
+#'   
+#' @docType package
+#' @name rjmcmc
+NULL
