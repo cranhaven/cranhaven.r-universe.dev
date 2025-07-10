@@ -1,0 +1,27 @@
+#' pirateserrors
+#'
+#' A dataset containing the results of a survey of 1,000 pirates. This dataset is identical to the pirates dataset - except that it has many errors!
+#' 
+#'
+#' @format A data frame containing 1,000 rows and 14 columns
+#' \describe{
+#'   \item{id}{An integer giving the pirate's id number}
+#'   \item{sex}{A string with the pirate's self reported sex}
+#'   \item{headband}{A binary variable indicating whether the pirate wears a headband}
+#'   \item{age}{An integer giving the age of the pirate in years}
+#'   \item{college}{A string indicating the college the pirate went to. JSSFP stands for Jack Sparro's School of Fashion and Piratery, while CCCC stands for Captain Chunk's Cannon Crew}
+#'   \item{tattoos}{An integer indicating the number of tattoos the pirate has}
+#'   \item{tchests}{An integer indicating the number of treasure chests found by the pirate}
+#'   \item{parrots}{An integer indicating the number of parrots owned by the pirate in his/her lifetime}
+#'   \item{favorite.pirate}{A string indicating The pirate's favorite pirate}
+#'   \item{sword.type}{A string indicating the type of sword the pirate uses}
+#'   \item{sword.time}{A number indicating how long it takes (in seconds) for the pirate to draw his/her sword. Smaller times are better!}
+#'   \item{eyepatch}{An integer indicating the number of eyepatches worn by the pirate}
+#'   \item{beard.length}{A number indicating length of the pirate's beard in centimeters}
+#'   \item{fav.pixar}{A string indicating Pirate's favorite pixar movie}
+#' }
+#' @source 2015 annual international pirate meeting at the Bodensee in Konstanz, Germany
+#' 
+#' 
+#' 
+"pirateserrors"
