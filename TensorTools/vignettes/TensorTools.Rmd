@@ -1,0 +1,239 @@
+---
+title: "TensorTools"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{rTensor2}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+```{r setup}
+library(TensorTools)
+```
+
+## Introduction
+
+TensorTools is a set of tools to manipulate 3D tensors of data.  The package follows the work of Kernfeld, E., Kilmer, M., and Aeron, S. <https://doi.org/10.1016/j.laa.2015.07.021>.  For most operations, the first step is to take a discrete linear transpose along mode 3.  The TensorTools package allows manipulation of tensors using one of 6 discrete transforms.
+
+General principles:
+
+  + Results are transformation dependent.  In other words, multiplying 2 tensors together using a different transformation will give you a different product.
+
++ Inverses are not unique. In other words, different transformations yield inverses that are scaled differently. When calculating: $\texttt{tmult}(\texttt{A},\texttt{tInv(A)},\texttt{"tform"})=\texttt{I}$, the identity tensor will have zeros for all lateral slices except the first slice and the first lateral slice will be an identity matrix times some scalar.  The scalar will be different depending on which transform was used as well as the number of lateral slices.
+
++ If you calculate the inverse tensor and then use the inverse tensor in a product, you must use the same transformation that was used to find the inverse tensor.  The same is true for the tensor transpose function.
+
+## S-3 Class
+
+For storing and implementing tensor operations, TensorTools is built around an S-3 class in R.  Tensors store multi-dimensional arrays.  The modes of a tensor represent the dimensions of the multi-dimensional array that is being stored.  Using an S-3 class, one can access the tensor modes by using the standard \$ functionality in R.  For example, mytensor\$modes.  Similarly, the data in the tensor can be accessed by mytensor\$data. 
+
+```{r}
+A <- t_rand(modes=c(3,4,5))
+A$modes
+A$data
+```
+## Tensor Multiplication
+
+The tensor multiplication function ($\texttt{tmult}$) multiplies two tensors.  Step one is to perform a discrete transform along mode 3.  After transformation, the frontal slices are multiplied to together resulting in a new tensor.
+
+Because the frontal faces are multiplied together, the second mode of the first tensor must match the first mode of the second tensor.  As a example, we can multiply a $3 \times 4 \times 2$ tensor by a $4 \times 5 \times 2$ tensor.  In addition, mode 3 dimensions must also match.  If you are using the discrete wavelet transform, there is an additional requirement that the mode 3 dimension must be a of length $2^n$ where $n>1$ otherwise you must 0 pad the tensor in that dimension.
+
+
+```{r}
+A <-t_rand(modes=c(3,4,2))
+B <- t_rand(modes=c(4,5,2))
+tmult(x=A,y=B,"dct")
+```
+
+## Tensor Inverse
+
+The tensor inverse function ($\texttt{tINV}$) performs a discrete transformation down mode 3.  Then, each of the frontal slices are inverted.  Because the slices must be inverted, the mode 1 and mode 2 dimensions must be equal.
+
+```{r}
+A <-  t_rand(modes=c(3,3,2))
+Ainv = tINV(A,"dct")
+tmult(A,Ainv,"dct") # the result is an identity tensor
+```
+
+## Tensor Transpose
+
+The tensor transpose ($\texttt{t_tpose}$) performs a discrete transformation down mode 3.  Then, each of the frontal slices are transposed.
+
+```{r}
+A <-  t_rand(modes=c(3,5,2))
+A
+t_tpose(A,"dct")
+```
+
+## Eigenvalue Decomposition
+
+The eigenvalue decomposition function ($\texttt{tEIG}$) performs an eigenvalue decomposition on a tensor whose dimensions are $n \times n \times k$ using any discrete transform.  The function returns 2 tenors, an $n \times n \times k$ tensor of eigenvectors and a diagonal tensor of eigenvalues which is also $n \times n \times k$. Notice that if we multiply $P D P^{-1}$ we obtain the original tensor.
+
+```{r}
+A = t_rand(modes=c(3,3,2))
+result = tEIG(A,"dst")
+A$data-tmult(tmult(result$P,result$D,"dst"),tINV(result$P,"dst"),"dst")$data # zero tensor
+```
+## LU Decomposition
+
+The LU decomposition factors a 3-mode tensor into a lower triangular tensor and an upper triangular tensor.
+
+Note:  In order to perform this operation, the frontal slices need to be square.
+
+```{r}
+A <- t_rand(modes=c(3,3,2))
+result <- tLU(A,"dht")
+A$data-tmult(result$L,result$U,"dht")$data
+```
+
+## QR Decomposition
+
+The QR decomposition factors a 3-mode tensor into a left singular tensor object tensor and a right singular tensor object.
+
+Note:  In order to perform this operation, the frontal slices need to be square.
+
+```{r}
+A <- t_rand(modes=c(3,3,2))
+result <- tQR(A,"fft")
+A$data-tmult(result$Q,result$R,"fft")$data
+```
+## Singular Value Decomposition
+
+As an example, we use singular value decomposition (SVD) for image compression.  By factoring a tensor $\cal{A}$ into orthogonal tensors $\cal{U},\cal{S}$ and $\cal{V}$ using the SVD, we can then truncate the tensor to the first $k$ singular values and compare different transforms to the original image.
+
+```{r}
+library(raster)
+library(grid)
+data(raytrace)
+
+tform = "dct"
+
+A = raytrace$boat
+wSVD = tSVD(A,tform)
+
+k = 30 # number of singular values kept
+U = wSVD$U
+V = wSVD$V
+S = wSVD$S
+tV = t_tpose(V,tform)
+
+Uk = t_rand(modes = c(128, k, 128))
+Sk = t_rand(modes = c(k, k, 128))
+Vk = t_rand(modes = c(k, 128, 128))
+
+Uk = U$data[,1:k,]
+
+Sk = S$data[1:k,1:k,]
+
+Vk = tV$data[1:k,,]
+
+Uk = as.Tensor(Uk)
+Vk = as.Tensor(Vk)
+Sk = as.Tensor(Sk)
+
+X = tmult(Uk, Sk,tform)
+X = tmult(X, Vk, tform)
+
+# See how close the compressed image is to the original image
+fnorm(X$data-A$data)
+
+# feature scale
+if (tform=="fft"){
+  Xnew=Re(X$data)
+} else {
+  Xnew = X$data
+}
+Xnew = X$data
+newX = (Xnew-min(Xnew))/(max(Xnew)-min(Xnew))
+
+# View Images
+
+# Compressed image
+```{r}
+library(raster)
+library(grid)
+data(raytrace)
+
+tform = "dct"
+
+A = raytrace$boat
+wSVD = tSVD(A,tform)
+
+k = 30 # number of singular values kept
+U = wSVD$U
+V = wSVD$V
+S = wSVD$S
+tV = t_tpose(V,tform)
+
+Uk = t_rand(modes = c(128, k, 128))
+Sk = t_rand(modes = c(k, k, 128))
+Vk = t_rand(modes = c(k, 128, 128))
+
+Uk = U$data[,1:k,]
+
+Sk = S$data[1:k,1:k,]
+
+Vk = tV$data[1:k,,]
+
+Uk = as.Tensor(Uk)
+Vk = as.Tensor(Vk)
+Sk = as.Tensor(Sk)
+
+X = tmult(Uk, Sk,tform)
+X = tmult(X, Vk, tform)
+
+# See how close the compressed image is to the original image
+fnorm(X$data-A$data)
+
+# feature scale
+if (tform=="fft"){
+  Xnew=Re(X$data)
+} else {
+  Xnew = X$data
+}
+Xnew = X$data
+newX = (Xnew-min(Xnew))/(max(Xnew)-min(Xnew))
+
+# View Images
+
+# Compressed image
+grid.raster(newX[,45,])
+```
+
+
+```{r}
+# Original Image
+grid.raster(raytrace$boat$data[,45,])
+```
+
+## Linear Discriminate Analysis
+
+The $\tt{tLDA(\cA,nClass,nSamplesPerClass,\texttt{"tform"})}$ function performs tensor linear discriminate analysis on a 3-mode tensor.  The function assumes that the classes are sorted.
+
+For illustration purposes, we use a subset of the MNIST handwritten digits provided with the TensorTools package.
+
+```{r}
+data(Mnist)
+T <- Mnist$train$images
+```
+
+We sort the digits based on the labels.
+
+```{r}
+myorder <- order(Mnist$train$labels)
+T_sorted <- T$data[,myorder,]
+```
+
+Using a small subset, for illustration purposes, we perform tLDA.
+
+```{r}
+T <- T_sorted[,c(1:2,1001:1002,2001:2002,3001:3002,4001:4002,5001:5002,6001:6002,7001:7002,8001:8002,9001:9002),]
+tLDA(as.Tensor(T),10,2,"dct")
+```
