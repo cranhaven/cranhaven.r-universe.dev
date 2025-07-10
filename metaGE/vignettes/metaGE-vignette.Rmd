@@ -1,0 +1,364 @@
+---
+title: "metaGE-vignette"
+author: "Annaig De Walsche"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{metaGE-vignette}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  out.width = '70%'
+)
+```
+
+This package provides functions to perform a meta-analysis of genome-wide association studies in plant quantitative genetics. The present document displays the code and results corresponding to the analysis of the package data set. 
+
+# Package installation 
+
+First one need to install the `metaGE` package. 
+
+```{r intall metaGE}
+if (!require('metaGE')){
+  install.packages('metaGE')
+} 
+library('metaGE')
+```
+
+The analysis requires the following R packages:
+
+```{r setup,warning=FALSE,message=FALSE}
+
+library(tidyverse)
+library(DT)
+
+## For graphical displays
+library(data.table)
+library(corrplot)
+library(ggplot2)
+
+```
+
+# Build the dataset
+
+The starting point of the analysis is the list of files corresponding to the association studies results performed in the different environments. Here we consider only three association files for simplification. These files are included in the package.
+
+```{r listing files of GWAS results }
+## Get the folder containing the association file
+RepData <- system.file("extdata", package = "metaGE")
+
+## Get the complete list of association files
+File.list <- list.files(RepData ,full.names = TRUE) %>% 
+  tibble(Names = .)%>% 
+  mutate(ShortNames = Names %>%
+           str_remove(pattern = paste0(RepData,"/")) %>%
+           str_remove(pattern = "_3DF.txt"))  %>%
+  select(ShortNames,Names) %>% 
+  deframe
+
+File.list
+```
+
+Here is what the data look like in a single file:
+
+```{r looking at single file }
+## Have a look at the first one
+fread(File.list[1]) %>% head()  %>% datatable()
+```
+
+One now needs to collect the results of all association files into a single dataset using the `metaGE.collect` function.
+
+Notice that all files may not have the same SNPs (due to filtering per environment). This will result in NAs when files are merged. By default, any marker with NAs is discarded. Specify NA.rmv = FALSE if you want to keep the marker with NAs.
+
+
+```{r metaGE collect}
+###Build the dataset
+## First provide the list of variable names 
+Names.list <- list(MARKER="Marker_Name",
+                   CHR="Chromosome",
+                   POS="Marker_Position",
+                   FREQ="Maf",
+                   EFFECT="SNP_Weight",
+                   PVAL="Pvalue",
+                   ALLELE0="Allele1",
+                   ALLELE1="Allele2")
+
+MinFreq <- 0.07
+
+## Now collect
+MetaData <- metaGE.collect(FileNames = File.list, VariableNames = Names.list, MinFreq = MinFreq)
+head(MetaData$Data) %>% datatable()
+
+```
+
+The association files can be in several folders. In this case, one can define the FileNames argument as a list of lists. The argument VariableNames may also be a list of lists.
+
+```{r metaGE collect folders}
+## Get the list of the association files
+File.list1 <- File.list[1:2]
+
+## Get the list of the other association files
+File.list2 <- File.list[3]
+
+File.listc <- list("List1" = File.list1, "List2" = File.list2)
+File.listc
+
+###Build the dataset
+## First provide the list of variable names 
+Names.listc <- list(Names.list, Names.list)
+
+MinFreq <- 0.07
+
+## Now collect
+MetaData <- metaGE.collect(FileNames = File.listc, VariableNames = Names.listc, MinFreq = MinFreq)
+
+head(MetaData$Data)  %>% datatable()
+```
+
+From now on, we consider the dataset `metaData` included in the package `metaGE`. This dataset contains the results of 10 different genetic association studies on maize lines testing the association between a set of 27 411 markers and the grain yield.
+
+```{r import data}
+# Import the data
+data("metaData")
+```
+
+
+
+# Accounting for correlations between individual GWAS
+
+One can compute the correlations between the individual GWAS using the `metaGE.cor` function. 
+
+```{r build matcorr}
+Threshold <- 0.8
+MatCorr <- metaGE.cor(metaData, Threshold = Threshold)
+```
+
+
+Here is what the correlation matrix looks like:
+
+```{r show matcorr,fig.align = 'center',fig.height=8,fig.width=8}
+corrplot(MatCorr,order = "hclust")
+```
+
+
+# Global meta-analysis procedures
+
+One may fit different models with the `metaGE.fit` function depending on the argument `Method` :
+
+- if `Method = 'Fe'`, then the Fixed Effect (Fe) model is fitted, and a test to identify globally significant markers is performed. 
+- if `Method ='Re'`, then Random Effect (Re) model is fitted, and a test that allows some heterogeneity on the effect of the marker is performed. 
+
+
+Here are the two different models:
+```{r metaGE fit}
+## Fixed Effect
+FeDF <- metaGE.fit(metaData, MatCorr, Method = "Fe")
+head(FeDF %>% select(CHR, POS, MARKER, Mu, Tau, PVALUE))  %>% datatable()
+
+## Random Effect
+ReDF <- metaGE.fit(metaData, MatCorr, Method = "Re")
+head(ReDF %>% select(CHR, POS, MARKER, Mu, Tau, PVALUE))  %>% datatable()
+```
+
+One can have a look at the pvalues one gets for the different sets of tests to check for any problem. This can be done using the `metaGE.pvalplot` function, which displays the p-value distribution and the QQplot of the -log10(pvalues).
+
+
+```{r metaGE pvalplot,fig.height=3,fig.width=5,out.width='45%'}
+Pvalue.list <- list('PVALUE.Fe'= FeDF$PVALUE, 'PVALUE.Re'= ReDF$PVALUE)
+plott <- map(names(Pvalue.list),~metaGE.pvalplot(Pvalue.list[[.x]], Main= .x) )
+```
+
+## Check the candidates
+
+
+First apply some multiple testing procedure (here Benjamini-Hochberg with $H_0$ prior estimation). 
+
+```{r correcting pvalues}
+CorrectingPValues <- function(Pvalues){
+
+  ## Get a p0 estimate
+  p0 = min(2*sum(Pvalues > 0.5)/length(Pvalues),1-1/length(Pvalues))
+
+  ## Get the corrected p-values
+  CorrectedPval <- stats::p.adjust(Pvalues, method = 'BH')*p0
+
+  return(CorrectedPval)
+}
+```
+
+
+Here is the number of significant markers at a 0.05 threshold for the different sets of tests : 
+
+```{r FDR control}
+## FDR control
+Alpha <- 0.05
+Signif <- lapply(Pvalue.list, FUN = function(i){
+                  return(CorrectingPValues(i) %>% 
+                    `<`(Alpha) %>% 
+                    which)})
+
+lapply(X = Signif,FUN = length)
+```
+
+## Manhattan plot and heatmap
+
+One can draw the corresponding manhattan plot using the `metaGE.manhattan` : 
+
+```{r manhattan plot,fig.align='center',fig.height=6,fig.width=10}
+
+PvalThresholdFe <-FeDF[Signif$PVALUE.Fe,]$PVALUE%>% max %>% max(.,0)
+manhattanFe <- metaGE.manhattan(Data = FeDF,VarName = 'PVALUE', Threshold = PvalThresholdFe,Main = '-log10(Pval) alongside the chromosome Fe method' )
+print(manhattanFe)
+
+PvalThresholdRe <- ReDF[Signif$PVALUE.Re,]$PVALUE%>% max %>% max(.,0)
+manhattanRe <- metaGE.manhattan(Data = ReDF,VarName = 'PVALUE', Threshold = PvalThresholdRe,Main = '-log10(Pval) alongside the chromosome Re method')
+print(manhattanRe)
+
+```
+
+One can draw the corresponding heatmap using the `metaGE.heatmap` : 
+
+```{r heatmap,fig.align='center',fig.height=6,fig.width=10}
+heatmapFe <- metaGE.heatmap(Data = FeDF[Signif$PVALUE.Fe,],Prefix = "Z.",Main = "Z-scores of Fe significant markers across environments")
+
+
+heatmapRe <- metaGE.heatmap(Data = ReDF[Signif$PVALUE.Re,],Prefix = "Z.", Main = "Z-scores of Re significant markers across environments")
+
+```
+
+# Score local
+
+One can use the score local approach developed by Fariello MI, Boitard S, Mercier S, et al.(2017) using the `metaGE.lscore`. This approach aims to detect significant regions in a genome sequence by accumulating single marker p-values. The technical details of the computation can be found in Fariello MI, Boitard S, Mercier S, et al. Accounting for linkage disequilibrium in genome scans for selection without individual genotypes: The local score approach. Mol Ecol. 2017;00:1–15. https://doi.org/10.1111/mec.14141.
+
+
+```{r local score FE}
+x <- 3
+FeDF_ls <- metaGE.lscore(Data = FeDF, PvalName = "PVALUE", xi = x)
+```
+
+Here are the significant regions founded by the score local approach :
+
+```{r sigzones Fe}
+FeDF_ls$SigZones %>% datatable()
+```
+
+One can draw the manhattan plot of the score local and highlight the significtives markers using the `metaGE.manhattan` : 
+
+```{r manhattan Fe lscore,fig.align='center',fig.height=6,fig.width=10}
+manhattanFe_lscore <- metaGE.manhattan(Data = FeDF_ls$Data,
+                              VarName = "SCORE",
+                              Score = T,
+                              SigZones = FeDF_ls$SigZones )
+print(manhattanFe_lscore+ggtitle('Score local alongside the chromosome Fe method'))
+
+```
+
+# Tests for  GxE interactions 
+
+Different tests may be performed with the `metaGE.test` function depending on the argument :
+
+- if `Incidence` is provided to the function and `Contrast = NULL`, then a test of contrast to identify markers significant for at least one subclass of environments is performed. 
+- if `Incidence` and `Contrast` are provided to the function, then the test of contrast specified is performed. 
+- if `Covariate` is provided to the function, then Random Effect regression, a test to identify significant markers correlated to environments covariate, is performed.
+
+One can perform several tests by providing a list of the arguments `Contrast` and/or `Incidence` and/or `Covariate`. 
+
+
+Some covariates describing the environments are available in the `envDesc` data set :
+
+
+```{r import environment data}
+data("envDesc")
+envDesc %>% datatable()
+```
+
+## Tests of contrast
+
+First, one must build the incidence matrix using the `metaGE.incidence` function.
+
+```{r incidence matrix}
+## Build the incidence matrix 
+(Incidence.Temp <- metaGE.incidence(VarName = "Temp",Covariate = envDesc,EnvName = "ShortName", Data = metaData))
+```
+
+One can test whether the markers are significant in at least one environment subclass by setting `Contrast` to `NULL`. One can also identify significant markers with a distinct effect for the different subclasses of environments by specifying the appropriate `Contrast`. 
+
+One can use the `metaGE.test` function to perform tests of contrast.
+
+
+```{r metaGE  contrast test}
+## Build the list of Incidence
+Incidence.list <- list(Temp = Incidence.Temp,
+                       Diff.Temp = Incidence.Temp)
+
+#Build the list of Contrast
+Contrast.list <- list(Temp = NULL,
+                      Diff.Temp = matrix(c(1,-1,0,0,1,-1),2,byrow = T)) 
+
+
+ContrastDF <- metaGE.test(Data = metaData, MatCorr = MatCorr,
+                          Incidence = Incidence.list,
+                          Contrast = Contrast.list)
+```
+
+
+Here are the number of significant markers at a 0.05 threshold on control FDR for the different sets of tests : (Benjamini-Hochberg with $H_0$ prior estimation)
+
+```{r FDR control test contrast}
+Alpha <- 0.05
+SignifContrast <- apply(ContrastDF %>% select(contains("PVALUE.")),2,
+                        FUN = function(i){return(CorrectingPValues(i) %>% 
+                                                    `<`(Alpha) %>% 
+                                                      which)})
+
+lapply(SignifContrast,length)
+
+```
+
+One can draw the corresponding heatmap using the `metaGE.heatmap` : 
+```{r contrast heatmap,fig.align='center',fig.height=6,fig.width=10}
+# Specify the groups of environment
+heatmap_Temp <- metaGE.heatmap(Data = ContrastDF[SignifContrast$PVALUE.Temp,],EnvGroups = envDesc[,1:2],Prefix = "Z.",Main = "Z-scores of markers with contrasted effect according the temperature")
+
+
+```
+
+## Tests of meta-regression
+
+One may want to identify markers correlated to environments covariate. These can be done by performing a meta-regression test thanks to the function `metaGE.test` by providing a data frame containing one column corresponding to the environments (the first one) and column(s) corresponding to the covariate(s) in the argument `Covariate`.One can test whether the markers are significant in at least one environment subclass by setting `Contrast` to `NULL`. One can also identify significant markers with a distinct effect for the different subclasses of environments by specifying the appropriate `Contrast`. 
+
+One can use the `metaGE.test` function to perform tests of contrast.
+
+
+```{r regression test}
+RegressionDF <- metaGE.test(Data=metaData,MatCorr = MatCorr,Covariate = envDesc[,c(1,5,6)],EnvName = "ShortName")
+```
+
+
+Here are the number of significant markers at a 0.05 threshold on control FDR for the meta-regression tests : (Benjamini-Hochberg with $H_0$ prior estimation)
+```{r FDR control test regression}
+SignifRegression <- apply(RegressionDF %>% select(contains("PVALUE.")),2,
+                        FUN = function(i){return(CorrectingPValues(i) %>% 
+                                                    `<`(Alpha) %>% 
+                                                      which)})
+
+lapply(SignifRegression,length)
+
+```
+
+Here are the five most significant markers correlated to the Tnight.mean covariate.
+
+```{r significant marker test regression}
+RegressionDF[SignifRegression$PVALUE.Tnight.mean,] %>% select(CHR, POS, MARKER, PVALUE.Tnight.mean) %>% arrange(PVALUE.Tnight.mean) %>% head()  %>% datatable()
+```
+
+One can draw the graph of the marker effects according to the covariate using the `metaGE.regplot`.
+
+```{r metaGE regplot,fig.align='center',fig.height=7,fig.width=10}
+metaGE.regplot(Data = metaData, Covariate = envDesc,VarName = "Tnight.mean",EnvName = "ShortName", MarkerName = "AX-90548528", aesCol = "Classification")
+```
+
