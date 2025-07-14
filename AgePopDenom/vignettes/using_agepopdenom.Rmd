@@ -1,0 +1,614 @@
+---
+title: "Using AgePopDenom"
+output: rmarkdown::html_vignette
+vignette: >
+  %\
+  %\VignetteIndexEntry{Using AgePopDenom}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+editor_options: 
+  markdown: 
+  wrap: 72
+---
+
+# Introduction
+
+**AgePopDenom** is an R package designed for geostatistical modeling of fine-scale population age structures. By combining nationally representative survey data (e.g., DHS), geospatial rasters (e.g., population density), and administrative shapefiles, it produces single-year age distributions at a high spatial resolution. This vignette walks you through installing **AgePopDenom**, setting up a project directory, running the modeling workflow, and creating outputs such as predictive rasters and age pyramids.
+
+A key advantage of **AgePopDenom** is its simplicity. The `init()` and `run_full_workflow()` functions handle everything from data retrieval to model fitting and result generation, making it much easier to produce fine-scale demographic maps for public health and development applications. Whether you need to incorporate custom covariates or use your own population rasters, the package is flexible and supports a wide range of user inputs.
+
+------------------------------------------------------------------------
+
+# Installation
+
+## System Requirements
+
+Before installing **AgePopDenom**, ensure your system meets the following requirements:
+
+1.  **R version**: \>= 4.1.0
+2.  **C++ compiler**: C++17 compatible
+3.  **TMB** (Template Model Builder)
+
+### Platform-Specific Setup
+
+#### Windows
+
+1.  Install Rtools (matches your R version):
+
+``` r
+# Check if Rtools is installed and properly configured
+pkgbuild::has_build_tools()
+```
+
+If FALSE, download and install Rtools from: [CRAN Rtools](https://cran.r-project.org/bin/windows/Rtools/)
+
+**macOS**
+
+1.  Install Command Line Tools:
+
+```         
+xcode-select --install
+```
+
+2.  Alternatively, install gcc via Homebrew:
+
+```         
+brew install gcc
+```
+
+**Linux (Ubuntu/Debian)**
+
+1.  Update your system and install necessary packages:
+
+```         
+sudo apt-get update
+sudo apt-get install build-essential libxml2-dev
+```
+
+## AgePopDenom installation
+
+Once the setup is complete, follow the instructions below to download **AgePopDenom**
+
+Note: **AgePopDenom** is currently under development. Once it is available on CRAN, you will be able to install it using the following command:
+
+```{r eval=FALSE, include=TRUE}
+# install.packages("AgePopDenom")
+```
+
+To get the development version from GitHub, use:
+
+```{r eval=FALSE, include=TRUE}
+# install.packages("devtools")
+devtools::install_github("truenomad/AgePopDenom")
+```
+
+Then load it in R:
+
+```{r eval=FALSE, include=TRUE}
+library(AgePopDenom)
+```
+
+# Workflow Overview
+
+AgePopDenom provides a streamlined workflow to generate age-specific population estimates at a 5 km x 5 km resolution (by default). The main steps are: 1. Initialize a project 2. Obtain and organize data (survey data, population rasters, shapefiles) 3. Run the geostatistical model 4. Generate spatial predictions 5. Export and visualize results. Below is a typical usage pipeline.
+
+## 1. Initialize a Project
+
+Before starting, ensure you have an **RStudio project** set up. This will help organize your analysis and outputs into a single, self-contained directory. An RStudio project is essential for maintaining reproducibility and keeping your workflow organized.
+
+Once the RStudio project is created, initialize the project folder structure and create the key scripts by running:
+
+```{r eval=FALSE, include=TRUE}
+init(
+  r_script_name = "full_pipeline.R",
+  cpp_script_name = "model.cpp"
+)
+```
+
+The `init()` function sets up your project's directory structure and creates necessary script templates. When executed, it creates a standardized folder hierarchy that organizes your data, scripts, and outputs. The function accepts several parameters to customize your setup:
+
+-   `r_script_name`: Names your main R script (defaults to "full_pipeline.R")
+-   `cpp_script_name`: Names your C++ model script (defaults to "model.cpp")
+-   `open_r_script`: Controls whether the R script opens automatically after creation
+-   `setup_rscript`: Determines if the R script should include template code
+
+The resulting directory structure includes:
+
+```         
+01_data/
+  1a_survey_data/
+    processed/
+    raw/
+  1b_rasters/
+    urban_extent/
+    pop_raster/
+  1c_shapefiles/
+02_scripts/
+03_outputs/
+  3a_model_outputs/
+  3b_visualizations/
+  3c_table_outputs/
+  3d_compiled_results/
+```
+
+and two scripts:
+
+-   **full_pipeline.R** (orchestrates the entire analysis)
+
+-   **model.cpp** (C++ model for fast optimization)
+
+## 2. Gather data
+
+You can download or place your own survey data into `01_data/1a_survey_data/processed/`. The survey data should contain at least:
+
+-   *lat*, *lon* for location
+-   *age_in_years* for each individual
+-   An *urban* indicator (if available)
+
+To download DHS data, do:
+
+```{r eval=FALSE, include=TRUE}
+download_dhs_datasets(
+  country_codes = c("GMB"),
+  email = "my_email@example.com",
+  project = "Population project"
+)
+
+process_dhs_data()
+```
+
+Next, retrieve shapefiles (e.g., WHO boundaries):
+
+```{r eval=FALSE, include=TRUE}
+download_shapefile("GMB")
+```
+
+Obtain population rasters (e.g., WorldPop):
+
+```{r eval=FALSE, include=TRUE}
+download_pop_rasters("GMB")
+```
+
+Extract urban extent (included with **AgePopDenom** or supply your own):
+
+```{r eval=FALSE, include=TRUE}
+extract_afurextent()
+```
+
+## 3. Run the Full Workflow
+
+Use `run_full_workflow()` to fit the spatial model, predict gamma parameters, and generate aggregated outputs:
+
+```{r eval=FALSE, include=TRUE}
+run_full_workflow("GMB")
+```
+
+When you call `run_full_workflow("country_code")`, **AgePopDenom** executes the following sub-functions in sequence:
+
+### 3i. `fit_spatial_model()`
+
+`fit_spatial_model()` fits a parameter-based geostatistical model using Template Model Builder (C++). It reads survey data, then estimates the Gamma shape (α) and scale (λ) parameters at each cluster, accounting for spatial correlation via a distance matrix.
+
+```{r eval=FALSE, include=TRUE}
+fit_spatial_model(
+  country_code,
+  data,
+  scale_outcome = "log_scale",
+  shape_outcome = "log_shape",
+  covariates = "urban",
+  cpp_script_name = "02_scripts/model",
+  output_dir = "03_outputs/3a_model_outputs"
+)
+```
+
+This function fits a parameter-based geostatistical model using Template Model Builder (TMB). Parameters:
+
+-   `country_code`: ISO3 country code (e.g., "GMB")
+-   `data`: Survey data frame containing:
+-   `lat`, `lon`: Geographic coordinates
+-   `age_in_years`: Individual ages
+-   `urban`: Urban/rural indicator (0/1)
+-   `scale_outcome`: Column name for log scale parameter
+-   `shape_outcome`: Column name for log shape parameter
+-   `covariates`: Vector of covariate names
+-   `cpp_script_name`: Path to TMB C++ script
+-   `output_dir`: Directory for model outputs
+-   `manual_params`: Optional list of manual parameter values:
+-   `beta1`: Vector of coefficients for scale model
+-   `beta2`: Vector of coefficients for shape model
+-   `gamma`: Spatial correlation parameter
+-   `log_sigma2`: Log of spatial variance
+-   `log_phi`: Log of spatial range parameter
+-   `log_tau2_1`: Log of nugget variance
+-   `control_params`: Optional list of optimization control parameters:
+-   `trace`: Level of output (0-6)
+-   `maxit`: Maximum iterations
+-   `abs.tol`: Absolute convergence tolerance
+
+The function returns a list containing:
+
+\- `par`: Named vector of fitted parameters
+
+\- `objective`: Final objective function value
+
+\- `convergence`: Convergence status (0 = success)
+
+\- `scale_formula`, `shape_formula`: Model formulas
+
+\- `variogram`: Fitted variogram object (if applicable)
+
+The `manual_params` input in the `fit_spatial_model()` function allows users to provide their own initial parameter estimates, offering greater control over the model optimization process. This is especially useful when default estimates from the linear regression or variogram fitting might not suit specific use cases or when prior knowledge of the data suggests alternative starting values.
+
+When using `manual_params`, the user must supply a list containing the following required parameters:
+
+-   `beta1`: Coefficients for the scale parameter linear model
+
+-   `beta2`: Coefficients for the shape parameter linear model
+
+-   `gamma`: Coefficient regulating the relationship between the shape and scale parameters
+
+-   `log_sigma2`: Log-transformed variance of the Gaussian process
+
+-   `log_phi`: Log-transformed spatial range parameter, derived from variogram fitting or user input
+
+-   `log_tau2_1`: Log-transformed nugget effect for the Gaussian process
+
+If `manual_params` is not provided, the function derives these values using default methods, including linear regression for beta1 and beta2 and an empirical variogram for log_phi. However, when `manual_params` is supplied, it overrides these defaults, enabling advanced users to refine model initialization or replicate earlier analyses with exact parameter values.
+
+The parameters serve different modeling purposes:
+
+1.  **Fixed Effects Parameters** (`beta1`, `beta2`):
+
+-   Control the relationship between covariates and the gamma distribution parameters
+-   Length must match the number of covariates
+-   Typically estimated from initial linear models
+
+2.  **Spatial Parameters** (`log_sigma2`, `log_phi`):
+
+-   Control the spatial correlation structure
+-   `log_sigma2`: Determines strength of spatial effects
+-   `log_phi`: Controls the effective range of spatial correlation
+
+3.  **Error and Correlation Parameters** (`gamma`, `log_tau2_1`):
+
+-   `gamma`: Links shape and scale parameters
+-   `log_tau2_1`: Accounts for measurement uncertainty
+
+When specifying manual parameters, consider: - Parameter scales (some are log-transformed) - Relationship to your data's spatial structure - Computational stability (avoid extreme values) - Previous successful model fits
+
+The `control_params` can be adjusted alongside `manual_params` to fine-tune the optimization process:
+
+```{r eval=FALSE, include=TRUE}
+control_params = list(
+  trace = 3,        # Higher values show more optimization details
+  maxit = 2000,     # Increase for complex spatial structures
+  abs.tol = 1e-10,  # Stricter convergence criteria
+  rel.tol = 1e-8    # Relative convergence tolerance
+)
+```
+
+Here's the technical implementation:
+
+```{r eval=FALSE, include=TRUE}
+fit_spatial_model(
+  data = survey_data,
+  scale_outcome = "log_scale",
+  shape_outcome = "log_shape",
+  covariates = "urban",
+  cpp_script_name = "02_scripts/model",
+  manual_params = list(
+    beta1 = c(0.5, -0.3),
+    beta2 = c(0.2, 0.1),
+    gamma = 0.8,
+    log_sigma2 = log(0.5),
+    log_phi = log(100),
+    log_tau2_1 = log(0.1)
+  ),
+  control_params = list(
+    trace = 3,
+    maxit = 2000,
+    abs.tol = 1e-10
+  )
+)
+```
+
+### 3ii. `generate_variogram_plot()`
+
+This function creates empirical and fitted variograms to assess spatial correlation structure in the data. It visualizes how similarity (in terms of age) between the different cluster locations changes with distance.
+
+```{r eval=FALSE, include=TRUE}
+generate_variogram_plot(
+  age_param_data,
+  fit_vario,
+  country_code,
+  scale_outcome = "log_scale",
+  output_dir = "03_outputs/3b_visualizations",
+  width = 12,
+  height = 9,
+  png_resolution = 300
+)
+```
+
+Parameters:
+
+- `age_param_data`: Data frame containing survey locations and parameters
+- `fit_vario`: Fitted variogram object from spatial model
+- `country_code`: ISO3 country code
+- `scale_outcome`: Column name for outcome variable ("log_scale" or "log_shape")
+- `output_dir`: Directory for saving plots
+- `width`, `height`: Plot dimensions in inches
+- `png_resolution`: Resolution of saved PNG file in DPI
+
+The function:
+- Computes empirical variogram from data points
+- Overlays fitted theoretical variogram
+- Creates diagnostic plot showing spatial correlation decay
+- Saves plot as PNG file in specified output directory
+
+Returns:
+- ggplot2 object of variogram plot
+- Saved PNG file in output directory
+
+### 3iii. `create_prediction_data()`
+
+This function builds a gridded dataset at \~5 km resolution, merging population rasters, urban-rural classification, and admin boundaries. Ensures each cell is linked to the proper covariates.
+
+```{r eval=FALSE, include=TRUE}
+create_prediction_data(
+  country_code,
+  country_shape,
+  pop_raster,
+  ur_raster,
+  adm2_shape,
+  cell_size = 5000,
+  ignore_cache = FALSE,
+  output_dir = "03_outputs/3a_model_outputs"
+)
+```
+
+Creates a regular grid for predictions. Parameters:
+
+-   `country_code`: ISO3 country code
+-   `country_shape`: sf object of country boundary
+-   `pop_raster`: Population density raster
+-   `ur_raster`: Urban/rural classification raster
+-   `adm2_shape`: Administrative boundaries (sf object)
+-   `cell_size`: Grid resolution in meters
+-   `ignore_cache`: Whether to regenerate existing grids
+-   `output_dir`: Output directory for grid data
+
+The grid includes: - Centroid coordinates - Population values - Urban/rural classification - Administrative unit IDs
+
+### 3iv `generate_gamma_predictions()`
+
+This function uses the fitted model parameters to simulate Gamma distributions at unobserved locations. Produces shape and scale estimates plus uncertainties.
+
+```{r eval=FALSE, include=TRUE}
+generate_gamma_predictions(
+  country_code,
+  age_param_data,
+  model_params,
+  predictor_data,
+  shapefile,
+  cell_size = 5000,
+  n_sim = 5000,
+  ignore_cache = FALSE,
+  output_dir = "03_outputs/3a_model_outputs"
+)
+```
+
+Parameters:
+
+-   `country_code`: ISO3 country code
+
+-   `age_param_data`: Fitted parameters at survey locations
+
+-   `model_params`: List of model parameters from fit_spatial_model()
+
+-   `predictor_data`: Grid cells for prediction
+
+-   `shapefile`: Administrative boundaries
+
+-   `cell_size`: Grid resolution
+
+-   `n_sim`: Number of Monte Carlo simulations
+
+-   `ignore_cache`: Whether to use cached predictions
+
+-   `output_dir`: Output directory
+
+Returns:
+
+-   Predicted shape and scale parameters
+
+### 3v. `generate_gamma_raster_plot()`
+
+This function converts shape, scale, and derived mean-age predictions into rasters. Creates exploratory maps for validation or visual inspection.
+
+```{r eval=FALSE, include=TRUE}
+generate_gamma_raster_plot(
+  predictor_data,
+  pred_list,
+  country_code,
+  output_dir = "03_outputs/3b_visualizations",
+  save_raster = TRUE
+)
+```
+
+Parameters:
+
+-   `predictor_data`: Grid cell data
+
+-   `pred_list`: Prediction results
+
+-   `country_code`: ISO3 country code
+
+-   `output_dir`: Output directory
+
+-   `save_raster`: Whether to save raster files
+
+Produces:
+
+-   Shape parameter raster
+
+-   Scale parameter raster
+
+-   Mean age raster
+
+### 3vi. `generate_age_pop_table()`
+
+This function computes age-specific population counts by applying Gamma-based proportions to population rasters. Aggregates counts and proportions at selected administrative levels (e.g., district, region).
+
+```{r eval=FALSE, include=TRUE}
+generate_age_pop_table(
+  predictor_data,
+  scale_pred,
+  shape_pred,
+  country_code,
+  age_range = c(0, 99),
+  age_interval = 1,
+  ignore_cache = FALSE,
+  output_dir = "03_outputs/3c_table_outputs"
+)
+```
+
+Parameters:
+
+-   `predictor_data`: Grid cell data
+
+-   `scale_pred`, `shape_pred`: Predicted parameters
+
+-   `country_code`: ISO3 country code
+
+-   `age_range`: Vector of min/max ages
+
+-   `age_interval`: Age grouping interval
+
+-   `ignore_cache`: Whether to use cached results
+
+-   `output_dir`: Output directory
+
+Produces two data frames:
+
+-   `prop_df`: Age proportions with uncertainty
+
+-   `pop_df`: Population counts with uncertainty
+
+### 3vii. `generate_age_pyramid_plot()`
+
+This function creates population pyramids (either counts or proportions) for visualizing demographic structures across user-defined geographic units.
+
+```{r eval=FALSE, include=TRUE}
+generate_age_pyramid_plot(
+  dataset,
+  country_code,
+  output_dir = "03_outputs/3b_visualizations"
+)
+```
+
+Parameters:
+
+-   `dataset`: List containing prop_df and pop_df
+
+-   `country_code`: ISO3 country code
+
+-   `output_dir`: Output directory
+
+-   `fill_high`, `fill_low`: Color gradient endpoints
+
+-   `line_color`: Bar outline color
+
+-   `break_axis_by`: Age axis interval
+
+Creates:
+
+-   A list containing both proportion and count plots.
+
+### 3viii. `process_final_population_data()`
+
+This function summarizes final outputs into Excel or CSV files. Allows users to retrieve final aggregated counts, proportions, and uncertainties for reporting.
+
+```{r eval=FALSE, include=TRUE}
+process_final_population_data(
+  input_dir = "03_outputs/3c_table_outputs",
+  excel_output_file = "03_outputs/3d_compiled_results/age_pop_denom_compiled.xlsx"
+)
+```
+
+Parameters: - `input_dir`: Directory containing results - `excel_output_file`: Path for Excel outpu
+
+Produces: - The function writes an Excel spreadhseet with six sheets containing population counts and proportions at different administrative levels (country, region, district).
+
+By allowing you to pass parameters to the underlying functions, `run_full_workflow()` offers both flexibility and efficiency in managing the geostatistical modeling process. Each sub-function within the workflow accepts a variety of parameters, enabling advanced users to tailor the workflow to their specific needs. These parameters support customization of datasets, modeling approaches (including initial model parameters and additional covariates), grid resolutions, output formats, and caching options. This level of control ensures that the workflow aligns with the specific analytical requirements of the user.
+
+## Example: Gambia
+
+To demonstrate **AgePopDenom**, we provide an example workflow using simulated DHS-like data for Gambia. This enables users to replicate fine-scale age-structured population modeling locally without requiring restricted data access. The example covers directory setup, dummy data simulation, and running the full modeling workflow.
+
+```{r eval=FALSE, include=TRUE}
+init(
+  r_script_name = "full_pipeline.R",
+  cpp_script_name = "model.cpp",
+  open_r_script = FALSE
+)
+
+# set up country code
+cntry_code = "GMB"
+
+# Gather and process datasets ---------------------------------------
+
+# Set parameters for simulation
+total_population <- 266
+urban_proportion <- 0.602
+total_coords <- 266
+lon_range <- c(-16.802, -13.849)
+lat_range <- c(13.149, 13.801)
+mean_web_x <- -1764351
+mean_web_y <- 1510868
+
+# Simulate processed survey dataset for Gambia
+set.seed(123)
+df_gambia <- NULL
+df_gambia$age_param_data <- dplyr::tibble(
+  country = "Gambia",
+  country_code_iso3 = "GMB",
+  country_code_dhs = "GM", 
+  year_of_survey = 2024,
+  id_coords = rep(1:total_coords, length.out = total_population),
+  lon = runif(total_population, lon_range[1], lon_range[2]),
+  lat = runif(total_population, lat_range[1], lat_range[2]), 
+  web_x = rnorm(total_population, mean_web_x, 50000),
+  web_y = rnorm(total_population, mean_web_y, 50000),
+  log_scale = rnorm(total_population, 2.82, 0.2),
+  log_shape = rnorm(total_population, 0.331, 0.1),
+  urban = rep(c(1,0), c(
+    round(total_population * urban_proportion), 
+    total_population - round(total_population * urban_proportion))),
+  b1 = rnorm(total_population, 0.0142, 0.002),
+  c = rnorm(total_population, -0.00997, 0.001),
+  b2 = rnorm(total_population, 0.00997, 0.002),
+  nsampled = sample(180:220, total_population, replace = TRUE))
+
+# save as processed dhs data
+saveRDS(
+  df_gambia,
+  file = here::here(
+    "01_data", "1a_survey_data", "processed", 
+    "dhs_pr_records_combined.rds"))
+
+# Download shapefiles
+download_shapefile(cntry_code)
+
+# Download population rasters from worldpop
+download_pop_rasters(cntry_code)
+
+# Extract urban extent raster
+extract_afurextent()
+
+# Run models and get outputs ------------------------------------------
+
+# Run the full model workflow
+run_full_workflow(cntry_code)
+```
+
+For more detailed information on advanced usage (e.g., integrating additional covariates, applying user-supplied rasters), consult the function-specific help files. We hope this package empowers you to reliably estimate age-structured population counts in diverse contexts and at finer geographic scales than was previously feasible.
