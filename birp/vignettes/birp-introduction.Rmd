@@ -1,0 +1,569 @@
+---
+title: "birp"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{birp}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE, # merges source code and its printed output into a single block
+  comment = ">" # Adds > to every line of printed output; visually distinguishing it from the code that generated it
+)
+```
+
+############################################
+############################################
+Understanding whether a population is **declining, stable, or increasing** is a crucial part of effective biodiversity management and policy decisions. Many ecological time‑series are short, noisy, and/or collected with different survey methods, making it difficult to use approaches that demand large data sets or highly standardized survey designs.
+
+```birp``` implements **hierarchical Bayesian models** designed to overcome these limitations, providing a flexible framework that allows you to **test for population trends** and **changes in trends** under various **study designs** (e.g. **Before‑After, Control‑Intervention, BACI**).
+
+This vignette demonstrates how to:
+
+* Getting started: **Fit a basic trend model** using example data
+* **Include specific study designs**, such as before-after (BA) or control-intervention (CI) setups
+* **Combine data** from different survey methods to estimate a shared trend
+* Fit a **negative-binomial model** when your data is overdispersed
+* Fit a **stochastic trend model** when you expect random variability between different survey locations
+* **Add covariates** that account for survey effort or detection probability to improve model accuracy
+* **Understand the modeling approach** behind ```birp``` and how it works
+
+This vignette focuses on the **practical use** of the ```birp``` R-package; for the full **methodological details**, **simulation studies**, and **real‑world case analyses**, please refer to the [accompanying manuscript](https://www.biorxiv.org/content/10.1101/2025.01.08.631844v1).
+
+
+#################################################
+# Getting Started with ```birp```
+#################################################
+
+This section guides you through a **simple analysis workflow** using the ```birp``` package, from generating data to visualizing results.
+Let's start by **loading the package**:
+```{r setup}
+library(birp)
+```
+
+## Input Data Format
+```birp``` expects a data frame with five required columns:
+
+* ```location```    : site identifier
+* ```timepoint```   : time of observation (e.g., year, but can be any numbers that make sense to you)
+* ```counts```      : number of detections (e.g., number of individuals observed)
+* ```effort```      : sampling effort (e.g., number of trap nights). Can be named *covEffort_1*, *covEffort_2*, ...  if multiple covariates are used.
+* ```CI_group```    : group assignment (e.g., "control" or "intervention")
+
+If your study has no intervention, like in this first example, you can assign the same group name (e.g.,  ```Group_1 ```) to all rows. Each data set/input file should correspond to a **single survey method**. If your study used multiple survey methods, ```birp``` can analyze all methods together; [this will be covered in a later section](#combine-data-from-different-survey-methods).
+
+Here's an example data set:
+
+```{r, echo=FALSE}
+# Create example data
+exampleData <- data.frame(
+  location = rep(c("site1", "site2", "site3"), each = 5),
+  timepoint = rep(2020:2024, times = 3),
+  counts    = c(28, 12, 26, 48, 20, 21, 22, 76, 22, 100, 65, 32, 60, 19, 42),
+  effort   = c(2,1,2,3,1,1,1,4,1,4,5,2,5,1,2),
+  CI_group    = rep("Group_1", times = 15)
+)
+```
+
+
+```{r, echo=FALSE}
+print(exampleData)
+```
+
+In this example, there are **three different survey locations** (site1, site2, and site3) that have been sampled over the course of **five years** (2020-2024). The effort numbers could represent, for example, the **number of camera trap days** of that given location and timepoint. Note that you **do not need to have data from every year** to be able to use birp! There is no before/after or control/intervention design here; therefore every row has been assigned ```Group_1```. You can create this data frame by copying and pasting this command into your R-console:
+```{r, eval=FALSE}
+# Create example data
+exampleData <- data.frame(
+  location = rep(c("site1", "site2", "site3"), each = 5),
+  timepoint = rep(2020:2024, times = 3),
+  counts    = c(28, 12, 26, 48, 20, 21, 22, 76, 22, 100, 65, 32, 60, 19, 42),
+  effort   = c(2,1,2,3,1,1,1,4,1,4,5,2,5,1,2),
+  CI_group    = rep("Group_1", times = 15)
+)
+```
+
+########################################
+## Preparing your data 
+########################################
+
+Once you prepared your data set, the next step is to **convert it into a ```birp_data``` object**, which is the required format for analysis using the ```birp``` package. There are **three functions** available for creating a ```birp_data``` object, depending on the format and source of your input data:
+
+* ```birp_data_from_data_frame()```
+Use this function when your data is already loaded into R as a *data.frame*. It allows you to specify columns corresponding to location, timepoint, counts, control-intervention group (CI_group) and covariates (e.g. effort). This is the **most flexible and commonly used approach** when working interactively within ```R```.
+* ```birp_data_from_file()```
+This function is ideal when your data is stored as a **CSV or tab-delimited text file** on your computer. It reads the data from the specified file path and constructs a ```birp_data``` object, provided the file follows the expected format and column naming conventions used by ```birp```.
+* ```birp_data()```
+This is the **most manual method** and is suitable for advanced users. It allows you to create a ```birp_data``` object directly by supplying a named list of components such as the count data, covariates, timepoints, and metadata. This option is useful for scripted workflows or for programmatically generating and modifying data.
+
+You can learn more about these functions using R's built-in help system; for example, type ```?birp_data_from_file```. Let's convert the example data from above to a ```birp_data``` object. Since our example data is an already existing data frame in ```R```, we will use the ```birp_data_from_data_frame()``` function:
+```{r}
+exampleBirp <- birp_data_from_data_frame(exampleData)
+print(exampleBirp)
+```
+
+**Printing the ```birp_data``` object displays a summary of your data.** You can access the original data frame at any time using the dollar sign, e.g., ```exampleBirp$data```.
+
+
+########################################
+## Estimating a Population Trend
+########################################
+Once your data has been converted into a ```birp_data``` object, you can estimate population trends using the main function of the ```birp``` package: ```birp()```. This function runs a **Bayesian trend estimation** using **Markov Chain Monte Carlo (MCMC)** sampling to infer the posterior distribution of the trend parameter, $\gamma$ (gamma), which **represents the rate of population change over time**.
+
+Here's how to fit the model:
+
+<!-- First fit the model using verbose=FALSE -->
+```{r, echo=FALSE}
+est <- birp(exampleBirp, verbose=FALSE)
+```
+
+<!-- Then show model code to user with default verbose=TRUE -->
+```{r, eval=FALSE}
+est <- birp(exampleBirp)
+```
+
+When you run the model, **progress messages will be printed in the console by default** to show what's happening during the fitting process. If you prefer a more quiet output, you can turn these messages off by setting ```verbose = FALSE```.
+Let's look at the result:
+```{r}
+print(est)
+```
+
+The output will include a key summary line such as:
+
+```{r, echo=FALSE}
+cat("Posterior probability of increasing trend P(gamma > 0): ", est$prob_gamma_positive, "\n")
+```
+
+
+This is the **main result of interest**. In this example, ```birp``` estimates a **`r round(est$prob_gamma_positive,4)*100`% probability that the trend is increasing** between the specified timepoints (e.g., 2020-2024). In other words, based on the observed data and the assumptions of the model, there's a **high posterior probability that the underlying population is growing** during this period.
+
+*What does this mean?*
+The value reported is the **posterior probability**, which is the probability of a trend being positive ($\gamma$ > 0) **after accounting for the observed data**. This is calculated using **MCMC**, a computational algorithm that samples from the posterior distribution; a distribution of plausible values for the trend parameter given the data and model. The proportion of MCMC samples where gamma is greater than zero gives us the posterior probability of an increasing trend.
+
+This probabilistic interpretation is a strength of Bayesian methods: rather than giving a binary yes or no answer, ```birp``` quantifies uncertainty and tells you **how likely** it is that the population is increasing, given the data and model structure.
+
+
+########################################
+## Visualizing the result
+########################################
+
+After fitting a model with ```birp()```, you can **visualize the estimated trends** using the ```plot()``` function. This works because ```birp``` objects have a **custom plot function defined for them**, so when you use ```plot()``` with a ```birp``` object, it automatically uses the underlying function tailored to show the posterior distributions of the trend parameter ($\gamma$). 
+```{r, fig.width=6, fig.height=4}
+plot(est)
+```
+
+The x-axis represents the **rate parameter** $\gamma$. A **positive $\gamma$ indicates an increasing** population trend, while a **negative $\gamma$ indicates a decreasing** trend. The legend in the top corner is added automatically and shows the posterior probability that the population is increasing, based on the observed data (i.e., the number of counts, $n$). A narrow, peaked posterior curve indicates high certainty; a flatter curve suggests greater uncertainty and often crosses zero
+
+You can **customize this plot much like a standard scatter plot**. For example, you can remove the legend, change the line color, or provide a custom label for the y-axis:
+```{r, fig.width=6, fig.height=4}
+plot(est, col="deeppink", legend=NA, ylab = "Density of posterior estimates")
+```
+
+Great, now you know how to **prepare your data**, **fit a simple population trend model** with ```birp```, and **understand and visualize the results**. The package also offers more advanced features, including fitting negative binomial and stochastic models, incorporating different sampling designs, modeling multiple time epochs to test for changes in trends, and adding covariates to improve inference. These topics will be covered in the following sections.
+
+########################################################
+# Testing for Changes in Trends Using Sampling Designs
+########################################################
+
+In real-world monitoring, populations often experience **changes in trend** due to interventions, environmental shifts, or other events. The ```birp``` package **provides flexible tools to test for such changes** using different sampling designs, including:
+
+* **Before-After (BA)**: 
+to assess whether a trend has changed after a certain point in time.
+* **Control-Intervention (CI)**: 
+to compare trends between an affected group and an unaffected (control) group.
+* **Before-After-Control-Intervention (BACI)**: 
+a combination of both, allowing to test for intervention effects by comparing groups over time.
+
+
+##################################################################
+## Before-After (BA) Design: Detecting a Change in Trend Over Time
+##################################################################
+
+In some situations, we may suspect that an event (e.g., the establishment of a protected area or arrival of a new predator) has caused a **shift in population trend at a known time**. We can test for this by specifying a **change point** in the ```birp()``` function using the ```timesOfChange``` argument.
+
+```{r}
+est <- birp(exampleBirp, verbose = FALSE, timesOfChange = 2023)
+print(est)
+```
+
+This fits a model that allows **separate trends (gamma ($\gamma$) values) before and after the change point**. The output includes:
+
+* The timepoint of the assumed change (not estimated, but taken from the user).
+* **Separate trend estimates** (posterior summaries) for each period (called "epochs").
+* The **probability that the trend is increasing (P($\gamma > 0$)) for each epoch**.
+
+For example, the result:
+```{r, echo=FALSE}
+cat("Posterior probability of increasing trend P(gamma > 0): ", est$prob_gamma_positive, "\n")
+```
+
+shows **moderate support for an increasing trend before 2023**, and **stronger evidence for an increase after**. You can test for multiple change points by providing a vector to the ```timesOfChange``` argument.
+
+###############################################################
+## Control-Intervention (CI) and BACI Designs: Comparing Groups
+###############################################################
+
+Sometimes, instead of (or in addition to) looking for changes over time, you want to **compare different groups**, for example, a group of locations affected by a policy (**intervention group**) versus unaffected sites (**control group**). This is where **CI** and **BACI** designs come in.
+
+*What is a BACI Design?*
+**BACI** stands for **Before-After-Control-Intervention**, and it's commonly used in environmental impact studies. It **compares trends in control and intervention groups before and after a known event**. This allows us to **test whether the intervention had a measurable effect**, while accounting for natural variation in trends.
+
+To use a BACI design in ```birp```, you need to:
+
+1. **Create a BACI matrix**, which tells the model:
+  - What the control and intervention groups are.
+  - How many trend parameters ($\gamma$ values) to estimate for each group and time period.
+2. Fit the model with both the ```timesOfChange``` and ```BACI``` arguments.
+
+################################
+## Example: Running a BACI Model
+################################
+
+The **BACI matrix defines the trend structure**. Each **row** represents a group (e.g., Control or Intervention), and each **column after the first** represents a different timepoint. The first column contains group names (e.g., "A" and "B"). The numbers indicate **which trend parameter ($\gamma$) to assign**.
+
+```{r}
+BACI_matrix <- matrix(c(
+  "A", "1", "1",
+  "B", "1", "2"
+), nrow = 2, byrow = TRUE)
+print(BACI_matrix)
+```
+
+This defines a **typical BACI setup** with:
+
+* **Two groups**: "A" (Control) and "B" (Intervention).
+* **Two epochs**: before and after some intervention (e.g., a policy or disturbance).
+* The values "1" and "2" indicate which $\gamma$ parameter is used. Group "A" uses the same trend ($\gamma_1$) in both epochs, while group "B" uses $\gamma_1$ before the change and $\gamma_2$ after, **allowing a trend shift only for the impacted (intervention) group**.
+
+In this example, we are **generating simulated data** containing both control and intervention groups using the ```simulate_birp()``` function. More details on how to simulate data using ```birp``` [can be found here](#simulating-example-data).
+
+```{r}
+set.seed(42)
+# Simulate data with 4 locations: 2 Control + 2 Intervention
+sim_data <- simulate_birp(timepoints = 1:20,
+  timesOfChange = 10,
+  gamma = c(-0.05, 0.1),
+  numLocations = 4,
+  numCIGroups = 2,  # 2 CI groups: Control and Intervention
+  BACI = BACI_matrix,
+  verbose = FALSE) # set TRUE to see verbal output in the console
+```
+
+Here, we simulated a **Before-After-Control-Intervention (BACI) dataset with 4 locations**: two assigned to a control group and two to an intervention group. We simulate counts over 20 timepoints, with a **change point at time 10** and **two different $\gamma$ values**: -0.05 (slight decline) before the change point as well as for the control group after the change point and 0.1 for the intervention group after the change point (moderate increase after the intervention).
+With the simulated data ready, we can now run the **trend estimation including the BACI setup**:
+```{r}
+est <- birp(data = sim_data,
+  timesOfChange = 10,
+  BACI = BACI_matrix,
+  verbose=FALSE)
+print(est)
+```
+
+#################################
+### Interpreting the Model Output
+#################################
+
+The output includes **separate $\gamma$ values (trend estimates) for each group and period**:
+
+* $\gamma_1$ **corresponds to the control group** (first row in the BACI_matrix) and shows a **negative trend** (mean ≈ -0.05), with P(gamma > 0) = 0, meaning the model is confident that this group is declining.
+* $\gamma_2$ **corresponds to the intervention group** (second row in the BACI_matrix) and shows a **positive trend** (mean ≈ 0.10), with P(gamma > 0) = 1, meaning the model is confident this group is increasing.
+
+The **posterior probabilities** indicate how certain the model is that each group is increasing or decreasing.
+This outcome is a **clear example of a successful BACI effect**: the control group continues to decline slightly, while the intervention group improves following the change point. This contrast provides **strong evidence that the intervention had a positive impact**.
+
+#################################
+### Visualizing the Model Output
+#################################
+
+Just like in the single-epoch example, ```birp``` includes **built-in plotting functions to visualize the results of a multi-epoch model**:
+
+```{r, fig.width=6, fig.height=4}
+plot(est)
+```
+
+This plot shows the **posterior probabilities of an increasing trend for each epoch**. The legend automatically uses the epoch labels; here it is simply *1* and *2* for the first and second epoch, respectively. A **narrow, peaked posterior curve indicates high certainty**; a flatter curve suggests greater uncertainty and often crosses zero. The proportion of the curve above zero corresponds to the **posterior probability of an increasing trend**. In this example, the model correctly and with high certainty identifies an initial decline followed by an increase (exactly as simulated).
+
+There is another function called ```plot_epoch_pair```, that can be used to get a **two-dimensional plot** of epoch pairs:
+
+```{r, fig.width=6, fig.height=4}
+plot_epoch_pair(est, col="navy")
+```
+
+In this plot, the **trend estimate for the first epoch ($\gamma_1$) is shown on the x-axis**, and the **estimate for the second epoch ($\gamma_2$) on the y-axis**. Dashed lines mark zero on both axes, dividing the plot into four quadrants. Posterior densities are visualized as circles, where **smaller circles indicate higher certainty** and larger circles reflect greater uncertainty. In this example, the model is confident in its estimates, as shown by the relatively small circle.
+
+The **location of the posterior density within a quadrant reveals the direction of the estimated trends**:
+
+* Top-left quadrant: $\gamma_1$ is negative, $\gamma_2$ is positive - a decline followed by an increase (our case).
+* Top-right quadrant: both $\gamma_1$ and $\gamma_2$ are positive - consistent increase across both epochs.
+* Bottom-left quadrant: both $\gamma_1$ and $\gamma_2$ are negative - consistent decline across both epochs.
+* Bottom-right quadrant: $\gamma_1$ is positive, $\gamma_2$ is negative - an increase followed by a decline.
+
+This visual summary allows **quick interpretation of both the direction and certainty of multi-epoch trends**.
+
+
+
+##########
+## Summary
+##########
+Whether you're testing for a **temporal shift in trend**, a **difference between groups**, or a **combination of both**, ```birp``` gives you the flexibility to model:
+
+* Single or multiple change points.
+* Control vs intervention groups.
+* Interactions between time and group (BACI).
+
+These tools help you go beyond simple trend estimates and evaluate the **impact of events or actions on population dynamics** in a statistically sound way.
+
+
+############################################
+# Combining multiple survey methods
+###########################################
+
+In many ecological studies, population trends are inferred from data collected using **multiple methods** such as camera traps, track counts, acoustic detectors, or field observations. ```birp``` supports such **multi-method data sets**, allowing you to **integrate counts from different sources to improve inference** and account for method-specific variation in detection probabilities or survey effort.
+
+To use multiple methods in ```birp```, you need to **provide a separate data set for each method**. Each data set should follow the **standard ```birp``` data format** (see the [Input Data Format](#input-data-format)).
+
+This vignette includes two example data sets, one from a camera trap study and the other from a track count study, both conducted for the same species and at the same locations. To **read in both files and estimate population trends using both data sets simultaneously**, use the following code:
+
+```{r}
+# Access the path to the example data provided with the package
+pathToFiles <- system.file("extdata", package = "birp")
+
+# Read in both files
+data <- birp_data_from_file(filenames = c(
+  file.path(pathToFiles, "cameraTrapData.csv"),
+  file.path(pathToFiles, "trackData.csv")
+))
+```
+
+**What is** ```system.file()```?
+
+The function ```system.file()``` is **not part of the** ```birp``` **package**, but a **base R utility** that returns the path to files included with any installed R package. This makes your code **reproducible and portable**, since the file paths will work regardless of where the package is installed on a user's system.
+
+**Using your own data**
+
+If you have your own data sets stored elsewhere on your computer, **you don't need ```system.file()```**. Just **provide the full path to each file directly**:
+
+```{r, eval=FALSE}
+data <- birp_data_from_file(filenames = c(
+  "path/to/your/file/cameraTrapData.csv",
+  "path/to/your/file/trackData.csv"
+))
+```
+
+############################################
+# Running a Negative-Binomial Model
+############################################
+
+By default, ```birp```  assumes that the counts follow a **Poisson distribution**. However, if **overdispersion is suspected**, meaning the **variance in the data exceeds the mean**, a negative binomial model may be more appropriate. You can **switch to a negative binomial likelihood** by setting the argument ```negativeBinomial = TRUE``` while keeping the rest of the model setup unchanged. Let's run it using the same [example data](#preparing-your-data) as above:
+
+```{r}
+fit_nb <- birp(data = exampleBirp,
+               negativeBinomial = TRUE,
+               verbose = FALSE)
+print(fit_nb)
+```
+
+This will fit the same single-epoch model as [above](#estimating-a-population-trend), but now the **likelihood allows for overdispersed count data**. Because the model estimates one additional parameter (the **overdispersion parameter** ```b```), it is slightly less certain (`r round(fit_nb$prob_gamma_positive,4)*100`%) about the trend estimates, resulting in a **slightly reduced statistical power**.
+
+#################################################
+## Deciding between Poisson or Negative-binomial
+#################################################
+
+To help determine whether the **negative binomial (NB) model is necessary**, we provide the function ```assess_NB()```. This function evaluates whether the **additional flexibility of the NB model is warranted by the data** or whether a **simpler Poisson model would be enough**. It does this by **repeatedly simulating new datasets under a Poisson assumption** and comparing the fit against the original NB model fit. If the Poisson model consistently performs worse, ```assess_NB()``` recommends keeping the NB model. Otherwise, it suggests switching to the Poisson model to improve statistical power. For example:
+
+```{r}
+exampleBirp <- birp_data_from_data_frame(exampleData)
+est <- birp(exampleBirp, negativeBinomial = TRUE, verbose=FALSE)
+res_assess <- assess_NB(est, numRep = 100, verbose=FALSE)
+```
+
+If ```res_assess$keepNB``` is ```TRUE```, the data is **considered overdispersed**, and the **NB model should be retained**. If it is ```FALSE```, the **Poisson model is preferred**.  By default,  ```plot = TRUE ``` generates a visual inspection of the distribution of the overdispersion parameter (b) across replicates; set it to  ```FALSE ``` to suppress the plot.
+In this example, the results suggest that the **Poisson model provides an adequate fit**, and using the more complex negative binomial model is unnecessary.
+
+############################################
+# Fitting a Stochastic Trend Model
+############################################
+
+The default trend model in ```birp``` is **deterministic**, meaning that within each epoch the population is assumed to follow an exact exponential trend defined by the parameter $\gamma$. To account for **random fluctuations in population size between locations**, you can instead use a *stochastic trend model* by setting ```stochastic = TRUE```:
+
+```{r}
+exampleBirp <- birp_data_from_data_frame(exampleData)
+fit_stoch <- birp(data = exampleBirp,
+                  stochastic = TRUE,
+                  verbose = FALSE)
+```
+This allows for **location-specific fluctuations around the shared group-level trend**, providing a more flexible model for populations with variable dynamics across sites. See the [final section of this vignette](###stochastic -model) for additional information about the modeling process.
+
+##############################
+# Using additional covariates
+##############################
+
+A standard `birp` analysis requires only one covariate column: the **effort covariate**. In addition to the required effort covariate, `birp` also supports **optional detection covariates**. These covariates are used to **model variation in detection probabilities across time or space**. By default, `birp` assumes detection probability is constant within each method-location pair across time, which means that detection probabilities cancel out of the model. However, if you **suspect that detection probability varies** (e.g., with time of day, season, or observer), you can **include one or more detection covariates**.
+
+**Detection covariate columns** in the input file must be named `covDetection_1`, `covDetection_2`, and so on.
+
+#######################################
+## Example: Adding a Detection Covariate
+#######################################
+
+Below is an example of a data frame that includes one detection covariate, in addition to the required columns:
+
+```{r}
+example_data <- data.frame(
+  location  = rep(c("site1", "site2"), each = 5),
+  timepoint = rep(2015:2019, times = 2),
+  counts    = sample(10:100, 10, replace = TRUE),
+  effort    = sample(1:5, 10, replace = TRUE),
+  CI_group  = rep("Group_1", 10),
+  covDetection_1 = runif(10, 0, 1)      # random values between 0 and 1
+)
+```
+
+Lets covert to a ```birp data``` object:
+```{r}
+dat <- birp_data_from_data_frame(example_data)
+```
+
+You can now **estimate the trend using the ```birp()``` function**. If you believe the detection covariate reflects the **actual detection probability** (i.e., it is known rather than estimated), you can set ```assumeTrueDetectionProbability = TRUE```. This option is **only available when there is a single detection covariate**.
+
+```{r, fig.width=6, fig.height=4}
+est1 <- birp(dat, assumeTrueDetectionProbability=TRUE, verbose = FALSE)
+est2 <- birp(dat, assumeTrueDetectionProbability=FALSE, verbose = FALSE)
+```
+```{r, fig.width=6, fig.height=4}
+plot(est1)
+plot(est2)
+```
+
+The **first model (```est1```) treats the covariate as a known detection probability**, while the **second (```est2```) estimates detection effects from the data** and you can see how those two trend estimates differ.
+
+#################################################
+## Additional covariates vs stratifying your data
+#################################################
+
+While `birp` allows you to model detection probabilities using covariates, there is an **alternative approach** that can often be **more effective: stratification**. 
+
+Stratification means **dividing your data into separate survey methods** based on known factors that influence detection probability, such as the **observer**, **time of day**, or **equipment type**, and **treating each stratum as a distinct method** in the analysis (see [Combining Multiple Survey Methods](#combining-multiple-survey-methods)).
+
+For example:
+
+* If **two different observers** contributed to the data collection, you can create two different data sets, one for "observer1" and one for "observer2".
+* If you are using camera traps and have **day-time color images and night-time black-and-white images**, these could be treated as two separate methods (e.g., `method = "day"` and `method = "night"`).
+
+Whenever feasible, we **recommend using stratification** rather than modeling detection through covariates. This is because **estimating detection probabilities from covariates adds complexity to the model and often reduces statistical power**.
+
+
+##############################
+# Simulating Example Data
+##############################
+To explore how ```birp``` works, you can **generate simulated data** using the ```simulate_birp()``` function. This is especially useful for **learning, testing model behavior, or evaluating performance under known parameter values**.
+
+The following example simulates count data for a population that **declines before 2010 and increases afterward**. The population trend is determined by two $\gamma$ values: $-0.03$ before 2010 and $0.03$ after.
+
+```{r}
+simData <- simulate_birp(gamma = c(-0.03, 0.03),
+                      timepoints = 2000:2020,
+                      timesOfChange = 2010,
+                      verbose = FALSE)
+```
+This creates a ```birp_data``` **object containing the simulated counts and associated timepoints**, which can be used as input to the ```birp``` function just like above:
+
+```{r}
+est <- birp(simData, verbose=FALSE, timesOfChange = 2010)
+print(est)
+```
+In this case, ```birp``` is sure that the trend **increases after 2010 and decreases before 2010**.
+
+
+############################################
+# Overview of the ```birp``` modeling framework
+############################################
+
+Our modeling framework builds on **classic count distributions (Poisson and negative binomial)** and **explicitly tests for changes in population trends over predefined time epochs**.
+
+## 1. Population Trend Models
+
+We implement two variants of population trend models: a **deterministic model** and a **stochastic model**. Both models describe how population abundance evolves exponentially over time but differ in their assumptions about spatial variation among locations. The structure of the models is flexible enough to represent **classical study designs like Before-After (BA) or Before-After-Control-Intervention (BACI)**, as well as more complex combinations of groups and time periods.
+
+Since the model tracks **relative abundances**, it tells us how populations have changed **compared to the first survey**, but not their absolute size (i.e., the total number of individuals).
+
+############################################
+### Deterministic Model
+############################################
+
+In the **deterministic approach**, populations at each location belong to groups sharing a **common trend**. We partition the overall study period into a number of epochs (specified by the user and it can be just a single epoch), separated at known times. Within each epoch, the population changes exponentially and at a **constant rate** \( \gamma(g,m) \), hence the rate is specific to group \( g \) and epoch \( m \).
+The relative abundance at location $j$ and survey time $t_k$ is given by:
+
+\[
+\varphi_j(t_k, \boldsymbol{\gamma}) = \exp \left( \sum_{m=1}^M \rho_m(t_k) \, \gamma(g(j), m) \right),
+\]
+
+Here’s what each part means:
+
+- $\gamma(g(j), m)$ is the **population growth rate** for group $g(j)$ during epoch $m$.
+- $\rho_m(t_k)$ is a **weighting factor** that represents how much of epoch $m$ has passed by time $t_k$.
+- The sum over all epochs allows the model to **combine multiple time periods with different growth rates**.
+- The exponential function reflects the assumption of **exponential growth (or decline)** within each epoch.
+
+In other words, the deterministic model assumes that **populations within the same group grow or decline in exactly the same way, with no random variation.** The change in the growth rate at every location is fully explained by its group and the time period.
+
+
+### Stochastic Model
+
+Population changes may not always follow smooth, predictable patterns. Even if two locations belong to the same group and share similar environmental conditions, their populations might grow or decline differently due to chance events, like a sudden storm or disease outbreak. To reflect this kind of randomness, we extend the deterministic model by adding **stochasticity**, that is, we allow for **random fluctuations over time**.
+
+We model these fluctuations using a process known as **geometric Brownian motion**, which is a standard way to model quantities that grow or shrink randomly over time. In this framework, the relative abundance \( \tilde{\varphi}_j(t, \boldsymbol{\gamma}) \) at location \( j \) evolves according to:
+
+\[
+\mathrm{d} \tilde{\varphi}_j(t, \boldsymbol{\gamma}) = \gamma_{g(j)}(t) \tilde{\varphi}_j(t, \boldsymbol{\gamma}) \, \mathrm{d}t + \sigma \tilde{\varphi}_j(t, \boldsymbol{\gamma}) \, \mathrm{d}W(t),
+\]
+
+
+Here’s what each part means:
+
+- $\gamma_{g(j)}(t)$ represents the **average growth** rate for the group that location $j$ belongs to.
+- $\sigma$ is a parameter that **controls how 'noisy' or unpredictable the changes are**; larger values mean more variation.
+- $W(t)$ represents **random noise over time**, modeled as Brownian motion.
+- The multiplication by $\tilde{\varphi}_j(t, \boldsymbol{\gamma})$  ensures that **locations with larger populations experience proportionally larger changes**, both in the deterministic and the random parts of the equation.
+
+
+In simple terms, **each location tends to follow the group’s average trend, but with some randomness on top**. Some locations might temporarily grow faster or slower just due to chance.
+
+
+############################################
+## 2. Observation Model
+############################################
+
+So far, we have described how populations are expected to change over time at each location. But what we actually observe are **counts**, which are the number of individuals recorded during a survey. These observed counts depend not only on how many individuals are present, but also on **how much effort** was put into the survey (e.g., how long someone looked, or how many traps were used) and **how likely individuals were to be detected**.
+
+We model the observed counts $n_{ijk}$ from survey method $i$, location $j$, and time $t_k$ as being drawn from either a **Poisson** or **Negative Binomial** distribution, depending on how much variation is expected in the data:
+
+\[
+n_{ijk} \sim \text{Poisson}(\lambda_{ij}(t_k) \, s_{ijk})
+\quad \text{or} \quad
+n_{ijk} \sim \text{NegativeBinomial}(\lambda_{ij}(t_k) \, s_{ijk}, \theta)
+\]
+
+Here’s what these models mean:
+
+- The **Poisson distribution** assumes that counts vary randomly around a mean (the expected count), with **variance equal to the mean**.
+- The **Negative Binomial distribution** allows for **extra variability**, which is common in ecological count data; this is controlled by the parameter $\theta$.
+- $\lambda_{ij}(t_k)$ is the **observation rate**: the expected number of individuals observed per unit of effort.
+- $s_{ijk}$ is the **effort**, provided by the user (e.g., trap-nights, survey hours, etc.).
+
+The observation rate is modeled as:
+
+\[
+\lambda_{ij}(t_k) = N_{j T_0} \, \varphi_j(t_k, \boldsymbol{\gamma}) \, \delta_{ij}
+\]
+
+This combines information about the population and the observation process:
+
+- $N_{j T_0}$ is the **initial abundance** at location $j$ at the first survey time.
+- $\varphi_j(t_k, \boldsymbol{\gamma})$ is the **relative abundance** at time $t_k$, modeled using the deterministic or stochastic population trend.
+- $\delta_{ij}$ is the **detection probability**, describing how likely an individual is to be seen using method $i$ at location $j$.
+
+In our model, we often **do not need to estimate the initial population size \( N \) or the detection probability \( \delta \)**. This is because we **condition on the total number of counts**, which means we focus only on the **relative proportions of observations rather than their absolute values**. As a result, the terms for population size and detection probability effectively cancel out. If you would like to read more about this, please refer to the [manuscript](https://www.biorxiv.org/content/10.1101/2025.01.08.631844v1).
+
+In short, the observation model **connects what we expect based on population trends to what we actually observe in the field**, accounting for survey effort, detection probability, and variability in the data.
