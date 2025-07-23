@@ -1,0 +1,247 @@
+---
+title: "Evaluating scRNA-seq Integration Quality with CIDER"
+output: 
+  rmarkdown::html_vignette:
+    toc: TRUE
+    number_sections: true
+vignette: >
+  %\VignetteIndexEntry{Evaluating scRNA-seq Integration Quality with CIDER}
+  %\VignetteEncoding{UTF-8}
+  %\VignetteEngine{knitr::rmarkdown}
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>", warning = FALSE, message = FALSE
+)
+```
+
+# Why Evaluate Integration?
+
+Single-cell RNA-seq integration methods aim to remove technical batch
+effects while preserving biological variation. **CIDER** provides a
+**ground-truth-free** approach to:
+
+1.  Identify well-integrated cell populations
+2.  Detect potentially incorrect integrations
+3.  Quantify integration confidence through empirical p-values
+
+This vignette focuses how showing the process using the example data of
+dendritic cells.
+
+# Set up
+
+Apart from **CIDER**, the following packages also need to be loaded:
+
+```{r setup}
+library(CIDER)
+library(Seurat)
+library(cowplot)
+library(ggplot2)
+```
+
+# Load dendritic data
+
+The example data can be downloaded from
+<https://figshare.com/s/d5474749ca8c711cc205>. This dataset contains
+26593 genes and 564 cells, and comprises four dendritic cell subtypes (CD141, 
+CD1C, DoubleNeg, and pDC) from two batches. The raw count matrix and sample 
+information were downloaded from a curated set, and cells with fewer than 
+500 detected genes have been removed.
+
+```{r}
+# Download the data
+data_url <- "https://figshare.com/ndownloader/files/52116197"
+data_file <- file.path(tempdir(), "dendritic.rds")
+
+if (!file.exists(data_file)) {
+  message("Downloading data...")
+  download.file(data_url, destfile = data_file, mode = "wb")
+}
+
+dendritic_reduced <- load(data_file)
+```
+
+```{r}
+# load("../data/dendritic.rda")
+dendritic <- CreateSeuratObject(counts = dendritic@assays$RNA@counts, meta.data = dendritic@meta.data)
+```
+
+```{r}
+# Verify batch composition
+table(dendritic$Batch)
+```
+
+# Perform integration with Seurat
+
+First an integration method$^1$ is applied on the dendritic data. You
+can apply other integration methods to the your data, as long as the
+correct PCs are stored in your Seurat object, i.e.
+`Reductions(seu.integrated, "pca")` or `seu.integrated@reductions$pca`.
+
+```{r integration}
+seu.list <- SplitObject(dendritic, split.by = "Batch")
+for (i in 1:length(seu.list)) {
+  seu.list[[i]] <- NormalizeData(seu.list[[i]], verbose = FALSE)
+  seu.list[[i]] <- FindVariableFeatures(seu.list[[i]], 
+                                        selection.method = "vst", 
+                                        nfeatures = 1000, verbose = FALSE)
+}
+seu.anchors <- FindIntegrationAnchors(object.list = seu.list, 
+                                      dims = 1:15, verbose = FALSE)
+seu.integrated <- IntegrateData(anchorset = seu.anchors, 
+                                dims = 1:15, verbose = FALSE)
+
+DefaultAssay(seu.integrated) <- "integrated"
+seu.integrated <- ScaleData(seu.integrated, verbose = FALSE)
+seu.integrated <- RunPCA(seu.integrated, verbose = FALSE)
+seu.integrated <- RunTSNE(seu.integrated, reduction = "pca", dims = 1:5)
+```
+
+Clear the intermediate outcome.
+
+```{r}
+rm(seu.list, seu.anchors)
+gc()
+```
+
+# CIDER Evaluation Workflow
+
+CIDER evaluates integration results in three steps.
+
+## Step 1: Density-Based Clustering
+
+Clustering based on the corrected PCs (`hdbscan.seurat`). This step uses
+HDBSCAN, which is a density-based clustering algorithm$^2$. The
+clustering results are stored in `seu.integrated$dbscan_cluster`.
+Clusters are further divided into batch-specific clusters by
+concatenating dbscan_cluster and batch, stored in
+`seu.integrated$initial_cluster`.
+
+```{r}
+seu.integrated <- hdbscan.seurat(seu.integrated)
+```
+
+## Step 2: Calculate Cluster Similarities
+
+Compute IDER-based similarity matrix (`getIDEr`) among the
+batch-specific initial clusters. If multiple CPUs are availble, you can
+set `use.parallel = TRUE` and `n.cores` to the number of available cores
+to speed it up.
+
+```{r}
+ider <- getIDEr(seu.integrated, use.parallel = FALSE, verbose = FALSE)
+```
+
+## Step 3: Compute Integration Confidence
+
+Assign the similarity and estimate empirical p values (`estimateProb`)
+for the correctness of integration. High similarity values and low p
+values indicate that the cell are similar to the surrounding cells and
+likely integrated correctly.
+
+```{r}
+seu.integrated <- estimateProb(seu.integrated, ider)
+```
+
+# Visual Evaluation
+
+## Evaluation scores
+
+The evaluation scores can be viewed by the `scatterPlot` as below. As
+shown cells with dbscan_cluster of 2 and 3 have low regional similarity
+and high empirical p values, suggesting that they can be incorrectly
+integrated.
+
+```{r, fig.height=3, fig.width=11}
+p1 <- scatterPlot(seu.integrated, "tsne", "dbscan_cluster")
+p2 <- scatterPlot(seu.integrated, "tsne", colour.by = "similarity") + labs(fill = "Similarity")
+p3 <- scatterPlot(seu.integrated, "tsne", colour.by = "pvalue") + labs(fill = "Prob of \nrejection")
+plot_grid(p1, p2, p3, ncol = 3)
+```
+
+**Interpretation Guide:**
+
+✅ **High similarity** + **Low p-value**: Well-integrated regions
+
+❌ **Low similarity** + **High p-value**: Potential integration errors
+
+## The IDER-based Similarity Network
+
+To have more insight, we can view the IDER-based similarity matrix by
+functions `plotNetwork` or `plotHeatmap`. Both of them require the input
+of a Seurat object and the output of `getIDEr`. In this example,
+1_Batch1 and 1_Batch2 as well as 4_Batch1 and 4_Batch2 have high
+similarity.
+
+`plotNetwork` generates a graph where vertexes are initial clusters and
+edge widths are similarity values. The parameter `weight.factor`
+controls the scale of edge widths; larger `weight.factor` will give
+bolder edges proportionally.
+
+```{r, fig.height=5, fig.width=5}
+plotNetwork(seu.integrated, ider, weight.factor = 3)
+```
+
+## Cluster Similarity Heatmap
+
+`plotHeatmap` generates a heatmap where each cell is coloured and
+labeled by the similarity values.
+
+```{r, fig.height=5, fig.width=5}
+plotHeatmap(seu.integrated, ider)
+```
+
+# Validation Against Ground Truth Annotation
+
+So far the evaluation have completed and CIDER has not used the ground
+truth at all!
+
+Let's peep at the ground truth before the closure of this vignette. As
+shown in the figure below, the clusters having low IDER-based similarity
+and high p values actually have at least two populations (CD1C and
+CD141), verifying that CIDER spots the wrongly integrated cells.
+
+```{r, fig.height=3, fig.width=5}
+scatterPlot(seu.integrated, "tsne", colour.by = "Group") + labs(fill = "Group\n (ground truth)")
+```
+
+# Best Practices
+
+1.  Parameter Tuning:
+
+-   Adjust `hdbscan.seurat` parameters if initial clustering is too
+    granular
+-   Modify `cutree.h` in `estimateProb` to change confidence thresholds
+
+2.  Interpretation Tips:
+
+-   Always validate suspicious joint clusters with marker genes
+
+3.  Scalability:
+
+-   For large datasets (\>10k cells), enable parallel processing with
+    `use.parallel=TRUE`
+
+# Reproducibility
+
+```{r sessionInfo}
+sessionInfo()
+```
+
+# References
+
+1.  Stuart and Butler et al. Comprehensive Integration of Single-Cell
+    Data. Cell (2019).
+2.  Campello, Ricardo JGB, Davoud Moulavi, and Jörg Sander.
+    “Density-based clustering based on hierarchical density estimates.”
+    Pacific-Asia conference on knowledge discovery and data mining.
+    Springer, Berlin, Heidelberg, 2013.
+3.  The data were downloaded from \url{https://hub.docker.com/r/jinmiaochenlab/batch-effect-removal-benchmarking}.  
+4.  Tran HTN, Ang KS, Chevrier M, Lee NYS, Goh M, Chen J. A benchmark of batch-effect correction methods for single-cell RNA sequencing data. Genome Biol. (2020).  
+5.  Villani A-C, Satija R, Reynolds G, Sarkizova S, Shekhar K, Fletcher J, et al. Single-cell RNA-seq reveals new types of human blood dendritic cells, monocytes, and progenitors. Science (2017).
+
