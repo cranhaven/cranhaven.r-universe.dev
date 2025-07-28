@@ -1,0 +1,77 @@
+#' Groundwater Levels
+#'
+#' @description Groundwater levels in wells in the
+#'   U.S. Geological Survey (USGS) water-level monitoring network,
+#'   Idaho National Laboratory and vicinity, Idaho.
+#'   The purpose of this network is to document the changes in storage
+#'   and the general direction of groundwater flow within the eastern Snake River Plain (ESRP) aquifer.
+#'   The data collected from this network have been used to determine changes
+#'   in hydraulic-gradient that affect the rate and direction of groundwater and waste-constituent movement.
+#'   It can also help identify sources of recharge and measure its effects.
+#'   The groundwater measurements are taken from both the ESRP aquifer
+#'   and the perched groundwater zones above the aquifer.
+#'
+#' @format A data frame with columns:
+#' \describe{
+#'   \item{`site_nm`}{Local site name.}
+#'   \item{`site_no`}{USGS site number.}
+#'   \item{`lev_dt`}{Date and time the water level was measured, in "America/Denver" time zone.
+#'     Missing values of time were substituted with "12:00".}
+#'   \item{`lev_meth_cd`}{Code indicating the method used to determine the water level.
+#'     The codes and their meanings are as follows:
+#'       "A" airline measurement,
+#'       "B" analog or graphic recorder,
+#'       "F" transducer,
+#'       "G" pressure-gage measurement,
+#'       "L" interpreted from geophysical logs,
+#'       "O" observed,
+#'       "S" steel-tape measurement,
+#'       "T" electric-tape measurement,
+#'       "V" calibrated electric tape---accuracy of instrument has been checked,
+#'       "W" calibrated electric cable, and
+#'       "Z" other.
+#'   }
+#'   \item{`lev_status_cd`}{Code indicating the status of the site at the time the water level was measured.
+#'     The codes and their meanings are as follows:
+#'       "1" static,
+#'       "3" true value is above the reported water level value due to local conditions,
+#'       "5" groundwater level affected by surface water,
+#'       "P" site was being pumped.}
+#'   \item{`lev_age_cd`}{Code indicating the water-level approval status.
+#'     The codes and their meanings are as follows:
+#'       "A" approved for publication---processing and review completed, and
+#'       "P" provisional data subject to revision.}
+#'   \item{`lev_va`}{Depth to water level, in feet below the land surface reference point.}
+#'   \item{`sl_lev_va`}{Groundwater level above North American Vertical Datum of 1988 (NAVD 88), in feet.}
+#'   \item{`lev_acy_va`}{Accuracy of depth to water-level measurement (`lev_va`), in feet.}
+#'   \item{`sl_lev_acy_va`}{Accuracy of groundwater level above NAVD value (`sl_lev_va`), in feet.
+#'     Does not account for vertical datum shift.}
+#' }
+#'
+#' @source Data was obtained from the National Water Information System (NWIS) (U.S. Geological Survey, 2023).
+#'   Groundwater level data was retrieved from NWIS by using the USGS R-package
+#'   [dataRetrieval](https://code.usgs.gov/water/dataRetrieval) (DeCicco and others, 2023).
+#'   Data was retrieved for each site number listed in the samples dataset and removed any non-essential columns.
+#'
+#' @references DeCicco, L.A., Hirsch, R.M., Lorenz, D., Watkins, W.D., Johnson, M., 2023,
+#'   dataRetrieval: R packages for discovering and retrieving water data available from
+#'   Federal hydrologic web services, v.2.7.13, \doi{10.5066/P9X4L3GE}.
+#' @references U.S. Geological Survey, 2023, National Water Information System---web services,
+#'   accessed April 7, 2023, from \doi{10.5066/F7P55KJN}.
+#'
+#' @keywords datasets
+#'
+#' @examples
+#' str(gwl)
+#'
+#' poi <- as.POSIXct(c("2000-01-01", "2001-01-01")) # period of interest
+#' site_no <- "432700112470801" # well USGS 1
+#' is <- gwl$lev_dt >= poi[1] & gwl$lev_dt < poi[2] & gwl$site_no == site_no
+#' d <- gwl[is, ]
+#' plotrix::plotCI(
+#'   x = d$lev_dt,
+#'   y = d$sl_lev_va,
+#'   li = d$sl_lev_va - d$sl_lev_acy_va,
+#'   ui = d$sl_lev_va + d$sl_lev_acy_va
+#' )
+"gwl"
