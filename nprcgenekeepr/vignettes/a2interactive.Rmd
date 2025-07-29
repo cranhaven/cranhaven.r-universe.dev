@@ -1,0 +1,869 @@
+---
+title: "Interactive Use of nprcgenekeepr"
+subtitle: "An R Package for the Genetic Management of Colonies"
+output:
+  html_document:
+    df_print: paged
+vignette: >
+  %\VignetteEngine{knitr::rmarkdown_notangle} 
+  %\VignetteIndexEntry{Interactive Use of nprcgenekeepr} 
+  %\usepackage[UTF-8]{inputenc}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE, include = TRUE, results = "markup",
+  cache = FALSE
+)
+pdf.options(useDingbats = TRUE)
+start_time <- proc.time()
+```
+
+```{r, include = FALSE}
+library(stringi)
+# library(rmsutilityr)
+suppressMessages(library(ggplot2))
+library(knitr)
+library(nprcgenekeepr)
+set_seed(1L)
+```
+
+## Introduction
+This tutorial demonstrates the major functions used 
+within the Shiny application provided by the __nprcgenekeepr__ package and
+provides sufficient insight into those functions that they may be used
+independently.
+
+This tutorial is primarily directed toward someone with experience using
+R who wants to better understand how the Shiny application works or 
+to perform some actions not directly supported by the Shiny application.
+
+Please provide any comments, questions, or bug reports through the GitHub
+issue tracker at 
+[https://github.com/rmsharp/nprcgenekeepr/issues](
+https://github.com/rmsharp/nprcgenekeepr/issues).
+
+
+## Installation and Help
+
+You can install **nprcgenekeepr** from GitHub with the following code.
+
+```{r gh-installation, eval = FALSE, echo=TRUE}
+install.packages(nprcgenekeepr)
+## Use the following code to get the development version
+# install.packages("devtools")
+# devtools::install_github("rmsharp/nprcgenekeepr")
+```
+
+All missing dependencies should be automatically installed.
+
+You can get help from the __R__ console with 
+
+```{r gh-help, eval = FALSE, echo=TRUE}
+?nprcgenekeepr
+```
+__The help provided by this (_nprcgenekeepr.R_) needs to be more complete 
+and include links to the tutorials.__
+
+## Reading in a Pedigree
+
+A pedigrees can be imported using either Excel worksheets or text files that 
+contain all of the pedigree information or using either Excel worksheets or 
+text files that contain a list of focal animals with the remainder of the 
+pedigree information is pulled in through the LabKey API.
+
+This tutorial will use a pedigree file that can be created using the 
+__makeExamplePedigreeFile__ function as shown below.
+The function __makeExamplePedigreeFile__ both saves a file and returns the
+full path name to the saved file, which we are saving into the variable 
+_pedigreeFile_.
+Note: the user will select where to store the file.
+
+```{r make-example-pedigree, eval = FALSE, include = TRUE}
+library(nprcgenekeepr)
+pedigreeFile <- makeExamplePedigreeFile()
+```
+This writes _ExamplePedigree.csv_ to a place you select within your file
+system.
+
+```{r get-file-name, eval = TRUE, echo = FALSE, include = FALSE}
+pedigreeFile <- "../inst/extdata/ExamplePedigree.csv"
+```
+
+You use the file name provided by the __makeExamplePedigreeFile__ function
+to tell __read.table__ what file to read.
+
+```{r read-in-example-pedigree}
+breederPedCsv <- read.table(pedigreeFile,
+  sep = ",", header = TRUE,
+  stringsAsFactors = FALSE
+)
+
+breederPedCsv$fromCenter <- "TRUE"
+breederPedCsv$fromCenter[
+  suppressWarnings(sample(
+    which(is.na(breederPedCsv$sire) &
+      is.na(breederPedCsv$dam)),
+    round(0.8 * length(which(
+      is.na(breederPedCsv$sire) &
+        is.na(breederPedCsv$dam)
+    )))
+  ))
+] <- "FALSE"
+```
+Note the number of rows read. Each row represents an individual within the 
+pedigree.
+```{r row-count}
+nrow(breederPedCsv)
+```
+
+The next step is to put the information read from the file into a 
+pedigree object. This is done with the __qcStudbook__ function, which examines 
+the file contents and tests for common pedigree errors.
+
+You can see the errors that can be detected by __qcStudbook__ by returning the
+empty error list with __getEmptyErrorLst()__. 
+We are not showing the output of the function call now 
+because later in this tutorial we will explore errors in more depth.
+
+__qcStudbook__ can take four arguments _sb_, _minParentAge_ (in years), 
+_reportChanges_,
+and _reportErrors_. However, all but _sb_ have default values and only the
+_sb_ argument is required.
+
+It is prudent to ensure that parents are at least of breeding age, which
+is species specific.
+I have used a _minParentAge_ of 2 years.[^1]
+
+[^1]: Setting the _minParentAge_ to 3.5 and above will cause an error along
+with the creation of a file _~/lowParentAge.csv_ that will list the parents
+with low age at the birth of an offspring.
+
+```{r form-pedigree-object}
+breederPed <- qcStudbook(breederPedCsv, minParentAge = 2L)
+```
+
+If __qcStudbook__ reports an error, change the call by adding the 
+__reportErrors__ argument set to __TRUE__ and examine the returned object.
+More on this is presented in the __Pedigree Errors__ section.
+
+## Identifying Focal Animals
+
+You may want to focus your work on a _focal_ group of animals. 
+This can be done by reading in a list of animal IDs that make up the _focal_
+group and use that list to update the pedigree.
+Alternatively you can created a list of animal IDs based on 
+criteria you have selected. 
+
+For example, to select living animals at the facility with at least one parent,
+the following can be used.
+
+```{r select-focal-animals-from-pedigree, results='asis'}
+focalAnimals <- breederPed$id[!(is.na(breederPed$sire) &
+  is.na(breederPed$dam)) &
+  is.na(breederPed$exit)]
+print(stri_c(
+  "There are ", length(focalAnimals),
+  " animals in the vector _focalAnimals_."
+))
+```
+
+As can be seen, these animals have at least one parent and have not left the
+facility.
+
+```{r short-pedigree-list-of-focal-animals}
+breederPed[breederPed$id %in%
+  focalAnimals, c("id", "sire", "dam", "exit")][1L:10L, ]
+```
+
+We indicate that these are the animals of interest by using the
+__setPopulation__ function. 
+This function simply sets a column named _population_[^2] to the logical value
+of __TRUE__ if the row represents an animal in the list and __FALSE__ otherwise.
+
+[^2]: The _population_ column is created and added to the pedigree object if it 
+does not already exist.
+
+The first line of code below sets the _population_ column and the second 
+counts the number of rows where the value was set to __TRUE__.
+
+```{r set-population-flag}
+breederPed <- setPopulation(ped = breederPed, ids = focalAnimals)
+nrow(breederPed[breederPed$population, ])
+```
+
+The IDs used to populate the _population_ flag can be used to trim the pedigree 
+so that it contains only those 
+individuals who are in the ID list or are ancestors of those individuals.
+
+```{r trim-pedigree}
+trimmedPed <- trimPedigree(focalAnimals, breederPed)
+nrow(breederPed)
+nrow(trimmedPed)
+```
+
+The __trimPedigree__ function has the ability to remove those ancestors 
+that do not contribute genetic information.
+Uninformative founders are those individuals who are parents of only
+one individual and who have no parental information. 
+(_Currently genotypic information is ignored by __trimPedigree___).
+
+```{r removed-uninformatiive-animals}
+trimmedPedInformative <- trimPedigree(focalAnimals, breederPed,
+  removeUninformative = TRUE
+)
+nrow(trimmedPedInformative)
+```
+
+We can find all of the animals that are in the trimmed pedigree but are not
+focal animals.
+```{r get-animals-added-to-focal-animals}
+nonfocalInTrimmedPed <- trimmedPed$id[!trimmedPed$id %in% focalAnimals]
+length(nonfocalInTrimmedPed)
+```
+
+We can see which of these `r length(nonfocalInTrimmedPed)` are and are not
+parents.
+We will first make sure we have all of the parents by getting our list of
+parents from the entire pedigree. 
+We then demonstrate that they are all in the trimmed pedigree.
+```{r find-focal-parents}
+allFocalParents <- c(
+  breederPed$sire[breederPed$id %in% focalAnimals],
+  breederPed$dam[breederPed$id %in% focalAnimals]
+)
+trimmedFocalParents <- c(
+  trimmedPed$sire[trimmedPed$id %in% focalAnimals],
+  trimmedPed$dam[trimmedPed$id %in% focalAnimals]
+)
+all.equal(allFocalParents, trimmedFocalParents) # Are the IDs the same?
+```
+
+However, not all of the animals in the trimmed pedigree are either
+the focal animals or their parents. They are more distant ancestors
+as we will show.
+
+```{r find-non-focal-non-focal-parent}
+notFocalNotParent <-
+  trimmedPed$id[!trimmedPed$id %in% c(focalAnimals, allFocalParents)]
+length(notFocalNotParent)
+```
+
+
+```{r find-grandparents, echo = FALSE, include=FALSE, eval = TRUE}
+allFocalGrandParents <- c(
+  breederPed$sire[breederPed$id %in% allFocalParents],
+  breederPed$dam[breederPed$id %in% allFocalParents]
+)
+## Not all parents are known so the unknown individuals (NA) are removed.
+allFocalGrandParents <- allFocalGrandParents[!is.na(allFocalGrandParents)]
+trimmedFocalGrandParents <-
+  c(
+    trimmedPed$sire[trimmedPed$id %in% allFocalParents],
+    trimmedPed$dam[trimmedPed$id %in% allFocalParents]
+  )
+trimmedFocalGrandParents <-
+  trimmedFocalGrandParents[!is.na(trimmedFocalGrandParents)]
+all.equal(allFocalGrandParents, trimmedFocalGrandParents)
+```
+
+Since the trimming process is supposed to retain the focal animals
+and their ancestors, we will leave it as an exercise for you to demonstrate
+that at least some of the remaining animals are grandparents of the focal
+animals. _Hint: there are `r length(trimmedFocalGrandParents)` grandparents
+in both the trimmed and the complete pedigree_.
+
+```{r added-animals, echo=FALSE, include=FALSE, eval=TRUE}
+# get-informative-and-uninformative-added-animals
+trimmedPedInformative <- trimPedigree(focalAnimals, breederPed,
+  removeUninformative = TRUE
+)
+uninformative <- trimmedPed$id[!trimmedPed$id %in% trimmedPedInformative$id]
+notFocalInTrimmedPed <- trimmedPed$id[!trimmedPed$id %in% focalAnimals]
+additionalAnimals <- nrow(trimmedPed) - length(focalAnimals)
+geneticallyInformative <-
+  nrow(trimPedigree(focalAnimals, breederPed,
+    removeUninformative = TRUE
+  )) -
+  length(focalAnimals)
+```
+
+As you can see from the number of rows in the full pedigree 
+(`r nrow(breederPed)`) versus the trimmed pedigree (`r nrow(trimmedPed)`),
+trimmed pedigrees can be much smaller. 
+Of the additional `r additionalAnimals` animals, 
+`r geneticallyInformative`
+provide genetic information while the others 
+(`r length(uninformative)`) are genetically uninformative.
+
+```{r animals-no-birth-no-exit, echo = FALSE, eval = TRUE, include=FALSE}
+unknownBirth <- breederPed$id[is.na(breederPed$birth)]
+unknownBirthOrExit <-
+  breederPed$id[is.na(breederPed$birth) | !is.na(breederPed$exit)]
+knownPed <- breederPed[!breederPed$id %in% unknownBirthOrExit, ]
+otherIds <- knownPed$id[!knownPed$id %in% trimmedPed$id[is.na(trimmedPed$exit)]]
+```
+
+As is shown below only `r length(otherIds)` (`r get_and_or_list(otherIds)`)
+living animals are still in the colony but are not in the trimmed pedigree.[^3]
+
+[^3]: All animals within the colony have a known birth date.
+
+```{r show-living-animals-not-in-trimmed-pedigree, results = 'asis'}
+unknownBirth <- breederPed$id[is.na(breederPed$birth)]
+knownExit <- breederPed$id[!is.na(breederPed$exit)]
+unknownBirthKnownExit <-
+  breederPed$id[is.na(breederPed$birth) | !is.na(breederPed$exit)]
+knownPed <- breederPed[!breederPed$id %in% unknownBirthKnownExit, ]
+otherIds <- knownPed$id[!knownPed$id %in% trimmedPed$id[is.na(trimmedPed$exit)]]
+print(stri_c(
+  "The living animals in the pedigree that are not in the trimmed ",
+  "pedigree are ", get_and_or_list(otherIds), "."
+))
+```
+
+## Age Sex Pyramid Plot
+
+You can examine the population structure using an age-sex pyramid plot with a 
+single function. 
+We will limit our view to just the focal animals and their living relatives.
+This is appropriate for colony management because in addition to the genetic
+diversity we seek, we have to remain cognizant of the age and sex distributions
+within the colonies we manage.
+
+```{r plot-focal-age-sex-pyramid, include = TRUE}
+#| fig.alt: >
+#|   Age Sex Pyramid Plot.
+getPyramidPlot(ped = trimmedPed[is.na(trimmedPed$exit), ])
+```
+
+## Genetic Value Analysis
+
+Your genetic value analysis must be carefully performed. 
+The next three commands set up the entire pedigree for analysis.
+The first of these three commands set all of the pedigree members to
+be part of the population of interest by setting the _population_
+column to __TRUE__ for all individuals.
+
+```{r set-entire-pedigree-as-population}
+ped <- setPopulation(breederPed, NULL)
+```
+
+Note that a new pedigree object (__ped__) is being created.
+
+```{r full-pedigree-genetic-value-summary}
+probands <- ped$id[ped$population]
+ped <- trimPedigree(probands, ped,
+  removeUninformative = FALSE,
+  addBackParents = FALSE
+)
+```
+
+The arguments to __reportGV__ are all optional except for _ped_, but
+you may often want to non-default values.
+
+- __ped__ Pedigree information in data.frame format
+
+- __guIter__  Integer indicating the number of iterations for the gene-drop 
+analysis. Default is 5000 iterations
+
+- __guThresh__ Integer indicating the threshold number of animals for 
+defining a unique allele. Default considers an allele "unique" if it is found
+in only 1 animal.
+
+- __pop__ Character vector with animal IDs to consider as the population of 
+interest. The default is NULL.
+
+- __byID__ Logical variable of length 1 that is passed through to eventually 
+be used by alleleFreq(), which calculates the count of each allele in the 
+provided vector. If byID is TRUE and ids are provided, the function will 
+only count the unique alleles for an individual (homozygous alleles will 
+be counted as 1).
+
+```{r full-geneticValue}
+geneticValue <- reportGV(ped,
+  guIter = 50L,
+  guThresh = 3L,
+  byID = TRUE,
+  updateProgress = NULL
+)
+summary(geneticValue)
+```
+
+What happens if we limit our analysis to the trimmed pedigree?
+Remember that the trimmed pedigree still contains all of the genetic
+information that the full pedigree has for the focal animals.
+
+```{r trimmed-genetic-value-analysis}
+trimmedGeneticValue <- reportGV(trimmedPed,
+  guIter = 50L,
+  guThresh = 3L,
+  byID = TRUE,
+  updateProgress = NULL
+)
+summary(trimmedGeneticValue)
+```
+
+It is clear that limiting your analysis to the animals of interest
+reduces the effort required to examine the animals of interest.
+
+### Detailed look at the Genetic Value Report object
+
+The names of the object within the genetic value report object 
+(_trimmedGeneticValue_) can be listed as shown in the next line of code.
+
+```{r list-genetic-value-objects}
+names(trimmedGeneticValue)
+```
+
+The _report_ object (an R dataframe) can in-turn be examined.
+
+```{r list-report-object-parts}
+names(trimmedGeneticValue$report) ## column names
+nrow(trimmedGeneticValue$report) ## Number of rows
+```
+
+The report is more conveniently used as a separate object.
+The next section of code rounds some of the numerical values and converts all
+columns to characters for display as a table where only the first 10 lines
+are included.
+
+```{r look-at-genetic-value-report}
+rpt <- trimmedGeneticValue[["report"]]
+rpt$indivMeanKin <- round(rpt$indivMeanKin, 5L)
+rpt$zScores <- round(rpt$zScores, 2L)
+rpt$gu <- round(rpt$gu, 5L)
+rpt <- toCharacter(rpt)
+names(rpt) <- headerDisplayNames(names(rpt))
+knitr::kable(rpt[1L:10L, ]) # needs more work for display purposes.
+```
+
+We start the next lines of code by getting a fresh copy of the genetic value
+report since we changed all of the numeric values to characters in the last 
+section to print the table.
+These lines demonstrate one way of extracting the component objects from the
+_genetic value_ object.
+
+```{r kinship-and-founders}
+rpt <- trimmedGeneticValue[["report"]]
+kmat <- trimmedGeneticValue[["kinship"]]
+f <- trimmedGeneticValue[["total"]]
+mf <- trimmedGeneticValue[["maleFounders"]]
+ff <- trimmedGeneticValue[["femaleFounders"]]
+nmf <- trimmedGeneticValue[["nMaleFounders"]]
+nff <- trimmedGeneticValue[["nFemaleFounders"]]
+fe <- trimmedGeneticValue[["fe"]]
+fg <- trimmedGeneticValue[["fg"]]
+```
+
+It is informative to examine the distribution of _genetic uniqueness_, 
+_mean kinship_, and _z-scores_ (normalized _mean kinship_ values).
+
+Creation of the boxplot for the _genetic uniqueness_ values is shown below.
+
+```{r genetic-uniqueness-boxplot}
+#| fig.alt: >
+#|   Genetic Uniqueness Box Plot.
+gu <- rpt[, "gu"]
+guBox <- ggplot(data.frame(gu = gu), aes(x = "", y = gu)) +
+  geom_boxplot(
+    color = "darkblue",
+    fill = "lightblue",
+    notch = TRUE, #| fig.alt: >
+    #|   Histogram of time between eruptions for Old Faithful.
+    #|   It is a bimodal distribution with peaks at 50-55 and
+    #|   80-90 minutes.
+
+    outlier.color = "red",
+    outlier.shape = 1L
+  ) +
+  theme_classic() +
+  geom_jitter(width = 0.2) +
+  coord_flip() +
+  ylab("Score") +
+  ggtitle("Genetic Uniqueness")
+print(guBox)
+```
+
+Extraction of the individual _mean kinship_ values and their corresponding 
+z-scores is shown in the next code chunk. 
+
+```{r extraction-of-mk-zs}
+mk <- rpt[, "indivMeanKin"]
+zs <- rpt[, "zScores"]
+```
+
+Creation of boxplots for the _mean kinship_ and _z-scores_ is left
+as an exercise.
+
+## Breeding Group Formation
+
+The primary purpose of __nprcgenekeepr__ is to form breeding groups 
+according to our best information regarding maintaining the genetic
+characteristics we desire and the realities associated with other animal
+husbandry needs.
+
+There are several options you must consider when forming groups using
+__nprcgenekeepr__, which we will examine using code below.
+
+-   Animals used to form groups
+    -   _high-value_: Randomly select from only high-value animals in genetic 
+        value analysis
+    -   _all_: Randomly select from all animals in genetic value analysis
+    -   _candidates_: Use candidate animals entered below to form groups
+-   Sex ratio
+    -   Randomly assign animals without regard to sex
+    -   Use a harem structure with one breeding male per group
+    -   Specify the sex ratio between 0.5 and 10 (F/M)
+-   Whether or not to pre-populate (seed) groups with animals of your choice
+-   Number of groups to be formed
+-   Whether or not to ignore females at or above the minimum parent age
+-   Number of simulations used to search for the optimal group makeup
+-   Whether or not kinship coefficients are to be included in results
+
+You decisions regarding each of the above options are expressed 
+in a call to the function __groupAddAssign__. 
+A complete description of the function and its arguments is available
+using the code shown below.
+
+```{r groupAddAssign-help-request, eval = FALSE}
+?groupAddAssign
+```
+
+Below is the descriptions of the function parameters extracted from the 
+documentation near the time this tutorial was prepared.
+
+- __candidates__ Character vector of IDs of the animals available for use in 
+forming the groups. The animals that may be present in currentGroups are not 
+included within candidates.
+
+- __currentGroups__ List of character vectors of IDs of animals currently 
+assigned to groups. Defaults to a list with character(0) in each sub-list 
+element (one for each group being formed) assuming no groups are 
+pre-populated.
+
+- __kmat__ Numeric matrix of pairwise kinship values. Rows and columns are 
+named with animal IDs.
+
+- __ped__ Dataframe that is the 'Pedigree'. It contains pedigree information 
+including the IDs listed in candidates.
+
+- __threshold__ Numeric value indicating the minimum kinship level to be 
+considered in group formation. Pairwise kinship below this level will be 
+ignored. The default values is 0.015625.
+
+- __ignore__ List of character vectors representing the sex combinations to be
+ignored. If provided, the vectors in the list specify if pairwise kinship 
+should be ignored between certain sexes. Default is to ignore all pairwise 
+kinship between females.
+
+- __minAge__ Integer value indicating the minimum age to consider in group 
+formation. Pairwise kinships involving an animal of this age or younger will
+be ignored. Default is 1 year.
+
+- __iter__ Integer indicating the number of times to perform the random group 
+formation process. Default value is 1000 iterations.
+
+- __numGp__ Integer value indicating the number of groups that should be formed
+from the list of IDs. Default is 1.
+
+- __updateProgress__ Function or NULL. If this function is defined, it will be
+called during each iteration to update a shiny::Progress object.
+
+- __harem__ Logical variable when set to TRUE, the formed groups have a single
+male at least minAge old.
+
+- __sexRatio__ Numeric value indicating the ratio of females to males x from 
+0.5 to 20 by increments of 0.5.
+
+- __withKin__ Logical variable when set to TRUE, the kinship matrix for the 
+group is returned along with the group and score. Defaults to not return the
+kinship matrix. This maintains compatibility with earlier versions.
+
+
+We will use the _trimmedPed_ pedigree in our code.
+
+For illustration purposes we are going to keep the numbers of candidates, 
+groups, and iterations fairly small.
+
+We will get first some animal IDs to use for our candidates by selecting animals
+at least 2 years old at the time this pedigree was sampled (01-01-2015).
+
+```{r get-candidates}
+candidates <- trimmedPed$id[trimmedPed$birth < as.Date("2013-01-01") &
+  !is.na(trimmedPed$birth) &
+  is.na(trimmedPed$exit)]
+table(trimmedPed$sex[trimmedPed$id %in% candidates])
+```
+
+Our candidates are made up of 
+`r table(trimmedPed$sex[trimmedPed$id %in% candidates])[[1]]`
+females and `r table(trimmedPed$sex[trimmedPed$id %in% candidates])[[2]]` males.
+The parameters __currentGroups__, __threshold__, __ignore__, __minAge__, 
+__sexRatio__, __withKin__, 
+and __updateProgress__ are allowed to take their default values.
+The setting of the __sexRatio__ parameter to 0 is ignored in the following 
+call of the __groupAddAssign__ function.
+This is consistent 
+with the a value of 0 making little since in a breeding colony.
+
+The empty seventh group at the bottom is evidence that all of the candidate
+animals could be placed in a group without exceeding the default value of
+0.015625.
+
+### Harems
+
+The following group assignments will be forming harem groups.
+This is done by setting __harem__ to \code{TRUE}. Setting `iter` to 100 or more
+will increase optimal composition of breeding groups
+
+```{r create-harem-groups}
+haremGrp <- groupAddAssign(
+  kmat = trimmedGeneticValue[["kinship"]],
+  ped = trimmedPed,
+  candidates = candidates,
+  iter = 10L,
+  numGp = 6L,
+  harem = TRUE
+)
+haremGrp$group
+```
+
+We can identify and list the males in each group with the following code.
+
+```{r list-males-in-harem-groups}
+sapply(haremGrp$group, function(ids) {
+  ids[ids %in% trimmedPed$id[trimmedPed$sex == "M"]]
+})
+```
+
+It is easy to notice that the male is listed first within each breeding group.
+
+We can also see the number of animals and the sex ratios created in each group.
+Since these are harem groups the sex ratios are determined by the number of 
+animals in the individual groups.
+
+```{r harem-count-and-sexratios}
+lines <- sapply(haremGrp$group, function(ids) {
+  paste0(
+    "Count: ", length(ids), " Sex Ratio: ",
+    round(calculateSexRatio(ids, trimmedPed), 2)
+  )
+})
+for (line in lines) print(line)
+```
+
+Examination of this table shows that of the 
+`r table(trimmedPed$sex[trimmedPed$id %in% candidates])[[1]]` females 
+`r (sum(sapply(haremGrp$group[-1], function(ids) length(ids))) - length(haremGrp$group[-1]))`
+are included.
+
+### Controlling Sex Ratios
+
+The following group assignments will be forming harem groups.
+This is done by setting __harem__ to \code{TRUE}.
+
+```{r create-sexratio-groups}
+sexRatioGrp <- groupAddAssign(
+  kmat = trimmedGeneticValue[["kinship"]],
+  ped = trimmedPed,
+  candidates = candidates,
+  iter = 10L,
+  numGp = 6L,
+  sexRatio = 9.0
+)
+sexRatioGrp$group
+```
+
+Again we can identify and list the males in each group with the following code.
+
+```{r list-males-in-sexratio-groups}
+sapply(sexRatioGrp$group, function(ids) {
+  ids[ids %in% trimmedPed$id[trimmedPed$sex == "M"]]
+})
+```
+
+We can also see the number of animals and the sex ratios created in each group.
+
+```{r list-count-and-sexratios}
+lines <- sapply(sexRatioGrp$group, function(ids) {
+  paste0(
+    "Count: ", length(ids), " Sex Ratio: ",
+    round(calculateSexRatio(ids, trimmedPed), 2L)
+  )
+})
+for (line in lines) print(line)
+```
+
+Examination of this table shows that of the 
+`r table(trimmedPed$sex[trimmedPed$id %in% candidates])[[1]]` females 
+`r (sum(sapply(sexRatioGrp$group[-1], function(ids) length(ids))) - length(sexRatioGrp$group[-1]))`
+are included.
+
+## Pedigree Errors
+
+As stated earlier you can see which types of errors are detected by 
+_qcStudbook_ by looking at names returned by _getEmptyErrorLst()_ as shown below.
+
+```{r getEmptyErrorLst}
+names(getEmptyErrorLst())
+```
+
+Each is defined below.
+
+```{r make-errorList-definition-tbl, echo = FALSE, eval=TRUE}
+errorTypes <- names(getEmptyErrorLst())
+errorDescriptions <- c(
+  "Database connection failed: configuration or permissions are invalid",
+  "Columns that must be within the pedigree file are missing.",
+  "Values, which are supposed to be dates, cannot be interpreted as a date.",
+  "Parents were too young on the date of birth of to have been the parent.",
+  "Individuals listed as female or hermaphroditic and as a sire.",
+  "Individuals are listed as male and as a dam.",
+  "Individuals who are listed as both a sire and a dam.",
+  "IDs listed more than once.",
+  stri_c(
+    "Columns that have been changed to conform to internal naming ",
+    "conventions and what they were changed to."
+  )
+)
+errorTbl <- data.frame(
+  Error = errorTypes, Definition = errorDescriptions,
+  stringsAsFactors = FALSE
+)
+```
+```{r print-error-definition-tbl, echo=FALSE}
+knitr::kable(errorTbl)
+```
+
+We are going to 
+use the small imaginary pedigree listed below that has multiple errors
+to discuss pedigree error detection and reporting. 
+First note the birth dates of ego_id _o4_ 
+(2006-04-13) and the purported sire _s2_ (2006-06-19). Note also the purported 
+birth date of the _d2_ and the birth dates of her offspring.
+Obviously dates or IDs may be incorrect.
+
+This is the pedigree. _(We will discuss the column names shortly.)_
+
+```{r list-pedOne}
+knitr::kable(nprcgenekeepr::pedOne)
+```
+
+If we try to convert this pedigree file into the standardized studbook format, 
+we are going to get an error message and the 
+creation of a file in the R sessions temporary directory that lists the records 
+that have generated the errors. 
+
+```{r summary-pedOne-no-errors, error = TRUE}
+pedOne <- nprcgenekeepr::pedOne # put it in the local environment
+ped <- qcStudbook(pedOne, minParentAge = 0.0)
+```
+
+The contents of _lowParentAge.csv_ is shown below.
+
+```{r read-lowParentAge.csv, echo = FALSE, include = FALSE}
+lowParentAge <- read.csv(paste0(tempdir(), "/lowParentAge.csv"))
+```
+```{r print-lowParentAge.csv, echo = FALSE}
+knitr::kable(lowParentAge)
+```
+
+Examination of the ages of the parents reveals the issues being reported.
+
+We can remove the errors by changing the birth dates of _o4_ from 2006-04-13
+to 2015-09-16 and of _d2_ from 2015-09-16 to 2006-04-13. 
+
+```{r correct-birthdate, error = TRUE}
+pedOne$birth_date[pedOne$ego_id == "o4"] <- as.Date("2015-09-16")
+pedOne$birth_date[pedOne$ego_id == "d2"] <- as.Date("2006-04-13")
+```
+
+Note the changes made to the column names between the original __pedOne__ 
+pedigree and the pedigree (__ped__) we get from __qcStudbook__. 
+We have chosen to limit the displayed pedigree by selecting the _ego_id_'s and 
+_id_'s in __pedOne__ and __ped__ respectively.
+
+```{r display-corrected-birth-records}
+ped <- qcStudbook(pedOne, minParentAge = 0.0)
+ped[ped$id %in% c("s2", "d2", "o3", "o4"), ]
+```
+
+However, the preferred method of creating the standardized studbook format
+with __qcStudbook__ is to examine all errors found and correcting them 
+before proceeding.
+This is done by explicitly requesting that all aspects inconsistent with the 
+studbook format be identified by setting _reportChanges_ and _reportErrors_ to
+\code{TRUE}.
+
+```{r look-for-errors}
+errorList <- qcStudbook(pedOne,
+  minParentAge = 0.0, reportChanges = TRUE,
+  reportErrors = TRUE
+)
+summary(errorList)
+```
+
+We will discuss each of these newly identified errors in a moment, however,
+let's look at shortening this report, because often you will not be 
+interested in the more trivial changes to the column names
+made by __qcStudbook__ and in those cases you simply choose not to report 
+changes to the column names as is shown here by setting _reportChanges_ to 
+\code{FALSE}. 
+For this illustration, we are going to bring back the original copy of 
+__pedOne__ to see how the suspicious parents are reported by the 
+__summary__ function.
+
+```{r look-for-errors-only}
+pedOne <- nprcgenekeepr::pedOne
+errorList <- qcStudbook(pedOne,
+  minParentAge = 0L, reportChanges = FALSE,
+  reportErrors = TRUE
+)
+options(width = 90L)
+summary(errorList)
+```
+
+The first two errors mentioned are of particular interest.
+Currently __qcStudbook__ automatically changes the sex of dams to 
+_F_ (female) and sires to _M_ (male) when __reportErrors__ is set
+to \code{FALSE}.
+
+## Genetic Loops 
+
+This feature is not supported within the Shiny application and is not 
+fully implemented. 
+
+To use the __findLoops__ function run the following code and select a pedigree 
+as your input file that has a loop in it. 
+We are continuing to use the example pedigree that comes with the software
+_Example_Pedigree.csv_.
+
+```{r look-at-loops}
+exampleTree <- createPedTree(breederPed)
+exampleLoops <- findLoops(exampleTree)
+```
+
+You can count how many loops you have with the following code.
+
+```{r countLoops}
+length(exampleLoops)
+nLoops <- countLoops(exampleLoops, exampleTree)
+sum(unlist(nLoops[nLoops > 0L]))
+```
+
+You can list the first 10 sets of ids, sires and dams in loops with the
+following line of code:
+
+```{r listLoops}
+examplePedigree[unlist(exampleLoops), c("id", "sire", "dam")][1L:10L, ]
+```
+```{r elapsed-time}
+elapsed_time <- get_elapsed_time_str(start_time)
+```
+The current date and time is `r Sys.time()`. The processing time for
+this document was `r elapsed_time`.
+
+```{r session-info}
+sessionInfo()
+```

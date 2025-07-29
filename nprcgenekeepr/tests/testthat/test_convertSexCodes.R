@@ -1,0 +1,36 @@
+#' Copyright(c) 2017-2024 R. Mark Sharp
+#' This file is part of nprcgenekeepr
+context("convertSexCodes")
+library(testthat)
+original <- c(
+  "m", "male", "1", "MALE", "M", "F", "f", "female", "FemAle", "U",
+  "Unknown", "H", "hermaphrodite", "U", "Unknown", "3", "4"
+)
+sexCodes <- convertSexCodes(original)
+test_that("convertSexCodes makes correct transformations", {
+  expect_true(is.factor(sexCodes))
+  sexCodes <- as.character(sexCodes)
+  expect_equal(sexCodes[1L], "M")
+  expect_equal(sexCodes[2L], "M")
+  expect_equal(sexCodes[3L], "M")
+  expect_equal(sexCodes[4L], "M")
+  expect_equal(sexCodes[5L], "M")
+  expect_equal(sexCodes[6L], "F")
+  expect_equal(sexCodes[7L], "F")
+  expect_equal(sexCodes[8L], "F")
+  expect_equal(sexCodes[9L], "F")
+  expect_equal(sexCodes[10L], "U")
+  expect_equal(sexCodes[11L], "U")
+  expect_equal(sexCodes[12L], "U")
+  expect_equal(sexCodes[13L], "U")
+  expect_equal(sexCodes[14L], "U")
+  expect_equal(sexCodes[15L], "U")
+  expect_equal(sexCodes[16L], "U")
+  expect_equal(sexCodes[17L], "U")
+  sexCodes <- convertSexCodes(original, ignoreHerm = FALSE)
+  sexCodes <- as.character(sexCodes)
+  expect_equal(sexCodes[12L], "H")
+  expect_equal(sexCodes[13L], "H")
+  expect_equal(sexCodes[13L], "H")
+  expect_equal(sexCodes[17L], "H")
+})
