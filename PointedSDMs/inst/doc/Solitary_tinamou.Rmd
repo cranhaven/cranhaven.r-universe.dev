@@ -1,0 +1,266 @@
+---
+title: "Example of PointedSDMs for the solitary tinamou"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Example of PointedSDMs for the solitary tinamou}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  warning = FALSE,
+  message = FALSE,
+  eval = FALSE
+)
+
+```
+
+## Introduction
+
+This vignette illustrates the various functions of *PointedSDMs* by using three datasets of the solitary tinamou (*Tinamus solitarius) --* a species of ground bird found on the eastern side of Brazil. Due to package dependencies, this vignette is not run. However the data and *R* script are available such that the user may carry out inference.
+
+```{r setup, warning = FALSE, message = FALSE}
+
+library(PointedSDMs)
+library(terra)
+library(INLA)
+library(ggplot2)
+
+```
+
+```{r safe, include = FALSE}
+
+bru_options_set(inla.mode = "experimental")
+
+```
+
+### Load data
+
+Firstly, we load in the datasets and objects required for this vignette. The *SolitaryTinamou* dataset attached to this package contains a `list` of four objects; for ease of use, we make new objects for the items in this `list`.
+
+```{r load data}
+
+data('SolitaryTinamou')
+projection <- "+proj=longlat +ellps=WGS84"
+
+covariates <- terra::rast(system.file('extdata/SolitaryTinamouCovariates.tif', 
+                                      package = "PointedSDMs"))
+
+datasets <- SolitaryTinamou$datasets
+region <- st_as_sf(SolitaryTinamou$region)
+mesh <- SolitaryTinamou$mesh
+
+```
+
+The first item is a `list` of three datasets: *eBird*, *Gbif* and *Parks*. The first two are `data.frame` objects containing only two variables: `X` and `Y` describing the latitude and longitude coordinates of the species location respectively. As a result of this, these two datasets are considered to be *present only* datasets in our integrated model.
+
+The other dataset (*Parks*) is also a `data.frame` object. It contains the two coordinate variables present in the first two datasets, but contains two additional variables: `Present`, a binary variable describing the presence (*1*) or absence (*0*) of the species at the given coordinates, and `area` describing the area of the park. Since we have information on the presences and absences of the species in this dataset, we consider it a *presence absence* dataset.
+
+`Region` is a `sf` object which give the boundary of the park containing the species; it was used in the *mesh* construction and for the plots in this vignette.
+
+```{r look at data}
+
+str(datasets)
+class(region)
+
+```
+
+The next object is `covariates`, a `spatRaster` objects of the covariates (*Forest, NPP* and *Altitude*) describing the area of the parks. We stack these three objects together using the `stack` function, and then scale them.
+
+```{r covariates, fig.width=8, fig.height=5}
+
+covariates <- scale(covariates)
+crs(covariates) <- projection
+plot(covariates)
+
+```
+
+Finally we require a *Delaunay triangulated mesh* for the construction of the spatial field. A plot of the mesh used for this vignette is provided below.
+
+```{r mesh, fig.width=8, fig.height=5}
+
+ggplot() + gg(mesh)
+
+```
+
+### Base model
+
+To set up an integrated species distribution model with `PointedSDMs`, we initialize it with the `startISDM` function -- which results in an *R6* objects with additional slot functions to further customize the model. The base model we run for these data comprises of the spatial covariates and an intercept term for each dataset.
+
+```{r set up base model, warning = FALSE, message = FALSE}
+
+base <- startISDM(datasets, spatialCovariates = covariates, Boundary = region,
+                 Projection = projection, responsePA = 'Present', Offset = 'area',
+                 Mesh = mesh, pointsSpatial = NULL)
+
+```
+
+Using the `.$plot` function produces a *gg* object of the points used in this analysis by dataset; from this plot, we see that most of the species locations are found towards the eastern and south-central part of the park.
+
+```{r data, fig.width=8, fig.height=5}
+
+base$plot(Boundary = FALSE) + 
+  geom_sf(data = st_boundary(region)) +
+  ggtitle('Plot of the species locations by dataset')
+
+```
+
+In this model, we also include prior information for the *Forest* effect using `$priorsFixed`.
+
+```{r priorsFixed}
+
+base$priorsFixed(Effect = 'Forest', mean.linear = 0.5, prec.linear = 0.01)
+
+```
+
+To run the integrated model, we use the `fitISDM` function with the `data` argument as the object created with the `startISDM` function above.
+
+```{r run base model, warning = FALSE, message = FALSE}
+
+baseModel <- fitISDM(data = base)
+summary(baseModel)
+
+```
+
+### Model with spatial fields
+
+#### Shared spatial field
+
+Spatial fields are fundamental in our spatial species distribution models, and so we include them in the model by setting `pointsSpatial = TRUE` in `startISDM`. Furthermore, we will put a stronger prior on the intercept and fixed effects.
+
+```{r set up model with fields, warning = FALSE, message = FALSE}
+
+fields <- startISDM(datasets, spatialCovariates = covariates, Boundary = region,
+                   Projection = projection, Mesh = mesh, responsePA = 'Present')
+
+fields$priorsFixed(Effect = 'Intercept', prec.linear = 1)
+
+for (cov in names(covariates)) fields$priorsFixed(Effect = cov, prec.linear = 1)
+
+```
+
+To specify the spatial field in the model, we use the slot function `$specifySpatial`. This in turn will call *R-INLA*'s `inla.spde2.pcmatern` function, which is used to specify penalizing complexity (PC) priors for the parameters of the field. If we had set `PC = FALSE` in this function, our shared spatial field would be specified with *R-INLA*'s `inla.spde2.matern` function.
+
+```{r specifySpatial}
+
+fields$specifySpatial(sharedSpatial = TRUE, 
+                      constr = TRUE,
+                      prior.range = c(3, 0.1), 
+                      prior.sigma = c(1, 0.1))
+
+```
+
+Finally we run the integrated model, again with `fitISDM` but this time we specify options with *R-INLA*'s *empirical Bayes* integration strategy to help with computation time.
+
+```{r run fields model, warning = FALSE, message = FALSE}
+
+fieldsModel <- fitISDM(fields, options = list(control.inla = 
+                                                list(int.strategy = 'eb')))
+summary(fieldsModel)
+
+```
+
+#### Correlate fields
+
+If we would like to correlate the spatial fields across the datasets , we can specify `pointsSpatial = 'correlate'` in `startISDM()`:
+
+```{r correlate model}
+
+correlate <- startISDM(datasets, Boundary = region,
+                 Projection = projection, Mesh = mesh, 
+                 spatialCovariates = covariates$Altitude,
+                 responsePA = 'Present', 
+                 pointsSpatial = 'correlate')
+
+correlate$priorsFixed(Effect = 'Intercept', prec.linear = 1)
+
+correlate$priorsFixed(Effect = 'Altitude', prec.linear = 1)
+
+correlate$specifySpatial(sharedSpatial = TRUE, 
+                         prior.range = c(3, 0.1), 
+                         prior.sigma = c(1, 0.1))
+
+correlate$changeComponents()
+
+```
+
+We furthermore include an additional spatial field (deemed the *bias field*) for our citizen science *eBird* observations with the `$addBias` slot function.
+
+```{r addBias}
+
+correlate$addBias('eBird')
+
+correlate$specifySpatial(Bias = TRUE,
+                      prior.range = c(2, 0.1), 
+                      prior.sigma = c(0.1, 0.1))
+
+```
+
+And then estimating the model:
+
+```{r run correlate model}
+
+correlateModel <- fitISDM(correlate, 
+                          options = list(control.inla = 
+                                           list(int.strategy = 'eb')))
+summary(correlateModel)
+
+```
+
+### Prediction of the spatial fields
+
+If we wanted to make predictions of the shared spatial random field across the map, we set `spatial = TRUE` in the generic `predict` function.
+
+```{r predict spatial, warning = FALSE, message = FALSE}
+
+spatial_predictions <- predict(correlateModel, mesh = mesh,
+                       mask = region, 
+                       spatial = TRUE,
+                       fun = 'linear')
+
+```
+
+And subsequently plot using the generic `plot` function.
+
+```{r spatial, fig.width=8, fig.height=5}
+
+plot(spatial_predictions, variable = c('mean', 'sd'))
+
+```
+
+However if we wanted to make predictions of the bias field, we would do this by setting `biasfield = TRUE`.
+
+```{r predict bias, warning = FALSE, message = FALSE}
+
+bias_predictions <- predict(correlateModel, 
+                    mesh = mesh, 
+                    mask = region, 
+                    bias = TRUE,
+                    fun = 'linear')
+
+```
+
+```{r bias, fig.width=8, fig.height=5}
+
+plot(bias_predictions)
+
+```
+
+### Dataset out cross-validation
+
+The last function of interest is `datasetOut`, which removes a dataset out of the full model, and then calculates a cross-validation score with this reduced model. In this case, we try the function out by removing the *eBird* dataset.
+
+```{r datasetOut, warning = FALSE, message = FALSE}
+
+eBird_out <- datasetOut(model = correlateModel, dataset = 'eBird')
+
+```
+
+```{r print datasetOut}
+
+eBird_out
+
+```
