@@ -1,0 +1,173 @@
+---
+title: "Building a worklfow for Warblers acorss Pennsylvania state"
+output: rmarkdown::html_vignette
+bibliography: '`r system.file("References.bib", package="intSDM")`'
+vignette: >
+  %\VignetteIndexEntry{PennsylvaniaWarbler}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  eval = FALSE,
+  fig.width=8, 
+  fig.height=5,
+  warning = FALSE,
+  message = FALSE)
+```
+
+This vignette illustrates using the *intSDM* R package for three types of warbler distributed across Pennsylvania on the Eastern side of the United States of America. This case study has been used in numerous other integrated species distribution model analyses (for example, @PointedSDMs, @isaac2020data and @miller2019recent) and includes three datasets: *eBird*, *North American Breeding Bird Survey* (*BBS*) and *Pennsylvania Breeding Bird Atlas* (*BBA*). Details on the data and the selection of observation models for each are provided within the references.
+
+```{r setup}
+
+library(intSDM)
+library(USAboundaries)
+
+```
+
+We will assume that the *BBA* and *BBS* data are not provided on *GBIF*, and thus will load them directly from the *PointedSDMs* package.
+
+```{r get data}
+
+data("SetophagaData")
+BBA <- SetophagaData$BBA
+BBA$Species_name <- paste0('Setophaga_', BBA$Species_name)
+BBS <- SetophagaData$BBS
+BBS$Species_name <- paste0('Setophaga_', BBS$Species_name)
+
+```
+
+We will then initialize the workflow using the `startWorkflow` function.
+
+```{r startWorkflow}
+
+workflow <- startWorkflow(Richness = FALSE,
+  Projection = "+proj=utm +zone=17 +datum=WGS84 +units=km",
+  Species = c("Setophaga_caerulescens"), 
+              #"Setophaga_fusca", "Setophaga_magnolia"),
+  saveOptions = list(projectName =  'Setophaga'), Save = FALSE
+)
+
+```
+
+The `.$addArea()` function only gives us access to country borders. However we can easily add other polygon objects to the workflow using the *Object* argument from the function.
+
+```{r addArea}
+
+workflow$addArea(Object = USAboundaries::us_states(states = "Pennsylvania"))
+
+```
+
+Next we add data to the analysis. The *eBird* dataset is available to download directly from *GBIF*, and thus may be downloaded into out workflow using the `.$addGBIF` function and specifying the relevant *datasetKey*. We limit our search to only 5000 species observations (per species) using the `limit` argument, however more species may be added if you wanted. In addition, we only include observations between 2005 and 2009, given that these are the time periods that the other datasets include.
+
+The other two datasets are not directly available on *GBIF*, but may still be added using the `.$addStructured` function. This requires us to specify the response name of each dataset (using the *responseName* argument), and the species name variable (using the *speciesName* argument).
+
+```{r download Data}
+
+workflow$addGBIF(datasetName = 'eBird', datasetType = 'PO', limit = 5000,
+                 datasetKey = '4fa7b334-ce0d-4e88-aaae-2e0c138d049e',
+                 year = '2005,2009')
+
+workflow$addStructured(dataStructured = BBS, datasetType = 'Counts',
+                       responseName = 'Counts', 
+                       speciesName = 'Species_name')
+
+workflow$addStructured(dataStructured = BBA, datasetType = 'PA',
+                       responseName = 'NPres', 
+                       speciesName = 'Species_name')
+
+workflow$plot(Species = TRUE)
+
+```
+
+We can then add the *elevation* and *canopy* covariates from the *PointedSDMs* package. These covariates have already been scaled. If we were planning on using *worldClim* covariates, we could have used the *worldClim* argument by specifying which variable we wanted to download.
+
+```{r addCovariates}
+
+covariates <- scale(terra::rast(system.file('extdata/SetophagaCovariates.tif', 
+                                      package = "PointedSDMs")))
+names(covariates) <- c('elevation', 'canopy')
+
+workflow$addCovariates(Object = covariates)
+  
+workflow$plot(Covariates = TRUE)
+
+```
+
+We add an *fm_mesh_2d* object using `.$addMesh`.
+
+```{r biasFields}
+
+workflow$addMesh(cutoff = 0.2 * 5,
+                 max.edge = c(0.1, 0.24) * 80,
+                 offset = c(0.1, 0.4) * 100)
+
+workflow$plot(Mesh = TRUE)
+
+```
+
+And add a second spatial effect for the *eBird* data, and specify priors.
+
+```{r speciyRandom}
+
+workflow$specifySpatial(prior.range = c(30, 0.1),
+                        prior.sigma = c(1, 0.1))
+
+workflow$biasFields(datasetName = 'eBird',
+                    prior.range = c(15, 0.1),
+                    prior.sigma = c(1, 0.1))
+
+workflow$specifyPriors(effectNames = 'Intercept', 
+                       Mean = 0, 
+                       Precision = 1)
+
+```
+
+For this case study, we specify the model outcome as *Model* and *cross-validation*. This will give us: an *R-INLA* model outcome for which we could analyse further, and estimates of cross-validation.
+
+The cross-validation we use is spatial-blocking, which will segment our study area into *k* folds. Here we use the *Predict* method, which will iteratively fit a training model for all combinations of dataset in all blocks except for one. The linear predictor of the training model is then calculated at the values of the test data (which is the first non-present-only dataset added into the model) in the left out block. A new testing model is then fit using the testing data is fit, using the predicted linear predictor as an offset in the model. The log marginal likelihood is then calculated from the testing model, and the model with the lowest log marginal likelihood across blocks is deemed best.
+
+```{r outcomes}
+
+workflow$workflowOutput(c('Model', 'Cross-validation'))
+
+workflow$crossValidation(Method = 'spatialBlock',  
+                         blockOptions = list(k = 4, 
+                                             rows_cols = c(20, 20), 
+                                             plot = TRUE, seed = 123),
+                         blockCVType = "Predict")
+
+```
+
+We may then estimate the model using `sdmWorkflow`, and print a summary of the models. Note that the cross-validation may take a long time to estimate, given that the model fits each combination of possible datasets, *k* times.
+
+```{r sdmWorkflow}
+
+Model <- sdmWorkflow(Workflow = workflow, 
+                      inlaOptions = list(control.inla=list(int.strategy = 'eb',
+                                                    diagonal = 0.1,
+                                                    cmin = 0),
+                                  safe = TRUE,
+                                  verbose = TRUE,
+                                  inla.mode = 'experimental'))
+
+```
+
+The summary of the model is given as:
+
+```{r plot int}
+
+Model[[1]]$Model
+
+```
+
+And a summary of the cross-validation is given as:
+
+```{r plot bias}
+
+Model[[1]]$spatialBlock
+
+```
