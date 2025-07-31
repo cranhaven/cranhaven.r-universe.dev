@@ -1,0 +1,46 @@
+#' A wrapper for tuneR's readWave that read sound files listed within selection tables
+#'
+#' \code{read_wave} is a wrapper for tuneR's \code{\link[tuneR]{readWave}} function that read sound files listed in data frames and selection tables
+#' @param ... arguments to be passed internally to \code{\link{read_sound_file}}.
+#' @return An object of class "Wave".
+#' @export
+#' @name read_wave
+#' @details The function is a wrapper for \code{\link{read_sound_file}}. The function is slated for deprecation and will be removed in future versions of the package. Please use \code{\link{read_sound_file}} instead.
+#' @examples
+#' {
+#'   # write wave files with lower case file extension
+#'   data(list = c("Phae.long1"))
+#'   writeWave(Phae.long1, file.path(tempdir(), "Phae.long1.wav"))
+#'
+#'   # read from selection table
+#'   read_wave(X = lbh_selec_table, index = 1, path = tempdir())
+#'
+#'   # from extended selection table
+#'   library(NatureSounds)
+#'   read_wave(X = lbh.est, index = 1)
+#'
+#'   # read WAV
+#'   filepath <- system.file("extdata", "recording.wav", package = "bioacoustics")
+#'   read_wave(filepath)
+#'
+#'   # read MP3
+#'   filepath <- system.file("extdata", "recording.mp3", package = "bioacoustics")
+#'   read_wave(filepath)
+#'
+#'   # URL file
+#'   read_wave(X = "https://www.xeno-canto.org/513948/download")
+#' }
+#'
+#' @references 
+#' Araya-Salas, M., & Smith-Vidaurre, G. (2017). warbleR: An R package to streamline analysis of animal acoustic signals. Methods in Ecology and Evolution, 8(2), 184-191.
+#' 
+#' @author Marcelo Araya-Salas (\email{marcelo.araya@@ucr.ac.cr})
+
+read_wave <-  read_wave <- function(...) {
+  
+  message2("This function is slated for deprecation in future versions. Please use the function read_sound_file() instead.")
+
+  read_sound_file(...)
+  }
+  
+ 
