@@ -1,0 +1,300 @@
+---
+title: "LTFGRS Workflow: Prepare Genetic Liability for Prediction"
+output: rmarkdown::html_vignette
+author: "Emil M. Pedersen"
+date: "`r Sys.Date()`"
+vignette: >
+  %\VignetteIndexEntry{LTFGRS Workflow: Prepare Genetic Liability for Prediction}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r include=FALSE, results = 'hide'}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+```{r setup, results = 'hide',warning = FALSE, message = FALSE}
+library(LTFGRS)
+library(dplyr)
+library(lubridate)
+library(rmarkdown)
+```
+
+
+***All data is simulated and is purely for demonstration purposes - This includes the CIP.***
+
+This vignette is intended to give users of the package an overview of how to use the different functions of the package and how they are intended to work together.  The liability-based predictors can be used for prediction or as a refined outcome in a GWAS. This vignette focuses on preparing for prediction, as this purpose requires the user to consider additional steps, such as censoring of future events and masking the outcome of the target individual. The vignette will cover the following steps:
+
+- Simulate mock trio, phenotype, and CIP data
+- Convert mock trio and phenotype data into a format suitable for estimate_liability()
+  - Automatic identification of n-degree relatives
+  - Censoring of future events on a family basis
+  - Assign thresholds on censored families
+  - Assign thresholds to family graphs
+- Estimate the liability-based predictors using estimate_liability()
+  - Both Gibbs and PA based estimators will be covered
+
+
+## Simulate mock trio, phenotype, and CIP data
+
+We will set some population parameters for the simulation. The parameters are as follows:
+
+```{r}
+# population parameters and seed
+set.seed(555)
+h2 = .5 # heritability
+K = .3 # population prevalence
+```
+
+### Cumulative incidence proportions (CIP)
+One of the key required input variables of LTFGRS is the population representative stratified cumulative incidence proportions (CIP) data. LTFGRS is able to utilise the population representative stratified CIPs to personalise thresholds for the liability-based predictors. The CIPs are typically obtained from large population registers or other sources that allow for population representative estimates. Here, we simulate a format similar to how stratified CIPs may be stored. We assume the CIPs have been stratified by sex and birth year. The population representative stratified CIPs has the interpretation of being the proportion of individuals born in a given year and sex that has been diagnosed with the outcome of interest by age $x$.
+
+```{r}
+# assuming we have been provided a CIP object of the following style:
+CIP = expand.grid(list(age = 1:100,
+                       birth_year = 1900:2024,
+                       sex = 0:1)) %>%
+  group_by(sex, birth_year) %>%
+  mutate(cip = (1:n() - 1)/n() * K) %>%
+  ungroup() %>% 
+  print(n = 10)
+```
+
+### Trio information
+The trio information presented here is a manually constructed to resemble a typical way the trio data may be stored. The names are chosen such that they resemble the relationship to the proband. This means there are simple names such as "dad", "mom", or "sib". There are also more complex names such as "pgf" for maternal grand father, "muncle" for maternal uncle", "hsmcousin" for half-sibiling maternal cousin, etc. The suffixes "H" and "W" mean husband and wife, respectively.
+
+```{r}
+# hand curated trio information, taken from LTFHPlus vignette:
+# https://emilmip.github.io/LTFHPlus/articles/FromTrioToFamilies.html
+family = tribble(
+  ~id, ~momcol, ~dadcol,
+  "pid", "mom", "dad",
+  "sib", "mom", "dad",
+  "mhs", "mom", "dad2",
+  "phs", "mom2", "dad",
+  "mom", "mgm", "mgf",
+  "dad", "pgm", "pgf",
+  "dad2", "pgm2", "pgf2",
+  "paunt", "pgm", "pgf",
+  "pacousin", "paunt", "pauntH",
+  "hspaunt", "pgm", "newpgf",
+  "hspacousin", "hspaunt", "hspauntH",
+  "puncle", "pgm", "pgf",
+  "pucousin", "puncleW", "puncle",
+  "maunt", "mgm", "mgf",
+  "macousin", "maunt", "mauntH",
+  "hsmuncle", "newmgm", "mgf",
+  "hsmucousin", "hsmuncleW", "hsmuncle"
+)
+```
+
+
+
+### Phenotype data
+We will simulate a liability based on the family structure defined above to assign a case-control outcome to each individual. Then other covariates such as sex and age are randomly assigned. To get the case-control status, we first generate a (population) graph, calculate a kinship matrix based on the heritability and kinship coefficient, and finally, draw liabilities from a multivariate normal with the calculated kinship matrix as covariance matrix.
+
+```{r}
+# creating a graph for the family
+graph = prepare_graph(.tbl = family, icol = "id", mcol = "momcol", fcol = "dadcol")
+# calculating the kinship matrix based on the graph
+cov_mat = get_covmat(fam_graph = graph, h2 = h2, index_id = "pid")
+# creating a phenotype for the family
+liabs = MASS::mvrnorm(n = 1, mu = rep(0, nrow(cov_mat)), Sigma = cov_mat)
+```
+Next, we will create the mock phenotype data:
+
+```{r}
+# these values are simulated only for illustrative purposes and not to make sense(!)
+pheno = tibble(
+  id = names(liabs),
+  status = liabs > qnorm(K, lower.tail = F),
+  # no consideration for generation etc in sex, fdato or birth_year:
+  sex = sample(0:1, size = length(liabs), replace = TRUE),
+  fdato = dmy(paste0(sample(1:28, length(liabs), replace = TRUE), "/", sample(1:12, length(liabs), replace = T), "/", sample(1940:2000, length(liabs), replace = TRUE))),
+  birth_year = year(fdato),
+  # age of onset only after fdato
+  adhd = purrr::map2_chr(.x = status, .y = birth_year,
+      ~ if(.x) paste0(sample(1:28, 1), "/", sample(1:12, 1), "/", sample((.y + 1):2010, 1)) else NA),
+  # end of follow up assigned here
+  indiv_eof = dmy("31/12/2010")) %>% # blanket time stop, meant to simulate end of registers
+  mutate(
+    # converting to date format
+    adhd = dmy(adhd),
+    # eof either blanket time stop or event date
+    indiv_eof = pmin(indiv_eof, adhd, na.rm = TRUE)) %>% 
+  filter(id != "pid_g") %>% # remove the genetic liability of the proband
+  # status is not required here. Only used it to generate the age of diagnosis.
+  select(-status) 
+paged_table(pheno)
+```
+
+The mock phenotype data is intended to resemble a format that can typically be derived from most register or bio bank phenotypes where the age of diagnosis is available. Columns of interest are:
+
+- `fdato`: the birth date of the individual
+- `birth_year`: the birth year of the individual
+- `adhd`: the outcome of interest,
+- `indiv_eof`: the personalised end of follow up for a given individual. it may be different for each individual due to any number of censoring or competing events.
+
+
+## Preparing for estimate_liability()
+
+In a real world scenario, we will not have access to all of the information used above. We will assume that the objects `CIP`, `family`, and `pheno` are the only information available to the user. These objects hold information that can often be extracted from population registers or bio banks.
+
+- `CIP`: The `CIP` object carry information about the prevalence of the outcome of interest in the population and therefore also on how each participant fits into the population distribution. 
+- `family`: The `family` object holds the trio information, i.e. information about the family structure and how each individual is related to each other. In a real world scenario this object may contains millions of unique individuals.
+- `pheno`: The `pheno` object holds phenotypic information on each individual present in the trio information.
+
+### Population graph
+With the `family` object, which holds the trio information, we can construct a population graph. The population graph holds all familial connects identified in the trio information and will form the basis of how families are identified. In real-world applications, the population graph may contain millions of individuals. To illustrate all the required steps, we will recalculate the population graph, but add sex as a node attribute.
+
+```{r}
+graph = prepare_graph(.tbl = family, 
+                      icol = "id",
+                      mcol = "momcol", 
+                      fcol = "dadcol",
+                      node_attributes = select(pheno, id, sex))
+```
+
+
+### Automatic identification of n-degree relatives
+
+When we want to calculate a family genetic risk score, we need to create a pedigree based on the proband and relations should be relative to the proband. We are interested in identifying all family members up to some degree of relatedness, $n$, without having to manually find all of these family members. Manually identifying family members up to degree $4$ is both time consuming and error prone. We have implemented an automatic detection of family members that utilise a graph based on all individuals in the trio information (ideally population registers) and neighbourhood graphs. In short, we create a pedigree (directed graph) with every individual in the trio data and copy sections around a proband with all individuals that are $n$ steps away from the proband in the graph (This is a neighbourhood graphs of degree n, here called a family graph).
+
+```{r}
+# Identify family members of degree n
+family_graphs = get_family_graphs(pop_graph = graph,
+                                  ndegree = 1,
+                                  proband_vec = pheno$id,
+                                  fid = "fid",
+                                  fam_graph_col = "fam_graph")
+family_graphs %>% print(n = 4)
+```
+The function `get_family_graphs()` will return a formatted tibble. The output will have two columns specified with the arguments, `fid` and `fam_graph_col`.  `fid` is the ids of the provided probands, who are also the individuals the neighbourhood (family) graphs are centred on. Note: In the example above, we have only one family graph for a given proband, however, an individual may still appear in several family graphs as a relative. E.g., a parent with two children may appearing in the family graph of both of their children. `fam_graph_col` holds the family graphs and are in the format of igraph. Operations on this level will not be required for the average user. An igraph object is shown here for context:
+
+```{r}
+family_graphs$fam_graph[[1]]
+```
+
+### Censoring of future events on a family basis
+
+The purpose of the genetic liability estimated here is prediction. In epidemiology (and many other fields) there is an emphasis on ensuring future events are not used to base predictions on. Hence, we need to ensure that, within a family, no events that happen after the end of follow up of the proband is used to estimate the genetic liability of the proband. In real world analysis, the end of follow up can be due to the proband being diagnosed or any censoring event, such as end of register follow up, emigration, or death.
+   The function `familywise_censoring()` offers a way to censor future events on a family basis, by censoring all events that happen after the end of follow up of the proband (`indiv_eof`).
+
+```{r}
+# calculate family specific thresholds
+info = familywise_censoring(
+  family_graphs = family_graphs,
+  tbl = pheno,
+  start = "fdato",
+  end = "indiv_eof",
+  event = "adhd",
+  merge_by = setNames(c("id"), c("pid")))
+
+paged_table(info)
+```
+The function `familywise_censoring()` will return a tibble with the following additional columns:
+
+- `status`: Assigned case-control status based on the family-wise censoring time, i.e. if the event happened after the end of follow up of the family, the status is set to `FALSE` (0).
+- `aod`: The age of diagnosis, NA for controls.
+- `age`: The age at the end of the family-wise follow up.
+
+The above information is used to calculate the personalised thresholds for each individual while also accounting for the fact that each family may have differing levels of information available to them.
+
+### Assign thresholds to censored families
+
+Once the `status`, `aod`, and `age` are known, we can assign thresholds to each family and their family members. Notably, this means that if an individual appears in multiple families, e.g. as a proband and as a relative to a different proband, that individual may have multiple (potentially different) thresholds assigned to them. The use of `fid` and `pid` helps ensure that each individual can still be uniquely identified.
+   Due to data privacy, it is possible to encounter CIPs values that are only provided at set values, e.g. a CIP value for each whole year by birth year and sex, such as what is shown in with the `CIP` object. However, the observed ages (or age of diagnosis) are typically not integer values. This means we may need to approximate the CIP values between the provided values. We offer an XGboost based approach to interpolate the CIPs between the provided values.
+   
+```{r, results = 'hide'}
+fam_thrs = prepare_thresholds(
+  .tbl = info,
+  CIP = CIP,
+  age_col = "age" ,
+  lower_equal_upper = FALSE,
+  personal_thr = TRUE, 
+  fid_col = "fid",
+  personal_id_col = "pid",
+  interpolation = "xgboost"
+)
+```
+
+
+```{r}
+paged_table(fam_thrs)
+```
+Note: Currently, it is possible to experience negative ages at the end of follow up. This is due to the family-wise end of follow up ending before an individual is born, e.g. proband is diagnosed in their youth, then has a child later in life. These individuals will get a non-informative threshold ($-\infty$ to max of `min_CIP_value` and the predicted CIP [`K_i`]). In other words, these individuals will have no impact on the estimate.
+
+The function `prepare_thresholds()` has several options that are worth pointing out. The first is `lower_equal_upper`, which is used to determine if the `upper` and `lower` thresholds should be the same for cases or not. This may be useful if the CIP values are considered very accurate, as it may lead to more accurate genetic liability estimates. The second is `personal_thr`, which specifies if thresholds should be based on `K_i` or `K_pop`. Basing the thresholds on `K_i` yields personalised thresholds that are based on the stratification of the CIPs. With the argument `Kpop`, it is possible to determine how the `K_pop` values are calculated. The current default option for `Kpop` is `"useMax`, which calculates `K_pop` as the maximum within each strata provided in the CIPs. Alternatively, a tibble can be provided with the `Kpop` argument, which shares columns with `.tbl`, e.g. sex, such that user-specific `K_pop` values can be specified.
+
+The function `prepare_thresholds()` will return a tibble with the following additional columns:
+
+- `K_i`: The CIP value for the individual. `K_i` is predicted if interpolation is used.
+- `K_pop`: The population prevalence. Currently calculated as the maximum CIP value within the CIP stratum an individual belongs to, e.g. for a male born in $2000$, `K_pop` is the maximum CIP value observed among males born in the year $2000$. Alternatively, acquired user-specified values through the `Kpop` argument.
+- `thr`: The liability threshold used to determine case-control status. `thr` is used to determine the upper and lower thresholds of an individual.
+- `lower`: lower threshold of an individual.
+- `upper`: upper threshold of an individual.
+
+If the mixture model is not used to calculate the genetic liability, only `lower` and `upper` are needed.
+
+
+### Assign thresholds to family graphs
+
+The function `estimate_liability()` can use the family graphs to calculate all necessary values for the genetic liability, if the thresholds are stored as attributes in the family graphs. We can attach the thresholds from `fam_thrs` to `family_graphs` with the function `familywise_attach_attributes()`. The function merges on the `fid` column and attaches any columns in `fam_attr` that are specified in `cols_to_attach`. Since the purpose of the genetic liability we are estimating is prediction, we do not wish to use the information from the proband. We mask the proband's information by setting the `upper` and `lower` values to $\infty$ and $-\infty$ (non-informative values) with the argument `censor_proband_thrs = TRUE`.
+
+```{r}
+# attach family specific thresholds
+ltfgrs_input = familywise_attach_attributes(family_graphs = family_graphs,
+                                            fam_attr = fam_thrs,
+                                            fam_graph_col = "fam_graph",
+                                            attached_fam_graph_col = "masked_fam_graph",
+                                            cols_to_attach = c("lower", "upper"),
+                                            censor_proband_thrs = TRUE)
+ltfgrs_input %>% print(n = 4)
+```
+The format is similar to the one used in `get_family_graphs()`. It is worth noting that the arguement `censor_proband_thrs` is only required if the purpose of the resulting genetic liability is prediction. 
+
+
+```{r}
+ltfgrs_input$masked_fam_graph[[1]]
+```
+The second row of the igraph (starting with "+attr:") shows the attributes that are available to each node in the graph.
+
+
+## Estimate the genetic liability
+
+The function `estimate_liability()` is used to estimate the genetic liability. The function accepts two types of input, here we will only focus on the graph-based input generated above. The graph-based input offer the best flexibility and scalability. The function has two arguments that are worth pointing out. 
+
+The first is `method`, which specifies the method used to estimate the genetic liability. Currently, two methods are supported. The first is a Gibbs sampler that samples from a truncated multivariate normal distribution, `method = "Gibbs"`. The second is an iterative pearson-aitken approach, `method = "PA"`. Generally speaking, the Pearson-Aitken approach is faster.
+   
+The second argument is `useMixture`, which specifies whether to use the mixture model or not. The mixture model is currently only supported with `method = "PA"`. The mixture model considers the genetic liability of controls as a mixture of the truncated normal for cases and controls, rather than just the distribution of controls. This accounts for the possibility that some controls are undiagnosed cases and accounts for it in the genetic liability estimate.
+
+```{r}
+ltfgrs_pa = estimate_liability(family_graphs = ltfgrs_input %>% rename(pid = fid),
+                               h2 = h2, 
+                               fid = "fid",
+                               pid = "pid",
+                               family_graphs_col = "masked_fam_graph",
+                               method = "PA", # <- METHOD
+                               useMixture = F)
+paged_table(ltfgrs_pa)
+```
+When using `method = "PA"`, an iterative conditioning is performed, which means the resulting estimate and uncertainty of the estimate is the expected mean value and variance of the last iteration, which is the proband's genetic liability. This is highlighted by the use of `var` in the output.
+
+```{r}
+ltfgrs_gibbs = estimate_liability(family_graphs = ltfgrs_input %>% rename(pid = fid), 
+                                  h2 = h2,
+                                  fid = "fid",
+                                  pid = "pid",
+                                  family_graphs_col = "masked_fam_graph",
+                                  method = "Gibbs", # <- METHOD
+                                  useMixture = F)
+paged_table(ltfgrs_gibbs)
+```
+When using `method = Gibbs`, samples are drawn from a truncated multivariate normal distribution until the convergence criteria is met. The output is the mean of genetic liability and the uncertainty is the standard error of the mean. The standard error is denoted with the `se` in the column name. Noteably, the uncertainties with the Gibbs and PA methods are different and should not be directly compared.
+
+### Parallelisation 
+The function `estimate_liability()` is able to use the `future` package to parallelise the estimation of the genetic liability. This is done by setting a suitable `plan` with the future backend. A plan suitable for most needs is `plan(multisession, workers = NCORES)`, which means that the function will run in parallel on the local PC utilising `NCORES`-cores. Other parallelisation options exist, but they are all handled by the future suit of packages.
+
