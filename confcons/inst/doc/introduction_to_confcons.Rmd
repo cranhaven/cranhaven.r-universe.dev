@@ -1,0 +1,323 @@
+---
+title: "Introduction to package 'confcons'"
+author: Ákos Bede-Fazekas, Imelda Somodi
+date: "`r format(Sys.Date(), '%Y-%m-%d')`"
+output:
+  rmarkdown::html_vignette:
+    toc: true
+vignette: >
+  %\VignetteIndexEntry{Introduction to package 'confcons'}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+## Confidence and consistency: what are they and why using them?
+
+'confcons' (**conf**idence & **cons**istency) is a light-weight, stand-alone R package designed to calculate the following two novel measures of predictive/potential distribution models (incl. species distribution models):
+
+- *confidence* that measures the proportion of predictions that the model is confident in;
+- *consistency* that measures how consistent the model is if the confidence in the training and evaluation subsets are compared.
+
+While *confidence* serves as a replacement for the widely criticized goodness-of-fit measures, such as AUC, *consistency* is a proxy for model's transferability (in space and time). Both measures can be calculated
+
+- in a balanced way, when predicted presences and predicted absences are equally important. These measures are called *confidence in predictions* ('CP') and *consistency of* (or difference in confidences in) *predictions* ('DCP');
+- in a way weighted towards the predicted presences, when certain positive presences are more important for the selected modelling purpose. These measures are called *confidence in positive predictions* ('CPP') and *consistency of* (or difference in confidences in) *positive predictions* ('DCPP').
+
+Much more information about the measures can be read in this scientific paper:
+
+Somodi I, Bede-Fazekas Á, Botta-Dukát Z, Molnár Z (2024): *Confidence and consistency in discrimination: A new family of evaluation metrics for potential distribution models*. Ecological Modelling 491: 110667. DOI: [10.1016/j.ecolmodel.2024.110667](https://doi.org/10.1016/j.ecolmodel.2024.110667).
+
+## Functions for calculating confidence and consistency
+
+Three small functions, `thresholds()`, `confidence()` and `consistency()`, belong to the core of the package. A wrapper function called `measures()` utilizes these workhorse functions and calculates every measures for us optionally along with some traditional measures, such as AUC and maxTSS.
+
+In the example below we'll see how these function work and what are their parameters and returned value. For further details, please consult with the help page of the selected function and the examples given there.
+
+## Workflow
+
+### Introduction
+
+Here, we'll go through the main steps of a typical workflow by:
+
+- loading some environmental and presence-absence data using the example dataset of package 'blockCV';
+- splitting the dataset to training and evaluation subset using spatial blocks;
+- training some simple models on the training subset;
+- making predictions to the whole dataset;
+- evaluating our models; and
+- interpreting the measures.
+
+First, we install package 'confcons' and their dependencies needed for this tutorial (incl. 'terra', 'sf', 'blockCV', 'ranger' and 'ROCR'):
+
+```{r eval = FALSE}
+install.packages("confcons", dependencies = TRUE)
+```
+
+If installed, we can attach these packages to the R session (and suppress the not too important warnings about the R version under the packages were built):
+
+```{r}
+suppressWarnings(library(terra))
+suppressWarnings(library(sf))
+suppressWarnings(library(blockCV))
+suppressWarnings(library(ranger))
+suppressWarnings(library(ROCR))
+suppressWarnings(library(confcons))
+```
+
+### Data preparation
+
+Let's open the environmental raster that contains four climatic layers at 5' resolution in GDA2020 (Geocentric Datum of Australia) projection:
+
+```{r}
+environment <- terra::rast(list.files(system.file("extdata/au/", package = "blockCV"), full.names = TRUE))
+terra::nlyr(environment)
+(predictors <- names(environment))
+terra::crs(x = environment, describe = TRUE)$name
+terra::res(environment)
+```
+
+We open also the occurrence data from a .csv file and convert them to Simple Features:
+
+```{r}
+occurrences <- read.csv(system.file("extdata/", "species.csv", package = "blockCV"))
+occurrences <- sf::st_as_sf(x = occurrences,
+                            coords = c("x", "y"),
+                            crs = terra::crs(environment))
+```
+
+For further details on the dataset, please refer to the vignette of package `blockCV`:
+
+```{r, eval = FALSE}
+vignette("tutorial_1")
+```
+
+Now we split the study region to training and evaluation parts using random spatial blocks and convert the resulted blocks to Simple Features:
+
+```{r}
+blocks <- blockCV::cv_spatial(x = occurrences,
+                              column = "occ",
+                              r = environment,
+                              size = 350000,
+                              k = 2,
+                              selection = "random",
+                              iteration = 50,
+                              seed = 12345,
+                              progress = FALSE,
+                              report = FALSE,
+                              plot = TRUE)
+blocks_sf <- sf::st_as_sf(x = blocks$blocks)
+```
+
+Let's see where are our presence and absence points and also which polygons will be used for training and which ones for evaluation:
+
+```{r, fig.height=10, fig.width=10}
+plot(x = environment[["bio_5"]], axes = FALSE, col = colorRampPalette(c("lightskyblue2", "lightyellow1", "rosybrown2"))(255), colNA = "gray95")
+plot(x = occurrences[occurrences$occ == 1, ], pch = "+", col = "darkgreen", add = TRUE)
+plot(x = occurrences[occurrences$occ == 0, ], pch = "+", col = "orange", add = TRUE)
+plot(x = sf::st_geometry(blocks_sf[blocks_sf$folds == 1, ]), col = "transparent", border = "royalblue1", lwd = 2, add = TRUE)
+plot(x = sf::st_geometry(blocks_sf[blocks_sf$folds == 2, ]), col = "transparent", border = "palevioletred1", lwd = 2, add = TRUE)
+legend(x = -2100000,
+       y = -1300000,
+       legend = c("presence", "absence", "training", "evaluation"),
+       col = c("darkgreen", "orange", NA, NA),
+       pch = c("+", "+", NA, NA),
+       border = c(NA, NA, "royalblue1", "palevioletred1"),
+       fill = c(NA, NA, "transparent", "transparent"))
+```
+
+We start to build a `data.frame` that will contain
+
+- the predictor values in the presence and absence locations,
+- the observed occurrences,
+- the training mask (`TRUE` for the location later used for model training, `FALSE` for evaluation locations), and
+- the predicted probabilities of occurrence (later appended).
+
+`raster::extract()` gathers the predictors from the studied locations for us. `blocks$folds[[1]]` contains two vectors of indices. We'll use the first vector for training (and the second one for evaluation).
+
+```{r}
+dataset <- as.data.frame(terra::extract(x = environment,
+                                        y = occurrences,
+                                        ID = FALSE))
+dataset$occurrences <- occurrences$occ
+dataset$training_mask <- (1:nrow(occurrences)) %in% blocks$folds_list[[1]][[1]]
+str(dataset)
+```
+
+### Training models and making predictions
+
+Now the `data.frame` contains all of the information needed to train predictive distribution models. For the sake of this example, we will create two simple models:
+
+- a Generalized Linear Model (GLM) with a linear formula (i.e., without interactions) and stepwise predictor selection, and
+- a Random Forest (RF) model with 10000, 8-level trees (the parameters were deliberately set to obtain an overfitted model).
+
+```{r}
+linear_formula <- as.formula(paste0("occurrences ~ ", paste(predictors, collapse = " + ")))
+model_glm <- step(trace = 0,
+                  object = glm(formula = linear_formula,
+                               family = binomial(link = "logit"),
+                               data = dataset[dataset$training_mask, ]))
+dataset$predictions_glm <- predict(object = model_glm,
+                                   newdata = dataset,
+                                   type = "response")
+```
+
+The GLM model was trained on the training subset (`dataset[dataset$training_mask, ]`) but all of the studied locations were used for prediction (i.e. training and evaluation subsets). A new column called 'predictions_glm' was appended to the `data.frame`. We repeat the same procedure, now training the RF model:
+
+```{r}
+model_rf <- ranger::ranger(formula = linear_formula,
+                           data = dataset[dataset$training_mask, ],
+                           num.trees = 10000,
+                           min.node.size = 10,
+                           max.depth = 8,
+                           seed = 12345,
+                           verbose = FALSE,
+                           classification = FALSE)
+dataset$predictions_rf <- predict(object = model_rf,
+                                  data = dataset,
+                                  type = "response",
+                                  verbose = FALSE)$predictions
+str(dataset[, c("occurrences", "training_mask", "predictions_glm", "predictions_rf")])
+```
+
+### Evaluation and interpretation
+
+Models are trained, predictions are done, so one step is missing: the evaluation. This is where package 'confcons' will become useful...
+
+Let's take a look at the lower (mean predicted value in the absence locations) and upper (mean predicted value in the presence locations) thresholds below/above which we interpret the predicted values as certain negatives and certain positives, respectively. We use function `thresholds()` for this purpose, which needs the integer/logical vector of the observed predictions (called 'observations') and the numeric vector of the predicted probabilities of occurrence (called 'predictions') as input parameters. The function returns two values (i.e., a named numeric vector of length 2).
+
+```{r}
+(thresholds_glm <- thresholds(observations = dataset$occurrences,
+                              predictions = dataset$predictions_glm))
+(thresholds_rf <- thresholds(observations = dataset$occurrences,
+                             predictions = dataset$predictions_rf))
+```
+
+Between 0.30 and 0.60, the predictions of the GLM model can be treated as uncertain predictions. The same holds for the RF model between 0.13 and 0.75.
+
+Now we calculate two of the proposed evaluation measures, confidence in positive predictions (CPP) and confidence in predictions (CP). Both should be calculated using the evaluation subset. Function `confidence()` can calculate any of these measures, depending on the value of its parameter 'type'. If it's 'positive', we'll get CPP, if it's 'neutral', we'll get CP that is not weighted towards the positive predictions. Beyond 'type' and the two previously mentioned parameters ('observations' and 'predictions') one more parameter is needed: 'thresholds'. Of course, the previously calculated thresholds will perfectly suit for this purpose.
+
+
+```{r}
+conf_P_eval <- confidence(observations = dataset$occurrences[!dataset$training_mask],
+                          predictions = dataset$predictions_glm[!dataset$training_mask],
+                          thresholds = thresholds_glm,
+                          type = "positive")
+conf_P_eval
+conf_N_eval <- confidence(observations = dataset$occurrences[!dataset$training_mask],
+                          predictions = dataset$predictions_glm[!dataset$training_mask],
+                          thresholds = thresholds_glm,
+                          type = "neutral")
+conf_N_eval
+```
+
+There is not so much difference between the two measures. Whether we should use CPP or CP for describing the confidence of our model depends on the main aim of our model. Confidence should be between `0` and `1`; the higher value indicates more confidence. Our GLM is not super confident, since both CPP and CP are relatively far from `1`.
+
+We are a bit curious whether the confidence of the model is higher or lower if is calculated for the training subset.
+
+
+```{r}
+conf_P_train <- confidence(observations = dataset$occurrences[dataset$training_mask],
+                           predictions = dataset$predictions_glm[dataset$training_mask],
+                           thresholds = thresholds_glm,
+                           type = "positive")
+conf_P_train
+conf_P_eval < conf_P_train
+```
+
+Of course, the model is more confident in the training subset than in the evaluation subset. This is absolutely normal (and would be strange if the opposite occurs). Which is not evident is the difference between the two and its interpretation. `consistency()` is the function that does the magic for us: a simple subtraction... It needs one of the two confidence measures (CPP or CP) for the training and the evaluation dataset, and returns their difference.
+
+```{r}
+consistency(conf_train = conf_P_train, conf_eval = conf_P_eval)
+```
+
+A negative value between `-1` and `0` is normal. The higher the consistency is (i.e., the closer to `0`), the more consistent the model is. Positive value might be an artifact or indicates that the training and evaluation subsets were accidentally swapped.
+
+We have got familiar with the three core functions of the package: `thresholds()`, `confidence()` and `consistency()`. The question is right if we ask: *why should we call three different functions several times if we want to get all the measures for our model?*. Well, we don't have to. There is a wrapper function called `measures()` that calculates everything for us.
+
+It needs three vectors:
+
+- the `integer`/`logical` vector of observed occurrences ('observations'),
+- the `numeric` vector of predicted probabilities of occurrence ('predictions'), and
+- the `logical` mask of the evaluation locations ('evaluation_mask').
+
+Previously we calculated the mask of the training locations, so its negation (`!`) will perfectly match this purpose:
+
+```{r}
+measures(observations = dataset$occurrences,
+         predictions = dataset$predictions_glm,
+         evaluation_mask = !dataset$training_mask)
+measures(observations = dataset$occurrences,
+         predictions = dataset$predictions_rf,
+         evaluation_mask = !dataset$training_mask)
+```
+
+The result is a named `numeric` vector containing all of the measures. It is more than needed. It is recommended to use 'CPP_eval' + 'DCPP', or, if predicted absences are as important as predicted presences in our research, 'CP_eval' + 'DCP'.
+
+We can see that RF model is really confident (0.84) in its predictions if the training subset is studied, but this confidence sharply drops when switching to the evaluation subset (to 0.47). Hence, the RF model is not too consistent, which warns us that transferability issues might potentially occurs if used for extrapolation. The GLM model is much more consistent (-0.19 vs. -0.37), so we should select that one for extrapolation, e.g. in a climate change impact study.
+
+If we have installed package 'ROCR', `measures()` can provide the Area Under the ROC Curve (AUC) and the maximum of True Skill Statistic (maxTSS) for us. We should simply switch the parameter 'goodness' from its default value (`FALSE`) to `TRUE`. 
+
+```{r}
+measures(observations = dataset$occurrences,
+         predictions = dataset$predictions_glm,
+         evaluation_mask = !dataset$training_mask,
+         goodness = TRUE)
+```
+
+### Evaluating multiple models
+
+There is one another `logical` parameter, called 'df', by which we can decide whether a one-row `data.frame` is more suited for our analysis purposes.
+
+```{r}
+measures(observations = dataset$occurrences,
+         predictions = dataset$predictions_rf,
+         evaluation_mask = !dataset$training_mask,
+         goodness = TRUE,
+         df = TRUE)
+
+```
+
+For example, if we have several models (i.e., two in this example), we can simply `rbind()` these rows in a `for` loop or a `lapply()`:
+
+
+```{r}
+model_IDs <- c("glm", "rf")
+for (model_ID in model_IDs) {
+  column_name <- paste0("predictions_", model_ID)
+  conf_and_cons <- measures(observations = dataset$occurrences,
+                            predictions = dataset[, column_name, drop = TRUE],
+                            evaluation_mask = !dataset$training_mask,
+                            df = TRUE)
+  if (model_ID == model_IDs[1]) {
+    conf_and_cons_df <- conf_and_cons
+  } else {
+    conf_and_cons_df <- rbind(conf_and_cons_df, conf_and_cons)
+  }
+}
+rownames(conf_and_cons_df) <- model_IDs
+conf_and_cons_df
+```
+
+The `lapply()` solution:
+
+```{r}
+conf_and_cons_list <- lapply(X = model_IDs,
+                             FUN = function(model_ID) {
+                               column_name <- paste0("predictions_", model_ID)
+                               measures(observations = dataset$occurrences,
+                                        predictions = dataset[, column_name, drop = TRUE],
+                                        evaluation_mask = !dataset$training_mask,
+                                        df = TRUE)
+                             })
+conf_and_cons_df <- do.call(what = rbind,
+                            args = conf_and_cons_list)
+rownames(conf_and_cons_df) <- model_IDs
+conf_and_cons_df
+```
+
