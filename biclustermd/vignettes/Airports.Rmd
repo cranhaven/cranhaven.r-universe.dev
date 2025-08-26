@@ -1,0 +1,160 @@
+---
+title: "Biclustering Airport Delay Data"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Biclustering Airport Delay Data}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE, 
+  message = FALSE, 
+  warning = FALSE, 
+  fig.align = 'center',
+  fig.width = 7,
+  fig.height = 5
+)
+```
+
+```{r setup}
+library(biclustermd)
+```
+
+# Applying biclustering to airport delays
+Suppose you are a data scientist who is interested in modeling delays in flight arrivals at airports around the world. You think that arrivals could be correlated by month. Hence, since you're looking at delays in arrivals you cluster average delay (in minutes) by month and destination airport. 
+
+## Data 
+To illustrate this problem I'm using the dataset `flights` from Hadley Wickham's package `nycflights13`:
+```{r}
+# install.packages("nycflights13")
+library(nycflights13)
+data("flights")
+```
+
+Per the documentation, `flights` contains data on all flights in 2013 that departed NYC via JFK, LaGuardia, or Newark. The variables we're interested in here are `month`, `dest`, and `arr_delay`.
+```{r}
+library(dplyr)
+flights <- flights %>%
+  select(month, dest, arr_delay)
+```
+
+`bicluster()` requires data to be in table format, which is what we will do here using `spread()` from `tidyr` after using `dplyr` to summarize the data since we are analyzing average arrival delay.
+```{r}
+library(tidyr)
+flights <- flights %>%
+  group_by(month, dest) %>%
+  summarise(mean_arr_delay = mean(arr_delay, na.rm = TRUE)) %>%
+  spread(dest, mean_arr_delay) %>% 
+  as.data.frame()
+```
+
+Now we name the rows using the text version of `month` followed by removing `month` and converting the data to a matrix.
+```{r}
+rownames(flights) <- month.name[flights$month]
+flights <- as.matrix(flights[, -1])
+flights[1:5, 1:5]
+```
+
+## Biclustering
+Now that our data is in correct form we can bicluster it.
+
+We first need to determine how many groups of months (*r*) and how many groups of destination airports (*c*) to define. Since rows correspond to months, in this analysis, setting *r* = 4 may not be a bad idea: create a group for each season/quarter of the year. For the columns (airports) the number of groups is a bit more ambiguous, just like with k-means clustering. Since each continent of the world may take a different amount of time and may have different policies for flights from the US, let's set *c* = 6.
+
+Now we're ready to bicluster. I'll put the code first and give brief descriptions to selected arguments. This will mostly be a repeat of the documentation for `biclustermd()`. 
+```{r}
+library(biclustermd)
+bc <- biclustermd(data = flights, col_clusters = 6, row_clusters = 4)
+bc
+```
+
+`biclustermd` outputs a list of class `biclustermd` with useful information. Execute `?biclustermd` to view the output in detail.
+
+This list is used to make plots and training data, for example.
+
+## Plotting
+To plot SSE by iteration, use `autoplot.biclustermd_sse()`, which outputs points by default:
+```{r}
+library(ggplot2)
+?autoplot.biclustermd_sse
+autoplot(bc$SSE)
+```
+
+Next, cluster similarity measures. If a similarity measure for rows equals one, that means that the row shuffling from the last iteration and second to last iteration are identical. If zero, the two shufflings have nothing in common. The same goes for column similarities. `autoplot.biclustermd_sim()` plots the RIs by iteration.
+```{r}
+?autoplot.biclustermd_sim
+autoplot(bc$Similarities)
+```
+
+`autoplot.biclustermd()` makes visual analysis of biclustering results easy by making a heat map of the clustered data. The algorithm does use randomness, so my results may look different from yours.
+```{r}
+?autoplot.biclustermd
+autoplot(bc) +
+  scale_fill_viridis_c(na.value = "white") +
+  labs(x = "Destination Airport", y = "Month", fill = "Average Delay")
+```
+
+Often times it is helpful to run the data through an S-shaped function before plotting. This is easy with `autoplot.biclustermd()`: set `transform_colors = TRUE` and specify by what constant you'd like to scale your data by (with `c`) before running it through a standard normal CDF:
+```{r}
+autoplot(bc, transform_colors = TRUE, c = 1/10) +
+  scale_fill_viridis_c(na.value = "white", limits = c(0, 1)) +
+  labs(x = "Destination Airport", y = "Month", fill = "Average Delay")
+```
+
+To make the results really stand out we can reorder the row and column groups with the `reorder` argument:
+```{r}
+autoplot(bc, transform_colors = TRUE, c = 1/10, reorder = TRUE) +
+  scale_fill_viridis_c(na.value = "white", limits = c(0, 1)) +
+  labs(x = "Destination Airport", y = "Month", fill = "Average Delay")
+```
+
+
+## Minimization of SSE for a set of parameters
+Since the algorithm uses purposeful randomness, it is recommend that analysts run the biclustering multiple times and keep the one with the smallest SSE. The function `rep_biclustermd()` does exactly that. Arguments to `rep_biclustermd()` are the same as those for `biclustermd()` with 3 additional arguments:
+1. `nrep`: the number of times to repeat the biclustering.
+2. `parallel`: a logical indicating if parallelization should be used or not. By default this is `FALSE`.
+3. `ncores`: the number of cores to parallelize over. Ignored if `parallel = FALSE`.
+
+Below we run biclustering 100 times without using parallelization.
+```{r}
+repeated_bc <- rep_biclustermd(flights, nrep = 100, col_clusters = 6, row_clusters = 4)
+repeated_bc
+```
+
+1. `repeated_bc$best_bc` returns the best biclustering, and has the same structure as the output of `biclustermd()`. 
+2. `repeated_bc$rep_sse` is the SSE for each repeat, in order.
+3. `repeated_bc$runtime` provides the CPU runtime for the user and system as well as elapsed time in seconds.
+
+The 100 repeats take approximately 20 seconds to complete. Parallelization is quicker given sufficient complexity. However, as `nrep` gets large, parallelization gets slow, since all `nrep` objects have to be written to memory versus the minimum SSE object when processing serially. These remarks are current as of July 17, 2019.
+```{r}
+repeated_bc$runtime
+```
+
+We can plot the best SSE at each repeat, that is, we can take the cumulative minimum of `rep_sse` and plot:
+```{r}
+plot(cummin(repeated_bc$rep_sse), type = 'o', ylab = 'Cumulative Minimum', xlab = 'Repeat Number')
+```
+
+
+## Predicting average delays 
+We'll end this tutorial by making a training dataset from the clustered data using `gather.biclustermd()`, which gives the name of the row and column the data point comes from as well as the row and column group it belongs to.
+```{r}
+training <- gather(repeated_bc$best_bc)
+training %>% head()
+```
+
+Now we'll plot cell (1, 4) and fit a linear model to it.
+```{r}
+autoplot(repeated_bc$best_bc, row_clusts = 1, col_clusts = 4) +
+  scale_fill_viridis_c(na.value = "white") +
+  labs(x = "Destination Airport", y = "Month", fill = "Average Delay")
+
+model <- training %>% 
+  filter(row_cluster == 1, col_cluster == 4) %>% 
+  lm(value ~ row_name + col_name, data = .)
+summary(model)
+sqrt(mean(resid(model) ^ 2))
+```
+
+If you have questions you can email me at johntreisner@gmail.com. In the case you've found an error please open up an issue.
