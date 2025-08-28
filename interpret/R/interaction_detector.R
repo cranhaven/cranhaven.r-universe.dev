@@ -1,0 +1,44 @@
+# Copyright (c) 2023 The InterpretML Contributors
+# Licensed under the MIT license.
+# Author: Paul Koch <code@koch.ninja>
+
+create_interaction_detector <- function(
+   dataset_handle,
+   bag,
+   init_scores
+) {
+   stopifnot(class(dataset_handle) == "externalptr")
+   if(!is.null(bag)) {
+      bag <- as.integer(bag)
+   }
+   if(!is.null(init_scores)) {
+      init_scores <- as.double(init_scores)
+   }
+   interaction_handle <- .Call(
+      CreateInteractionDetector_R, 
+      dataset_handle,
+      bag,
+      init_scores
+   )
+   return(interaction_handle)
+}
+
+free_interaction_detector <- function(interaction_handle) {
+   .Call(FreeInteractionDetector_R, interaction_handle)
+   return(NULL)
+}
+
+calc_interaction_strength <- function(interaction_handle, feature_indexes, max_cardinality, count_samples_required_for_child_split_min) {
+   stopifnot(class(interaction_handle) == "externalptr")
+   feature_indexes <- as.double(feature_indexes)
+   count_samples_required_for_child_split_min <- as.double(count_samples_required_for_child_split_min)
+
+   interaction_strength <- .Call(
+      CalcInteractionStrength_R, 
+      interaction_handle, 
+      feature_indexes, 
+      max_cardinality,
+      count_samples_required_for_child_split_min
+   )
+   return(interaction_strength)
+}
