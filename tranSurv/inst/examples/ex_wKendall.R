@@ -1,0 +1,5 @@
+data(channing, package = "boot")
+chan <- subset(channing, sex == "Male" & entry < exit)
+## When weights is not specified, this function reduces to condKendall()
+with(chan, wKendall(entry, exit, cens))
+mean(replicate(1000, with(chan, wKendall(entry, exit, cens, rexp(nrow(chan))))))

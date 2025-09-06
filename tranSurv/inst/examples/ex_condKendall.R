@@ -1,0 +1,7 @@
+data(channing, package = "boot")
+chan <- subset(channing, sex == "Male" & entry < exit)
+attach(chan)
+cKendall(entry, exit, cens)
+cKendall(entry, exit, cens, method = "IPW1")
+cKendall(entry, exit, cens, method = "IPW2")
+detach(chan)
