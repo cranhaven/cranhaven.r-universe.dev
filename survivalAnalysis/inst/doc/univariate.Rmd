@@ -1,0 +1,157 @@
+---
+title: "Univariate Survival Analysis"
+author: "Marcel Wiesweg"
+date: "`r Sys.Date()`"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Univariate Survival Analysis}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+Techniques of survival analysis are needed once you have right-censored data. 
+Such data is the result of clinical trials or retrospective studies that observe a defined endpoint such as progression free 
+survival or overall survival: At time of analysis, the endpoint has not occurred for all subjects. There are two possible reasons: A subject is lost to follow-up at some point in time and you cannot find out if the endpoint occurred or not, or your analysis is done when the subject is still under follow-up. In any case, you need standard methods of analysis, which you will find in any paper reporting trial result in clinical oncology.
+(Please note that this introduction is very short and insufficient to cover many important statistical aspects)
+
+## Source Data
+
+The survivalAnalysis package assumes your data to be contained in one data frame with one row per subject and at least two columns:
+- A numeric column giving the survival time.
+- A logical or numeric (0/1) column with the censoring indicator. TRUE or 1 is interpreted such that the endpoint occurred for the subject at the given time, FALSE or 0 is interpreted such that the endpoint did not occur during the given time under observation.
+
+From a dataset containing only survival data, you can generate descriptive statistics such as median survival, but usually you want to compare groups by subject characteristics. Thus, the data frame will usually contain further columns containing covariates of interest. If one such covariate (or a computational result using these covariates) result in a logical or categorical variable, continue reading this vignette. If you want to analyse multiple covariates at once, accounting for possible interactions, or need to analyse continuous variables (truly as a continous variable, not categorical by specifying cut-offs), please read the companion vignette on [multivariate analysis](multivariate.html).
+
+For the purpose of this vignette, we use the `lung` dataset from the `survival` package:
+
+```{r, echo=FALSE, results='asis'}
+knitr::kable(head(survival::lung, 10))
+```
+
+Survival data is contained in the "time" and "status" columns, with all other columns as presumed or potential covariates.
+
+## The Analysis Result
+
+First of all, we load the tidyverse, for some tools the tidytidbits package and finally and the survivalAnalysis package:
+```{r, warning=FALSE, message=FALSE}
+library(tidyverse)
+library(tidytidbits)
+library(survivalAnalysis)
+```
+
+The survivalAnalysis package is built around the notion of performing an analysis generating a _result_ object, and then performing output such as printing or plotting using this object. Of course, everything can be done in a `magrittr` pipeline.
+
+As a first step, we want to get a feeling for the data and have a look at the median survival. You need to tell the `analyse_survival` method which columns to regard as time and censoring indicator. We do that with the `vars()` method from `dplyr`, which allows to give the plain variable names. Passing column names as strings is also possible.
+
+```{r}
+survival::lung %>%
+  analyse_survival(vars(time, status))
+```
+
+The analyse_survival method actually returns a list of class 'SurvivalAnalysisUnivariateResults'. There are reimplementations for `print()` and `format()` provided. For the timespans that apply here we are more used to thinking in months than in days, so let's print it in months:
+```{r}
+survival::lung %>%
+  analyse_survival(vars(time, status)) %>%
+  print(timespan_unit="months")
+```
+
+As you see, there is a comment that only one group was analyzed and a log-rank p is not defined. You get a median survival with confidence interval and range.
+
+## A Univariate Analysis
+
+The ECOG performance status is a classical prognostic indicator. To get a feeling for the data, let's first have a look how it is distributed. The `count_by` method from `tidytidbits` comes handy. 
+
+```{r}
+survival::lung %>%
+  count_by(ph.ecog)
+```
+
+There is only one subject with ECOG 3. It makes sense to group 2 und 3 together. Then we perform the survival analysis comparing the subgroups formed by the ECOG status. We store the result object for later use.
+
+```{r}
+survival::lung %>%
+  mutate(ecog=recode_factor(ph.ecog, `0`="0", `1`="1", `2`="2-3", `3`="2-3")) %>%
+  analyse_survival(vars(time, status), by=ecog) ->
+result
+print(result)
+```
+
+We get much more information now. ECOG status is a highly significant prognostic factor.
+
+Please note that the textual presentation can be customized (see help page of `format.SurvivalAnalysisUnivariateResult`) and is sufficient for many purposes, but if you need the numbers, the `survival_data_frames` function allows to extract the same information in a structured list as data frames.
+
+You may have noted that the `by` argument also takes plain variable names. If you are used to the tidyverse style, just skip this, but if not: You can use the columns of the data frame as if they were local variables. You can also pass expressions. We may, for example, want to compare ECOG 0-1 with ECOG 2-3. Instead of inserting a `mutate` call, we just pass the logical expression `ph.ecog <= 1`. In this case, you should give interpretation of the logical values so that the result can easily be understood. There is the `by_label_map` parameter in `analyse_survival` which allows to give labels to the values of `by`. These labels will also be used in plots.
+
+```{r}
+survival::lung %>%
+  analyse_survival(vars(time, status), 
+                   by=ph.ecog <= 1,
+                   by_label_map=c(`TRUE`="ECOG 1-2",
+                                  `FALSE`="ECOG 2-3"))
+```
+## Kaplan-Meier Plots
+
+For your paper you will want to provide Kaplan-Meier plots of your results. The  [survminer](https://github.com/kassambara/survminer) package has revolutionized drawing of Kaplan-Meier plots in R.  The survivalAnalysis package fully integrates plotting with survminer, providing sane defaults:
+
+```{r, fig.width=6, fig.height=4}
+kaplan_meier_plot(result)
+```
+
+Apparently, some details need tweaking. The relevant function, `ggsurvplot()`, is highly customizable, please refer to its documentation! All parameters supported by ggsurvplot can simply be passed to `kaplan_meier_plot()`. In addition, there are some shortcuts which we will now use.
+
+We want to add
+* x axis label for OS
+* x axis breaks by quarter year
+* legend label
+* display the hazard ratios
+* a risk table, but "clean" only with minimal overhead
+* use a theme of our choice
+
+```{r, fig.width=8, fig.height=5}
+kaplan_meier_plot(result,
+                  break.time.by="breakByQuarterYear",
+                  xlab=".OS.months",
+                  legend.title="ECOG Status",
+                  hazard.ratio=TRUE,
+                  risk.table=TRUE,
+                  table.layout="clean",
+                  ggtheme=ggplot2::theme_bw(10))
+```
+
+What about differences by sex? Let's draw two KM plots side-by-side using `kaplan_meier_grid()`. This piece of code also demonstrates the possible use of lists of default arguments, which can be overridden. If arguments differ per-plot, there is the mapped_plot_args argument.
+
+Internally, `gridExtra::marrangeGrob()` does the layout. For some reason, the returned value needs an explicit `print()`. Normally you will want to save it to PDF. I recommend using `tidytidbits`' `save_pdf`, into which you can simply pipe the kaplan_meier_grid output.
+
+```{r, fig.width=8, fig.height=10, results='hide'}
+default_args <- list(break.time.by="breakByMonth",
+                     xlab=".OS.months",
+                     legend.title="ECOG Status",
+                     hazard.ratio=TRUE,
+                     risk.table=TRUE,
+                     table.layout="clean",
+                     ggtheme=ggplot2::theme_bw(10))
+list(result,
+     survival::lung %>%
+       analyse_survival(vars(time, status), 
+                        by=sex,
+                        by_label_map=c(`1`="Male", `2`="Female"))
+     ) %>%
+  kaplan_meier_grid(nrow=2,
+                    default_args,
+                    break.time.by="breakByQuarterYear",
+                    mapped_plot_args=list(
+                      legend.title=c("ECOG Status", "Sex"),
+                      title=c("A", "B")
+                    )) %>%
+  print
+
+```
+
+
