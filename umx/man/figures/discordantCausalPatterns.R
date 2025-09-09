@@ -1,0 +1,16 @@
+libs("ggplot2")
+tmp1 = data.frame(r = c(.4, .4, .4), type = rep("No confounding"      , 3), N = 100, ci.lower = c(.35, .35, .35), ci.upper = c(.45, .45, .45), p = c(.01),group = c("Pop", "DZ", "MZ"))
+tmp2 = data.frame(r = c(.4, .3, .2), type = rep("Partial confounding" , 3), N = 100, ci.lower = c(.35, .25, .15), ci.upper = c(.45, .35, .25), p = c(.01),group = c("Pop", "DZ", "MZ"))
+tmp3 = data.frame(r = c(.4, .2, .0), type = rep("Complete confounding", 3), N = 100, ci.lower = c(.35, .15,-.05), ci.upper = c(.45, .25, .05), p = c(.01),group = c("Pop", "DZ", "MZ"))
+tmp  = rbind(tmp1, tmp2, tmp3)
+tmp$group = factor(tmp$group, levels=c("Pop", "DZ", "MZ"))
+tmp$type  = factor(tmp$type , levels=c("No confounding", "Partial confounding", "Complete confounding"))
+
+bar = ggplot(tmp, aes(x = type, y = r, fill = group))
+bar = bar + geom_bar(position = position_dodge(), stat = "identity", size = .1, colour = "black") # thin black outline
+bar = bar + geom_errorbar(aes(ymin = ci.lower, ymax = ci.upper), size = .3, width = .2, position = position_dodge(.9))
+bar = bar + xlab("Causal Status") + ylab("Correlation")
+bar = bar + ggtitle(paste0("Association in discordant twins reveals confounding")) + theme_bw()
+print(bar)
+p = ggplot(data = mtcars, aes(x=mpg, y=wt)) + geom_point()
+# bar + hrbrthemes::theme_ipsum()
