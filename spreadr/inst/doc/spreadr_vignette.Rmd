@@ -1,0 +1,310 @@
+---
+title: "spreadr: A R package to simulate spreading activation in a network"
+author: "Cynthia S. Q. Siew"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+bibliography: sources.bib
+vignette: >
+  %\VignetteIndexEntry{Introduction}
+  %\VignetteEngine{knitr::rmarkdown}
+  \usepackage[utf8]{inputenc}
+---
+
+<style>
+p { text-align: justify }
+</style>
+
+# Introduction
+
+The notion of spreading activation is a prevalent metaphor in the cognitive sciences; however, the tools to implement spreading activation in a computational simulation are not as readily available.
+This vignette introduces the spreadr R package (pronunced 'SPREAD-er'), which can implement spreading activation within a specified network structure.
+The algorithmic method implemented in the `spreadr` function follows the approach described in @vitevitchSimulatingRetrievalHighly2011, who viewed activation as a fixed cognitive resource that could “spread” among connected nodes in a network.
+
+# Installation {.tabset}
+
+You can choose to install the stable version from CRAN, or the development build from GitHub.
+
+## Stable (CRAN)
+
+```{r eval=FALSE}
+install.packages("spreadr")
+```
+
+If you encounter any bugs or issues, please try the development build first.
+The bug or issue may have already been fixed on GitHub, but not yet propagated onto CRAN.
+
+## Development (GitHub)
+
+```{r eval=FALSE}
+install.packages("remotes")
+remotes::install_github("csqsiew/spreadr")
+```
+
+If you encounter any bugs or issues, please try the development build first.
+The bug or issue may have already been fixed on GitHub, but not yet propagated onto CRAN.
+
+# Example with a phonological network
+
+In this example, we will simulate spreading activation in a small sample portion of a phonological network [@chanInfluencePhonologicalNeighborhood2009] which is automatically loaded with spreadr.
+This phonological network is unweighted and undirected, but spreadr supports weighted and directed graphs as well.
+This makes it is possible to simulate spreading activation in a weighted network where more activation is passed between nodes that have "stronger" edges, or in a directed (asymmetric) network where activation can pass from node *i* to node *j* but not necessarily from node *j* to node *i*.
+
+You may substitute any network in place of this example one.
+
+## Describe the network {.tabset}
+
+The network for spreading activation must be either an `igraph` object or an adjacency matrix.
+
+### Using an igraph object
+
+`pnet`, an `igraph` object with named vertices representing our sample phonological network is automatically loaded with the spreadr library.
+
+```{r message=FALSE}
+library(spreadr)
+library(igraph)
+
+data("pnet")  # load and inspect the igraph object
+```
+
+```{r eval=FALSE}
+plot(pnet)
+```
+<!-- Behind the scenes, we want to generate identical plots, so save a layout.
+     This is hidden because I don't want to make the vignette too complex. -->
+```{r echo=FALSE}
+set.seed(1)
+layout <- layout_with_lgl(pnet)
+plot(pnet, layout=layout)
+```
+
+Don't worry if your plot does not look exactly as above.
+The layout of the nodes is determined stochastically.
+
+### Using an adjacency matrix
+
+`pnetm`, an named adjacency matrix representing our sample phonological network is automatically loaded with the spreadr library.
+
+```{r message=FALSE}
+library(spreadr)
+library(igraph)
+set.seed(1)
+
+data("pnetm")
+pnetm[1:5, 1:5]  # inspect the first few entries
+```
+
+```{r eval=FALSE}
+plot(graph_from_adjacency_matrix(
+  pnetm, mode="undirected")) # visualise the graph
+```
+```{r echo=FALSE}
+plot(graph_from_adjacency_matrix(
+    pnetm, mode="undirected"),
+  layout=layout)
+```
+
+For those following along: don't worry if your plot does not look exactly as above.
+The layout of the nodes is determined stochastically.
+
+For simplicity, the rest of this example will use `pnet`, an `igraph` representation of `pnetm`.
+This difference is trivial --- the spreadr function accepts both igraph and adjacency matrix.
+
+## Specify the adding of activation {.tabset}
+
+A simulation of spreading activation is uninteresting without some activation to spread.
+In the simplest case, you may specify the initial activation state of each node, from which the simulation will proceed.
+Alternatively, you can also specify the addition of activation at any node, at any time point within the simulation.
+
+### Initial activation only
+
+Initial activation is specified by a `data.frame` (or `data.frame`-like object, such as a `tibble`) with columns `node` and `activation`.
+Each row represents the addition of `activation` amount of activation to the node with name `node`, at the initial pre-spreading activation step of the simulation.
+
+For example, if we wanted the nodes `"beach"` and `"speck"` to have `20` and `10` activation initially, respectively:
+
+```{r}
+start_run <- data.frame(
+  node=      c("beach", "speck"),
+  activation=c(     20,      10))
+```
+
+### Activation at specified time points
+
+The adding of activation at specified time points is specified by a `data.frame` (or `data.frame`-like object, such as a `tibble`) with columns `node`, `activation`, and `time`.
+Each row represents the addition of `activation` amount of activation to the node with name `node` at time point `time`.
+The initial state before any spreading activation occurs is `time = 0`.
+
+Therefore, if we wanted the node `"beach"` to have `20` activation initially, then `"speck"` to have `10` activation at `time = 5`:
+
+```{r}
+start_run <- data.frame(
+  node =       c("beach", "speck"),
+  activation = c(     20,      10),
+  time =       c(      0,       5))
+```
+
+For more details about the meaning of `time` in the spreading activation simulation, please read the `spreadr` function documentation.
+To keep things simple, the rest of this example will use the version of `start_run` without the `time` column (see the leftmost tab).
+
+```{r echo=FALSE}
+start_run <- data.frame(
+  node =       c("beach", "speck"),
+  activation = c(     20,      10))
+```
+
+## Run the simulation
+
+We are now ready to run the simulation through the `spreadr` function.
+This function takes a number of parameters, some of which are listed here.
+Required parameters are written in **bold**, optional parameters are written with their default values (in brackets):
+
+i. **network**: Adjacency matrix or `igraph` object representing the network in which to simulate spreading activation
+ii. **start_run**: Non-empty `data.frame` describing the addition of activation into the network.
+iii. *decay* (`0`): Proportion of activation lost at each time step (range from 0 to 1)
+iv. *retention* (`0.5`): Proportion of activation retained in the originator node (range from 0 to 1)
+v. *suppress* (`0`): Nodes with activation values lower than this value will have their activations forced to `0` (typically this will be a very small value e.g. < 0.001)
+vi. *time* (`10`): Number of iterations in the simulation
+vii. *include_t0* (`FALSE`): If the initial state activations should be included in the result `data.frame`
+
+For more details on all the possible function parameters, please read the `spreadr` function documentation.
+For more details on the spreading activation algorithm, see @siewSpreadrPackageSimulate2019 and @vitevitchSimulatingRetrievalHighly2011.
+
+```{r}
+result <- spreadr(pnet, start_run, include_t0=TRUE)
+```
+
+## Examine the results
+
+The result is presented as a `data.frame` with columns `node`, `activation`, and `time`.
+Each row contains the activation value of a node at its specified time step.
+
+```{r eval=TRUE}
+head(result)  # inspect the first few rows
+tail(result)  # inspect the last few rows
+```
+
+As a `data.frame`, the `result` can be easily saved as a CSV file for sharing.
+
+```{r eval=FALSE}
+write.csv(result, file="result.csv")  # save result as CSV file
+```
+
+You can also easily visualise the `result` using your favourite graphical libraries.
+Here, we use `ggplot2`:
+
+```{r}
+library(ggplot2)
+ggplot(result, aes(x=time, y=activation, color=node)) +
+  geom_point() +
+  geom_line()
+```
+
+# Additional examples
+
+Here, we address some common "how do I do *X*?" questions by example.
+
+## Using a weighted network
+
+Simply pass a weighted network (`igraph` object or adjacency matrix) to the `spreadr` function.
+
+Let's take a simple three-node network as example:
+
+```{r}
+weighted_network <- matrix(
+  c(0, 1, 9,
+    1, 0, 0,
+    9, 0, 0), nrow=3, byrow=TRUE)
+colnames(weighted_network) <- c("a", "b", "c")
+rownames(weighted_network) <- c("a", "b", "c")
+
+# To visualise the network only --- this is not necessary for spreadr
+weighted_igraph <- graph_from_adjacency_matrix(
+  weighted_network, mode="undirected", weighted=TRUE)
+plot(weighted_igraph, edge.width=E(weighted_igraph)$weight)
+```
+
+If we let the node `"a"` have initial `activation = 10`, we should expect to see 9 units of activation go to `"c"`, and 1 unit to `"b"`, for `retention = 0`.
+
+```{r}
+spreadr(
+  weighted_network, data.frame(node="a", activation=10),
+  time=1, retention=0, include_t0=TRUE)
+```
+
+## Using a directed network
+
+Simply pass a directed network (`igraph` object or adjacency matrix) to the `spreadr` function.
+
+Let's take a simple three-node network as example:
+
+```{r}
+directed_network <- matrix(
+  c(0, 1, 0,
+    0, 0, 1,
+    0, 0, 0), nrow=3, byrow=TRUE)
+colnames(directed_network) <- c("a", "b", "c")
+rownames(directed_network) <- c("a", "b", "c")
+
+# To visualise the network only --- this is not necessary for spreadr
+directed_igraph <- graph_from_adjacency_matrix(
+  directed_network, mode="directed")
+plot(directed_igraph, edge.width=E(directed_igraph)$weight)
+```
+
+If we let the node `"b"` have initial `activation = 10`, we should expect to see all 10 units of activation go to `"c"`, and none go to `"a"`, for `retention = 0`.
+
+```{r}
+spreadr(
+  directed_network, data.frame(node="b", activation=10),
+  time=1, retention=0, include_t0=TRUE)
+```
+
+## Repeating the simulation across different parameters
+
+There are a few ways to do this, but here we will showcase a relatively simple method using `data.frame`s.
+
+Suppose we want to simulate spreading activation across four different parameter sets of *(retention, decay*): (0, 0), (0.5, 0), (0, 0.5), and (0.5, 0.5).
+We would first record down all those parameters which will differ into a `data.frame`:
+
+```{r}
+params <- data.frame(
+  retention=c(0, 0.5,   0, 0.5),
+  decay=    c(0,   0, 0.5, 0.5))
+```
+
+Then, we prepare the common parameters that will *not* differ.
+
+```{r}
+network <- matrix(
+  c(0, 1,
+    0, 0), nrow=2, byrow=TRUE)
+start_run <- data.frame(node=1, activation=10)
+```
+
+Now, to run the simulate once for each set of different parameters, we simply `apply` over the rows of `params`.
+
+```{r}
+apply(params, 1, function(row)
+  spreadr(
+    network, start_run,
+    time=2, include_t0=TRUE,
+    retention=row[1], decay=row[2]))
+```
+
+# Reporting bugs or issues
+
+First, please check that you are on the development build.
+This is because the development build contains a more up-to-date version of spreadr, which may include various bug fixes, as compared to the stable CRAN build.
+
+If your problems persist, please report them on our [Github repository](https://github.com/csqsiew/spreadr/issues).
+
+# Session Info
+
+```{r}
+sessionInfo()
+```
+
+# References
