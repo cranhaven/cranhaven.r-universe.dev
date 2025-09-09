@@ -1,0 +1,145 @@
+---
+title: "Mesa High Vignette"
+author: "Benjamin W. Campbell"
+date: "`r Sys.Date()`"
+output: rmarkdown::html_vignette
+bibliography: fergm.bib
+vignette: >
+  %\VignetteIndexEntry{Mesa High Vignette}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+## Vignette Info and Introduction
+This vignette uses the faux.mesa.high network from the ergm package [@hunter2008ergm] to provide an example of the basic functionality of the fergm package [@box2018modeling].  In particular, it walks through the estimation of a well-fitting Exponential Random Graph (ERGM) model on the simulated "Mesa High" network.  Once estimated, the corresponding Frailty Exponential Random Graph (FERGM) model is estimated and compared to the comparable ERGM.  The documentation for each individual function includes chunks of code taken from this vignette.  
+
+It is worth noting that many of these functions are built upon the `rstan` package [@guo2016rstan].  Given that the output of the `fergm` function is a `stanfit` object, one may use much of the built-in functionality of the `rstan` package should they be familiar with the package.  
+
+This vignette proceeds by walking through an example step-by-step to illustrate a representative workflow for using the FERGM package.  
+
+*Note: The code presented here is not built given the runtime for the FERGM.  As such, the code presented is purely illustrative.  It will successfully execute, however.* 
+
+## Importing Mesa High Network 
+
+The following chunk of code imports the Mesa High network generously provided in the `ergm` package [@hunter2008ergm].   
+
+```{r, eval = FALSE}
+# Load statnet which contains the ergm package and the faux.mesa.high network.
+library(statnet)
+
+# Set seed for replication
+set.seed(1)
+
+# Load faux.mea.high daa
+data("faux.mesa.high")
+
+# Rename the object
+mesa <- faux.mesa.high
+```
+
+## ERGM and FERGM Estimation
+The second step, once the data is imported, is to estimate a well-fitting ERGM and its FERGM counterpart.  The `fergm` function takes at least two arguments, the network object to have an FERGM fit on and a character string formula containing undirected `ergm-terms`. A variety of other function arguments can be specified to override defaults, including the seed, the number of chains, number of warmup iterations, total number of iterations, and the number of cores used.  The `fergm` function returns a named list of two objects: `fergm$stan.dta` returns the data object handed to Stan and `fergm$stan.fit` is the `stanfit` object returned.  The following chunk of code handles this.  
+
+```{r, echo = TRUE, eval = FALSE}
+# ERGM fit
+ergm.fit <- ergm(mesa ~ edges +
+                   nodematch('Sex') +
+                   nodematch('Grade', diff = FALSE) +
+                   nodematch('Race', diff = FALSE) +
+                   gwesp(decay = 0.2, fixed = TRUE) +
+                   altkstar(lambda = 0.6, fixed = TRUE))
+
+# FERGM fit
+library(fergm)
+form <- c("edges + nodematch('Sex') + nodematch('Grade', diff = FALSE) +
+        nodematch('Race', diff = FALSE) + gwesp(decay = 0.2, fixed = TRUE) + 
+        altkstar(lambda = 0.6, fixed = TRUE)")
+
+fergm.fit <- fergm(net = mesa, form = form, chains = 1)
+
+```
+
+## Summarizing FERGM Output
+While the `fergm` package does not contain a built in `summary` function for the FERGM, there are several means to summarize `fergm` output. One way to do so cleanly is to use the built-in `clean_summary` function.  This function takes two objects: the output of the `fergm` function and a vector of custom character names for each coefficient.  If a vector of custom chaaracter names is not provided then the function inherits the formula used in the `fergm` call, which holds true for other functions including the `custom_var_names` argument.  
+
+In addition, we provide a built-in function to create coefficient plots: `coef_plot`.  This function takes either an `fergm` object to plot the FERGM coefficients or both an `fergm` and `ergm` object to plot and compare the coefficients.  
+
+We also include a built-in function to plot the densities for each coefficient of interest, `coef_posterior_density`. The code is as follows:
+
+```{r, echo = TRUE, eval = FALSE}
+# Conventional rstan approach to extracting posterior summary
+stan.smry <- summary(fergm.fit$stan.fit)$summary
+beta_df <- stan.smry[grep("beta", rownames(stan.smry)),]
+est <- round(beta_df[,c(1,4,8)], 3)
+est # in order of "form"
+
+# fergm built-in function to summarize posteior
+est <- clean_summary(fergm.fit)
+est <- clean_summary(fergm.fit, 
+                     custom_var_names = c("Edges", "Sex Homophily",
+                                          "GradeHomophily", "Race Homophily",
+                                          "GWESP", "Alternating K-Stars"))
+est
+# Compare substantive implications via coef plot, these are with 95% credible intervals
+coef_plot(fergm.fit = fergm.fit)
+
+coef_plot(fergm.fit = fergm.fit, 
+          custom_var_names =  c("Edges", "Sex Homophily", "Grade Homophily", 
+                                "Race Homophily", "GWESP", "Alternating K-Stars"))
+coef_plot(fergm.fit = fergm.fit, 
+          ergm.fit = ergm.fit, 
+          custom_var_names =  c("Edges", "Sex Homophily", "Grade Homophily", 
+                                "Race Homophily", "GWESP", "Alternating K-Stars"))
+
+
+# You can also look at the density of particular variables using the following:
+
+densities <- coef_posterior_density(fergm.fit = fergm.fit)
+
+densities <- coef_posterior_density(fergm.fit = fergm.fit, 
+                                    custom_var_names = c("Edges", "Sex Homophily", 
+                                                         "Grade Homophily", "Race Homophily", 
+                                                         "GWESP", "Alternating K-Stars"))
+densities[[1]]
+densities[[2]]
+```
+
+There are also a series of `rstan` functions to summarize posterior distributions, and we would refer the reader to the `rstan` manual should they be interested in learning their alternatives.
+
+## FERGM Diagnostics
+To visually check whether there is evidence that the chains used to estimate the FERGM have converged, traceplots may be used.  While `rstan` has a built-in traceplot function that could easily be used, changes may be desired to produce publication-quality graphics.  As such, building upon the `rstan::traceplot()` function, we provide a cleaner alternative.  The code is as follows:
+
+```{r, echo = TRUE, eval = FALSE}
+# Use rstan functions to assess whether chains have evidence of converging
+trace <- rstan::traceplot(fergm.fit$stan.fit, pars = "beta")
+trace
+
+# We have our own version that includes variable names and tidies it up a bit
+fergm_beta_traceplot(fergm.fit)
+
+fergm_beta_traceplot(fergm.fit,
+                     custom_var_names =  c("Edges", "Sex Homophily", 
+                                           "Grade Homophily", "Race Homophily", 
+                                           "GWESP", "Alternating K-Stars"))
+```
+
+Additional diagnostics are available using the `rstan` package, and we would refer the reader to their well-written manual for further diagnostics or details on their built-in diagnostic plots.  
+
+## Compare ERGM and FERGM Fit
+One might be interested in the relative difference in predictive performance between an ERGM and an FERGM.  While the `coef_plot()` function offers an opportunity to compare the coefficients of these two models, it does not provide a means to assess the relative fit of each model. Relative fit is examined through simulating a number of networks based upon the model results and examining the average number of correctly predicted ties across all simulated networks.  This routine is described by the manuscript presenting the model [@box2018modeling].  **Note, specifying an object named net prior to estimating the compare_predictions function is necessary to produce a valid network on the left-hand side of the simulate method for ERGMs.**  The code to perform this routine is as follows:
+
+```{r, echo = TRUE, eval = FALSE}
+# Use fergm built in compare_predictions function to compare predictions of ERGM and FERGM
+net <- ergm.fit$network
+predict_out <- compare_predictions(ergm.fit = ergm.fit, fergm.fit = fergm.fit, replications = 100)
+
+# Use the built in compare_predictions_plot function to examine the densities of correctly predicted
+  # ties from the compare_predictions simulations
+compare_predictions_plot(predict_out)
+
+# We can also conduct a KS test to determine if the FERGM fit it statistically disginguishable 
+  # from the ERGM fit
+compare_predictions_test(predict_out)
+```
+
+# References
+
