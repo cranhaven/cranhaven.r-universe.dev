@@ -1,0 +1,15 @@
+#' Sample Data for OES
+#'
+#' A simulated dataset containing outcomes, intervention variables, and covariates.
+#'
+#' @format A data frame with 10000 rows and 7 variables:
+#' \describe{
+#'   \item{x1}{A binary 0/1 treatment assignment.}
+#'   \item{x2}{A four-level factor treatment assignment with levels \code{"0"}, ..., \code{"3"}.}
+#'   \item{y1}{A binary 0/1 outcome.}
+#'   \item{y2}{A binary 0/1 outcome.}
+#'   \item{z1}{A continuous normally-distributed covariate.}
+#'   \item{z2}{A binary 0/1 covariate.}
+#'   \item{z3}{A six-level factor covariate with levels \code{"0"}, ..., \code{"5"}.}
+#' }
+"df_oes"
