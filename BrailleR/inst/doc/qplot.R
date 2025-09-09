@@ -1,0 +1,128 @@
+## ----GetLibraries-------------------------------------------------------------
+library(BrailleR)   
+library(ggplot2)   
+dsmall = diamonds[1:100,]   
+
+## ----g1-----------------------------------------------------------------------
+g1 = qplot(carat, price, data = diamonds)   
+# summary(g1)   
+g1  
+# VI(g1)   ### automatic since BrailleR v0.32.0
+
+## ----g2-----------------------------------------------------------------------
+g2 = qplot(carat, price, data = dsmall, colour = color)    
+# summary(g2)   
+g2
+
+## ----g3-----------------------------------------------------------------------
+g3 = qplot(carat, price, data = dsmall, shape = cut)    
+# summary(g3)   
+g3
+
+## ----g4-----------------------------------------------------------------------
+# to get semi-transparent points   
+g4 = qplot(carat, price, data = diamonds, alpha = I(1/100))    
+# summary(g4)   
+g4
+
+## ----g5-----------------------------------------------------------------------
+# to add a smoother (default is loess for n<1000)   
+g5 = qplot(carat, price, data = dsmall, geom = c("point", "smooth"))    
+# summary(g5)   
+g5
+#! g5a = qplot(carat, price, data = dsmall, geom = c("point", "smooth"), span = 1)    
+library(splines)    
+#! g5b = qplot(carat, price, data = dsmall, geom = c("point", "smooth"), method = "lm")    
+#! g5c = qplot(carat, price, data = dsmall, geom = c("point", "smooth"), method = "lm", formula = y ~ ns(x,5))    
+
+## ----g6, include=FALSE--------------------------------------------------------
+# continuous v categorical   
+g6 = qplot(color, price / carat, data = diamonds, geom = "jitter", alpha = I(1 / 50))    
+# summary(g6)   
+g6
+# VI(g6)     ### automatic since BrailleR v0.32.0
+g6a = qplot(color, price / carat, data = diamonds, geom = "boxplot")    
+# summary(g6a)   
+g6a
+
+## ----g7-----------------------------------------------------------------------
+# univariate plots   
+g7a = qplot(carat, data = diamonds, geom = "histogram")    
+# summary(g7a)   
+g7a
+g7b = qplot(carat, data = diamonds, geom = "histogram", binwidth = 1, xlim = c(0,3))    
+g7b
+g7c = qplot(carat, data = diamonds, geom = "histogram", binwidth = 0.1, xlim = c(0,3))
+g7c
+g7d = qplot(carat, data = diamonds, geom = "histogram", binwidth = 0.01, xlim = c(0,3))    
+# summary(g7d)   
+g7d
+
+## ----g8, include=FALSE--------------------------------------------------------
+g8 = qplot(carat, data = diamonds, geom = "density")    
+# summary(g8)   
+g8
+
+## ----g9, include=FALSE--------------------------------------------------------
+# data is separated by implication using the following...   
+g9 = qplot(carat, data = diamonds, geom = "density", colour = color)    
+# summary(g9)   
+g9
+g10 = qplot(carat, data = diamonds, geom = "histogram", fill = color)    
+# summary(g10)   
+g10
+
+## ----g11----------------------------------------------------------------------
+# bar charts for categorical variable   
+g11a = qplot(color, data = diamonds)    
+# summary(g11a)   
+g11a
+g11b = qplot(color, data = diamonds, geom = "bar")    
+# summary(g11b)   
+g11b
+g12a = qplot(color, data = diamonds, geom = "bar", weight = carat)   
+# summary(g12a)   
+g12a
+g12b = qplot(color, data = diamonds, geom = "bar", weight = carat) + scale_y_continuous("carat")    
+# summary(g12b)   
+g12b
+
+## ----g13----------------------------------------------------------------------
+# time series plots   
+g13a = qplot(date, unemploy / pop, data = economics, geom = "line")    
+# summary(g13a)   
+g13a
+g13b = qplot(date, uempmed, data = economics, geom = "line")    
+# summary(g13b)   
+g13b
+
+## ----g14, include=FALSE-------------------------------------------------------
+# path plots   
+year <- function(x) as.POSIXlt(x)$year + 1900    
+g14a = qplot(unemploy / pop, uempmed, data = economics, geom = c("point", "path"))    
+# summary(g14a)   
+g14a
+#g14b = qplot(unemploy / pop, uempmed, data = economics, geom = "path", colour = year(date)) + scale_area()    
+#summary(g14b)   
+
+## ----g15, include=FALSE-------------------------------------------------------
+# facets is the ggplot term for trellis' panels   
+g15a = qplot(carat, data = diamonds, facets = color ~ ., geom = "histogram", binwidth = 0.1, xlim = c(0, 3))    
+# summary(g15a)   
+g15a
+g15b = qplot(carat, ..density.., data = diamonds, facets = color ~ ., geom = "histogram", binwidth = 0.1, xlim = c(0, 3))   
+# summary(g15b)   
+g15b
+
+## ----g16----------------------------------------------------------------------
+# rescaling of the axes   
+g16 = qplot(carat, price, data = dsmall, log = "xy")   
+# summary(g16)   
+g16
+
+## ----g17, include=FALSE-------------------------------------------------------
+# Facets syntax without a "." before the "~" causes grief
+g17 = qplot(displ, hwy, data=mpg, facets =~ year) + geom_smooth()    
+# summary(g17)   
+g17
+
