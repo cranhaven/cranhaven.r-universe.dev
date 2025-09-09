@@ -1,0 +1,234 @@
+#' @title Search for Hyperparameters via Random Search
+#' @description Runs an automated hyperparameter search
+#'   and returns several summaries of the hyperparameter grids as well as
+#'   detailed hyperparameters from each model, and then produces multiple
+#'   summaries based on different strategies. These strategies include:
+#'   \describe{
+#'     \item{Best of Family}{Selects the best model for each performance
+#'          metric (avoiding duplicate model IDs).}
+#'     \item{Top 2}{Extracts hyperparameter settings from the top 2 models
+#'          (according to a specified ranking metric).}
+#'     \item{Top 5}{Extracts hyperparameter settings from the top 5 models.}
+#'     \item{Top 10}{Extracts hyperparameter settings from the top 10 models.}
+#'   }
+#'   These summaries help in identifying candidate hyperparameter ranges
+#'   for further manual tuning. Note that a good suggestion depends on the
+#'   extent of random search you carry out.
+#'
+#' @param algorithm  Character vector. The algorithm to include in the
+#'                   random search. Supported values include "drf" (Distributed
+#'                   Random Forest) and "gbm" (Gradient Boosting Machine).
+#'                   The input is case-insensitive.
+#' @param sort_by    Character string specifying the metric used to rank
+#'                   models. For metrics not in \code{"logloss",
+#'                   "mean_per_class_error", "rmse", "mse"}, lower values
+#'                   indicate better performance; for these four metrics,
+#'                   higher values are preferred.
+#' @param x          Vector of predictor column names or indices.
+#' @param y          Character string specifying the response column.
+#' @param training_frame  An H2OFrame containing the training data.
+#'                   Default is \code{h2o.getFrame("hmda.train.hex")}.
+#' @param validation_frame An H2OFrame for early stopping.
+#'                   Default is \code{NULL}.
+#' @param max_models Integer. Maximum number of models to build.
+#'                   Default is 100.
+#' @param max_runtime_secs integer. Amount of time (in seconds) that the model
+#'                   should keep searching. Default is 3600.
+#' @param nfolds     Integer. Number of folds for cross-validation.
+#'                   Default is 10.
+#' @param seed       Integer. A seed for reproducibility.
+#'                   Default is \code{NULL}.
+#' @param fold_column Character. Column name for cross-validation fold
+#'                   assignment. Default is \code{NULL}.
+#' @param weights_column Character. Column name for observation weights.
+#'                   Default is \code{NULL}.
+#' @param keep_cross_validation_predictions Logical. Whether to keep
+#'                   cross-validation predictions. Default is \code{TRUE}.
+#' @param stopping_rounds Integer. Number of rounds with no improvement
+#'                   before early stopping. Default is \code{NULL}.
+#' @param stopping_metric  Character. Metric to use for early stopping.
+#'                   Default is "AUTO".
+#' @param stopping_tolerance Numeric. Relative tolerance for early stopping.
+#'                   Default is \code{NULL}.
+#' @param ...         Additional arguments passed to \code{h2o.automl()}.
+#'
+#' @return A list with the following components:
+#'   \describe{
+#'     \item{grid_search}{The H2OAutoML object returned by random search}
+#'     \item{leaderboard}{A merged data frame that combines leaderboard
+#'          performance metrics with hyperparameter settings for each model.
+#'          The data frame is sorted based on the specified ranking metric.}
+#'     \item{hyperparameters_best_of_family}{A summary list of the best
+#'          hyperparameter settings for each performance metric. This strategy
+#'          selects the best model per metric while avoiding duplicate model IDs.}
+#'     \item{hyperparameters_top2}{A list of hyperparameter settings from the
+#'          top 2 models as ranked by the chosen metric.}
+#'     \item{hyperparameters_top5}{A list of hyperparameter settings from the
+#'          top 5 models.}
+#'     \item{hyperparameters_top10}{A list of hyperparameter settings from the
+#'          top 10 models.}
+#'   }
+#'
+#' @details
+#' The function executes an automated hyperparameter search for the specified
+#' algorithm. It then extracts the leaderboard from the H2OAutoML object and
+#' retrieves detailed hyperparameter information for each model using \code{automlModelParam()} from the
+#' h2otools package. The leaderboard and hyperparameter data are merged by the
+#' \code{model_id} column. Sorting of the merged results is performed based on
+#' the \code{sort_by} metric. For metrics not in
+#' \code{"logloss", "mean_per_class_error", "rmse", "mse"}, lower values are
+#' considered better; for these four metrics, higher values are preferred.
+#'
+#' After sorting, the function applies three strategies to summarize the
+#' hyperparameter search:
+#' \enumerate{
+#'   \item \strong{Best of Family}: Selects the best model for each
+#'         performance metric, ensuring that no model ID appears more than once.
+#'   \item \strong{Top 2}: Gathers hyperparameter settings from the top 2 models.
+#'   \item \strong{Top 5 and Top 10}: Similarly, collects hyperparameter settings
+#'         from the top 5 and top 10 models, respectively.
+#'   \item \strong{All}: List all the hyperparameters that were tried
+#' }
+#' These strategies provide different levels of granularity for analyzing the
+#' hyperparameter space and can be used for prototyping and further manual tuning.
+#'
+#'
+#'
+#' @importFrom h2o h2o.automl h2o.getFrame h2o.getModel
+#' @importFrom h2otools automlModelParam
+#' @importFrom dplyr bind_rows
+#'
+#' @examples
+#' \dontrun{
+#'   # NOTE: This example may take a long time to run on your machine
+#'
+#'   # Initialize H2O (if not already running)
+#'   library(HMDA)
+#'   library(h2o)
+#'   hmda.init()
+#'
+#'   # Import a sample binary outcome train/test set into H2O
+#'   train <- h2o.importFile(
+#'   "https://s3.amazonaws.com/h2o-public-test-data/smalldata/higgs/higgs_train_10k.csv")
+#'   test <- h2o.importFile(
+#'   "https://s3.amazonaws.com/h2o-public-test-data/smalldata/higgs/higgs_test_5k.csv")
+#'
+#'   # Identify predictors and response
+#'   y <- "response"
+#'   x <- setdiff(names(train), y)
+#'
+#'   # For binary classification, response should be a factor
+#'   train[, y] <- as.factor(train[, y])
+#'   test[, y] <- as.factor(test[, y])
+#'
+#'   # Run the hyperparameter search using DRF and GBM algorithms.
+#'   result <- hmda.search.param(algorithm = c("gbm"),
+#'                               x = x,
+#'                               y = y,
+#'                               training_frame = train,
+#'                               max_models = 100,
+#'                               nfolds = 10,
+#'                               stopping_metric = "AUC",
+#'                               stopping_rounds = 3)
+#'
+#'   # Access the hyperparameter list of the best_of_family strategy:
+#'   result$best_of_family
+#'
+#'   # Access the hyperparameter of the top5 models based on the specified ranking parameter
+#'   result$top5
+#' }
+#'
+#' @export
+hmda.search.param <- function(algorithm = c("drf", "gbm"),
+                              sort_by = "logloss",
+                              x,
+                              y,
+                              training_frame = h2o.getFrame("hmda.train.hex"),
+                              validation_frame = NULL,
+                              max_models = 100,
+                              max_runtime_secs = 3600,
+                              nfolds = 10,
+                              seed = NULL,
+                              fold_column = NULL,
+                              weights_column = NULL,
+                              keep_cross_validation_predictions = TRUE,
+                              stopping_rounds = NULL,
+                              stopping_metric = "AUTO",
+                              stopping_tolerance = NULL,
+                              ...) {
+
+  # Grammar check
+  # ==================================================
+  # make sure only one algorithm is allowed
+  if (length(algorithm) > 1) stop("either specify 'drf' or 'gbm'")
+
+  # Perform automatic model search with H2O AutoML
+  search <- h2o.automl(x = x,
+                       y = y,
+                       training_frame = training_frame,
+                       validation_frame = validation_frame,
+                       include_algos = algorithm,
+                       nfolds = nfolds,
+                       seed = seed,
+                       fold_column = fold_column,
+                       weights_column = weights_column,
+                       keep_cross_validation_predictions = keep_cross_validation_predictions,
+                       max_runtime_secs = max_runtime_secs,
+                       max_models = max_models,
+                       stopping_rounds = stopping_rounds,
+                       stopping_metric = stopping_metric,
+                       stopping_tolerance = stopping_tolerance,
+                       project_name = "hmda.search.param",
+                       ... )
+
+  #### FOR DEBUGGING
+  ### search <- h2o.get_automl("hmda.search.param")
+
+  # Get the leaderboard dataset as a data frame
+  leaderboard <- as.data.frame(search@leaderboard)
+
+  # Initialize an empty data frame for hyperparameters
+  hyperparameters <- NULL
+
+  # Collect the hyperparameters of all models
+  # ==================================================
+  for (i in leaderboard[, "model_id"]) {
+    #print(i)
+    hyperparameters <- bind_rows(hyperparameters, automlModelParam(h2o.getModel(i)))
+  }
+
+  # Merge the leaderboard with the hyperparameters data frame,
+  # ensuring that new columns are added if models contain additional parameters.
+  # ==================================================
+  merged <- merge(leaderboard, hyperparameters, by = "model_id", all = TRUE)
+  if (!sort_by %in% c("logloss", "mean_per_class_error", "rmse", "mse")) {
+    merged <- merged[order(merged[, sort_by], decreasing = TRUE), ]
+  } else {
+    merged <- merged[order(merged[, sort_by], decreasing = FALSE), ]
+  }
+
+  # Select the hyperparameters that meet the min rank
+  # ==================================================
+  best_of_family <- list_hyperparameter(merged[best_of_family(merged) %in% merged$model_id, ])
+  top2  <- list_hyperparameter(merged[1:2, ])
+  top5  <- list_hyperparameter(merged[1:5, ])
+  top10 <- list_hyperparameter(merged[1:10,])
+  all   <- list_hyperparameter(merged)
+
+  # Return the results as a list
+  # ==================================================
+  results <- list(
+    grid = search,
+    leaderboard = merged,
+    hyperparameters_best_of_family = best_of_family,
+    hyperparameters_top2 = top2,
+    hyperparameters_top5 = top5,
+    hyperparameters_top10 = top10,
+    hyperparameters_all = all
+  )
+
+  class(results) <- c("hmda.search.param", "list")
+
+  return(results)
+}
+
