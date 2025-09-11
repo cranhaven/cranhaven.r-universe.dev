@@ -1,0 +1,20 @@
+utils::globalVariables(
+  c(
+    "name",
+    "unit",
+    ".",
+    ":=",
+    "participant_id",
+    "session_id",
+    "run_id",
+    "id_event",
+    "identifier_columns",
+    "table_name",
+    "order_level",
+    "value",
+    "label",
+    "col_type",
+    "type_data",
+    "type_level"
+  )
+)
