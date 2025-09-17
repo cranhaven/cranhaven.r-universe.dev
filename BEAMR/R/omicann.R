@@ -1,0 +1,16 @@
+#' Pediatric T-ALL Omics Annotation Data from COG trial AALL0434
+#'
+#' A subset of genomic lesion and RNA expression data from pediatric and young
+#'     adult t-lineage acute lymphoblastic leukmia patients in the Children's
+#'     Oncology Group trial AALL0434, published in Liu et al., 2017 Nature
+#'     Genetics. This is the annotation mapping feature id to gene name
+#'     given by Ensembl ID.
+#'
+#' @format ## `omicann`
+#' A list with two data frames of omics annotation.
+#' \describe{
+#'   \item{Lesion}{A dataframe with 20 rows and 2 columns with lesion ID and Ensembl ID.}
+#'   \item{RNA}{A dataframe with 20 rows and 2 columns with featue ID and Ensembl ID.}
+#' }
+#' @source <https://www.nature.com/articles/ng.3909>
+"omicann"
