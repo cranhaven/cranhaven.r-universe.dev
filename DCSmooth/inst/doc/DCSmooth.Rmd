@@ -1,0 +1,666 @@
+---
+title: "DCSmooth"
+author: "Bastian Schaefer"
+output:
+  rmarkdown::html_vignette:
+    toc: true
+vignette: >
+  %\VignetteIndexEntry{DCSmooth}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+date: 18.10.2021
+bibliography: literature.bib
+csl: journal-of-the-royal-statistical-society.csl
+---
+
+<!-- rmarkdown::render("DCSmooth.Rmd", output_format = "latex_document") -->
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+# 1 Introduction
+
+This vignette describes the use of the *DCSmooth*-package and its functions. The *DCSmooth* package provides some tools for non- and semiparametric estimation of the mean surface $m$ of an observed sample of some   function $$y(x, t) = m(x, t) + \varepsilon(x, t).$$
+
+This package is accompanying @SchaeferFeng2020. Boundary modification procedures for local polynomial smoothing are considered by @FengSchaefer2021. For a more comprehensive and detailed description of the algorithms than in section 4, please refer to these papers.
+
+The *DCSmooth* contains the following functions, methods and data sets:
+
+| <span style="display: inline-block; width:170px">Functions</span>|<span style="display: inline-block; width:500px"> </span>|
+|:-------------------|:--------------------------------------------------------|
+| `set.options()`    | Define options for the `dcs()`-function.                |
+| `dcs()`            | Nonparametric estimation of the expectation function of a matrix `Y`. Includes automatic iterative plug-in bandwidth selection.          |
+| `surface.dcs()`    | 3d-plot for the surfaces of an `"dcs"`-object.          |
+| `sarma.sim()`      | Simulate a SARMA-model.                                 |
+| `sarma.est()`      | Estimate the parameters of a SARMA-model.               |
+| `sfarima.sim()`    | Simulate a SFARIMA-model.                               |
+| `sfarima.est()`    | Estimate the parameters of a SFARIMA-model.             |
+| `kernel.assign()`  | Assign a pointer to a kernel function.                  |
+| `kernel.list()`    | Print list of kernels available in the package.         |
+
+| <span style="display: inline-block; width:170px">Methods/Generics</span>|<span style="display: inline-block; width:500px"> </span>|
+|:-------------------|:--------------------------------------------------------|
+| `summary.dcs()`    | Summary statistics for an object of class `"dcs"`.      |
+| `print.dcs()`      | Print an object of class `"dcs"`.                       |
+| `plot.dcs()`       | Plot method for an `"dcs"`-object, returns contour plot.|
+| `residuals.dcs()`  | Returns the residuals of the regression from an `"dcs"`-object.|
+| `print.summary_dcs()`| Print an object of class `"summary_dcs"`, which inherits from `summary.dcs()`.|
+| `print.set_options()`| Prints an object of class `"dcs_options"`, which inherits from `set.options()` |
+| `summary.sarma()`| Summary statistics for an object of class `"sarma"` |
+| `print.summary_sarma()`| Prints an object of class `"summary_sarma"`, which inherits from `summary.sarma()` |
+| `summary.sfarima()`| Summary statistics for an object of class `"sfarima"` |
+| `print.summary_sfarima()`| Prints an object of class `"summary_sfarima"`, which inherits from `summary.sfarima()` |
+
+| <span style="display: inline-block; width:170px">Data</span>|<span style="display: inline-block; width:510px"> </span>|
+|:-------------------|:--------------------------------------------------------|
+| `y.norm1`          |  A surface with a single gaussian peak.                 |
+| `y.norm2`          |  A surface with two gaussian peaks.                     |
+| `y.norm3`          |  A surface with two gaussian ridges.                    |
+| `temp.nunn`        |  Temperatures in Nunn, CO observed in 2020 in 5 minute intervals. (Source: NOAA) |
+| `temp.yuma`        |  Temperatures in Yuma, AZ observed in 2020 in 5 minute intervals. (Source: NOAA) |
+| `wind.nunn`        |  Wind speed in Nunn, CO observed in 2020 in 5 minute intervals. (Source: NOAA) |
+| `wind.yuma`        |  Wind speed in Yuma, AZ observed in 2020 in 5 minute intervals. (Source: NOAA) |
+| `returns.alv`        |  5 minute returns of Allianz SE from 2007 to 2010 |
+| `volumes.alv`        |  5 minute volumes of Allianz SE from 2007 to 2010 |
+
+
+# 2 Details of Functions, Methods and Data
+
+## 2.1 Functions
+
+### `set.options()` {-}
+This auxiliary function is used to set the options for the `dcs` function. An 
+object of class `dcs_options` is created and should be used as `dcs_options`-
+argument in the `dcs` function.
+
+Arguments of `set.options()` are
+
+* **type** Specifies the regression type. Supported methods are kernel regression (`"KR"`) and local polynomial regression (`"LP"`), which is the default value.
+* **kerns** A character vector of length 2 stating the identifiers for the kernels in each dimension to use. The first element corresponds to the smoothing conditional on rows, the second conditional on columns. The identifiers are of the form $X\_k\mu\nu$, where $X$ indicates the smoothing method to use, either one of `M`, `MW` or `T`. The value $k$ is the kernel order, $\mu$ is the smoothness degree and $\nu$ the derivative estimated by the kernel, which must match the order of derivative `drv`. For more information on the kernels see section 4.3, a list of available kernels is given in A.1. The default kernels are `"MW_220"` for both dimensions.
+* **drv** Derivative $(\nu_x, \nu_t)$ of $m(x,t)$ to be estimated. Note that $k \geq \nu + 2$, hence, only estimation of derivatives corresponding to kernels available is possible. 
+* **var_model** Specifies the model assumption and estimation method for the errors/innovations $\varepsilon(x, t)$ in the regression model. The form is given by `"model_method"` Currently available are
+  + `"iid"` (independently identically distributed errors with variance estimation from the residuals, set as default).
+  + `"sarma_sep"` (separable spatial ARMA (SARMA) process, two univariate processes in both directions are estimated via `stats::arima`).
+  + `"sarma_HR"` (fast estimation of an SARMA process by the Hannan-Rissanen algorithm).
+  + `"sarma_RSS` (estimation of an separable SARMA process by numerical minimization of the RSS).
+  + `"sfarima_RSS"` (estimation of a separable spatial FARIMA (SFARIMA) model by numerical minimization of the RSS).
+  
+The models and estimation methods are described in more detail in Section 4.4.
+
+> The option **var_est** with values `c("iid", "qarma", "sarma", "lm")` has been replaced by **var_model**. For compatibility reasons, the option can still be used in `set.options` but will be converted to **var_model**
+
+* **...** Additional arguments passed to `set.options`. The default values of these options typically depend on other options and thus are put in an ellipsis. Accepted arguments are
+  + **IPI_options** Advanced options for tuning the parameters of the iterative plug-in algorithm of the bandwidth selection. These options include 2-element vectors for the inflation parameters (`infl_par`), the inflation exponents (`infl_exp`) and trimming parameters for stabilized estimation of the necessary derivatives (`trim`). Another option to further stabilize estimation of derivatives at the boundaries is the use of a constant estimation window at the boundaries setting the logical flag `const_window` to `TRUE`. The default values for the IPI-options depend partly on the regression type and error model selected and are given below. For convenience, the contents of `IPI_options` can be passed directly into the ellipsis `...` of `set.options()`.
+  + **model_order** controls the order of the parametric error term model if an SARMA or SFARIMA model is used. This can be either a list of the form `list(ar = c(1, 1), ma = c(1, 1))` (the default for SARMA and SFARIMA) specifying the model order, or any of `c("aic", "bic", "gpac")` specifying an order selection criterion. Note that `gpac` does not work under SFARIMA errors.
+  + **order_max** Controls the maximum order if an order selection process is chosen in `model_order`. Is a list of the form `list(ar = c(1, 1), ma = c(1, 1))` (the default).
+
+
+`set.options()` returns an object of class `"dcs_options` including the following values
+
+* **type** Inherited from input.
+* **kerns** Inherited from input.
+* **drv** Inherited from input.
+* **p_order** A numeric vector of length 2, computed from `drv` by $p_k = \nu_k + 1, k = x, t$.
+* **var_model** Inherited from input.
+* **IPI_options** Options for the iterative-plug in algorithm for bandwidth selection. If unchanged, values are set conditional on `type` (see default values for `KR` and `LP` below).
+* **add_options** A list containing the additional options `model_order` and `order_max` if available.
+
+> Every argument of the `set.options` function has a default value. Hence, just using `set.options()` will produce a complete set of options for double conditional smoothing regression in `dcs` (which is also implemented as default options in `dcs`, if the argument `dcs_options` is omitted).
+
+Default options for kernel regression (`type = "KR"`) are
+```{r, echo = FALSE, warning = FALSE}
+library(DCSmooth)
+set.seed(123)
+summary(set.options(type = "KR"))
+```
+
+Default options for local polynomial regression (`type = "LP"`) are
+```{r, echo = FALSE, warning = FALSE}
+summary(set.options(type = "LP"))
+```
+
+### `dcs()` {-}
+The `dcs()`-function is the main function of the package and includes IPI-bandwidth selection and non-parametric smoothing of the observations `Y` using the selected bandwidths. This function creates an object of class `dcs`, which includes the results of the DCS procedure.
+
+Arguments of `dcs()` are
+
+* **Y** The matrix of observations to be smoothed via the DCS procedure. This matrix should only contain numeric values and no missing observations. For computational reasons, `Y` has to have at least five rows and columns, however, for reliable results the size should be larger.
+* **dcs_options** The options used for the smoothing and bandwidth selection. This should be an object of class `"dcs_options"` created by `set.options()`. This argument is optional, if omitted, all options will be set to their default values from the `set.options()` function.
+* **h** Either a two-value vector of positive numeric bandwidths or `"auto"` if bandwidth selection should be employed (the default).
+* **parallel** A logical flag if parallelization should be used for computation of the smoothed surfaces and its derivatives. If the order of the variance model is automatically selected, parallelization affects also this.
+* **...** Further arguments to be passed to the function. This includes the equidistant covariates `X` and `T` which should be ordered numerical vectors whose length matches the number of rows of `Y` for `X` and the number of columns of `Y` for `T`.
+
+`dcs` returns an object of class `"dcs` including the following values
+
+* **X, T** Vectors of covariates inherited from input or calculated to be equidistant on $[0,1]$ if these are omitted in the input.
+* **Y** Matrix of observations inherited from input.
+* **M** Matrix of smoothed values. If the argument `h = "auto` is used in `dcs`, the bandwidths are optimized via the IPI-algorithm, if `h` is set to fixed values, these bandwidth are used.
+* **R** Matrix of residuals computed from $R = Y - M$.
+* **h** Bandwidths used for smoothing of `Y`. Either obtained by IPI bandwidth selection or given as argument in `dcs`.
+* **c_f** The estimated variance factor used in the last iteration of the bandwidth selection algorithm. Is set to `NA`, if no bandwidth selection is used.
+* **var_est** The estimated model obtained for the error terms (residuals) $\varepsilon(x, t)$, i.e. the matrix `$R`. Output depends on the model specification used in `dcs_options$var_model`. For `var_model = "iid"`, it contains the estimated standard deviation of the residuals and an indicator for stationarity, which is true by assumption. For `dcs_options$var_model = c("sarma_sep", "sarma_RSS", "sarma_HR")`, it contains the estimated model in an object of class `"sarma"` including the coefficient matrices `$ar` and `$ma`, the standard deviation `$sigma` as well as an stationarity indicator `$stnry`. For `dcs_options$var_model = "sfarima_RSS"`, the output is of class `"sfarima"`, with similar contents as `"sarma"` and the addition of the estimated long memory parameter vector `$d`.
+* **dcs_options** An object of class `"dcs_options"` containing the options used in the function.
+* **iterations** An integer reporting the number of iterations of the IPI algorithm. Is set to `NA`, if no bandwidth selection is used.
+* **time_used** A number reporting the time (in seconds) used for the IPI algorithm (total including all iterations). Is set to `NA`, if no bandwidth selection is used.
+
+
+### `surface.dcs()` {-}
+This function is a convenient wrapper for the `plotly::plot_ly()` function of the *plotly* package, for easy displaying of the considered surfaces. Direct plotting is available for any object of class `"dcs"` or any numeric matrix `Y`.
+
+Arguments of `surface.dcs()` are
+
+* **Y** Either an object of class `"dcs"`, inheriting from a call to `dcs()` or a numeric matrix, which is then directly passed to `plotly::plot_ly()`.
+* **trim** A two-value vector which gives the percentage (between 0 and 0.5) of boundaries to leave out in the plot. Useful, if estimation at boundaries is unstable and has too high values compared to the inner, e.g. useful when estimation of derivatives is considered.
+* **plot_choice** Only used, if `Y` is an object of class `"dcs"`. Specifies the surface to be plotted, `1` for the original observations, `2` for the smoothed surface and `3` for the residual surface. If `plot_choice` is omitted and `Y` is an `"dcs"`-object, a choice dialogue will be prompted to the console, which asks to state one of the available options.
+* **...** Further arguments to be passed to the `plotly::plot_ly()` function.
+
+`surface.dcs()` returns an object of class `"plotly"`.
+
+### `sarma.sim()` {-}
+Simulation of a spatial ARMA process (SARMA). This function returns an object of class `"sarma"` with attribute `"subclass" = "sim"`. The simulated innovations are created from a normal distribution with specified standard deviation $\sigma$. This function uses a burn-in period for more consistent results.
+
+Arguments of `sarma.sim()` are
+
+* **n_x**, **n_t** The dimension of the resulting matrix of observations, where `n_x` specifies the number of rows and `n_t` the number of columns. Initially, a matrix `Y'` of size $2 n_x \times 2 n_t$ is simulated, for which simulation points with $i \leq n_x$ or $j \leq n_t$ are discarded (burn-in period).
+* **model** A list containing the model parameters to be used in the simulation. The argument should be a list of the form `list(ar, ma, sigma)`. The values `ar` and `ma` are matrices of size $(p_x + 1) \times (p_t + 1)$ respective $(q_x + 1) \times (q_t + 1)$ and contain the coefficients in ascending lag order, so that the upper left entry is equal to 1 (for lag 0 in both dimensions). The standard deviation of the iid. innovations with zero mean is `sigma`, which should be a single positive number. See the examples in the application part 3.3 and the notation of SARMA models in Section 4.4.
+
+`sarma.sim()` returns an object of class `"sarma"` with attribute `"subclass" = "sim"` including the following values:
+
+* **Y** The matrix of simulated values with size $n_x \times n_t$ (determined by function arguments `n_x`, `n_t`). The matrix $Y$ is the lower left $n_x \times n_t$ submatrix of the actually simulated matrix $Y'$ of size $2 n_x \times 2 n_t$ to avoid effects from setting the initial values (burn-in period).
+* **innov** The $n_x \times n_t$ matrix of iid. normally distributed innovations/errors of the SARMA model with zero mean and variance $\sigma^2$ (determined by the function argument `model\$sigma`). As with `Y`, the original matrix has size $2 n_x \times 2 n_t$.
+* **model** The model used for simulation, inherited from input.
+* **stnry** A flag indicating whether the simulated process is stationary.
+
+### `sarma.est()` {-}
+Estimate the parameters of an SARMA of given order. It returns an object of class `"sarma"` with attribute `"subclass" = "est"`. For estimation, three methods are available.
+
+Arguments of `sarma.est()` are
+
+* **Y** A (demeaned) matrix of observations, which contains only numeric values and no missing observations.
+* **method** A character string specifying the method for estimation. Currently supported methods are the Hannan-Rissanen algorithm (`"HR"`), a separable model using two univariate estimations via `stats::arima` (`"sep"`) and a separable model which minimizes the residual sum of squares (RSS) of the model (`"RSS"`).
+* **model_order** A list specifying the order of the SARMA to be estimated. This list should be of the form `list(ar = c(1, 1), ma = c(1, 1))`, where all orders should be non-negative integers. A SARMA$((1,1), (1,1))$ model is estimated by default, if `model_order` is omitted.
+
+`sarma.est()` returns an object of class `"sarma"` with attribute `"subclass" = "est"` including the following values:
+
+* **Y** The matrix of observations inherited from input.
+* **innov** The matrix of estimated innovations (residuals).
+* **model** A list of estimated model coefficients containing the matrices `ar` of autoregressive coefficients, the matrix `ma` of moving average coefficients as well as the standard deviation of residuals `sigma`.
+* **stnry** A flag indicating whether the estimated process is stationary.
+
+### `sfarima.sim()` {-}
+Simulation of a (separable) spatial fractional ARIMA (SFARIMA) process. This function returns an object of class `"sfarima"` with attribute `"subclass" = "sim"`. The simulated innovations are created from a normal distribution with specified standard deviation $\sigma$. This function uses a burn-in period for more consistent results.
+
+Arguments of `sfarima.sim()` are
+
+* **n_x**, **n_t** The dimension of the resulting matrix of observations, where `n_x` specifies the number of rows and `n_t` the number of columns. Initially, a matrix `Y'` of size $2 n_x \times 2 n_t$ is simulated, for which simulation points with $i \leq n_x$ or $j \leq n_t$ are discarded (burn-in period).
+* **model** A list containing the model parameters to be used in the simulation of the form `list(ar, ma, d, sigma)`. The values `ar` and `ma` are matrices of size $(p_x + 1) \times (p_t + 1)$ respective $(q_x + 1) \times (q_t + 1)$ and containing the coefficients in ascending lag order, so that the upper left entry is equal to 1 (for lag 0 in both dimensions). The long-memory parameters $d_x, d_t$ are stored in `d`, a numerical vector of length 2, with $0 < d_x, d_t < 0.5$. The standard deviation of the iid. innovations with zero mean is `sigma`, which should be a single positive number. See the examples in the application part 3.4 and the notation of the short memory SARMA part in Section 4.4.
+
+`sfarima.sim()` returns an object of class `"sfarima"` with attribute `"subclass" = "sim"` including the following values:
+
+* **Y** The matrix of simulated values with size $n_x \times n_t$ (determined by function arguments `n_x`, `n_t`). The matrix $Y$ is the lower left $n_x \times n_t$ submatrix of the actually simulated matrix $Y'$ of size $2 n_x \times 2 n_t$ to avoid effects from setting the initial values (burn-in period).
+* **innov** The $n_x \times n_t$ matrix of iid. normally distributed innovations/errors of the SFARIMA model with zero mean and variance $\sigma^2$ (determined by the function argument `model\$sigma`). As with `Y`, the original matrix has size $2 n_x \times 2 n_t$.
+* **model** The model used for simulation, inherited from input.
+* **stnry** A flag indicating whether the simulated process is stationary.
+
+### `sfarima.est()` {-}
+Estimation of an SFARIMA process. This function minimizes the residual sum of squares (RSS) to estimate the SFARIMA-parameters of a given order. It returns an object of class `"sfarima"` with attribute `"subclass" = "est"`.
+
+Arguments of `sfarima.est()` are
+
+* **Y** A (demeaned) matrix of observations, which contains only numeric values and no missing observations.
+* **model_order** A list specifying the order of the SFARIMA to be estimated. This list should be of the form `list(ar = c(1, 1), ma = c(1, 1))`. All orders should be non-negative integers. A SFARIMA$((1,1), (1,1))$ model is estimated by default, if `model_order` is omitted.
+
+`sfarima.est()` returns an object of class `"sfarima"` with attribute `"subclass" = "est"` including the following values:
+
+* **Y** The matrix of observations inherited from input.
+* **innov** The matrix of estimated innovations (residuals).
+* **model** A list of estimated model coefficients containing the matrices `ar` of autoregressive coefficients, the matrix `ma` of moving average coefficients as well as the vector `d` holding the long-memory parameters and the standard deviation of residuals `sigma`.
+* **stnry** A flag indicating whether the estimated process is stationary.
+
+### `kernel.assign()` {-}
+This function sets an external pointer to a specified boundary kernel available in the DCSmooth package. These kernels are functions $K(u, q)$, where $u$ is a vector on $[q, -1]$ and $q \in [0, 1]$. The boundary kernels are as proposed by @MuellerWang1994, @Mueller1991 and constructed via the method described in @FengSchaefer2021. Available types are Müller-Wang (`MW`), Müller (`M`) and truncated kernels (`T`).
+
+Arguments of `kernel.assign()` are
+
+* **kernel_id** The identifier for the kernel to be assigned. It is a character string of the form `"X_abc"`, where `X` is specifies the type (`MW`, `M`, `T`), `a` i the kernel order $k$, `b` is the degree of smoothness $\mu$ and `c` is the order of derivative $\nu$. A list of currently usable kernel identifiers can be accessed with the function `kernel.list()`.
+
+`kernel.assign()` returns an object of class `"function"`, which points to a precompiled kernel function.
+
+### `kernel.list()` {-}
+`kernel.list()` prints the available identifiers for use in `kernel.assign()`.
+
+The argument of `kernel.list()` is
+
+* **print** A logical value indicating if the list of available kernels should be printed to the console.
+
+`kernel.list()` returns a list including the available kernels as character strings, if the argument is `print = FALSE`.
+
+Available kernels are
+
+ $k$ | $\mu$ | $\nu$ | Truncated Kernels | Müller Kernels | Müller-Wang Kernels
+-----|-------|-------|-------------------|----------------|---------------------
+ 2   | 0     | 0     |                   | `M_200`        | `MW_200` 
+ 2   | 1     | 0     |                   | `M_210`        | `MW_210` 
+ 2   | 2     | 0     | `T_220`           | `M_220`        | `MW_220` 
+     |       |       |                   |                |   
+ 3   | 2     | 1     | `T_321`           | `M_321`        | `MW_320` 
+     |       |       |                   |                | 
+ 4   | 2     | 0     | `T_420`           | `M_420`        | `MW_420` 
+ 4   | 2     | 1     |                   | `M_421`        | `MW_421` 
+ 4   | 2     | 2     | `T_422`           | `M_422`        | `MW_422`
+
+## 2.2 Methods
+The *DCSmooth* package contains the following methods
+
+| <span style="display: inline-block; width:170px">Function</span>|<span style="display: inline-block; width:500px">Methods/Generics available</span>|
+|:-------------------|:--------------------------------------------------------|
+| `dcs_options`      | `print`, `summary`                                      |
+| `dcs`              | `plot`, `print`, `print.summary`, `residuals`, `summary`|
+| `sarma`            | `print.summary`, `summary`                              |
+| `sfarima`          | `print.summary`, `summary`                              |
+
+## 2.3 Data
+This package contains three simulated example data sets and six data sets of environmental spatial time series.
+
+Each of the three simulated example data sets is a matrix of size $101 \times 101$ computed on $[0,1]^2$ for the following functions, where $N(\mu, \Sigma)$ is the bivariate normal distribution with mean vector $\mu$ and covariance matrix $\Sigma$:
+
+* **y.norm1** $$ N \left( \begin{pmatrix} 0.5 \\ 0.5 \end{pmatrix}, \begin{pmatrix} 0.05 & 0 \\ 0 & 0.05 \end{pmatrix} \right)$$
+* **y.norm2** $$ N \left( \begin{pmatrix} 0.5 \\ 0.3 \end{pmatrix}, \begin{pmatrix} 0.1 & 0 \\ 0 & 0.1 \end{pmatrix} \right) + \mathcal{N} \left( \begin{pmatrix} 0.2 \\ 0.8 \end{pmatrix}, \begin{pmatrix} 0.05 & 0 \\ 0 & 0.05 \end{pmatrix} \right) $$
+* **y.norm3** $$ N \left( \begin{pmatrix} 0.25 \\ 0.75 \end{pmatrix}, \begin{pmatrix} 0.01 & 0 \\ 0 & -0.1 \end{pmatrix} \right) + \mathcal{N} \left( \begin{pmatrix} 0.75 \\ 0.5 \end{pmatrix}, \begin{pmatrix} 0.01 & 0 \\ 0 & -0.1 \end{pmatrix} \right)$$
+
+```{r}
+# surface.dcs(y.norm1)
+# surface.dcs(y.norm2)
+# surface.dcs(y.norm3)
+```
+
+The environmental application data sets feature the temperature and wind speed surfaces of Nunn, CO (`temp.nunn`, `wind.nunn`) and Yuma, AZ (`temp.yuma`, `wind.yuma`). The observations are taken in 2020 in 5-minute intervals. The temperatures are given in *Celsius* and wind speed is given in *m/s*. All data sets consist therefore of 288 columns (the intraday observations) and 366 rows (the days). The data is taken from the U.S. Climate Reference Network database at [www.ncdc.noaa.gov](https://www.ncdc.noaa.gov/crn/qcdatasets.html). (see Diamond et al., 2013)
+
+```{r}
+# surface.dcs(temp.nunn)
+# surface.dcs(temp.yuma)
+# surface.dcs(wind.nunn)
+# surface.dcs(wind.yuma)
+```
+
+For examples of financial applications, the return and volume data of German insurance company Allianz SE is available in the package. The data is aggregated to the 5-minute level over the years 2007-2010, hence, the financial crisis 2008 is covered. The matrices consist of 1016 rows representing the days and 101 (returns) respective 102 (volumes) columns for the intraday 5-minute intervals.
+
+```{r}
+# surface.dcs(returns.alv)
+# surface.dcs(volumes.alv)
+```
+
+# 3 Application
+The application of the package is demonstrated at the example of the simulated function `y.norm1`, which represents a gaussian peak on $[0,1]^2$ with $n_x = n_t = 101$ evaluation points. Different models are simulated and estimation using `dcs` is demonstrated. Whenever default options are used, they are not explicitly used as function arguments, instead only when deviating from the defaults, the options are changed.
+
+> In order to keep the file size manageable, the `surface.dcs` commands in this vignette are commented out. Run the complete code used in section 3 of this vignette by `demo("DCS_demo", package = "DCSmooth")`, but note that it might take some time.
+
+## 3.1 Defining the Options
+
+In order to set specific options use the `set.options()` function to create an object of class `"dcs_options"`.
+
+```{r}
+opt1 = set.options(type = "KR", kerns = c("M_220", "M_422"), drv = c(0, 2),
+                   var_model = "sarma_RSS",
+                   IPI_options = list(trim = c(0.1, 0.1), infl_par = c(1, 1),
+                                      infl_exp = c(0.7, 0.7), 
+                                      const_window = TRUE),
+                   model_order = list(ar = c(1, 1), ma = c(0, 0)))
+summary(opt1)
+class(opt1)
+```
+
+The contents of the advanced option `IPI_options` can be set directly as argument in `set.options()`. Changing these options might lead to non convergent bandwidths.
+
+```{r}
+opt2 = set.options(type = "KR", kerns = c("M_220", "M_422"), drv = c(0, 2),
+                   var_model = "sarma_RSS", trim = c(0.1, 0.1),
+                   infl_par = c(1, 1), infl_exp = c(0.7, 0.7), 
+                   const_window = TRUE,
+                   model_order = list(ar = c(1, 1), ma = c(0, 0)))
+summary(opt2)
+class(opt2)
+```
+
+When using a model selection procedure, the additional option `order_max` is available:
+
+```{r}
+opt3 = set.options(var_model = "sarma_sep", model_order = "bic",
+                   order_max = list(ar = c(0, 1), ma = c(2, 2)))
+summary(opt3)
+```
+
+## 3.2 Application of the DCS with iid. errors
+
+The example data set is simulated by using iid. errors:
+
+```{r}
+# surface.dcs(y.norm1)
+
+y_iid = y.norm1 + matrix(rnorm(101^2), nrow = 101, ncol = 101)
+# surface.dcs(y_iid)
+```
+
+### Kernel Regression with iid. errors {-}
+While local linear regression has some clear advantages over kernel regression, kernel regression is the faster method.
+
+```{r}
+opt_iid_KR = set.options(type = "KR")
+dcs_iid_KR = dcs(y_iid, opt_iid_KR)
+
+# print results
+dcs_iid_KR
+
+# print options used for DCS procedure
+dcs_iid_KR$dcs_options
+
+# plot regression surface
+# surface.dcs(dcs_iid_KR, plot_choice = 2)
+```
+
+The summary of the `"dcs"`-object provides some more detailed information:
+```{r}
+summary(dcs_iid_KR)
+```
+
+### Local Polynomial regression with iid. errors {-}
+This is the default method, specification of options is not necessary. Note that local polynomial regression requires the bandwidth to cover at least the number of observations of the polynomial order plus one. For small bandwidths or too few observation points in one dimension, local polynomial regression might fail ("Bandwidth h must be larger for local polynomial regression."). It is suggested to use kernel regression in this case.
+
+```{r}
+dcs_LP_iid = dcs(y_iid)
+dcs_LP_iid
+
+summary(dcs_LP_iid)
+
+# plot regression surface
+# surface.dcs(dcs_LP_iid, plot_choice = 2)
+```
+
+
+## 3.3 Application of the DCS with SARMA errors
+A matrix containing innovations following a SARMA$((p_x, p_t), (q_x, q_t))$ process can be obtained by using the `sarma.sim()` function. We use the following SARMA$((1, 1), (1, 1))$-process as example:
+$$
+AR = \begin{pmatrix} 1 & 0.4 \\ -0.3 & -0.12 \end{pmatrix},
+\quad
+MA = \begin{pmatrix} 1 & -0.5 \\ -0.2 & 0.1 \end{pmatrix}
+\quad \text{ and } \quad
+\sigma^2 = 0.25
+$$
+
+```{r}
+ar_mat = matrix(c(1, -0.3, 0.4, 0.12), nrow = 2, ncol = 2)
+ma_mat = matrix(c(1, -0.2, -0.5, 0.1), nrow = 2, ncol = 2)
+sigma  = sqrt(0.25)
+model_list = list(ar = ar_mat, ma = ma_mat, sigma = sigma)
+sim_sarma = sarma.sim(n_x = 101, n_t = 101, model = model_list)
+
+# SARMA observations
+y_sarma = y.norm1 + sim_sarma$Y
+# surface.dcs(y_sarma)
+```
+
+Estimation of an SARMA process for a given order is implemented via the `sarma.est()` function (note that the simulated matrix can be accessed via `$Y`):
+
+```{r}
+est_sarma = sarma.est(sim_sarma$Y, method = "HR",
+                      model_order = list(ar = c(1, 1), ma = c(1, 1)))
+
+summary(est_sarma)
+```
+
+### Local Polynomial regression with specified SARMA order {-}
+The `dcs()`-command is used with the default SARMA$((1, 1), (1, 1))$ model (correctly specified) and with an SARMA$((1, 1), (0, 0))$ (i.e. SAR$(1, 1)$) model. The chosen estimation procedure is `"sep"`:
+
+```{r}
+# SARMA((1, 1), (1, 1))
+opt_sarma_1 = set.options(var_model = "sarma_sep")
+dcs_sarma_1 = dcs(y_sarma, opt_sarma_1)
+
+summary(dcs_sarma_1$var_est)
+
+# SARMA((1, 1), (0, 0))
+# Use "sarma_HR" as it includes fast Yule-Walker estimation
+opt_sarma_2 = set.options(var_model = "sarma_HR",
+                          model_order = list(ar = c(1, 1), ma = c(0, 0)))
+dcs_sarma_2 = dcs(y_sarma, opt_sarma_2)
+
+summary(dcs_sarma_2$var_est)
+```
+
+### Local Polynomial regression with automated order selection {-}
+Automated order selection is used with `model_order = c("aic", "bic", "gpac")` in `set.options()`. The first one minimizes the AIC, the second one the BIC and the third uses a generalized partial autocorrelation function for order selection (not available for SFARIMA estimation). Order selection for large data sets is slowly in general, however, the `"gpac"` might be slightly faster than the other two. If automatic order selection is used, the argument `order_max` sets the maximum orders to be tested in the same way as `model_order` is usually defined as a list.
+
+```{r}
+# BIC
+opt_sarma_3 = set.options(var_model = "sarma_HR", model_order = "bic",
+                          order_max = list(ar = c(2, 2), ma = c(2, 2)))
+dcs_sarma_3 = dcs(y_sarma, opt_sarma_3)
+
+summary(dcs_sarma_3$var_est)
+
+# gpac
+opt_sarma_4 = set.options(var_model = "sarma_HR", model_order = "gpac",
+                          order_max = list(ar = c(2, 2), ma = c(2, 2)))
+dcs_sarma_4 = dcs(y_sarma, opt_sarma_4)
+
+summary(dcs_sarma_4$var_est)
+```
+
+## 3.4 Modeling errors with long memory
+This package includes a bandwidth selection algorithm when the errors $\varepsilon(x, t)$ follow an SFARIMA$((p_x, p_t), (q_x, q_t))$ process with long memory. Order selection for SFARIMA models works exactly as in the SARMA case. We use the same SARMA model as in 3.3 with long-memory parameters $d = (0.3, 0.1)$:
+
+```{r}
+ar_mat = matrix(c(1, -0.3, 0.4, 0.12), nrow = 2, ncol = 2)
+ma_mat = matrix(c(1, -0.2, -0.5, 0.1), nrow = 2, ncol = 2)
+d = c(0.3, 0.1)
+sigma  = sqrt(0.25)
+
+model_list = list(ar = ar_mat, ma = ma_mat, d = d, sigma = sigma)
+sim_sfarima = sfarima.sim(n_x = 101, n_t = 101, model = model_list)
+
+# SFARIMA surface observations
+y_sfarima = y.norm1 + sim_sfarima$Y
+
+# surface.dcs(y_sfarima)
+
+opt_sfarima = set.options(var_model = "sfarima_RSS")
+dcs_sfarima = dcs(y_sfarima, opt_sfarima)
+
+summary(dcs_sfarima$var_est)
+```
+
+
+## 3.5 Estimation of derivatives
+Local polynomial estimation is suitable for estimation of derivatives of a function or a surface. While estimation of derivatives works as well under dependent errors, the example uses the iid. model from 3.2. Derivatives can be computed for any derivative vector `drv`, if the values are non-negative and an appropriate kernel function is chosen (such that the derivative order of the kernel matches the derivative order in `drv`). Note that the order of the polynomials for the $\nu$th derivative is chosen to be $p_i = \nu_i + 1, i = x, t$. As bandwidths increase with the order of the derivatives, the bandwidth might be large for higher derivative orders.
+
+The estimator for $m^{(1, 0)}(x, t)$ is
+```{r}
+opt_drv_1 = set.options(drv = c(1, 0), kerns = c("MW_321", "MW_220"))
+opt_drv_1$IPI_options$trim = c(0.1, 0.1)
+dcs_drv_1 = dcs(y_iid, opt_drv_1)
+
+dcs_drv_1
+# surface.dcs(dcs_drv_1, trim = c(0.1, 0.1), plot_choice = 2)
+```
+
+The estimator for $m^{(0, 2)}(x, t)$ is given by
+```{r}
+opt_drv_2 = set.options(drv = c(0, 2), kerns = c("MW_220", "MW_422"))
+opt_drv_2$IPI_options$trim = c(0.1, 0.1)
+
+dcs_drv_2 = dcs(y_iid, opt_drv_2)
+
+dcs_drv_2
+
+# surface.dcs(dcs_drv_2, trim = c(0.1, 0.1), plot_choice = 2)
+```
+
+# 4 Mathematical Background
+
+## 4.1 Double Conditional Smoothing
+The double conditional smoothing (DCS, see @Feng2013) is a spatial smoothing technique which effectively reduces the two-dimensional estimation to two one-dimensional estimation procedures. The DCS is defined for kernel regression as well as for local polynomial regression.
+
+Classical bivariate (and multivariate) regression has been considered e.g. by @Herrmann1995 (kernel regression) and @RuppertWand1994 (local polynomial regression). The DCS provides now a faster and, especially for equidistant data, more efficient smoothing scheme, which leads to reduced computation time. For the DCS procedure implemented in this package, consider a $(n_x \times n_t)$-matrix $\mathbf{Y}$ of non-empty observations $u_{i,j}$ and equidistant covariates $X$, $T$ on $[0,1]$, where $X$ has length $n_x$ and $T$ has length $n_t$. The model is then
+$$
+y_{i,j} = m(x_i, t_j) + \varepsilon_{i,j}
+$$
+where $m(x, t)$ is the mean or trend function, $x_i \in X$, $t_j \in T$ and $\varepsilon$ is a random error function with zero mean. The model in matrix form is $\mathbf{Y} = \mathbf{M}_1 + \mathbf{E}$ at the observation points.
+
+The main assumption of the DCS is that of product kernels, i.e. the weights in the respective methods are constructed by $K(u,v) = K_1(u) K_2(v)$. Now, a two stage smoother can be constructed by either the kernel weights directly (kernel regression) or by using locally weighted regression with kernels $K_1$, $K_2$, in any case, the weights are called $\mathbf{W}_x$ and $\mathbf{W}_t$. The DCS procedure implemented in *DCSmooth* smoothes over rows (conditioning on $X$) first and then over columns (conditioning on $T$), although switching the smoothing order is exactly equivalent. Hence, the DCS is given by the following equations:
+$$
+\begin{align*}
+\mathbf{\widehat{M}}_0[ \ , j] &= \mathbf{Y} \cdot \mathbf{W}_t[ \ , j] \\
+\mathbf{\widehat{M}}_1[i, \ ] &= \mathbf{W}_x [i, \ ] \cdot \mathbf{\widehat{M}}_0
+\end{align*}
+$$
+
+## 4.2 Bandwidth Selection
+The bandwidth vector $h = (h_x, h_t)$ is selected via an iterative plug-in (IPI) algorithm [@Gasser1991]. The IPI selects the optimal bandwidths by minimizing the mean integrated squared error (MISE) of the estimator. As the MISE includes derivatives of the regression surface $m(x, t)$, auxiliary bandwidths for estimation of these derivatives are calculated via an inflation method. These inflation method connects the bandwidths of $m(x, t)$ with that of a derivative $m^{(\nu_x, \nu_t)}(x, t)$ by
+$$
+\widetilde{h}_k = c_k \cdot h_k^{\alpha}, \quad k = x, t
+$$
+and is called exponential inflation method (EIM). The values of $c_k$ are chosen on simulations, that of $alpha$ are subject to the derivative of interest.
+The IPI now starts with an initial bandwidth $h_0$ (chosen to be $h_0 = (0.1, 0.1)$) and calculates in each step $s$ the auxiliary bandwidths $\widetilde{h}_{k,s}$ from $h_{s-1}$ and $h_s$ from the smoothed derivative surfaces using $\widetilde{h}_{k,s}$. The iteration process finishes until a certain threshold is reached.
+
+## 4.3 Boundary Modification
+In kernel regression, the boundary problem exists, which leads to biased estimated at the boundaries of the regression surface. This problem can (partially) be solved by means of suitable boundary kernels as introduced by @Mueller1991 and @MuellerWang1994. These boundary kernels differ in their degrees of smoothness and hence lead to different estimation results at the boundaries. However, all kernels are similar to the classical kernels in the interior region of the regression.
+
+Following @FengSchaefer2021, a boundary modification is also defined for local polynomial regression. In the *DCSmooth* package, the local polynomial regression is always with boundary modification weights. Kernel types available (either for kernel regression or local polynomial regression) are Müller-type, Müller-Wang-type and truncated kernels, denoted by `M`, `MW` and `T`. In most applications, the Müller-Wang type are the preferred weighting functions.
+
+For observations $X = x_i$, $x_i, i = 1, \dots, n_x$ and a given bandwidth $h$, define $u_r = \frac{x_r - X}{h} \in [-1, q]$. A (left) boundary kernel function $K^l_q(u)$ of order $(k, \mu, \nu)$ is defined on $[-1, q]$, for $q \in [0,1]$ and has the following properties
+$$
+\int_{-1}^q u^j K^l_q(u) \text{d} u = \begin{cases}
+0 & \text{ for } 0 \leq j < k, j \neq \nu\\
+(-1)^\nu \nu! & \text{ for } j = \nu\\
+\beta \neq 0 & \text{ for } j = k
+\end{cases}
+$$
+The corresponding right boundary kernels can be calculated by $K^r_q(u) = (-1)\nu K_q(-u)$. The boundary kernels assigned by `kernel.assign()` are left boundary kernels.
+
+## 4.4 Spatial ARMA processes
+The SARMA process $\varepsilon_{i,j}$ is given by the following equations:
+$$
+\phi(B_1, B_2)\varepsilon_{i,j} = \psi(B_1, B_2)\eta_{i,j},\\
+$$
+where the lag operators are $B_1 \varepsilon_{i,j} = \varepsilon_{i-1, j}$ and $B_2 \varepsilon_{i,j} = \varepsilon_{i,j-1}$, $\xi \underset{iid.}{\sim} \mathcal{N}(0,\sigma^2)$ and
+$$
+\phi(z_1, z_2) = \sum_{m = 0}^{p_1} \sum_{n = 0}^{p_2} \phi_{m, n} z_1^m z_2^n, \ \psi(z_1, z_2) = \sum_{m = 0}^{q_1} \sum_{n = 0}^{q_2} \psi_{m, n} z_1^m z_2^n.
+$$
+The coefficients $\psi_{m,n}$ and $\phi_{m,n}$ are written in matrix form
+$$
+\begin{align*}
+\boldsymbol{\phi} = \begin{pmatrix}
+\phi_{0,0} & \dots & \phi_{0, p_2} \\
+\vdots & \ddots & \\
+\phi_{p_1, 0} &  & \phi_{p_1, p_2}
+\end{pmatrix} \ \text{ and } \ \boldsymbol{\psi} = \begin{pmatrix}
+\psi_{0, 0} & \dots & \psi_{0, q_2} \\
+\vdots & \ddots & \\
+\psi_{q_1, 0} &  & \psi_{q_1, q_2}
+\end{pmatrix},
+\end{align*}
+$$
+where $\Phi$ is the AR-part (`$var_model$ar`) and $\Psi$ is the MA-part (`$var_model$ma`). The example from 3.3,
+$$
+\begin{align}
+\boldsymbol{\phi} = \begin{pmatrix} 1 & 0.4 \\ -0.3 & -0.12 \end{pmatrix}
+\ \text{ and } \
+\boldsymbol{\psi} = \begin{pmatrix} 1 & -0.2 \\ -0.5 & 0.1 \end{pmatrix}
+\end{align},
+$$
+would then reduce to the process
+$$
+\varepsilon_{i,j} = 0.4\varepsilon_{i,j-1} - 0.3 \varepsilon_{i-,j} + 0.2\varepsilon_{i-1,j-1} + 0.2 \xi_{i,j-1} + 0.2 \xi_{i-1,j} -0.5 \xi_{i-1,j-1} + \xi_{i,j}.
+$$
+Note that this process can be written as product of two univariate processes in the sense that
+$$
+\phi_1(B_1)\phi_2(B_2)^T \varepsilon_{i,j} = \psi_1(B_1) \psi_2(B_2)^T \eta_{i,j},\\
+$$
+with
+$$
+\phi_1 = \begin{pmatrix} 1 \\ -0.3 \end{pmatrix}, \quad \phi_2 = \begin{pmatrix} 1 \\ 0.4 \end{pmatrix}, \quad \psi_1 = \begin{pmatrix} 1 \\ -0.5 \end{pmatrix}, \quad \psi_2 = \begin{pmatrix} 1 \\ -0.2 \end{pmatrix}.
+$$
+Hence, these process forms a separable SARMA. Estimation of separable SARMA models can be reduced to estimation of univariate ARMA models.
+
+## 4.5 Estimation of SARMA processes
+
+For estimation of SARMA models, three methods are implemented in *DCSmooth*:
+
+### Estimation of a separable SARMA by ML-estimation {-}
+This method is only available under the assumption of a separable model. Define two univariate time series
+$$
+\varepsilon_{1,r} = \{\varepsilon_1\}_r = \{\varepsilon_{i,j}\}_{i + n_t (j - 1)}, \quad \varepsilon_{2,s} = \{\varepsilon_2\}_s = \{\varepsilon_{i,j}\}_{j + n_x * (i - 1)}
+$$
+for $r,s = 1, \dots, n_x \cdot n_t$, $i = 1, \dots, n_x$, $j = 1, \dots, n_t$. The parameters $\phi_1, \psi_1$ of $\varepsilon_{1,r}$ and $\phi_2, \psi_2$ of $\varepsilon_{2,s}$ can then be estimated by well-known maximum likelihood estimators.
+
+### Least squares estimation using the RSS {-}
+The SARMA model can be rewritten as
+$$
+\eta_{i,j} = \psi(B_1, B_2)^{-1}\phi(B_1, B_2)\varepsilon_{i,j},\\
+$$
+which allows for an $AR(\infty)$-representation of the SARMA model
+$$
+\eta_{i,j} = \sum_{r,s = 0}^{\infty} \theta^{AR}_{r,s} \varepsilon_{i-r, s-j}
+$$
+
+From this, we can define the residual sum of squares (RSS) and get an estimate for the vector of coefficients $\theta = c(\phi_{1,0}, \phi_{0,1}, \dots, \psi_{1,0}, \psi_{0,1}, \dots$ by
+$$
+\widehat{\theta} = \arg \min RSS \approx \arg \min \sum_{i,j = 0}^{\infty} \eta_{i,j}^2
+$$
+
+Calculation of the $AR(\infty) representation of an SARMA model is difficult for a general SARMA but for a separable SARMA, the known univariate formulas hold.
+
+These procedure can be directly used for SFARIMA models, if the long memory parameter $d$ is included in $\theta$ (see @Beran2009).
+
+### The Hannan-Rissanen Algorithm
+The previously defined estimation methods require numeric optimization of some quantities and hence take more time for calculation on a computer. The Hannan-Rissanen algorithm (@HannanRissanen1982) provides a much faster estimation procedure. An extension to SARMA models is straightforward:
+
+The main idea Hannan-Rissanen algorithm is to use a high-order SAR auxiliary model for initial estimation of the non observable innovations sequence. Then, a linear regression model is applied, which yields the SARMA-parameters from the observations and estimated innovations.
+
+Let $\{\varepsilon\}_{i,j}$ be the the ordered observations of the $SARMA((p_x, p_t), (q_x, q_t))$ process $\varepsilon(x, t)$ with $i = 1, \dots, n_x, j = 1, \dots, n_t$. The SARMA parameters $\mathbf{\phi, \mathbf{\psi}$ are then estimated by the modified Hannan-Rissanen algorithm:
+1. Obtain the auxiliary residuals $\widetilde{\eta}_{i,j}$ by fitting a high-order autoregressive model with $(\widetilde{p}_x, \widetilde{p}_t) \geq (p_x, p_t)$ to the observations:
+$$
+\begin{align}
+\widetilde{\eta}_{i,j} = \begin{cases}
+\sum_{m = 0}^{\widetilde{p}_1} \sum_{n = 0}^{\widetilde{p}_2} \widetilde{\phi}_{m,n} \varepsilon_{i - m, j - n}, & \widetilde{p}_1 < i \leq n_1, \widetilde{p}_2 < j \leq n_2\\
+0, &1 \leq i \leq \widetilde{p}_1, 1 \leq j \leq \widetilde{p}_2
+\end{cases}
+\end{align}
+$$
+where $\widetilde{\phi}_{m,n}$ is estimated by the Yule-Walker equations and $\phi_{0,0} = 1$.
+2. Obtain $\widehat{\phi}_{m,n}$ and $\widehat{\psi}_{m,n}$ and the estimated innovations $\widehat{\eta}_{i,j}$ by linear regression from
+$$
+\begin{align}
+\varepsilon_{i,j} = -\sum_{\substack{m=0\\m \neq n = 0}}^{p_1} \sum_{\substack{n=0\\n \neq m = 0}}^{p_2} \widehat{\phi}_{m,n} \varepsilon_{i-m,j-n} + \sum_{\substack{m=0\\m \neq n = 0}}^{q_1} \sum_{\substack{n=0\\n \neq m = 0}}^{q_2} \widehat{\psi}_{m,n} \widetilde{\xi}_{i-m,j-n} + \widehat{\xi}_{i,j}
+\end{align}
+$$
+The resulting coefficients $\widehat{\mathbf{\phi}}$, $\widehat{\mathbf{\psi}}$ are then the estimates for the parameters.
+
+The autocovariance function of the SARMA-process is $\gamma(s,t) = \mathbb{E}(\varepsilon_{i,j} \varepsilon_{i+s, j+t})$. For $\widetilde{p}_x, \widetilde{p}_t$, the spatial Yule-Walker equation for the $SAR(\widetilde{p}_x, \widetilde{p}_t)$ approximation of the SARMA is then
+$$
+\begin{align}
+\mathbf{\Gamma} \ \left( \text{vec} (\widetilde{\boldsymbol{\phi}}) \setminus \{ \widetilde{\phi}_{0,0}\} \right) = \gamma
+\end{align}
+$$
+where $\mathbf{\Gamma}$ is the autocovariance matrix and $\gamma$ the vector of autocovariances when using the following notation:
+$$
+\begin{align}
+\mathbf{\Gamma} &= \begin{pmatrix}
+\gamma(0,0) & \gamma(1,0) & \dots 	& \gamma(\widetilde{p}_1,0) & \gamma(2,0) & \dots 	& \gamma(\widetilde{p}_1 - 1, \widetilde{p}_2)\\
+\gamma(1,0) & \gamma(0,0) &			&							&			  &			& \gamma(\widetilde{p}_1 - 2, \widetilde{p}_2)\\
+\vdots 		& 			  & \ddots	&							&			  &			& \vdots \\
+\gamma(\widetilde{p}_1 - 1, \widetilde{p}_2) & & \dots &			&			  &			& \gamma(0,0)
+\end{pmatrix} \\
+\gamma &= \left(\gamma(0,1), \gamma(0,2), \dots, \gamma(\widetilde{p}_1, 0), \dots, \gamma(\widetilde{p}_1, \widetilde{p}_2) \right)^T.
+\end{align}
+$$
+
+# References
+
+
+
+
