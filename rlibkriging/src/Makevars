@@ -1,0 +1,57 @@
+## See Section 1.2.1 "Using 'Makevars'" of Writing R Extensions
+## https://cran.r-project.org/doc/manuals/r-release/R-exts.html#Using-Makevars
+
+## Using shared libs with Linux|MacOS requires to copy libKriging*.(so|dylib) and libarmadillo*.(so|dylib)
+## next to rlibkriging.so (in installation directory)
+## then rpath of rlibkriging may be simplify updated
+## Linux: $ chrpath -r '${ORIGIN}' ./Rlibs/rlibkriging/libs/rlibkriging.so
+##        $ chrpath -l ./Rlibs/rlibkriging/libs/rlibkriging.so # print rpath to verify
+## MacOS: $ otool -l ./Rlibs/rlibkriging/libs/rlibkriging.so | grep LC_RPATH -A2 # get LC_RPATH to remove (and more)
+##        $ install_name_tool -delete_rpath ${__OLD_LC_RPATH__} ./Rlibs/rlibkriging/libs/rlibkriging.so
+
+MAKE_SHARED_LIBS=off
+STATIC_LIB=on
+export LIBKRIGING_PATH=$(shell pwd)/../inst/
+
+ifneq ("${MAKE_SHARED_LIBS}","off")
+	EXTRA_PKG_LIBS= -Wl,-rpath,"${LIBKRIGING_PATH}"/lib
+
+	ifeq ("$(shell uname -s)","Linux")
+		LIB_SUFFIX=so
+		# Adds local directory of a lib in its rpath
+		# Makefile constant '$${ORIGIN}' is expanded as '${ORIGIN}'
+		EXTRA_PKG_LIBS:=-Wl,-rpath,'$${ORIGIN}' $(EXTRA_PKG_LIBS)
+	else # Darwin aka MacOS
+		LIB_SUFFIX=dylib
+		# local path is @rpath or @loader_path and is implicitly set by default in LC_RPATH
+		# https://wincent.com/wiki/@executable_path,_@load_path_and_@rpath
+		EXTRA_PKG_LIBS:=-Wl,-rpath,'@loader_path' $(EXTRA_PKG_LIBS)
+	endif
+else
+	LIB_SUFFIX=a
+endif
+
+USE_FLANG=$(shell echo $(FC) | grep -E "flang")
+ifneq ($(USE_FLANG),)
+  LLVM_PATH=$(shell $(USE_FLANG) --version | grep -E "InstalledDir" | cut -d: -f2 | tr -d ' ')
+  FLIBS=-L$(LLVM_PATH)/../lib -flang-experimental-exec -lFortran_main -lFortranRuntime -lFortranDecimal -lm
+  $(info Use FLANG with FLIBS: $(FLIBS))
+endif
+
+EXTERNAL_LIBS=$(subst $\",,$(shell LIBKRIGING_PATH=${LIBKRIGING_PATH} ../src/libK/bindings/R/tools/ExternalLibsExtractor.sh))
+
+CXX_STD = CXX17
+
+PKG_CPPFLAGS=-I"${LIBKRIGING_PATH}"/include -include "libKriging/utils/lkalloc.hpp" -DARMA_ALIEN_MEM_ALLOC_FUNCTION=lkalloc::malloc -DARMA_ALIEN_MEM_FREE_FUNCTION=lkalloc::free
+# https://stat.ethz.ch/pipermail/r-package-devel/2018q3/003033.html
+PKG_CXXFLAGS=$(SHLIB_OPENMP_CXXFLAGS)
+# https://stackoverflow.com/questions/49154506/understanding-makevars-for-linking-to-external-c-library-in-r-package
+PKG_LIBS=$(SHLIB_OPENMP_CXXFLAGS) -L"${LIBKRIGING_PATH}"/lib -lKriging -larmadillo -llbfgsb_cpp $(EXTRA_PKG_LIBS) $(EXTERNAL_LIBS) $(LAPACK_LIBS) $(BLAS_LIBS) $(FLIBS)
+MAKEFLAGS=-j$(nproc)
+
+null      :=
+SPACE     := $(null) $(null)
+# Funky workaround to rewrite path by escaping spaces with a backslash  
+$(SHLIB): .check $(subst $(SPACE),\$(SPACE),${LIBKRIGING_PATH})/lib/libKriging.$(LIB_SUFFIX) $(subst $(SPACE),\$(SPACE),${LIBKRIGING_PATH})/lib/libarmadillo.$(LIB_SUFFIX)
+
+include ../src/libK/bindings/R/check.mk
