@@ -1,0 +1,179 @@
+---
+title: "Identification of Prognosis-Related Mutually Exclusive Modules"
+author: "Xiangmei Li,Bingyue Pan,Junwei Han"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: yes
+    toc_depth: 3
+    toc_float: yes
+    number_sections: yes
+    self_contained: yes
+    css: "corp-styles.css"
+    highlight: pygments
+  pdf_document:
+    toc: yes
+    toc_depth: '3'
+vignette: >
+  %\VignetteIndexEntry{ProgModule}
+  %\VignetteEncoding{UTF-8}
+  %\VignetteEngine{knitr::rmarkdown}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+```{r echo = TRUE, results = 'hide',eval=FALSE}
+install.packages("ProgModule")
+```
+
+```{r setup}
+library(ProgModule)
+```
+
+# Introduction
+
+Cancer arises from the dysregulated cell proliferation caused by acquired mutations in key driver genes. With the rapid accumulation of cancer genomics alterations data, the major goal of cancer genome is to distinguish tumorigenesis driver mutations from passenger mutations, which may improve our understanding of the complex processes involved in cancer formation and progression and tail personalize therapies to a tumor's mutational pattern. Nowadays, there have been numerous algorithms developed to uncover the genomics mutational signatures, but they are generally limited by their high computational complexity, high false-positive rate, and impracticality for clinical application. To elucidate the underlying mechanisms of cancer initiation, we believed that developing algorithms to identify mutation-driven modules that take into account the impact on patient prognosis while balancing mutation coverage and exclusivity may uncover intricate associations between mutations and survival, and will provide us with crucial insights for cancer diagnosis and treatment. This package attempts to develop a novel bioinformatics tool, **ProgModule**, to identify candidate driver modules for predicting the prognosis of patients by integrating exclusive coverage of mutations with clinical characteristics in cancer. The detailed flowchart of this package is shown as follows: 
+
+
+
+```{r pressure, echo=FALSE,  out.width = '80%'}
+knitr::include_graphics("../inst/flowchart.png")
+```
+
+
+# Overview of the package
+
+The **ProgModule** package is a bioinformatics tool to identify driver modules for predicting the prognosis of cancer patients, which balances the exclusive coverage of mutations and simultaneously considers the mutation combination-mediated mechanism in cancer. And **ProgModule** functions can be categorized into mainly Analysis and Visualization modules. Each of these functions and a short description is summarized as shown below: <br/> 1.Obtain non-silent mutations frequency matrix.<br/> 2.Identify cohort-specific local subnetworks.<br/> 3.Calculate the prognosis-related mutually exclusive mutation (PRMEM) score of module.<br/> 4.Identify the prognosis-related mutually exclusive mutation modules.<br/> 5.Visualization results:<br/> 5.1 Plot Patients' Kaplan-Meier Survival Curves based on the mutation status of driver module.<br/> 5.2 Plot patient-specific dysfunction pathways and user-interested geneset mutually exclusive and co-occurrence plots.<br/> 5.3 Plot patient-specific dysfunction pathways' waterfall plots.<br/> 5.4 Plot genes' hotspot mutation lollipop plots. <br/>
+
+## Obtain non-silent mutations frequency matrix.
+
+We downloaded patients' mutation data from the TCGA database in Mutation Annotation Format (MAF) format. About the mutation status of a specific gene in a specific sample, we converted MAF format data into a mutation status matrix, in which every row represents the gene and every column represents the sample. In our study, we only extract the non-silent somatic mutations (nonsense mutation, missense mutation, frame-shift indels, splice site, nonstop mutation, translation start site, inframe indels) in protein-coding regions.The function **get_mut_status** in the **ProgModule** package can implement the above process. Take simulated data as an example, the command lines are as follows:
+
+MAF files contain many fields ranging from chromosome names to cosmic annotations. However, most of the analysis in our uses the following fields.
+
+-   Mandatory fields: **Hugo_Symbol,** **Variant_Classification,** **Tumor_Sample_Barcode.**<br/> Complete specification of MAF files can be found on [NCI GDC documentation page](https://docs.gdc.cancer.gov/Data/File_Formats/MAF_Format/). <br/>
+
+```{r}
+#load the mutation annotation file
+maf<-system.file("extdata","maffile.maf",package = "ProgModule")
+maf_data<-read.delim(maf)
+mutvariant<-maf_data[,c("Hugo_Symbol","Tumor_Sample_Barcode","Variant_Classification")]
+#perform the function 'get_mut_status'
+mut_status<-get_mut_status(mutvariant=mutvariant,nonsynonymous = TRUE)
+#view the first five lines of mut_status matrix
+mut_status[1:5,1:5]
+```
+
+<br/>
+
+## Search cohort-specific local subnetworks.
+
+The breadth-first search algorithm was then used to search cohort-specific local subnetworks from protein-protein interaction(PPI) networks, which starting at each driver gene obtained from NCG database (defined as seed node) and iteratively exploring its neighbor mutation genes until reaching a maximal number of genes (500 in our study), and the maximum size of the local network is determined by users. The function **get_local_network** in the **ProgModule** package can implement the above process. <br/>
+
+```{r}
+#load mutation matrix and PPI network
+data(mut_status,subnet)
+# find the local network of each gene
+localnetwork<-get_local_network(network=subnet,freq_matrix=mut_status,max.size=500)
+```
+
+<br/>
+
+## Define a prognosis-related mutually exclusive mutation score for modules.
+
+To identify prognosi-related driver modules, **ProgModule** requres sample mutation and survival data. First, we defined a Prognosis-Related Mutually Exclusive Mutation (PRMEM) score to simultaneously assess a module’s mutation coverage,exclusivity, and association with cancer prognosis. The PRMEM score of a module is defined as follows: $$PRMEM\ Score=MI(M)*Ex(M)*Cov(M)$$<br/>
+Here, $MI(M)$ is the mutual information between the mutation states of module $M$ and patient survival states, assessing the impact of module mutation on prognosis; $Ex(M)$ is the exclusive score of the module $M$, defined as: $$Ex(M)=\frac{\sum_{i{\in}M}\frac{EP_i}{P_i}}{N_M}$$ where $EP_i$ is the number of samples in which gene $i$ is exclusively mutated, $P_i$ is the number of samples in which gene $i$ is mutated, and $N_M$ is the number of genes in $M$; $Cov(M)$ is the mutation ratio of module $M$, defined as: $$Cov(M)=\frac{P}{n}$$ where $n$ is the total number of samples and $P$ is the number of samples with mutations in $M$. The function**get_mutual_module** in the **ProgModule** package can implement the above process. 
+
+
+```{r}
+#load the data
+data(mut_status,net,module,univarCox_result)
+sur<-system.file("extdata","sur.csv",package = "ProgModule")
+sur<-read.delim(sur,sep=",",header=TRUE,row.names = 1)
+#Calculate the PRMEM score of module
+mutuallyexclusivemodule<-get_mutual_module(module=module,net=net,freq_matrix=mut_status,sur=sur,module_sig="risk",univarCox_result,rate=0.05)
+#view the scores of the modules
+mutuallyexclusivemodule
+```
+
+<br/>
+
+## Identify the prognosis-related mutually exclusive modules.
+
+According to the PRMEM score, an iterative greedy algorithm was employed to search mocules within local subnetworks, where the PRMEM score reach local maxima. The function **get_candidate_module** in the **ProgModule** package can implement the above process. <br/>
+
+```{r}
+#load the data
+data(local_network,mut_status,subnet)
+sur<-system.file("extdata","sur.csv",package = "ProgModule")
+sur<-read.delim(sur,sep=",",header=TRUE,row.names = 1)
+canonical_drivers<-system.file("extdata","canonical_drivers.txt",package = "ProgModule")
+seed_gene<-read.table(canonical_drivers,header=FALSE)
+gene<-intersect(seed_gene[,1],names(local_network))
+#Get candidate modules
+candidatemodule<-get_candidate_module(local_network=local_network,network=subnet,freq_matrix=mut_status,sur=sur,seed=gene,max.size=200,rate=0.05)
+#View the top 10 candidate modules
+candidatemodule[["module_set"]][1:5]
+```
+
+<br/>
+
+## Visualization results.
+
+(1) The function **get_mut_survivalresult** is used to draw Kaplan-Meier survival curves based on the mutation status of driver module. The command lines are as follows:
+
+<br/>
+
+```{r fig.height=6, fig.width=8,warning=FALSE,results='hold'}
+#Load the data
+data(mut_status,final_candidate_module)
+sur<-system.file("extdata","sur.csv",package="ProgModule")
+sur<-read.delim(sur,sep=",",header=TRUE,row.names=1)
+#Drawing Kaplan-Meier Survival Curves.
+get_mut_survivalresult(module=final_candidate_module,freq_matrix=mut_status,sur)
+```
+
+<br/>
+
+(2) The function **get_plotMutInteract** is used to draw patient-specific dysfunction pathways and user-interested geneset mutually exclusive and co-occurrence plots. The command lines are as follows:\
+    <br/>
+
+```{r fig.height=6,fig.width=8,warning=FALSE,results='hide'}
+#Load the data
+data(plotMutInteract_moduledata,plotMutInteract_mutdata)
+#Drawing an plotMutInteract of genes
+get_plotMutInteract(genes=unique(unlist(plotMutInteract_moduledata[1:4])),freq_matrix=plotMutInteract_mutdata)
+#Drawing an plotMutInteract of modules
+get_plotMutInteract(module=plotMutInteract_moduledata,freq_matrix=plotMutInteract_mutdata,nShiftSymbols=0)
+```
+
+<br/>
+
+(3) The function **get_oncoplots** is used to draw a patient-specific dysfunction pathways' waterfall plots. <br/>
+
+```{r fig.height=6,fig.width=8,warning=FALSE,results='hide'}
+#obtain the modules
+data(final_candidate_module)
+#load the maf data
+maffile<-system.file("extdata","maffile.maf",package="ProgModule")
+#Drawing an oncoplot
+get_oncoplots(maf=maffile,genes=final_candidate_module[[3]])
+```
+
+<br/>
+
+(4) The function **get_lollipopPlot** is used to plot genes' mutation hotspot lollipop plots. <br/>
+
+```{r fig.height=6,fig.width=8,warning=FALSE,results='hide'}
+#load the maf data
+data(maf_data)
+#Drawing an lollipopPlot of TP53
+get_lollipopPlot(maf=maf_data,gene="TP53")
+```
+
+<br/>
