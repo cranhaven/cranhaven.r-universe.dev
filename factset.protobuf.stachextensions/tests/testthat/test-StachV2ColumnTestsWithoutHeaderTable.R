@@ -1,0 +1,26 @@
+source("../test_constants.R")
+
+testthat::test_that("column organized without header table",
+                    {
+                      res <-
+                        stachExtensioncol$ConvertToDataFrame(packagewithoutheader, FALSE)
+
+                      expect_equal(ncol(data.frame(res[1])), 6, info = "Column count is mismatching it should be 6")
+                      expect_equal(nrow(data.frame(res[1])), 62, info = "Row count is mismatching it should be 62")
+
+                      # comparing the first row data
+                      df <- data.frame(res[1])
+                      expect_equal(unname(as.list(df[1,])), firstRow, info =
+                                     "first row of table is mismatched with the stach data")
+
+                      # comparing the second row data
+                      expect_equal(unname(as.list(df[2,])), secondRow, info =
+                                     "second row of table is mismatched with the stach data")
+
+                      # comparing count of meta data items
+                      colOrgMetadata <- stachExtensioncol$GetMetadata(package)
+                      expect_equal(length(colOrgMetadata[[1]]), 18, info = "There is an incorrect amount of Metadata items")
+
+                      # comparing values of meta data items with key and value
+                      expect_equal(colOrgMetadata[[1]]$`Grouping Frequency`[[2]],"Industry - Beginning of Period",info = "Mis match of Meta Data Item value with given Key Value pair")
+                    })
