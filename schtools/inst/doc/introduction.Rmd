@@ -1,0 +1,190 @@
+---
+title: "Introduction to schtools"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Introduction to schtools}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+schtools::set_knitr_opts()
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  echo = TRUE,
+  comment = "#>"
+)
+```
+
+```{r deps}
+library(schtools)
+library(dplyr)
+library(ggplot2)
+library(readr)
+library(tidyr)
+```
+
+## Handling mothur data
+
+### Calculate relative abundances
+
+You can read a shared file and calculate relative abundances with `calc_relabun()`:
+
+```{r calc_relabun}
+shared_dat <- read_tsv(system.file("extdata", "test.shared",
+  package = "schtools"
+))
+relabun_dat <- shared_dat %>% calc_relabun()
+head(relabun_dat)
+```
+
+`calc_relabun()` returns the data frame in long format. 
+You can use `tidyr::pivot_wider()` to convert it to wide format:
+
+```{r pivot_wider}
+wide_dat <- relabun_dat %>%
+  pivot_wider(names_from = "otu", values_from = "rel_abun")
+head(wide_dat)
+```
+
+You can see that the relative abundances for each sample sum to 1:
+
+```{r sum1}
+wide_dat %>%
+  select(starts_with("Otu")) %>%
+  rowSums()
+```
+
+
+### Taxonomy files
+
+mothur formats taxonomy files as tab-separated values (tsv). 
+You can use `read_tax()` to parse the taxonomy data and create separate columns
+for each taxonomic level.
+
+```{r read_tax}
+tax_dat <- read_tax(system.file("extdata", "test.taxonomy",
+  package = "schtools"
+))
+head(tax_dat)
+```
+
+The column `label_html` provides html that correctly italicizes the genus name
+without italicizing the OTU label. This can be used with
+`ggtext::element_markdown()` to make nice plots:
+
+```{r italic-genus}
+library(ggtext)
+set.seed(20220427)
+
+relabun_dat %>%
+  mutate(
+    sample_num = stringr::str_remove(sample, "p") %>% as.integer(),
+    treatment = case_when(
+      sample_num %% 2 == 1 ~ "A",
+      TRUE ~ "B"
+    )
+  ) %>%
+  inner_join(tax_dat, by = "otu") %>%
+  ggplot(aes(x = rel_abun, y = label_html, color = treatment)) +
+  geom_jitter(alpha = 0.7, height = 0.2) +
+  labs(x = "Relative abundance", y = "") +
+  theme_minimal() +
+  theme(axis.text.y = element_markdown())
+```
+
+#### Pooling OTU counts at different taxonomic levels
+
+A common task is to repeat OTU-level analyses at different taxonomic levels to
+determine [which resolution is optimal for answering your questions](https://doi.org/10.1128/mbio.03161-21). 
+You'll need a shared file, generated from clustering sequences into OTUs with
+mothur, and a corresponding taxonomy file.
+Take a look at the [mothur documentation](https://mothur.org/wiki/) for info on
+generating these files and performing microbiome analyses.
+
+In this example, `pool_taxon_counts()` pools the OTU counts in the shared file 
+at the genus level and returns new shared and taxonomy data frames.
+
+```{r pool_genus}
+tax_dat <- read_tax(system.file("extdata", "test.taxonomy",
+  package = "schtools"
+))
+shared_dat <- readr::read_tsv(system.file("extdata", "test.shared",
+  package = "schtools"
+))
+pool_taxon_counts(shared_dat, tax_dat, "genus")
+```
+
+You can do this for any taxonomic level in your taxonomy data frame.
+
+```{r pool_phylum}
+pool_taxon_counts(shared_dat, tax_dat, "phylum")
+```
+
+
+### Distance files
+
+If you have a distance file saved as a phylip-formatted lower triangle matrix
+from mothur's [`dist.seqs`](https://mothur.org/wiki/dist.seqs/) command, 
+you can read it into R with `read_dist()`:
+ 
+```{r read_dist}
+dist_filepath <- system.file("extdata",
+  "sample.final.thetayc.0.03.lt.ave.dist",
+  package = "schtools"
+)
+dist_tbl <- read_dist(dist_filepath)
+head(dist_tbl)
+```
+
+
+## R Markdown helpers for scientific writing
+
+When writing scientific papers with R Markdown, we often find ourselves 
+using the same knitr chunk options and miscellaneous helper functions.
+To use our favorite options like `eval=TRUE`, `echo=FALSE`, and others,
+run `set_knitr_opts()` in the first chunk of your R Markdown document:
+
+
+````markdown
+`r ''````{r, include = FALSE}
+set_knitr_opts()
+```
+````
+
+This also sets the inline hook to our custom `inline_hook()` function, which
+automatically formats numbers in a human-readable way and inserts an Oxford
+comma into lists when needed.
+
+### Who doesn't love an Oxford comma?
+
+When writing with R Markdown, you may wish to insert a list or vector 
+inline and correctly format it with an Oxford comma. 
+`inline_hook()` uses `paste_oxford_list()` to help you do just that!
+
+```{r oxford}
+animals <- c("cats", "dogs", "fish")
+```
+
+Insert the string as inline code with `` `r ` ``:
+
+> `` `r "\u0060r animals\u0060"` `` are the most common pets.
+
+Rendered output:
+
+> `r paste_oxford_list(animals)` are the most common pets.
+
+
+### Human-readable numbers
+
+`inline_hook()` uses `format_numbers()` under the hood to automatically format
+numbers to a human-readable format, rather than display in scientific notation.
+
+> The numbers `` `r "\u0060r c(1e-04, 1e-05, 1e-06)\u0060"` `` are very precise,
+> while `` `r "\u0060r c(1e04, 1e05, 1e06)\u0060"` `` are very large.
+
+Rendered output:
+
+> The numbers `r inline_hook(c(1e-04, 1e-05, 1e-06))` are very precise.
+> while `r inline_hook(c(1e04, 1e05, 1e06))` are very large.
+
