@@ -1,0 +1,1 @@
+Download mexican economic census for several years (2004, 2009, 2014 and 2019) and all federal entities. Filter the census data table by municipal data and build a data.frame for all federal entities and several years.
