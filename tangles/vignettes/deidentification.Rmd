@@ -1,0 +1,198 @@
+---
+title: "Anonymisation of Spatial Point Patterns and Raster Objects."
+author: "Malone, B."
+date: "`r Sys.Date()`"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Anonymisation of Spatial Point Patterns and Raster Objects.}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup_reset, include=FALSE}
+# Save original state
+old_opts    <- options()
+old_par     <- par(no.readonly = TRUE)
+old_wd      <- getwd()
+orig_search <- search()
+
+# On exit, restore state and detach any new packages
+on.exit({
+  options(old_opts)
+  par(old_par)
+  setwd(old_wd)
+  new_pkgs <- setdiff(search(), orig_search)
+  for (pkg in new_pkgs) {
+    if (grepl("^package:", pkg)) {
+      detach(pkg, character.only = TRUE, unload = TRUE)
+    }
+  }
+}, add = TRUE)
+```
+
+
+## Introduction
+This demo provides context and use cases for the three core functions of the `tangles` R package:
+
+* `tangles` – Anonymises spatial point patterns and raster objects.
+* `tangler` – re-applies a known Anonymisation to other data using a detangler object.
+* `detangles` – restores Anonymised data back to original coordinates using a valid detangler.
+
+The main driver behind this package is confidentiality. While modern science is becoming increasingly open and collaborative, some spatial data—especially that which relates to sensitive locations—must be shared carefully. Anonymisation allows us to retain spatial structure and support robust analysis while obscuring real-world locations.
+
+`tangles` Anonymises data through randomized spatial transformations:
+
+* Vertical shifts
+* Horizontal shifts
+* Rotational shifts
+
+Each transformation is stored with a hash-verified detangler, enabling reversible workflows and consistent Anonymisation across related datasets.
+
+## Setup
+
+`tangles` accepts spatial data in the form of:
+
+- Two-column matrices or data frames (X, Y coordinates)
+- `sf` POINT objects
+- `terra` raster layers or stacks
+
+It also allows exporting of Anonymised point data to shapefiles if needed.
+
+```{r libraries, echo=TRUE, message=FALSE, warning=FALSE}
+# Load required libraries
+library(tangles)
+library(digest)
+library(terra)
+library(sf)
+
+# Load point data
+data("HV_subsoilpH")
+
+# Load raster data from files
+ext_path <- system.file("extdata", package = "tangles")
+rast.files <- list.files(path = ext_path, full.names = TRUE)
+rasters <- terra::rast(rast.files)
+```
+
+## Tangling Point Data
+
+`tangles()` can be used directly on `sf` objects too. Here's an example with shapefile export:
+
+```{r tangles-point, echo=TRUE, message=FALSE, warning=FALSE}
+xyData <- as.matrix(HV_subsoilpH[, 1:2])
+tangles.out <- tangles(
+  data = xyData,
+  depth = 3,
+  rasterdata = FALSE,
+  raster_object = FALSE,
+  saveTangles = TRUE,
+  exportShapefile = TRUE,
+  path = tempdir()
+)
+
+# Using sf input
+df <- HV_subsoilpH[, 1:2]
+sf_pts <- st_as_sf(df, coords = c("X", "Y"))
+tangles.sf.out <- tangles(
+  data = sf_pts,
+  depth = 3,
+  saveTangles = TRUE,
+  exportShapefile = TRUE,
+  path = tempdir()
+)
+```
+
+## Tangling Raster Data
+
+You can also use `tangles()` directly on raster stacks to Anonymise them, particularly when you want to generate a new detangler object.
+
+```{r tangles-raster, echo=TRUE, message=FALSE, warning=FALSE}
+tangles.ras.out <- tangles(
+  data = rasters,
+  depth = 3,
+  rasterdata = TRUE,
+  raster_object = TRUE,
+  saveTangles = TRUE,
+  path = tempdir()
+)
+```
+
+## Tangling Point and Raster Data Together
+
+When tangling both point and raster data using the same transformation, it is important to constrain the rotation angles to preserve raster alignment. This can be done by setting `rasterdata = TRUE` in the `tangles()` call for point data. This ensures that any rotation is limited to 90°, 180°, or 270°, which maintains compatibility with grid-based raster structures.
+
+```{r tangling-together, echo=TRUE, message=FALSE, warning=FALSE}
+# 1. Tangling the point data
+xyData <- as.matrix(HV_subsoilpH[, 1:2])
+tangles.out <- tangles(
+  data = xyData,
+  depth = 4,
+  rasterdata = TRUE,
+  raster_object = FALSE,
+  saveTangles = FALSE
+)
+
+# 2. Tangling the raster data using the same detangler
+tangler.out <- tangler(
+  data = rasters,
+  tanglerInfo = tangles.out[[2]],
+  raster_object = TRUE,
+  stub = "combined",
+  saveTangles = FALSE
+)
+
+# 3. Convert points to sf objects
+original_pts <- st_as_sf(HV_subsoilpH, coords = c("X", "Y"))
+tangled_pts <- st_as_sf(as.data.frame(tangles.out[[1]]), coords = c("X", "Y"))
+
+# 4. Plot both
+par(mfrow = c(1, 2))
+plot(rasters[[1]], main = "Original Raster + Points")
+plot(original_pts, add = TRUE, pch = 16, col = "blue")
+
+plot(tangler.out[[1]][[1]], main = "Tangled Raster + Points")
+plot(tangled_pts, add = TRUE, pch = 16, col = "red")
+par(mfrow = c(1, 1))
+```
+
+## Detangling Back to Original
+
+To restore Anonymised data to its original spatial configuration, use the `detangles()` function with the correct `tanglerInfo` and `hash_key`. This will reverse all transformations in the correct order.
+
+Note:
+- For successful restoration, the `hash_key` must match the one embedded in the detangler object.
+- If working with raster data, ensure the same constraints (e.g., right-angle rotations) were applied during tangling.
+- You can optionally export the restored point data as shapefiles using `exportShapefile = TRUE`, which is useful for downstream spatial analysis or visualization.
+
+```{r detangles, echo=FALSE, eval=FALSE, message=FALSE, warning=FALSE}
+# Detangle points
+detangled_points <- detangles(
+  data = tangles.out[[1]],
+  tanglerInfo = tangles.out[[2]],
+  raster_object = FALSE,
+  stub = "demo_points",
+  hash_key = tangles.out[[2]]$hash,
+  saveTangles = TRUE,
+  path = tempdir()
+)
+
+# Detangle rasters
+detangled_rasters <- detangles(
+  data = tangler.out[[1]],
+  tanglerInfo = tangles.out[[2]],
+  raster_object = TRUE,
+  stub = "demo_raster",
+  hash_key = tangles.out[[2]]$hash,
+  saveTangles = TRUE,
+  path = tempdir()
+)
+```
+
+## Final Notes
+
+The `tangles` package provides a reversible and flexible method for Anonymising spatial data. It supports point and raster formats, and can be integrated into privacy-preserving data sharing workflows. While the Anonymised coordinates are spatially transformed, internal spatial relationships (e.g., autocorrelation) remain intact, allowing robust analysis without revealing exact locations.
+
+For best results:
+- Use non-right-angle rotations only on point data.
+- For rasters, limit rotations to 90°, 180°, or 270°.
+- Consider exporting Anonymised points as shapefiles when sharing with collaborators.
