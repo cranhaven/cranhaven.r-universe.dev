@@ -1,0 +1,293 @@
+---
+title: "Modeling"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Modeling}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+## Modeling plant emergence and canopy growth using UAV data
+
+This vignette demonstrates piecewise regression using canopy data derived from
+UAV imagery to estimate two key parameters:
+
+* t1: days to plant emergence.
+* t2: days to reach maximum canopy.
+
+The data are from the University of Wisconsin-Madison potato breeding program,
+specifically for a partially replicated experiment. The UAV images were
+collected in 2020 and processed in 2024.
+
+## Loading libraries
+
+```{r, warning=FALSE, message=FALSE }
+library(flexFitR)
+library(dplyr)
+library(kableExtra)
+library(ggpubr)
+library(purrr)
+```
+
+## 1. Exploring data
+
+We begin with the explorer function, which provides basic statistical summaries 
+and descriptive statistics, as well as visualizations to help understand the
+temporal evolution of each plot.
+
+```{r}
+data(dt_potato)
+explorer <- explorer(dt_potato, x = DAP, y = Canopy, id = Plot)
+```
+
+```{r}
+names(explorer)
+```
+
+```{r, fig.width= 8, fig.height=4, fig.alt="plot corr"}
+p1 <- plot(explorer, type = "evolution", return_gg = TRUE, add_avg = TRUE)
+p2 <- plot(explorer, type = "x_by_var", return_gg = TRUE)
+ggarrange(p1, p2)
+```
+
+To see more about the type of plots visit `plot.explorer()`.
+
+```{r, echo=FALSE}
+kable(mutate_if(explorer$summ_vars, is.numeric, round, 2))
+```
+
+
+## 2. Regression Function 
+
+Once the data have been explored, we define the expectation function. In this
+case, it is a piece-wise regression function with three parameters: t1, t2, and
+k. The function can be expressed mathematically as follows:
+
+`fn_lin_plat()`
+
+\begin{equation}
+f(t; t_1, t_2, k) =
+\begin{cases}
+0 & \text{if } t < t_1 \\
+\dfrac{k}{t_2 - t_1} \cdot (t - t_1) & \text{if } t_1 \leq t \leq t_2 \\
+k & \text{if } t > t_2
+\end{cases}
+\end{equation}
+
+
+```{r, echo = FALSE, fig.width= 8, fig.alt="plot fn"}
+plot_fn(
+  fn = "fn_lin_plat",
+  params = c(t1 = 40, t2 = 61.8, k = 100),
+  interval = c(0, 108),
+  color = "black",
+  base_size = 15
+)
+```
+
+## 3. Fitting Models
+
+To fit the model, we use the modeler function. Here:
+
+* x specifies the days after planting (DAP),
+* y is the canopy variable to be modeled,
+* grp allows us to perform group analysis, e.g., on multiple plots.
+
+In this example, we have 196 plots but will only fit the model for plots 166 
+and 40 as a subset. We define the piecewise function `fn_lin_plat` and set
+initial values for the parameters.
+
+```{r, warning=FALSE, message=FALSE }
+mod_1 <- dt_potato |>
+  modeler(
+    x = DAP,
+    y = Canopy,
+    grp = Plot,
+    fn = "fn_lin_plat",
+    parameters = c(t1 = 45, t2 = 80, k = 0.9),
+    subset = c(166, 40)
+  )
+mod_1
+```
+After fitting, we can inspect the model summary and visualize the fit using the plot function:
+
+```{r, fig.width= 8, fig.height=4, fig.alt="plot fit"}
+plot(mod_1, id = c(166, 40))
+kable(mod_1$param)
+```
+## 3.1. Extracting model coefficients and uncertainty measures
+
+Once the model is fitted, we can extract key statistical information, such as
+coefficients, standard errors, confidence intervals, and the variance-covariance
+matrix for each group (plot). These metrics allow us to draw conclusions about
+the parameter estimates and assess the uncertainty around them.
+
+The functions `coef`, `confint`, and `vcov` are used as follows:
+
+* **coef**: Extracts the estimated coefficients for each group.
+* **confint**: Provides the confidence intervals for the parameter estimates.
+* **vcov**: Returns the variance-covariance matrix, which can be used to understand 
+the relationships between the estimates and their variability.
+
+```{r}
+coef(mod_1)
+```
+```{r}
+confint(mod_1)
+```
+
+```{r}
+vcov(mod_1)
+```
+
+## 4. Providing different initial values
+
+The initial fit may not always be optimal, so we can adjust the initial parameter 
+values for each plot and even fix certain parameters to improve the model.
+
+```{r}
+initials <- data.frame(
+  uid = c(166, 40),
+  t1 = c(70, 60),
+  t2 = c(40, 80),
+  k = c(100, 100)
+)
+```
+
+```{r}
+kable(initials)
+```
+
+```{r}
+mod_2 <- dt_potato |>
+  modeler(
+    x = DAP,
+    y = Canopy,
+    grp = Plot,
+    fn = "fn_lin_plat",
+    parameters = initials,
+    subset = c(166, 40)
+  )
+```
+
+```{r, fig.width= 8, fig.height=4, fig.alt="plot fit 2"}
+plot(mod_2, id = c(166, 40))
+kable(mod_2$param)
+```
+
+It's important to note that providing poor initial guesses for the parameters can
+lead to inaccurate or unreliable model fits. For example, if we mistakenly assign
+t1 (the day of plant emergence) a value greater than t2 (the day of maximum canopy), 
+the model fit can fail or produce nonsensical results.
+
+## 5. Fixing some parameters of the model
+
+In certain cases, we may want to fix specific parameters either because they are
+known or because we prefer the model to leave these parameters unchanged. 
+For example, we can fix the parameter `k`, which represents the maximum canopy value, as follows:
+
+```{r}
+fixed_params <- list(k = "max(y)")
+```
+
+```{r}
+mod_3 <- dt_potato |>
+  modeler(
+    x = DAP,
+    y = Canopy,
+    grp = Plot,
+    fn = "fn_lin_plat",
+    parameters = c(t1 = 45, t2 = 80, k = 0.9),
+    fixed_params = fixed_params,
+    subset = c(166, 40)
+  )
+```
+
+```{r, fig.width= 8, fig.height=4, fig.alt="plot fit 3"}
+plot(mod_3, id = c(166, 40))
+kable(mod_3$param)
+```
+
+By fixing k to 100, we are telling the model that the maximum canopy for these plots
+is fixed at 100%. This allows the model to focus on estimating the other parameters,
+t1 and t2, potentially improving the accuracy of their estimates by reducing the 
+complexity of the model.
+
+## 6. Comparing estimations
+
+```{r}
+rbind.data.frame(
+  mutate(mod_1$param, model = "1", .before = uid),
+  mutate(mod_2$param, model = "2", .before = uid),
+  mutate(mod_3$param, model = "3", .before = uid)
+) |>
+  filter(uid %in% 166) |>
+  kable()
+```
+
+After fitting multiple models with different initial values, fixed parameters, 
+and canopy adjustments, we can compare the resulting coefficients and sum of 
+square errors (`sse`) to evaluate the impact of these changes.
+
+```{r}
+comparison <- performance(mod_1, mod_2, mod_3)
+comparison |>
+  filter(uid %in% 166) |>
+  kable()
+```
+
+```{r, fig.alt="plot fit 4"}
+plot(comparison, id = 166)
+```
+
+
+## 7. Making predictions
+
+
+Once the model is fitted and validated as the best representation of our data,
+we can proceed to make predictions. The `predict.modeler()` function provides a 
+range of flexible prediction options, allowing users to perform point 
+predictions, calculate the area under the curve (AUC), compute first or second
+derivatives, and even evaluate custom functions of the parameters. Below are
+some examples demonstrating these capabilities:
+
+```{r}
+# Point Prediction
+predict(mod_1, x = 45, type = "point", id = 166) |> kable()
+# AUC Prediction
+predict(mod_1, x = c(0, 108), type = "auc", id = 166) |> kable()
+# Function of the parameters
+predict(mod_1, formula = ~ t2 - t1, id = 166) |> kable()
+```
+In each example, the `predict.modeler()` function tailors the predictions to the 
+user’s needs, whether it's estimating a single value, integrating across a 
+range, or calculating a parameter-based expression.
+
+## 8. Modelling all plots using parallel processing
+
+Finally, we can apply this method to all 196 plots, leveraging parallel
+processing to speed up the computation. To do this, we specify `parallel = TRUE`
+in the options argument, and set the number of cores using the function
+`parallel::detectCores()`, which automatically detects the available cores.
+
+```{r, eval= FALSE}
+mod <- dt_potato |>
+  modeler(
+    x = DAP,
+    y = Canopy,
+    grp = Plot,
+    fn = "fn_lin_plat",
+    parameters = c(t1 = 45, t2 = 80, k = 0.9),
+    fixed_params = list(k = "max(y)"),
+    options = list(progress = TRUE, parallel = TRUE, workers = 5)
+  )
+```
+
+<br>
