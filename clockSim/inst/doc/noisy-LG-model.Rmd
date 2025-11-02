@@ -1,0 +1,175 @@
+---
+title: "Noisy LG model: incorporating noise to the classical LG ODE clock model"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{noisy-LG-model}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  out.width = "80%",
+  dpi = 300
+)
+```
+
+This vignette documents a "noisy LG model" provided in this package which 
+incorporates Gaussian noise in the classical LG model that was initially 
+defined as an ODE model. We take the classical LG circadian clock ODE model 
+and provide a stochastic differential equation (SDE) form.
+
+## A SDE LG model
+
+Here I summarize key concepts behind the `noisy_LG` model. Full definition is 
+available in the `odin/noisy_leloup-goldbeter.R` Odin definition file.
+
+1. Converting the ODE model to difference equations 
+$\vec{X}(t+\mbox{d}t)=\vec{X}(t)+\vec{X'}(t)\mbox{d}t$. This is the 
+`discrete_LG` model.
+2. Converting all concentration (states and parameters, in nM for LG) 
+to molecule count. This enables more physical addition of noise as noise 
+is inherently about molecule counts instead of concentration (mass statistics).
+3. Addition of noise terms st $\vec{X}(t+\mbox{d}t)=\vec{X}(t)+\vec{X'}(t)\mbox{d}t\ +\ b(X,t)\mbox{d}W$ (Wiener process) by considering randomness of the underlying 
+reaction processes (see below "Noise Scaling" section).
+
+The final difference equation update will be Euler-Maruyama where $\vec{X'}$ is 
+taken from the initial ODE:
+
+$$
+\vec{X}(t+\Delta t)=\vec{X}(t)+\vec{X'}(t)\Delta t+\vec{\sigma}(X,t)\Delta W,\ \Delta W=X\sqrt{\Delta t},\ X\sim\mathcal{N}(0, 1)
+$$
+
+### When is the model valid?
+
+At molecular level, reactions can be modeled as Poisson processes. Given a 
+reaction with rate $\alpha$ [molecules/$\Delta t$], within one time step we 
+turnover $\alpha$ molecules (mean). If $\alpha>>1$, we can think of the process 
+as a sum of many iid processes (basically central limit theorem). 
+In this case, Wiener process would be good approximation.
+
+### Noising scaling
+
+Intuitively, faster process -> larger expectation -> larger variance. This  
+comes natural from the Poisson model. With the following update equation of 
+RNA level $M$:
+
+$$
+M(t+\Delta t) = M(t) + (\mbox{transcription}(t)\ -\ \mbox{degradation}(t))\Delta t
+$$
+
+At each update step, transcription and degradation are independent 
+Poisson. We therefore have the noise-incorporated model:
+
+$$
+M(t+\Delta t) = M(t) + (\mbox{txn}(t)\ -\ \mbox{deg}(t))\Delta t\ +\ \sqrt{\mbox{txn}(t)+\mbox{deg}(t)}\ \Delta W
+$$
+
+**The noisy LG model allows you to "turn on/off" noise terms for updating of each of the 10 states in the LG model.**
+
+## Loading the noisy LG model
+
+Below we load the noisy LG model. Note that `getOdinGen()$noisy_LG` is a list:
+
+- `$gen`: model generator
+- `$count2nM`: multiplier to convert simulation result (count) to concentration (nM).
+
+In this model, we assumed the following:
+
+- Cell dimension `cellDimUM` takes default `10um` (cube of 10um sides).
+- Parameters are converted from concentration (`_conc` postfix user variables) to count using volume.
+- By default, only `M_T` (timeless RNA) noise is turned on (`NoiseVariance_M_T = -1`).
+- Simulation is performed in count and hour units
+
+If you would like to still analyze simulation data in concentration unit, multiply 
+results by the `$count2nM` multiplier (see example below).
+
+To turn on/off noise for each state, change the `NoiseVariance` prefix user 
+variables. Setting to -1 will add Poisson-scaled noise while setting to a positive 
+value (in nM concentration) will add a constant variance (=given variance) noise.
+
+```{r setup}
+library(clockSim)
+library(ggplot2)
+library(dplyr)
+
+mg <- getOdinGen()$noisy_LG
+model <- mg$gen$new()
+
+# Time steps
+interval_hours <- 0.001
+total_hours <- 2400
+model$set_user(STEP_HOURS = interval_hours)
+steps <- seq(from = 1, to = total_hours / interval_hours)
+```
+
+## Example: noise in tim RNA `M_T` turnover
+
+`M_T` noise is turned on by default. Here, we compare results with this noise 
+off and on (refer to other vignettes in the package for details on these analyses):
+
+1. Phase portrait plot
+2. Periodogram
+
+```{r}
+# A helper function for running simulation and convert unit
+runSim <- function(model, steps, interval_hours){
+  res <- model$run(steps)
+  res <- res |> as.data.frame() |> mutate(time = step*interval_hours)
+  res <- res |> filter(time %% 1 == 0) # Get results every hour
+  plt1 <- plot_phase(
+    res |> 
+      select(step, time, C, C_N) |>
+      # Convert units from count to nM
+      mutate(across(-c(time, step), .fns = \(x) x*mg$count2nM)), 
+    C, C_N)
+  res.per <- res |> tail(n=240) # Only use last 240 hours for periodogram
+  per <- compute_period(
+    # Use M_T tim RNA data
+    res.per |> pull(M_T),
+    # Refer to the lomb::lsp().
+    #   Only consider 18-30hour period, ofac=2 gives around ~1hour precision
+    method = "lomb", from = 18, to = 30, type = "period", ofac = 2)
+  
+  return(list(
+    plt.phase = plt1, lomb = per, res = res
+  ))
+}
+```
+
+
+### Phase portrait and periodogram
+
+```{r}
+# Turn noise off
+model$set_user(NoiseVariance_M_T = 0)
+run <- runSim(model, steps, interval_hours)
+plot(run$plt.phase)
+print(run$lomb)
+
+# Turn noise on
+model$set_user(NoiseVariance_M_T = -1)
+run <- runSim(model, steps, interval_hours)
+plot(run$plt.phase)
+print(run$lomb)
+```
+
+How about 1.5X k_sT (tim translation rate)?
+
+```{r}
+model$set_user(k_sT = 1.8)
+
+# Turn noise off
+model$set_user(NoiseVariance_M_T = 0)
+run <- runSim(model, steps, interval_hours)
+plot(run$plt.phase)
+print(run$lomb)
+
+# Turn noise on
+model$set_user(NoiseVariance_M_T = -1)
+run <- runSim(model, steps, interval_hours)
+plot(run$plt.phase)
+print(run$lomb)
+```
