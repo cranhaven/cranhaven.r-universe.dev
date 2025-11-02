@@ -1,0 +1,187 @@
+---
+title: "Tutorial for GWAS with SLOPE"
+author: "Piotr Sobczyk"
+date: "`r Sys.Date()`"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Tutorial for GWAS with SLOPE}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+### Table of Contents
+
+1. [How to do GWAS?](#how-to-do-GWAS)
+2. [How changing parameters affects my analysis?](#how-changing-parameters-affects-my-analysis)
+3. [How this procedure works exactly?](#how-this-procedure-works-exactly)
+
+### How to do GWAS?
+
+This tutorial will guide you on how to perform GWAS with SLOPE.
+Analysis consists of three simple steps.
+
+#### Reading data 
+
+You need to provide paths to three files:
+
+1. .fam file with information about observations including phenotype. 
+By default this file is assumed to have six column, with last one containing phenotype.
+For details see documentation of function *readPhenotype*
+2. .map file with mapping information about snps. 
+This file is not required for subsequent analysis, but is highly recommended. 
+Note that lack of mapping information will result in less informative plots and results
+summary.
+3. .raw file with snps. 
+We assume that snps were previously exported from PLINK with command <br/> 
+**plink -\-file input -\-recodeAD -\-out output**, where *input* is you 
+name of .ped file. 
+
+```{r, results='hide', message=FALSE}
+library(geneSLOPE)
+famFile <- system.file("extdata", "plinkPhenotypeExample.fam", package = "geneSLOPE")
+mapFile <- system.file("extdata", "plinkMapExample.map", package = "geneSLOPE")
+snpsFile <- system.file("extdata", "plinkDataExample.raw", package = "geneSLOPE")
+```
+
+```{r}
+phenotype <- read_phenotype(filename = famFile)
+```
+
+When you have phenotype you can move to reading snp data. 
+Depending on data size reading SNPs may long time.
+As data is very large, snps are filtered with their marginal test p-value.
+All snps which p-values are larger than threshold $pValMax$ will be truncated.
+For details on how to choose $pValMax$ see [How changing parameters affects my analysis?](#how-changing-parameters-affects-my-analysis)
+
+```{r, warning=FALSE}
+screening.result <- screen_snps(snpsFile, mapFile, phenotype, pValMax = 0.05, 
+                      chunkSize = 1e2, verbose=FALSE)
+```
+
+Parameter *verbose=FALSE* suppresses progress bar. Default value is *TRUE*.
+
+User look into result of reading and screening dataset
+
+```{r}
+summary(screening.result)
+```
+
+When data is successfully read, one can move to the second step of analysis.
+
+#### Clumping highly correlated genes
+
+Next step is clumping. Highly correlated snps will be clustered. For details
+see [How this procedure works exactly?](#how-this-procedure-works-exactly) 
+$rho$ controls number and size of clumps. For details see [How changing parameters affects my analysis?](#how-changing-parameters-affects-my-analysis)
+
+```{r}
+clumping.result <- clump_snps(screening.result, rho = 0.3, verbose = FALSE)
+```
+
+What is the result of clumping procedure?
+
+```{r}
+summary(clumping.result)
+```
+
+We can also plot our results
+
+```{r, warning=FALSE, fig.height=7, fig.width=7}
+plot(clumping.result)
+```
+
+
+If we are interested in specific chromosome we can "zoom it"
+
+```{r, warning=FALSE, fig.height=6, fig.width=6}
+plot(clumping.result, chromosomeNumber = 1)
+```
+
+
+It is possible to identify interactively clump number that contains SNP of interest.
+The procedure is the following. First plot the whole genome,
+then run function \emph{identify_clump} and click on SNP of interest.
+
+```{r, eval=FALSE}
+plot(clumping.result)
+identify_clump(clumping.result)
+```
+
+Knowing clump number one can zoom into it. 
+
+```{r, warning=FALSE, fig.height=6, fig.width=6}
+plot(clumping.result, clumpNumber = 1)
+```
+
+#### Running SLOPE on result of clumping procedure
+
+Last step of analysis is using SLOPE
+
+```{r}
+slope.result <- select_snps(clumping.result, fdr=0.1)
+```
+
+As before one can plot and summarize results
+
+```{r, warning = FALSE, fig.height=7, fig.width=7}
+summary(slope.result)
+plot(slope.result)
+```
+
+Like with result of clumping, it is possible to identify interactively clump number which contains
+specific SNP selected by SLOPE.
+The procedure is the following. First plot the whole genome,
+then run function \emph{identify_clump} and click on SNP of interest.
+
+```{r, eval=FALSE}
+plot(slope.result)
+identify_clump(slope.result)
+```
+
+When clump is identified one can zoom into it
+
+```{r, warning = FALSE, fig.height=7, fig.width=7}
+plot(slope.result, clumpNumber = 1)
+```
+
+It is easy to get information about selected SNPs.
+To get indices of columns in original SNP matrix they refer to use
+
+```{r}
+slope.result$selectedSnpsNumbers
+```
+
+If .map file was given, then one can get more information about SNPs
+
+```{r}
+slope.result$X_info[slope.result$selectedSnpsNumbers,]
+```
+
+For information about SNPs that are part of specific clump use
+
+```{r}
+summary(slope.result, clumpNumber = 1)
+```
+
+### How changing parameters affects my analysis?
+
+There are three numerical parameters that influence result
+
+* $pValMax$ is the threshold p-value for marginal test. When data is loaded to R,
+initial screening of snps is performed. For every snp, test for slope coefficient in simple linear regression model $lm(phenotype \sim snp)$ is performed. All snps with p-value larger than pValMax are discarded. Setting this parameter to too large will significantly increase number of snps on which clumping procedure will be performed. This may cause two technical threats
+    * Computer might run out of RAM memory
+    * Clumping procedure might take a lot of time
+* $rho$ is threshold for correlation between snps in clumping procedure. For given snp, every that is correlated with it at least at level $rho$ will be clumped together. Setting this parameter too high (say 0.7) will cause SLOPE to work on highly correlated snps which might affect FDR control
+* $fdr$ false discover rate (FDR) for SLOPE procedure. The higher $fdr$ is, the more variables will be accepted to the model. Contrary, small $fdr$ yields more conservative models
+
+### How this procedure works exactly?
+
+#### Clumping Procedure for SLOPE (CPS)
+
+**Input**: $rho \in (0, 1)$;
+
+1. for each SNPs calculate p-value for simple linear regression test, i.e. after assuming linear regression model with a single explanatory variable and testing if slope parameter is nonzero. Vector created from p-values gives hierarchy which is used in next steps;
+2. select index, Idx, corresponding to the smallest p-value, create group of all SNPs correlated with
+SNPs Idx at least on level Rho (Pearson correlation);
+3. define this group as clump and Idx as representative of clump. Exclude entire clump from remained SNPs;
+4. repeat two previous steps until each SNP is assigned to some clump.
