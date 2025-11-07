@@ -1,0 +1,33 @@
+#' Computes the dynamic principal component scores of a functional time series.
+#' 
+#' The \eqn{\ell}-th dynamic principal components score sequence is defined by
+#' \deqn{
+#'   Y_{\ell t}:=\sum_{k\in\mathbf{Z}} \int_0^1 \phi_{\ell k}(v) X_{t-k}(v)dv,\quad 1\leq \ell\leq d,
+#' }
+#' where \eqn{\phi_{\ell k}(v)} and \eqn{d} are explained in \code{\link{fts.dpca.filters}}. (The integral is not necessarily restricted to the interval \eqn{[0,1]}, this depends on the data.) For the sample version the sum extends over the range of lags for which the \eqn{\phi_{\ell k}} are defined. 
+#' 
+#' For more details we refer to  Hormann et al. (2015).
+#' 
+#' @title Functional dynamic principal component scores
+#' 
+#' @param X a functional time series given as an object of class \code{\link[fda]{fd}}.
+#' @param dpcs an object of class \code{fts.timedom}, representing the dpca filters
+#' obtained from the sample \code{X}. If \code{dpsc = NULL}, then
+#' \code{dpcs = fts.dpca.filter(fts.spectral.density(X))} is used.
+#' @return A \eqn{(T\times \code{Ndpc})}-matix with \code{Ndpc = dim(dpcs$operators)[1]}. The \eqn{\ell}-th column contains the \eqn{\ell}-th dynamic principal component score sequence.
+#' @references Hormann, S., Kidzinski, L., and Hallin, M.
+#' \emph{Dynamic functional principal components.} Journal of the Royal
+#' Statistical Society: Series B (Statistical Methodology) 77.2 (2015): 319-348.
+#' @seealso The multivariate equivalent in the \code{freqdom} package: \code{\link[freqdom]{dpca.scores}}
+#' @export
+#' @keywords DPCA
+fts.dpca.scores = function(X,dpcs = fts.dpca.filters(spectral.density(X))){
+
+  basisY=dpcs$basisY
+  B=inprod(basisY,basisY)
+  multX = t(B%*%X$coefs)
+  A=timedom(dpcs$operators,dpcs$lags)
+
+  dpca.scores(multX,A)
+} 
+

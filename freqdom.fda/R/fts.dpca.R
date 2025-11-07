@@ -1,0 +1,87 @@
+#' Functional dynamic principal component analysis (FDPCA) decomposes functional time series to a vector time series with
+#' uncorrelated components. Compared to classical functional principal components, FDPCA decomposition outputs components which
+#' are uncorrelated in time, allowing simpler modeling of the processes and maximizing long run variance of the projection.
+#'
+#' This convenient function applies the FDPCA methodology and returns filters (\code{\link{fts.dpca.filters}}), scores
+#' (\code{\link{fts.dpca.scores}}), the spectral density (\code{\link{fts.spectral.density}}), variances (\code{\link{fts.dpca.var}}) and
+#' Karhunen-Leove expansion (\code{\link{fts.dpca.KLexpansion}}).
+#'
+#' See the example for understanding usage, and help pages for details on individual functions.
+#'
+#' @title Compute Functional Dynamic Principal Components and dynamic Karhunen Loeve extepansion
+#'
+#' @param X a functional time series as a \code{fd} object from \code{fda} package.
+#' @param q window size for the kernel estimator, i.e. a positive integer.
+#' @param freq a vector containing frequencies in \eqn{[-\pi, \pi]} on which the spectral density should be evaluated.
+#' @param Ndpc is the number of principal component filters to compute as in \code{\link{fts.dpca.filters}}
+#'
+#' @references Hormann, S., Kidzinski, L., and Hallin, M.
+#' \emph{Dynamic functional principal components.} Journal of the Royal
+#' Statistical Society: Series B (Statistical Methodology) 77.2 (2015): 319-348.
+#' @references Brillinger, D.
+#' \emph{Time Series} (2001), SIAM, San Francisco.
+#' @references Shumway, R., and Stoffer, D.
+#' \emph{Time series analysis and its applications: with R examples} (2010), Springer Science & Business Media
+#'
+#' @return A list containing
+#' * \code{scores} \eqn{\quad} DPCA scores (\code{\link{fts.dpca.scores}})
+#' * \code{filters} \eqn{\quad}  DPCA filters (\code{\link{fts.dpca.filters}})
+#' * \code{spec.density} \eqn{\quad}  spectral density of \code{X} (\code{\link{fts.spectral.density}})
+#' * \code{var} \eqn{\quad} amount of variance explained by dynamic principal components (\code{\link{fts.dpca.var}})
+#' * \code{Xhat} \eqn{\quad}  Karhunen-Loeve expansion using \code{Ndpc} dynamic principal components (\code{\link{fts.dpca.KLexpansion}})
+#'
+#' @keywords DPCA
+#' @export
+#' @examples
+#' # Load example PM10 data from Graz, Austria
+#' data(pm10) # loads functional time series pm10 to the environment
+#' X = center.fd(pm10)
+#'
+#' # Compute functional dynamic principal components with only one component
+#' res.dpca = fts.dpca(X, Ndpc = 1, freq=(-25:25/25)*pi) # leave default freq for higher precision
+#' plot(res.dpca$Xhat)
+#' fts.plot.filters(res.dpca$filters)
+#' 
+#' # Compute functional PCA with only one component
+#' res.pca = prcomp(t(X$coefs), center = TRUE)
+#' res.pca$x[,-1] = 0
+#' 
+#' # Compute empirical variance explained
+#' var.dpca = (1 - sum( (res.dpca$Xhat$coefs - X$coefs)**2 ) / sum(X$coefs**2))*100
+#' var.pca = (1 - sum( (res.pca$x %*% t(res.pca$rotation) - t(X$coefs) )**2 ) / sum(X$coefs**2))*100
+#' 
+#' cat("Variance explained by PCA (empirical):\t\t",var.pca,"%\n")
+#' cat("Variance explained by PCA (theoretical):\t",
+#'    (1 - (res.pca$sdev[1] / sum(res.pca$sdev)))*100,"%\n")
+#' cat("Variance explained by DPCA (empirical):\t\t",var.dpca,"%\n")
+#' cat("Variance explained by DPCA (theoretical):\t",(res.dpca$var[1])*100,"%\n")
+#' 
+#' # Plot filters
+#' fts.plot.filters(res.dpca$filters)
+#' 
+#' # Plot spectral density (note that in case of these data it's concentrated around 0)
+#' fts.plot.operators(res.dpca$spec.density,freq = c(-2,-3:3/30 * pi,2))
+#' 
+#' # Plot covariance of X
+#' fts.plot.covariance(X)
+#' 
+#' # Compare values of the first PC scores with the first DPC scores 
+#' plot(res.pca$x[,1],t='l',xlab = "Time",ylab="Score", lwd = 2.5)
+#' lines(res.dpca$scores[,1], col=2, lwd = 2.5)
+#' legend(0,4,c("first PC score","first DPC score"), # puts text in the legend
+#'        lty=c(1,1),lwd=c(2.5,2.5), col=1:2)
+fts.dpca = function(X,
+                q = 30,
+                freq = (-1000:1000/1000)*pi,
+                Ndpc = X$basis$nbasis){
+  if (!is.fd(X))
+    stop("X must be a functional data object")
+  
+  res = list()
+  res$spec.density = fts.spectral.density(X, freq = freq, q = q)
+  res$filters = fts.dpca.filters(res$spec.density, q = q, Ndpc = Ndpc)
+  res$scores = fts.dpca.scores(X, res$filters)
+  res$var = fts.dpca.var(res$spec.density)
+  res$Xhat = fts.dpca.KLexpansion(X, res$filters)
+  res
+}
