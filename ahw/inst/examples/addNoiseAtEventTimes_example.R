@@ -1,0 +1,5 @@
+library(data.table)
+data(fr1)
+fr1 <- as.data.table(fr1)
+fr1 <- addNoiseAtEventTimes(fr1)
+head(fr1)
