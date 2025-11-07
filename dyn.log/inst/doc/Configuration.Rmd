@@ -1,0 +1,218 @@
+---
+title: "Configuration"
+author: Brandon Moretz
+date: "`r Sys.Date()`"
+output:
+  prettydoc::html_pretty:
+    theme: architect
+    highlight: github
+  
+vignette: >
+  %\VignetteIndexEntry{Configuration}
+  %\VignetteEngine{knitr::rmarkdown}
+  \usepackage[utf8]{inputenc}
+---
+
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+```{r setup}
+library(dyn.log)
+```
+
+```{r, comment = "", results = "asis", echo = F}
+options(crayon.enabled = TRUE)
+knitr::opts_chunk$set(collapse = TRUE, comment = "")
+old.hooks <- fansi::set_knit_hooks(knitr::knit_hooks)
+```
+
+## Configurations
+
+The dyn.log package is configuration-driven to provide the client flexibility with both the look & feel of log layouts/formatting (aesthetics), and how it interacts with its container environment. This vignette will focus less on *how the logger works*, and more on *how to make it work for you*.
+
+There are two main ways to set the logging configuration:
+
+* Explicitly pass a configuration file to the *init_logger* function.
+  + init_logger(file_path = "~/package/config.yaml")
+* Global Option
+    + options("dyn.log.config" = "~/package/config.yaml")
+
+If you work on a large project (i.e., comprised of many packages) setting the global option in your .Rprofile is the suggested approach; it will save you a great deal of time.
+
+## Templates
+
+The package comes with a few preconfigured logging setups that are common starting points for your bespoke configuration. To see the configuration templates call the *get_configurations* method:
+
+
+```{r, eval = F}
+configs <- get_configurations()
+configs
+```
+```{r, echo = F}
+configs <- get_configurations()
+pander::pander(sapply(configs, basename))
+```
+
+This will return a list of configurations and the yaml file path on your local system.
+
+There are two main ways to utilize these 'OTB' templates, both having the basic
+idea of copying a pre-configured template from the package to your local
+working environment, and then setting the logger to look for that file going-forward.
+
+### Package
+
+To use a custom logging configuration in a package:
+
+```{r, eval=FALSE}
+file.copy(from = configs$default, to = "inst/logging.yaml")
+```
+
+Which will make the new template part of your package, to load it, you can:
+
+Put this in your packages' ".onLoad" handler:
+
+```{r, eval=FALSE}
+init_logger(config_file = system.file("logging.yaml", package = "yourpkg"))
+```
+
+Or, put this line in your **.Rprofile**, and whenver you attach the **dyn.log** package, the logger will automatically load your custom configuration.
+
+```{r, eval=FALSE}
+options("dyn.log.config" = system.file("logging.yaml", package = "yourpkg"))
+```
+
+
+### Script Directory
+
+Usage of a custom configuration in a directory/project is basically the same:
+
+```{r, eval=F}
+# use here to get your workspace root
+file.copy(from = configs$default, 
+          to = file.path(here::here(), "logging.yaml"))
+```
+
+then in your **.Rprofile**:
+
+```{r, eval=F}
+library(dyn.log)
+
+init_logger("logging.yaml")
+```
+
+Or,
+
+```{r, eval=FALSE}
+options("dyn.log.config" = file.path(here::here(), "logging.yaml"))
+```
+
+And whenever the **dyn.log** package gets attached, it will be auto-configure for you.
+
+## Integration
+
+Now we'll take look at customizing log layouts for types in your project.
+
+If your client code leverages the use of R6 classes, you can specify a custom layout for standalone objects or objects that are part of a hierarchy by using the *association* property. For example, [TestObject](https://github.com/bmoretz/dyn.log/blob/master/tests/testthat/helper-objects.R) is a helper object defined in the testthat folder of dyn.log:
+
+The object hierarchy is declared as follows:
+
+```{r}
+TestObject <- R6::R6Class(
+  classname = "TestObject",
+
+  public = list(
+
+    cls_name = NULL,
+
+    initialize = function() {
+      private$id <- private$generate_id()
+      self$cls_name <- private$get_class_name()
+    },
+
+    identifier = function() {
+      invisible(private$id)
+    },
+
+    class_name = function() {
+      invisible(self$cls_name)
+    },
+
+    invoke_logger = function() {
+      a <- "test"; b <- 123; c <- 100L
+
+      Logger$trace("these are some variables: {a} - {b} - {c}")
+    }
+  ),
+
+  private = list(
+    id = NULL,
+
+    generate_id = function(n = 15) {
+      paste0(sample(LETTERS, n, TRUE), collapse =  "")
+    },
+
+    get_class_name = function() {
+      calls <- as.character(sys.calls())
+      calls <- calls[max(which(stringr::str_detect(calls, "\\$new\\(.*\\)")))]
+      stopifnot(length(calls) == 1)
+      invisible(stringr::str_remove(calls, "\\$new\\(.*\\)"))
+    }
+  )
+)
+
+DerivedTestObject <- R6::R6Class(
+  classname = "DerivedTestObject",
+  inherit = TestObject,
+  public = list(
+
+    initialize = function() {
+      super$initialize()
+    },
+
+    invoke_logger = function() {
+      a <- "derived test"; b <- 321; c <- 200L
+
+      Logger$trace("variables in derived: {a} - {b} - {c}")
+    }
+  )
+)
+```
+
+The layout configuration for "TestObject" looks like this:
+
+```yaml
+layouts:
+- association: TestObject
+  seperator: ' '
+  new_line: \n
+  formats: !expr list(
+           new_fmt_literal(crayon::cyan$bold, 'Class:'),
+           new_fmt_cls_field(crayon::bgCyan$silver$bold, 'cls_name'),
+           new_fmt_literal(crayon::cyan$bold, 'Object Id:'),
+           new_fmt_cls_field(crayon::bgCyan$silver$bold, 'id'),
+           new_fmt_line_break(),
+           new_fmt_log_level(),
+           new_fmt_timestamp(crayon::silver$italic),
+           new_fmt_exec_scope(crayon::magenta$bold, 'calling_fn'),
+           new_fmt_log_msg())
+```
+
+```{r}
+init_logger(configs$object)
+
+test_obj <- DerivedTestObject$new()
+
+test_obj$invoke_logger()
+```
+
+As you can see, the logger knows to log contextual information about any object derived from "TestObject." TestObject exposes two properties, one public and one private:
+
++ **id**: private property which is a random string unique to the object instance.
++ **cls_name**": a public property which is calculated when the object is instantiated to get the correct run-time class name (since it is derived).
+
+This can be a powerful mechanic for templatizing important contextual information in your client applications or scripts.
