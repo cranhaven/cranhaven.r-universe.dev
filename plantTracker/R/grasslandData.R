@@ -1,0 +1,57 @@
+#' Chart Quadrat Dataset for grassland species in MT and AZ
+
+#' An example dataset that contains data from mapped plant chart quadrats. Each
+#' row is an observation of one plant.
+#'
+#' @format An sf data frame with 1242 rows and 15 variables:
+#' \describe{
+#'   \item{Species}{A character string indicating the specific epithet for this
+#'   observation. The ideal formats are the 1) the latin binomial separated by
+#'   a space (i.e. "Bouteloua gracilis"), 2) the latin binomial separated by an
+#'   underscore (i.e. "Bouteloua_gracilis"), or 3) a species code consisting of
+#'   the first n' letters of each element of the latin binomial (i.e. "BOUGRA"
+#'   or "BOGR"). Whichever format is used, it must be used for all rows.}
+#'   \item{Clone}{An integer vector. (1) indicates that this individual is a
+#'   clone (genet). (0) indicates that this individual is not a clone. NA
+#'   indicates that this data was not recorded.}
+#'   \item{Seedling}{An integer vector indicating whether this observation was a
+#'   seedling (1), or not (0). This data was not collected for many
+#'   observations, which have an NA in this column. }
+#'   \item{Stems}{An integer greater than 0 indicating how many stems were
+#'   present for the observed plant. This data was not collected for many
+#'   observations, which have an NA in this column.}
+#'   \item{Basal}{An integer vector. (1) indicates that the basal area of
+#'   this individual was mapped. (0) indicates that the basal area of this
+#'   individual was not mapped (in which case it cannot be used in the
+#'   \code{\link{assign}} function.) NA indicates that this data was not
+#'   recorded.}
+#'   \item{Type}{A factor with two levels: 'point' or 'poly', which indicates
+#'   whether the observation was originally mapped as a 'point' or a 'polygon'.}
+#'   \item{Site}{A character string indicating the sampling location of this
+#'   observation. In this dataset, this value is either:
+#'   \itemize{
+#'      \item {AZ} (Santa Rita Experimental Range, Tucson, AZ)
+#'      \item {MT} (Fort Keogh Livestock and Range Research Laboratory,
+#'      Miles City, MT)}}
+#'   \item{Quad}{A character string indicating the name of the quadrat where
+#'   this plant was mapped.}
+#'   \item{Year}{An integer indicating the year when this plant was mapped.}
+#'   \item{sp_code_4}{A character string of the 4-letter species code for this
+#'   observation (The first two letters of the genus name, and first two letters
+#'   of the species name, capitalized with no spaces).}
+#'   \item{sp_code_6}{A character string of the 6-letter species code for this
+#'   observation (The first three letters of the genus name, and first three
+#'   letters of the species name, capitalized with no spaces).}
+#'   \item{Area}{A numeric variable indicating the basal area in m^2 of this
+#'   observation. In this dataset, observations originally mapped as points were
+#'   assigned an area of 2.46e-05 m^2. For individuals mapped as polygons, the
+#'   value in this column indicates the basal area of that plant.}
+#'   \item{geometry}{The sf geometry of class "MULTIPOLYGON" for
+#'   this observation. The location of this polygon indicates the plant's
+#'   location in a 1 m x 1 m square. If the plant was mapped as a polygon,
+#'   the area of this polygon indicates the basal area of that plant.}
+#'   ...
+#' }
+#' @source \doi{dx.doi.org/10.1890/11-2200.1} \cr
+#' \doi{doi.org/10.6084/m9.figshare.c.3304113.v1}
+"grasslandData"
