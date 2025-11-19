@@ -1,0 +1,90 @@
+#!/bin/sh
+set -e
+
+echo "--- [hdf5lib] Starting Windows configuration ---"
+
+# Input directories
+WD="$(pwd)"
+ZLIB_SRC="$WD/src/zlib"
+HDF5_SRC="$WD/src/hdf5"
+
+# R_HOME is set by the R build system
+R_EXE="${R_HOME}/bin/R"
+R_CPPFLAGS=$("$R_EXE" CMD config --cppflags)
+
+
+# Extract hdf5 and zlib tarballs
+# Use R's internal untar for cross-platform reliability
+echo "--- [hdf5lib] Decompressing HDF5 and zlib tarballs..."
+cd "$WD/src"
+"$R_EXE" -q -e "utils::untar('hdf5.tar.gz')"
+"$R_EXE" -q -e "utils::untar('zlib.tar.gz')"
+chmod +x hdf5/configure zlib/configure
+
+
+# --- 1. Build static zlib ---
+echo "--- [hdf5lib] Compiling static zlib..."
+cd "$ZLIB_SRC"
+make -f win32/Makefile.gcc libz.a
+
+
+# --- 2. Build static HDF5 ---
+echo "--- [hdf5lib] Starting HDF5 build..."
+cd "$HDF5_SRC"
+
+# Configure HDF5 with explicit host and szlib disabled
+echo "--- [hdf5lib] Configuring bundled HDF5 library..."
+./configure \
+  --host=x86_64-w64-mingw32 \
+  --disable-shared \
+  --enable-static \
+  --enable-threadsafe \
+  --enable-unsupported \
+  --disable-tests \
+  --disable-tools \
+  --disable-dependency-tracking \
+  --without-szlib \
+  ac_cv_header_dlfcn_h=no \
+  ac_cv_lib_dl_dlopen=no \
+  CFLAGS="$CFLAGS -fPIC" \
+  LDFLAGS="$LDFLAGS -L${ZLIB_SRC}" \
+  CPPFLAGS="$CPPFLAGS $R_CPPFLAGS -I${ZLIB_SRC}"
+
+# Compile HDF5 with warning suppressions
+echo "--- [hdf5lib] Compiling HDF5 static library..."
+make \
+  CFLAGS="$CFLAGS -Wno-deprecated-declarations -Wno-format -Wno-format-extra-args -Wno-implicit-fallthrough -Wno-unused-parameter -Wno-strict-prototypes -Wno-unused-function -Wno-unused-variable -Wno-sign-conversion -Wno-unknown-pragmas -Wno-c11-extensions" \
+  CPPFLAGS="$CPPFLAGS $R_CPPFLAGS -I${ZLIB_SRC}"
+
+
+# --- 3. Extract, Merge, and Strip ---
+echo "--- [hdf5lib] Extracting all object files..."
+ar -x "$HDF5_SRC/src/.libs/libhdf5.a"
+ar -x "$HDF5_SRC/hl/src/.libs/libhdf5_hl.a"
+ar -x "$ZLIB_SRC/libz.a"
+
+echo "--- [hdf5lib] Merging all .o files into libhdf5z.a..."
+ar -q libhdf5z.a *.o
+ranlib libhdf5z.a
+
+echo "--- [hdf5lib] Stripping static library..."
+strip -S libhdf5z.a
+
+
+# --- 4. Finalize R package ---
+cd "$WD"
+
+echo "--- [hdf5lib] Exposing minified HDF5 headers..."
+mkdir -p inst/include
+cp "$HDF5_SRC"/src/*.h    inst/include/
+cp "$HDF5_SRC"/hl/src/*.h inst/include/
+
+echo "--- [hdf5lib] Exposing final merged static library..."
+mkdir -p inst/lib
+cp "$HDF5_SRC/libhdf5z.a" inst/lib/
+
+echo "--- [hdf5lib] Cleaning up build-time directories..."
+rm -rf src
+
+echo "--- [hdf5lib] Windows configuration complete. ---"
+exit 0

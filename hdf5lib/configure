@@ -1,0 +1,99 @@
+#!/bin/sh
+set -e
+
+echo "--- [hdf5lib] Starting Unix configuration (STATIC) ---"
+
+# Input directories
+WD="$(pwd)"
+ZLIB_SRC="$WD/src/zlib"
+HDF5_SRC="$WD/src/hdf5"
+
+# R_HOME is set by the R build system
+R_EXE="${R_HOME}/bin/R"
+R_CPPFLAGS=$("$R_EXE" CMD config --cppflags)
+
+
+# Extract hdf5 and zlib tarballs
+# Use R's internal untar for cross-platform reliability
+echo "--- [hdf5lib] Decompressing HDF5 and zlib tarballs..."
+cd "$WD/src"
+"$R_EXE" -q -e "utils::untar('hdf5.tar.gz')"
+"$R_EXE" -q -e "utils::untar('zlib.tar.gz')"
+chmod +x hdf5/configure zlib/configure
+
+
+# --- 1. Build static zlib ---
+echo "--- [hdf5lib] Configuring and compiling static zlib..."
+cd "$ZLIB_SRC"
+CC="$CC" CFLAGS="$CFLAGS -fPIC" ./configure --static
+make libz.a CFLAGS="$CFLAGS -fPIC"
+
+
+# --- 2. Build static HDF5 ---
+echo "--- [hdf5lib] Starting HDF5 build..."
+cd "$HDF5_SRC"
+
+# Configure HDF5 with thread-safety enabled
+echo "--- [hdf5lib] Configuring bundled HDF5 library..."
+./configure \
+  --disable-shared \
+  --enable-static \
+  --enable-threadsafe \
+  --enable-unsupported \
+  --disable-tests \
+  --disable-tools \
+  --disable-dependency-tracking \
+  --without-szlib \
+  CFLAGS="$CFLAGS -fPIC -O2 -g0" \
+  LDFLAGS="$LDFLAGS -L${ZLIB_SRC}" \
+  CPPFLAGS="$CPPFLAGS $R_CPPFLAGS -I${ZLIB_SRC}"
+
+# Compile HDF5 with warning suppressions
+echo "--- [hdf5lib] Compiling HDF5 static library..."
+make \
+  CFLAGS="$CFLAGS -fPIC -O2 -g0 -Wno-deprecated-declarations -Wformat -Wno-format-security -Wno-format-extra-args -Wno-implicit-fallthrough -Wno-unused-parameter -Wno-strict-prototypes -Wno-unused-function" \
+  CPPFLAGS="$CPPFLAGS $R_CPPFLAGS -I${ZLIB_SRC}"
+
+
+# --- 3. Extract, Merge, and Strip ---
+echo "--- [hdf5lib] Extracting all object files..."
+ar -x "$HDF5_SRC/src/.libs/libhdf5.a"
+ar -x "$HDF5_SRC/hl/src/.libs/libhdf5_hl.a"
+ar -x "$ZLIB_SRC/libz.a"
+
+# --- Conditional Stripping (Non-Portable, Size-Reduction Step) ---
+if command -v objcopy >/dev/null 2>&1; then
+    echo "--- [hdf5lib] Found objcopy. Stripping object files for maximum size reduction..."
+    for f in *.o; do
+        objcopy --strip-debug "$f"
+    done
+else
+    echo "--- [hdf5lib] objcopy not found. Skipping intermediate object stripping."
+fi
+# ------------------------------------------------------------------
+
+echo "--- [hdf5lib] Merging all .o files into libhdf5z.a..."
+ar -q libhdf5z.a *.o
+ranlib libhdf5z.a
+
+echo "--- [hdf5lib] Stripping static library..."
+strip -S libhdf5z.a
+
+
+# --- 4. Finalize R package ---
+cd "$WD"
+
+echo "--- [hdf5lib] Exposing minified HDF5 headers..."
+mkdir -p inst/include
+cp "$HDF5_SRC"/src/*.h    inst/include/
+cp "$HDF5_SRC"/hl/src/*.h inst/include/
+
+echo "--- [hdf5lib] Exposing final merged static library..."
+mkdir -p inst/lib
+cp "$HDF5_SRC/libhdf5z.a" inst/lib/
+
+echo "--- [hdf5lib] Cleaning up build-time directories..."
+rm -rf src
+
+echo "--- [hdf5lib] Unix configuration complete. ---"
+exit 0
