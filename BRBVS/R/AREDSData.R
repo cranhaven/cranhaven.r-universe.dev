@@ -1,0 +1,25 @@
+#' Age-Related Eye Disease Study (AREDS)
+#'
+#' A real dataset of bivariate interval-censored data with 629 subjects and 4 non-genetic covariates
+#' and 1 genetic covariate. The dataset is selected from the Age-related Eye Disease Study (AREDS)
+#' (AREDS Group, 1999). Two events are the progression times (in years) to late-AMD in the left and
+#' right eyes.
+#'
+#' @format ## `AREDS`
+#' A data frame with 628 patients (rows) and 11 columns:
+#' \describe{
+#'   \item{SevScale1E}{Severity scale associated with the right eye}
+#'   \item{SevScale2E}{Severity scale associated with the left eye}
+#'   \item{ENROLLAGE}{Age at baseline}
+#'   \item{rs2284665}{SNP covariate highly associated with late-AMD progression (GG, GT, TT)}
+#'   \item{cens1}{Recurrence censoring variable in the right eye}
+#'   \item{cens2}{Recurrence censoring variable in the left eye}
+#'   \item{cens}{Overall survival censoring variable}
+#'   \item{t11}{Start of follow-up in days right eye}
+#'   \item{t12}{Time to recurrence or last follow-up in days right eye}
+#'   \item{t21}{Start of follow-up in days left eye}
+#'   \item{t22}{Time to recurrence or last follow-up in days left eye}
+#'   ...
+#' }
+#' @source <https://www.ncbi.nlm.nih.gov/projects/gap/cgi-bin/study.cgi?study_id=phs000001.v3.p1>
+"AREDS"
