@@ -1,0 +1,267 @@
+---
+title: "An example with simulated data"
+output: rmarkdown::html_vignette
+vignette: >
+  # %\VignetteIndexEntry{An example with simulated data}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+```{r setup}
+library(sspm)
+library(mgcv)
+library(dplyr)
+```
+
+The following example shows the typical `sspm` workflow. We will use simulated data.
+
+```{r data}
+sfa_boundaries
+borealis_simulated
+predator_simulated
+catch_simulated
+```
+
+1. The first step of the `sspm` workflow is to create a `sspm_boundary` from an `sf` object, providing the `boundary` that delineates the boundary regions. The object can then be plotted with `spm_plot` (as can most `sspm` objects). 
+
+```{r boundaries, fig.width=7, fig.height=5, fig.fullwidth=TRUE, fig.align='center'}
+bounds <- spm_as_boundary(boundaries = sfa_boundaries, 
+                          boundary = "sfa")
+
+plot(bounds)
+```
+
+2. The second step consists in wrapping a `data.frame`, `tibble` or `sf` object into a `sspm_data` object, with a few other pieces of relevant information, such as the name, dataset type (biomass, predictor or catch, depending on the type of information contained), time column and coordinates column (i not `sf`) and unique row identifier. Here we wrap the borealis dataset that contains the biomass information.
+
+```{r}
+biomass_dataset <- 
+  spm_as_dataset(borealis_simulated, name = "borealis",
+                 density = "weight_per_km2",
+                 time = "year_f",
+                 coords = c('lon_dec','lat_dec'), 
+                 uniqueID = "uniqueID")
+
+biomass_dataset
+```
+
+3. We do the same with the predator data, which are of the predictor type.
+
+```{r}
+predator_dataset <- 
+  spm_as_dataset(predator_simulated, name = "all_predators", 
+                 density = "weight_per_km2",
+                 time = "year_f",
+                 coords = c("lon_dec", "lat_dec"),
+                 uniqueID = "uniqueID")
+
+predator_dataset
+```
+
+4. The `sspm` workflow relies on the discretization of the boundary objects, the default method being voronoi tesselation.
+
+```{r}
+bounds_voronoi <- bounds %>% 
+  spm_discretize(method = "tesselate_voronoi",
+                 with = biomass_dataset, 
+                 nb_samples = 30)
+
+bounds_voronoi
+```
+
+The other available method is `triangulate_delaunay` for delaunay triangulation. Here the `a` argument is used to set the size of the mesh (see `RTriangle::triangulate` for more details).
+
+```{r, eval = FALSE}
+## Not run
+bounds_delaunay <- bounds %>%
+  spm_discretize(method = "triangulate_delaunay", a = 1, q = 30)
+bounds_delaunay
+```
+
+5. Plotting the object shows the polygons that have been created.
+
+```{r, fig.width=7, fig.height=5, fig.fullwidth=TRUE, fig.align='center'}
+plot(bounds_voronoi)
+```
+
+```{r, eval = FALSE}
+## Not run
+plot(bounds_delaunay)
+```
+
+6. The results of the discretization can also be explored with `spm_patches()` and `spm_points()`.
+
+```{r}
+spm_patches(bounds_voronoi)
+spm_points(bounds_voronoi)
+```
+
+7. The next step in this workflow is to smooth the variables to be used in the final `sspm` model, by using spatial-temporal smoothers, by passing each dataset through `spm_smooth`. Here we first smooth `weight_per_km2` as well as `temp_at_bottom`. Note that the boundary column `sfa` can be used in the formula as the data will be first joined to the provided boundaries.
+
+```{r}
+biomass_smooth <- biomass_dataset %>%  
+  spm_smooth(weight_per_km2 ~ sfa + smooth_time(by = sfa) + 
+               smooth_space() + 
+               smooth_space_time(),
+             boundaries = bounds_voronoi, 
+             family=tw)%>% 
+  spm_smooth(temp_at_bottom ~ smooth_time(by=sfa, xt = NULL) +
+               smooth_space() +
+               smooth_space_time(xt = NULL),
+             family=gaussian)
+
+biomass_smooth
+```
+
+8. The smoothed results for any smoothed variables (listed in "smoothed vars" above) can be easily plotted. Here the 4 panels represent 4 different patches in the same SFA. The panels show a very similar pattern due to the nature of the simulated data we are using. The data points are actually different, but the differences are not noticeable in this example case.
+
+```{r, fig.width=7, fig.height=5, fig.fullwidth=TRUE, fig.align='center'}
+plot(biomass_smooth, var = "weight_per_km2", log = FALSE, interval = T)
+```
+You can also make a spatial plot
+
+```{r, fig.width=7, fig.height=5, fig.fullwidth=TRUE, fig.align='center'}
+plot(biomass_smooth, var = "weight_per_km2", use_sf = TRUE)
+```
+
+9. We also smooth the `weight_per_km2` variable in the predator data.
+
+```{r}
+predator_smooth <- predator_dataset %>%  
+  spm_smooth(weight_per_km2 ~ smooth_time() + smooth_space(),
+             boundaries = bounds_voronoi,
+             drop.unused.levels = F, family=tw, method= "fREML")
+
+predator_smooth
+```
+
+10. Before we assemble the full model with our newly smoothed data, we need to deal with the catch data. We first load the dataset.
+
+```{r}
+catch_dataset <- 
+  spm_as_dataset(catch_simulated, name = "catch_data", 
+                 biomass = "catch",
+                 time = "year_f", 
+                 uniqueID = "uniqueID", 
+                 coords = c("lon_dec", "lat_dec"))
+
+catch_dataset
+```
+
+11. We then need to aggregate this data. This illustrate using the `spm_aggregate` functions. Here we use `spm_aggregate_catch`:
+
+```{r}
+biomass_smooth_w_catch <- 
+  spm_aggregate_catch(biomass = biomass_smooth, 
+                      catch = catch_dataset, 
+                      biomass_variable = "weight_per_km2",
+                      catch_variable = "catch",
+                      fill = mean)
+
+biomass_smooth_w_catch
+```
+
+12. Once data has been smoothed, we can assemble a `sspm` model object, using one dataset of type biomass, one dataset of type predictor and (optionnaly) a dataset of type catch.
+
+```{r}
+sspm_model <- sspm(biomass = biomass_smooth_w_catch, 
+                   predictors = predator_smooth)
+
+sspm_model
+```
+
+13. Before fitting the model, we must split data into test/train with `spm_split`.
+
+```{r}
+sspm_model <- sspm_model %>% 
+  spm_split(year_f %in% c(1990:2017))
+
+sspm_model
+```
+
+14. To fit the model, we might be interested in including lagged values. This is done with `spm_lag`.
+
+```{r}
+sspm_model <- sspm_model %>% 
+  spm_lag(vars = c("weight_per_km2_borealis", 
+                   "weight_per_km2_all_predators"), 
+          n = 1)
+
+sspm_model
+```
+
+15. We can now fit the final spm model with `spm`. 
+
+```{r}
+sspm_model_fit <- sspm_model %>% 
+  spm(log_productivity ~ sfa +
+        weight_per_km2_all_predators_lag_1 +
+        smooth_space(by = weight_per_km2_borealis_lag_1) +
+        smooth_space(), 
+      family = mgcv::scat)
+
+sspm_model_fit
+```
+
+It is possible to access the GAM fit object in order to look at it in more details and, for example, evaluate the goodness of fit.
+
+```{r}
+gam_fit <- spm_get_fit(sspm_model_fit)
+summary(gam_fit)
+```
+
+You can also use the summary method.
+
+```{r}
+summary(sspm_model_fit, biomass = "weight_per_km2_borealis")
+```
+
+16. Plotting the object produces a actual vs predicted plot (with TEST/TRAIN data highlighted.
+
+```{r, fig.width=7, fig.height=5, fig.fullwidth=TRUE, fig.align='center'}
+plot(sspm_model_fit, train_test = TRUE, scales = "free")
+```
+
+17. We can also extract the predictions.
+```{r}
+preds <- predict(sspm_model_fit)
+head(preds)
+```
+
+We can also get the predictions for biomass by passing the biomass variable name.
+```{r}
+biomass_preds <- predict(sspm_model_fit, biomass = "weight_per_km2_borealis")
+head(biomass_preds)
+```
+
+We can also predict the biomass one step ahead.
+
+```{r}
+biomass_one_step <- predict(sspm_model_fit, biomass = "weight_per_km2_borealis", 
+                            next_ts = TRUE)
+head(biomass_one_step)
+```
+
+18. We can produce an array of plots, as timeseries or as spatial plots
+
+```{r, fig.width=7, fig.height=5, fig.fullwidth=TRUE, fig.align='center'}
+plot(sspm_model_fit, log = T, scales = 'free')
+plot(sspm_model_fit, log = T, use_sf = TRUE)
+```
+
+```{r, fig.width=7, fig.height=5, fig.fullwidth=TRUE, fig.align='center'}
+plot(sspm_model_fit, biomass = "weight_per_km2_borealis",  scales = "free")
+plot(sspm_model_fit, biomass = "weight_per_km2_borealis", use_sf = TRUE)
+```
+
+```{r, fig.width=7, fig.height=5, fig.fullwidth=TRUE, fig.align='center'}
+plot(sspm_model_fit, biomass = "weight_per_km2_borealis",
+     next_ts = TRUE, aggregate = TRUE, scales = "free", 
+     smoothed_biomass = TRUE, interval = T)
+```
