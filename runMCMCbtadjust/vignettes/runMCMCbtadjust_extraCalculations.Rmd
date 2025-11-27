@@ -1,0 +1,925 @@
+---
+title: "How to perform extra (to MCMC fitting) calculus using runMCMCbtadjust: with a focus on the possibilities offered by Nimble"
+author: "Frédéric Gosselin"
+email: "frederic.gosselin@inrae.fr"
+date: "2024-08-08"
+output: rmarkdown::html_vignette
+bibliography: references.bib
+csl: ecology.csl 
+vignette: >
+  %\VignetteEngine{knitr::knitr}
+  %\VignetteIndexEntry{3- Extra calculations with Nimble}
+  %\usepackage[UTF-8]{inputenc}
+---
+
+
+
+# Introduction
+
+This file is meant to present the possibilities of the function `runMCMC_btadjust` in the `runMCMCbtadjust` package to perform calculus at the end of MCMC fitting a priori only under Windows at present (cf. <https://groups.google.com/g/nimble-users/c/MPpY4Y5NIgk>). This is offered by the component `extraCalculations` of `control.MCMC`. We here propose to calculate mode-type DIC as well as a sampled posterior GOF p-value at the end of the MCMC fit to give examples of the use of this component.
+
+We do it by using the possibilities of `NIMBLE` to do so. At present, `runMCMC_btadjust` also allows to run MCMC with `JAGS` or `greta`. Extra (i.e. post MCMC) calculations for `greta` are as easier to be performed after running `runMCMC_btadjust` than inside it, while I am not aware of such possibilities with `JAGS`: I therefore here present this possibility only for `NIMBLE`.
+
+To do these extra calculations, we will **write R commands within an expression that take profit of objects already built within `runMCMC_btadjust`**. In particular, the **current R Nimble model** - obtained by the command `nimble::nimbleModel` command within `runMCMC_btadjust` - for the `i`-th chain can be referred to by **`Model[[i]]`** and its C counterpart - obtained by the command `nimble::compileNimble` command applied on **`Model[[i]]`** - by **`CModel[[i]]`** while the configured model - obtained by the command `nimble::configureMCMC` command within `runMCMC_btadjust` - for the `i`-th chain can be referred to by `ConfModel[[i]]` and the model ready to be run in terms of MCMC iterations is `CModelMCMC[[i]]` for the `i`-th chain. **Note that the treatment of `i` in the above references will differ according to whether MCMC has been parallelized or not**. We will therefore provide two examples: one without parallelization and one with.
+
+**One very important extra object built within `runMCMC_btadjust` is the mcmc.list object containing the samples after convergence and adequate thinning, called `samplesList.temp`.**
+
+
+
+
+
+# Mode-type DIC
+
+We will here calculate the mode-type Deviance Information Criterion (DIC) proposed by @Celeux2006651 to circumvent problems met with the classical version of the DIC (@Spiegelhalter2002583). This is done to show how to perform this extra calculation, not because we suspect a problem with classical DIC in the very simple model we will use.
+
+We first provide an example of extra calculations on a specific model without using parallelization. We start by presenting the simulated data as well as the associated model and then, come to coding extra-calculations in this model.
+
+## Mode-type DIC without parallelization
+
+We will develop these on the very simple data and model used in one of our previous vignettes, that we first recall below: inspired from @Kery_2010, we model data of weights of 1,000 Pilgrim falcons (*Falco peregrinus*) simulated from a Gaussian distribution with mean 600 grams and standard error 30 grams:
+
+
+``` r
+
+set.seed(1)
+
+y1000<-rnorm(n=1000,mean=600,sd=30)
+```
+
+
+``` r
+
+library(runMCMCbtadjust)
+library(nimble)
+```
+
+As `NIMBLE` distinguishes data that have random distributions from other data, we specify two distinct lists to contain these:
+
+
+``` r
+
+ModelData <-list(mass = y1000)
+ModelConsts <- list(nobs = length(y1000))
+```
+
+We then write our Bayesian code within R with the `nimbleCode` function in the `nimble` package:
+
+
+``` r
+ ModelCode<-nimbleCode(
+  {
+    # Priors
+    population.mean ~ dunif(0,5000)
+    #population.mean ~ dnorm(0,sd=100)
+    population.sd ~ dunif(0,100)
+    
+    # Normal distribution parameterized by precision = 1/variance in Nimble
+    population.variance <- population.sd * population.sd
+    precision <- 1 / population.variance
+  
+    # Likelihood
+    for(i in 1:nobs){
+      mass[i] ~ dnorm(population.mean, precision)
+    }
+  })
+```
+
+The model is a simple linear - and Gaussian - model with only an intercept - actually the same model - for the likelihood section - as the probabilistic model used to generate the data.
+
+Our - optional - next step is to specify starting values for model's parameters. This is done by first writing a function that is repetitively called for each chain. We - also optionally - indicate the names of parameters to be saved and diagnosed in a vector called `params`:
+
+
+``` r
+ModelInits <- function()
+{list (population.mean = rnorm(1,600,90), population.sd = runif(1, 1, 30))}
+  
+Nchains <- 3
+
+set.seed(1)
+Inits<-lapply(1:Nchains,function(x){ModelInits()})
+
+#specifying the names of parameters to analyse and save:
+params <- c("population.mean", "population.sd") 
+
+```
+
+The associated estimation in which we will do extra calculations is the one with 3 chains below - which is not parallelized as parallelization is by default turned off and no mention to a `parallelize` argument is made in the call:
+
+
+``` r
+out.mcmc<-runMCMC_btadjust(code=ModelCode, constants = ModelConsts, data = ModelData, MCMC_language="Nimble",
+    Nchains=Nchains, params=params, inits=Inits,
+    niter.min=1000, niter.max=300000,
+    nburnin.min=100, nburnin.max=200000, 
+    thin.min=1, thin.max=1000,
+    conv.max=1.05, neff.min=1000)
+#> [1] "control$seed is NULL. Replaced by 1"
+#> ===== Monitors =====
+#> thin = 1: population.mean, population.sd
+#> ===== Samplers =====
+#> RW sampler (2)
+#>   - population.mean
+#>   - population.sd
+#> ===== Monitors =====
+#> thin = 1: population.mean, population.sd
+#> ===== Samplers =====
+#> RW sampler (2)
+#>   - population.mean
+#>   - population.sd
+#> ===== Monitors =====
+#> thin = 1: population.mean, population.sd
+#> ===== Samplers =====
+#> RW sampler (2)
+#>   - population.mean
+#>   - population.sd
+#> [1] "###################################################################################"
+#> |-------------|-------------|-------------|-------------|
+#> |-------------------------------------------------------|
+#> |-------------|-------------|-------------|-------------|
+#> |-------------------------------------------------------|
+#> |-------------|-------------|-------------|-------------|
+#> |-------------------------------------------------------|
+#> [1] "###################################################################################"
+#> |-------------|-------------|-------------|-------------|
+#> |-------------------------------------------------------|
+#> |-------------|-------------|-------------|-------------|
+#> |-------------------------------------------------------|
+#> |-------------|-------------|-------------|-------------|
+#> |-------------------------------------------------------|
+#> [1] "Raw multiplier of thin:  4.415"
+#> [1] "###################################################################################"
+#> [1] "Testing multiplier of thin:  4 :"
+#> [1] "Retained multiplier of thin:  4 :"
+#> [1] "###################################################################################"
+#> [1] "Case of niter update: Convergence and trying to reach end of MCMC at the end of next cycle"
+#> [1] "###################################################################################"
+#> [1] "###################################################################################"
+#> |-------------|-------------|-------------|-------------|
+#> |-------------------------------------------------------|
+#> |-------------|-------------|-------------|-------------|
+#> |-------------------------------------------------------|
+#> |-------------|-------------|-------------|-------------|
+#> |-------------------------------------------------------|
+#> [1] "###################################################################################"
+#> [1] "Main MCMC sampling finished."
+#> [1] "###################################################################################"
+#> [1] "Final max raw multiplier of thin:  1.265"
+#> [1] "###################################################################################"
+#> [1] "Retained final multiplier of thin:  1"
+#> [1] "###################################################################################"
+#> [1] "###################################################################################"
+#> [1] "MCMC has reached the required level of convergence."
+#> [1] "###################################################################################"
+#> [1] "MCMC has reached the required level of effective values."
+#> [1] "###################################################################################"
+```
+
+This is now time to write the program for DIC calculations within this setting thanks to the `extraCalculations` component of `control.MCMC` in `runMCMC_btadjust`.
+
+Given that we want to do calculations of DIC - which is based on calculating the log probabilities of data - we will first **need to ensure that all the statistical parameters necessary to calculate these probabilities are included in `samplesList.temp` by `runMCMC_btadjust`**: this is done by turning the component **`includeParentNodes`** of `control.MCMC` to TRUE. Note that this will not change the saved parameters nor the monitored parameters. If you wish to also save all these parameters - for example for calculations outside of `runMCMC_btadjust` , you should use component `saveParentNodes` of `control.MCMC`. If you wish to also monitor all these parameters, you should use component `monitorParentNodes` of `control.MCMC`.
+
+The second step will be to go through all the parameters in **`samplesList.temp`** , give them to the `NIMBLE` model as values of parameters, calculate the variables other than the data variables and then  calculate the log probabilities associated with data. Our first idea was to use commands \$setInits and \$calculate of `NIMBLE` models compiled in C (that can be referred to by **`CModel[[1]]`** ) to do so - we will here make the calculations with only the model of the first chain as this is equivalent to doing it with the models associated with the other chains. Yet, it turned out to be numerically very ineffective (cf. <https://groups.google.com/g/nimble-users/c/4Mk03_RTzA8>). Instead, we will need to go through the writing of a function for `NIMBLE` with the `nimbleFunction` methodology to do so efficiently, which accelerated calculus more than 600 times. For further information on `nimbleFunction`s, the reader is referred to the Nimble user guide, the Nimble web site: https://r-nimble.org/ or the Nimble users mailing list.
+
+As a final add-on, we will add to the names of all the variables created in the expression the tag ".EC" for ExtraCalculations to ensure they will not erase other variables that are active in `runMCMC_btadjust`. Here is the code assigned in an expression to the object called `calculations.for.modalDIC`:
+
+
+``` r
+
+
+calculations.for.modalDIC<-expression(
+  {
+    
+    Model1.EC<-Model[[1]]
+    
+    ## first preparing the sampled parameters in a matrix format; uses the as.matrix function specific to mcmc.list objects; also stocking names of the parameters
+    samples.List.matrix.EC<-as.matrix(samplesList.temp)
+    names.samples.EC<-dimnames(samples.List.matrix.EC)[[2]]
+    
+    ## second preparing the names of variables to calculate on:
+    varNames.EC<-Model1.EC$getVarNames()
+    DatavarNames.EC<-names(data)
+    notDatavarNames.EC<-setdiff(varNames.EC,DatavarNames.EC)
+    
+    ## third writing and compiling the nimbleFunction we will use:
+    logProbCalc.EC <- nimbleFunction(
+		setup = function(model,names.ref.list,notDatavarNames,DatavarNames) {
+	    },
+    run = function(P = double(1)) { ##NB: double(1) means this if of double type and has one dimension
+		values(model,names.ref.list) <<- P
+		model$calculate(notDatavarNames)
+        return(model$calculate(DatavarNames))
+        returnType(double(0))
+    })
+    logProbCalcPrepared.EC <- logProbCalc.EC(Model1.EC, names.samples.EC, notDatavarNames.EC, DatavarNames.EC)
+    ClogProbCalcPrepared.EC <- compileNimble(Model1.EC, logProbCalcPrepared.EC)
+
+    
+    ## fourth, running through all the samples in a sapply function to obtain the logLikelihoods corresponding to each set of parameters:
+    logLiks.EC<-sapply(1:(dim(samples.List.matrix.EC)[1]),function(toto) 
+      {
+      ClogProbCalcPrepared.EC$logProbCalcPrepared.EC$run(samples.List.matrix.EC[toto,])
+      })
+    ## fifth: calculating DICs and estimation of numbers of parameters:
+    
+    #mode type DIC; cf. Celeux et al. 2006 Bayesian analysis
+    DIC.mode.EC<--4*mean(logLiks.EC)+2*max(logLiks.EC)
+    p.DIC.mode.EC<--2*mean(logLiks.EC)+2*max(logLiks.EC)
+    
+    #calculation of classical DIC; cf. Celeux et al. 2006 Bayesian analysis
+    logLiks.meanparams.EC<-ClogProbCalcPrepared.EC$logProbCalcPrepared.EC$run(colMeans(samples.List.matrix.EC))
+    
+    DIC.EC<--4*mean(logLiks.EC)+2*logLiks.meanparams.EC
+    p.DIC.EC<--2*mean(logLiks.EC)+2*logLiks.meanparams.EC
+    
+    list(DIC.mode=DIC.mode.EC,p.DIC.mode=p.DIC.mode.EC,DIC=DIC.EC,p.DIC=p.DIC.EC)
+    }
+)
+
+out.mcmc<-runMCMC_btadjust(code=ModelCode, constants = ModelConsts, data = ModelData, MCMC_language="Nimble",
+    Nchains=Nchains, params=params, inits=Inits,
+    niter.min=1000, niter.max=300000,
+    nburnin.min=100, nburnin.max=200000, 
+    thin.min=1, thin.max=1000,
+    conv.max=1.05, neff.min=1000,
+    control=list(print.diagnostics=FALSE),
+    control.MCMC=list(includeParentNodes=TRUE,extraCalculations=calculations.for.modalDIC))
+#> [1] "control$seed is NULL. Replaced by 1"
+#> ===== Monitors =====
+#> thin = 1: lifted_d1_over_sqrt_oPprecision_cP, population.mean, population.sd, population.variance, precision
+#> ===== Samplers =====
+#> RW sampler (2)
+#>   - population.mean
+#>   - population.sd
+#> ===== Monitors =====
+#> thin = 1: lifted_d1_over_sqrt_oPprecision_cP, population.mean, population.sd, population.variance, precision
+#> ===== Samplers =====
+#> RW sampler (2)
+#>   - population.mean
+#>   - population.sd
+#> ===== Monitors =====
+#> thin = 1: lifted_d1_over_sqrt_oPprecision_cP, population.mean, population.sd, population.variance, precision
+#> ===== Samplers =====
+#> RW sampler (2)
+#>   - population.mean
+#>   - population.sd
+#> [1] "###################################################################################"
+#> |-------------|-------------|-------------|-------------|
+#> |-------------------------------------------------------|
+#> |-------------|-------------|-------------|-------------|
+#> |-------------------------------------------------------|
+#> |-------------|-------------|-------------|-------------|
+#> |-------------------------------------------------------|
+#> [1] "###################################################################################"
+#> |-------------|-------------|-------------|-------------|
+#> |-------------------------------------------------------|
+#> |-------------|-------------|-------------|-------------|
+#> |-------------------------------------------------------|
+#> |-------------|-------------|-------------|-------------|
+#> |-------------------------------------------------------|
+#> [1] "Raw multiplier of thin:  4.415"
+#> [1] "###################################################################################"
+#> [1] "Testing multiplier of thin:  4 :"
+#> [1] "Retained multiplier of thin:  4 :"
+#> [1] "###################################################################################"
+#> [1] "Case of niter update: Convergence and trying to reach end of MCMC at the end of next cycle"
+#> [1] "###################################################################################"
+#> [1] "###################################################################################"
+#> |-------------|-------------|-------------|-------------|
+#> |-------------------------------------------------------|
+#> |-------------|-------------|-------------|-------------|
+#> |-------------------------------------------------------|
+#> |-------------|-------------|-------------|-------------|
+#> |-------------------------------------------------------|
+#> [1] "###################################################################################"
+#> [1] "Main MCMC sampling finished."
+#> [1] "###################################################################################"
+#> [1] "Final max raw multiplier of thin:  1.265"
+#> [1] "###################################################################################"
+#> [1] "Retained final multiplier of thin:  1"
+#> [1] "###################################################################################"
+#> [1] "###################################################################################"
+#> [1] "Performing extra calculations"
+#> [1] "###################################################################################"
+#> [1] "###################################################################################"
+#> [1] "MCMC has reached the required level of convergence."
+#> [1] "###################################################################################"
+#> [1] "MCMC has reached the required level of effective values."
+#> [1] "###################################################################################"
+
+attributes(out.mcmc)$final.params$extra
+#> $DIC.mode
+#> [1] 9596.419
+#> 
+#> $p.DIC.mode
+#> [1] 1.936828
+#> 
+#> $DIC
+#> [1] 9596.418
+#> 
+#> $p.DIC
+#> [1] 1.935617
+```
+
+This works well. Results of both methods - modal DIC and classical DIC - are very close and both estimate correctly the number of parameters - here 2.
+
+
+
+
+## Mode-type DIC with parallelization
+
+We now give the adapted code in case of parallelization on the same data but with another model.
+
+
+``` r
+### important to take a seed different from the one prior to y1000 otherwise two vectors y1000 & x will be parallel
+set.seed(2)
+nobs<-1000
+x<-rnorm(nobs)
+
+library(parallel)
+
+ModelData <-list(mass = y1000)
+ModelConsts.X <- list(x=x, nobs = length(y1000))
+
+ ModelCode.X<-nimbleCode(
+  {
+    # Priors
+    Intercept ~ dnorm(0,sd=100)
+    Slope ~ dnorm(0,sd=100)
+    population.sd ~ dunif(0,100)
+    
+    # Normal distribution parameterized by precision = 1/variance in Nimble
+    population.variance <- population.sd * population.sd
+    precision <- 1 / population.variance
+  
+    # Likelihood
+    for(i in 1:nobs){
+      meany[i]<-Intercept+Slope*x[i]
+      mass[i] ~ dnorm(meany[i], precision)
+    }
+  })
+ 
+ 
+
+ModelInits.X <- function()
+{list (Intercept = rnorm(1,600,90),Slope = rnorm(1), population.sd = runif(1, 30,100))}
+
+### put here to pass CRAN tests: https://stackoverflow.com/questions/41307178/error-processing-vignette-failed-with-diagnostics-4-simultaneous-processes-spa
+options(mc.cores=2)
+
+### adapted the number of chains for the same reason
+Nchains.parallel<-2
+
+
+set.seed(1)
+Inits.X<-lapply(1:Nchains.parallel,function(x){ModelInits.X()})
+
+
+#specifying the names of parameters to analyse and save:
+params.X <- c("Intercept", "Slope", "population.sd") 
+
+```
+
+This model just has an extra parameter. The above code should adapt smoothly if running the code without parallelization. When parallelizing, another R object will be crucial: it is the series of "clusters" that have been created with the `parallel` library - one cluster per Markov chain. This set of clusters is named `cl` within `runMCMC_btadjust` and we will use them in the code below to do the extra calculations. 
+
+
+``` r
+
+calculations.for.modalDIC.parallel<-expression(
+  {
+     
+    ##first, send to each cluster the set of sample parameters it will have to treat in a matrix format
+    for (j.EC in seq_along(cl))
+        {
+          samples.to.treat.EC<-as.matrix(samplesList.temp[[j.EC]])
+          parallel::clusterExport(cl[j.EC], "samples.to.treat.EC",envir=environment())
+        }
+    ## second, running calculations within each cluster with the parallel::clusterEvalQ function
+    out1 <- parallel::clusterEvalQ(cl, {
+      Model1.EC<-Model[[1]]
+      names.samples.EC<-dimnames(samples.to.treat.EC)[[2]]
+    
+      ## third preparing the names of variables to calculate on:
+      varNames.EC<-CModel[[1]]$getVarNames()
+      DatavarNames.EC<-names(data)
+      notDatavarNames.EC<-setdiff(varNames.EC,DatavarNames.EC)
+      
+      ## fourth writing and compiling the nimbleFunction we will use:
+    logProbCalc.EC <- nimbleFunction(
+		setup = function(model,names.ref.list,notDatavarNames,DatavarNames) {
+	    },
+    run = function(P = double(1)) {
+		values(model,names.ref.list) <<- P
+		model$calculate(notDatavarNames)
+        return(model$calculate(DatavarNames))
+        returnType(double(0))
+    })
+    logProbCalcPrepared.EC <- logProbCalc.EC(Model1.EC, names.samples.EC, notDatavarNames.EC, DatavarNames.EC)
+    ClogProbCalcPrepared.EC <- compileNimble(Model1.EC, logProbCalcPrepared.EC)
+
+      ## fifth, running through all the samples in a sapply function to obtain the logLikelihoods corresponding to each set of parameters:
+          logLiks<-sapply(1:(dim(samples.to.treat.EC)[1]),function(toto) 
+      {
+      ClogProbCalcPrepared.EC$logProbCalcPrepared.EC$run(samples.to.treat.EC[toto,])
+      })
+    
+          return(logLiks)
+          gc(verbose = FALSE)
+        })
+    
+    logLiks.EC<-unlist(out1)
+    
+    
+    ## sixth: calculating DICs and estimation of numbers of parameters - outside of clusters for the first type of DIC and having to go back yo one cluster - here taken as the first - to do the calculation of logLikelihood on the mean of parameters as required by the classical formula of DIC:
+    
+    #mode type DIC; cf. Celeux et al. 2006 Bayesian analysis
+    DIC.mode.EC<--4*mean(logLiks.EC)+2*max(logLiks.EC)
+    p.DIC.mode.EC<--2*mean(logLiks.EC)+2*max(logLiks.EC)
+    
+    #calculation of classical DIC; cf. Celeux et al. 2006 Bayesian analysis
+    samples.to.treat.EC<-colMeans(as.matrix(samplesList.temp))
+    parallel::clusterExport(cl[1], "samples.to.treat.EC",envir=environment())
+    out1 <- parallel::clusterEvalQ(cl[1], {
+          logLiks.EC<-ClogProbCalcPrepared.EC$logProbCalcPrepared.EC$run(samples.to.treat.EC)
+          return(logLiks.EC)
+          gc(verbose = FALSE)
+        })
+    logLiks.meanparams.EC<-unlist(out1)
+    DIC.EC<--4*mean(logLiks.EC)+2*logLiks.meanparams.EC
+    p.DIC.EC<--2*mean(logLiks.EC)+2*logLiks.meanparams.EC
+    
+    list(DIC.mode=DIC.mode.EC,p.DIC.mode=p.DIC.mode.EC,DIC=DIC.EC,p.DIC=p.DIC.EC)
+    
+  }
+)
+
+out.mcmc.X<-runMCMC_btadjust(code=ModelCode.X, constants = ModelConsts.X, data = ModelData, MCMC_language="Nimble",
+    Nchains=Nchains.parallel, params=params.X, inits=Inits.X,
+    niter.min=1000, niter.max=300000,
+    nburnin.min=100, nburnin.max=200000, 
+    thin.min=1, thin.max=1000,
+    conv.max=1.05, neff.min=1000,
+    control=list(print.diagnostics=FALSE),
+    control.MCMC=list(includeParentNodes=TRUE,extraCalculations=calculations.for.modalDIC.parallel,parallelize=TRUE))
+#> [1] "control$seed is NULL. Replaced by 1"
+#> [1] "###################################################################################"
+#> [1] "###################################################################################"
+#> [1] "Raw multiplier of thin:  4.738"
+#> [1] "###################################################################################"
+#> [1] "Testing multiplier of thin:  5 :"
+#> [1] "Retained multiplier of thin:  5 :"
+#> [1] "###################################################################################"
+#> [1] "Case of niter update: Convergence and trying to reach end of MCMC at the end of next cycle"
+#> [1] "###################################################################################"
+#> [1] "###################################################################################"
+#> [1] "###################################################################################"
+#> [1] "Main MCMC sampling finished."
+#> [1] "###################################################################################"
+#> [1] "Final max raw multiplier of thin:  1.222"
+#> [1] "###################################################################################"
+#> [1] "Retained final multiplier of thin:  1"
+#> [1] "###################################################################################"
+#> [1] "###################################################################################"
+#> [1] "Performing extra calculations"
+#> [1] "###################################################################################"
+#> [1] "###################################################################################"
+#> [1] "MCMC has reached the required level of convergence."
+#> [1] "###################################################################################"
+#> [1] "MCMC has reached the required level of effective values."
+#> [1] "###################################################################################"
+
+attributes(out.mcmc.X)$final.params$extra
+#> $DIC.mode
+#> [1] 9596.612
+#> 
+#> $p.DIC.mode
+#> [1] 3.037516
+#> 
+#> $DIC
+#> [1] 9596.599
+#> 
+#> $p.DIC
+#> [1] 3.02419
+```
+
+Results of both methods are also aligned with the number of parameters we know in this model - 3. 
+
+These last DIC values are greater than the ones for the first, simple model, indicating a preference for the simpler model which is logical since it actually has a likelihood that is the same as the probabilistic model that generated the data.
+
+Mode-based DIC can be expected to provide better results than classical DIC in situations where the use of the mean of statistical parameters in classical DIC yields strange estimations of the number of parameters - esp. negative values. This can be due to the fact that distributions of parameters are not symmetric and /or multivariate distribution of parameters which is strongly non-linear. In this context, mode-based DIC makes more sense - I indeed used it in @Zilliox2014105 for this reason. Yet mode-based DIC will be dependent on how close the best of the sampled parameters is close to the mode. It could therefore make sense to calculate mode-based DIC with different numbers of samples and check the dependency of the DIC value from this number of parameters. A DIC value that stabilizes with the greatest number of parameters would indicate that we have a sufficiently high number of samples in our MCMC.
+
+This first example showed the reader how to perform extra calculations with `extraCalculations` component of `control.MCMC` in `runMCMCbtadjust` , both in an unaparallelized and a parallelized setting - here to calculate mode-based DIC and classical DIC. The code is rather generic in the sense that it should apply to any model without changing the code. A key point for numerical efficiency is to go through a `nimbleFunction` for what concerns calculations on the `NIMBLE` model.
+
+
+# Goodness-of-fit p-value
+
+We will now give another illustration of use of the `extraCalculations` argument in `runMCMC_btadjust` to **calculate goodness-of-fit (GOF) p-values**. More precisely we will propose a first series of adaptable scripts to calculate **sampled posterior GOF p-values** (@Gosselin2011) to diagnose the adequacy of the fitted model relative to the data at hand. Indeed, based on `NIMBLE` possibilities, the `extraCalculations` argument constitutes a natural way of doing these calculations without having to rewrite codes of the model within R. The very principle of sampled posterior GOF p-values is to base its calculation on a single set of parameters sampled from the posterior distribution - thus not having to repeatedly feed the model with parameter values as above.
+
+There are many discrepancy measures that can be used to calculate these p-values (see @Herpigny201518 or @Godeau2020). We will here concentrate ourselves on diagnosing the distribution of data, using in part the notion of randomized quantile residuals (@Dunn1996236) and its extension to replicated data.
+
+The **principle of sampled posterior GOF p-values** is very simple: first, sample randomly a *unique* value of model parameters from the posterior distribution; second, simulate many values of replicated data based on the model with this unique set of parameter values; second, compare the discrepancy function evaluated on these replicated data values with the discrepancy function evaluated on the observed data - still with this unique set of parameter values if the discrepancy function also depends on statistical parameters; third, construct an empirical p-value synthesizing these comparisons. @Gosselin2011 showed that, whatever the discrepancy function, this p-value is expected to follow a uniform distribution between 0 and 1 when the statistical model is the model that was used to generate the data - i.e. is the "true" model - which is not the case with the more classical- posterior predictive p-value (@Robins20001143) - which is sometimes referred to as the "Bayesian p-value".
+
+
+
+
+We will exemplify the calculus of the sampled p-value on a very simple model
+
+
+``` r
+
+set.seed(1)
+
+y1000<-rpois(n=1000,lambda=1)
+```
+
+As `NIMBLE` distinguishes data that have random distributions from other data, we specify two distinct lists to contain these:
+
+
+``` r
+
+ModelData <-list(y = y1000)
+ModelConsts <- list(nobs = length(y1000))
+```
+
+We then write our Bayesian code within R with the `nimbleCode` function in the `nimble` package:
+
+
+``` r
+ ModelCode<-nimbleCode(
+  {
+    # Prior
+    log.population.mean ~ dnorm(0,sd=10)
+    
+    population.mean<-exp(log.population.mean)
+    
+    # Likelihood
+    for(i in 1:nobs){
+      y[i] ~ dpois(population.mean)
+    }
+  })
+```
+
+The model is a simple Poisson generalized linear model with only an intercept - actually the same model - for the likelihood section - as the probabilistic model used to generate the data.
+
+Our - optional - next step is to specify starting values for model's parameters. This is done by first writing a function that is repetitively called for each chain. We - also optionally - indicate the names of parameters to be saved and diagnosed in a vector called `params`:
+
+
+``` r
+ModelInits <- function()
+{list (log.population.mean = rnorm(1,0,3))}
+  
+Nchains <- 3
+
+set.seed(1)
+Inits<-lapply(1:Nchains,function(x){ModelInits()})
+
+#specifying the names of parameters to analyse and save:
+params <- c("log.population.mean","population.mean") 
+
+```
+
+## Sampled posterior GOF p-value without parallelization
+
+We now write the code for GOF p-values associated to different discrepancy functions: the index of dispersion of the data and the variance, skewness and kurtosis of the normalized random quantile residuals of data. Given that the statistical model fits well with the data generation model, these p-values should not be surprising, i.e. given the way we will construct them, they should not be very close to 0. To render the process numerically efficient we will use a `nimbleFunction` as done in the first example but adapt it to the calculation of GOF p-values. We also use the option `includeAllStochNodes=TRUE` of `control.MCMC` to ensure that all the stochastic nodes are collected and therefore available in the object `samplesList.temp` so as to develop GOF p-values with all the required parameters. We will here develop the GOF p-values around the data `y`. This is one of the part of the code that will have to be tailored to each case; it is possible that multiple objects are used for GOF p-values. The other part that is to be adapted to each case is the choice of the discrepancy functions used. Sections of the code that have to be adapted to each case study are marked with the tag `### TO BE ADAPTED TO THE CASE AT HAND`.
+
+
+``` r
+
+
+calculations.for.GOFpvalues<-expression(
+  {
+    ## putting the Nimble model in a new R object and the length of the object on which to build GOF p-values
+    Model1.EC<-Model[[1]]
+      ### TO BE ADAPTED TO THE CASE AT HAND
+    lengthy<-length(data$y)
+    
+    
+    ## first putting the sampled parameters in a matrix format; uses the as.matrix function specific to mcmc.list objects:
+    samples.List.matrix.EC<-as.matrix(samplesList.temp)
+    names.samples.EC<-dimnames(samples.List.matrix.EC)[[2]]
+    
+    ## second randomly select a value in this matrix: the seed could be controlled here if this is wished: 
+    random.parameters.EC<-samples.List.matrix.EC[sample(dim(samples.List.matrix.EC)[1],1),]
+    
+    
+    ## third writing and compiling the nimbleFunction we will use for part of GOF calculus:
+    simulate_Ys.EC <- nimbleFunction(
+      ## preparing R objects that will be send to C/C++
+		setup = function(model,names.ref.list) {
+		    ### TO BE ADAPTED TO THE CASE AT HAND
+		  lengthy<-length(data$y)
+	    },
+    run = function(P = double(1),nrep= integer(0)) {
+      ## setting the new (sampled) values of parameters:
+		values(model,names.ref.list) <<- P
+		
+		  ## calculate the implications of these new parameter values for all the model
+		model$calculate()
+		
+		  ## preparing the object that will store the simulated y data:
+		    ### TO BE ADAPTED TO THE CASE AT HAND
+		ysim<-matrix(0,nrow=lengthy,ncol=nrep)
+		
+		  ## simulate the nrep values with Nimble using the includeData = TRUE option to be able to get it
+		for (i in 1:nrep)
+  		{
+		      ### TO BE ADAPTED TO THE CASE AT HAND
+		    model$simulate("y",includeData = TRUE)
+		      ### TO BE ADAPTED TO THE CASE AT HAND
+  		  ysim[,i]<-model$y
+	  	}
+		
+		    ## return the value
+		      ### TO BE ADAPTED TO THE CASE AT HAND
+      return(ysim)
+		      ### TO BE ADAPTED TO THE CASE AT HAND
+      returnType(double(2))
+    })
+    
+    ## preparing and compiling the nimbleFunction
+    simulate_YsPrepared.EC <- simulate_Ys.EC(Model1.EC, names.samples.EC)
+    Csimulate_YsPrepared.EC <- compileNimble(Model1.EC, simulate_YsPrepared.EC)
+
+    
+    ## fourth, defining the number of replicated data to sample, sample them with the model and the sampled parameters, and calculate the discrepancy functions on each of the simulated data:
+    rep.EC<-1000
+    ## running the nimbleFunction
+      ### TO BE ADAPTED TO THE CASE AT HAND
+    ysim<-Csimulate_YsPrepared.EC$simulate_YsPrepared.EC$run(random.parameters.EC,rep.EC)
+    ## calculating the replicated data sets for normalized quantile residuals
+      ### TO BE ADAPTED TO THE CASE AT HAND
+    ynormsim<-sapply(1:rep.EC,function(x){rnorm(lengthy)})
+    ## calculating the discrepancies on replicated data sets.
+      ### TO BE ADAPTED TO THE CASE AT HAND
+    replicated.disc.EC<-cbind(apply(ysim,2,function(x){var(x)/mean(x)}),t(apply(ynormsim,2,function(x){c(var(x),moments::skewness(x),moments::kurtosis(x))})))
+    
+    ## fifth, doing similar calculations on observed data y:
+      ### calculating normalized randomized quantile residual of y:
+        ### TO BE ADAPTED TO THE CASE AT HAND
+      ynorm.EC<-qnorm(ppois(data$y-1,random.parameters.EC["population.mean"])+runif(lengthy)*dpois(data$y,random.parameters.EC["population.mean"]))
+      ### calculating discrepancies on observed data sets
+        ### TO BE ADAPTED TO THE CASE AT HAND
+      observed.disc.EC<-c(ID.y=var(data$y)/mean(data$y),var(ynorm.EC),moments::skewness(ynorm.EC),moments::kurtosis(ynorm.EC))
+    
+    ## sixth, final calculations for producing the p-values; cf. Gosselin (2011), Plos One
+    sapply(1:dim(replicated.disc.EC)[2],function(x)
+      {temp1<-sum(observed.disc.EC[x]<replicated.disc.EC[,x])
+      temp2<-sum(observed.disc.EC[x]==replicated.disc.EC[,x])
+      temp3<-sum(observed.disc.EC[x]>replicated.disc.EC[,x])
+      epsilon=runif(1)
+      temp<-rbeta(1,shape1=temp1+epsilon*temp2+1,shape2=temp3+(1-epsilon)*temp2+1)
+      min(temp,1-temp)*2
+      
+    })
+    }
+)
+   
+
+out.mcmc.GOF<-runMCMC_btadjust(code=ModelCode, constants = ModelConsts, data = ModelData, MCMC_language="Nimble",
+    Nchains=Nchains, params=params, inits=Inits,
+    niter.min=1000, niter.max=300000,
+    nburnin.min=100, nburnin.max=200000, 
+    thin.min=1, thin.max=1000,
+    conv.max=1.05, neff.min=1000,
+    control=list(print.diagnostics=FALSE),
+    control.MCMC=list(includeAllStochNodes=TRUE,extraCalculations=calculations.for.GOFpvalues))
+#> [1] "control$seed is NULL. Replaced by 1"
+#> ===== Monitors =====
+#> thin = 1: log.population.mean, population.mean
+#> ===== Samplers =====
+#> RW sampler (1)
+#>   - log.population.mean
+#> ===== Monitors =====
+#> thin = 1: log.population.mean, population.mean
+#> ===== Samplers =====
+#> RW sampler (1)
+#>   - log.population.mean
+#> ===== Monitors =====
+#> thin = 1: log.population.mean, population.mean
+#> ===== Samplers =====
+#> RW sampler (1)
+#>   - log.population.mean
+#> [1] "###################################################################################"
+#> |-------------|-------------|-------------|-------------|
+#> |-------------------------------------------------------|
+#> |-------------|-------------|-------------|-------------|
+#> |-------------------------------------------------------|
+#> |-------------|-------------|-------------|-------------|
+#> |-------------------------------------------------------|
+#> [1] "###################################################################################"
+#> |-------------|-------------|-------------|-------------|
+#> |-------------------------------------------------------|
+#> |-------------|-------------|-------------|-------------|
+#> |-------------------------------------------------------|
+#> |-------------|-------------|-------------|-------------|
+#> |-------------------------------------------------------|
+#> [1] "###################################################################################"
+#> [1] "Main MCMC sampling finished."
+#> [1] "###################################################################################"
+#> [1] "Final max raw multiplier of thin:  5.46"
+#> [1] "###################################################################################"
+#> [1] "Testing final multiplier of thin:  5 :"
+#> [1] "Testing final multiplier of thin:  4 :"
+#> [1] "Testing final multiplier of thin:  3 :"
+#> [1] "Testing final multiplier of thin:  2 :"
+#> [1] "Retained final multiplier of thin:  2"
+#> [1] "###################################################################################"
+#> [1] "###################################################################################"
+#> [1] "Performing extra calculations"
+#> [1] "###################################################################################"
+#> [1] "###################################################################################"
+#> [1] "MCMC has reached the required level of convergence."
+#> [1] "###################################################################################"
+#> [1] "MCMC has reached the required level of effective values."
+#> [1] "###################################################################################"
+
+attributes(out.mcmc.GOF)$final.params$extra
+#> [1] 0.4766697 0.2970712 0.9603204 0.0684845
+```
+
+As expected, the four p-values are not surprising, since they are not very close to 0 (e.g. less than 0.05). This means that data do not criticize the model from the point of view of the four discrepancies we used.
+
+
+
+
+## Sampled posterior GOF p-value with parallelization
+
+Let us finally end up these examples on using the `extraCalculations` argument in `runMCMC_btadjust` to **calculate goodness-of-fit (GOF) p-values, by now proposing some code to calculate it with parallelization.** We will do it on the same model but with other data, now generated from a negative binomial distribution, i.e. with overdispersion compared to the Poisson distribution used before:
+
+
+``` r
+set.seed(1)
+y1000NB<-rnbinom(n=1000,mu=1,size=1) 
+ModelData.NB <-list(y = y1000NB) 
+```
+
+We will here propose a completely parallelized version although it is unclear in this case that this has strong - numerical - advantages.
+
+
+``` r
+
+calculations.for.GOFpvalues.parallel<-expression(
+  {
+    
+    ## first putting the sampled parameters in a matrix format; uses the as.matrix function specific to mcmc.list objects
+    samples.List.matrix.EC<-as.matrix(samplesList.temp)
+    names.samples.EC<-dimnames(samples.List.matrix.EC)[[2]]
+    
+    
+    ## second, defining the number of replicated data to sample and the length of the object to replicate:
+    rep.EC<-1000
+      ### TO BE ADAPTED TO THE CASE AT HAND
+    lengthy<-length(data$y)
+    
+    ## third, randomly select a value in this matrix & send it to each cluster - as well as other info: the seed could be controlled here if this is wished: and give it as values of the model and calculate the model
+    random.parameters.EC<-samples.List.matrix.EC[sample(dim(samples.List.matrix.EC)[1],1),]
+    parallel::clusterExport(cl, c("Nchains","random.parameters.EC","rep.EC","names.samples.EC"),envir=environment())
+    
+    ## fourth, running calculations within each cluster with the parallel::clusterEvalQ function
+    
+    out1 <- parallel::clusterEvalQ(cl, {
+      Model1.EC<-Model[[1]]
+        ### TO BE ADAPTED TO THE CASE AT HAND
+      lengthy<-length(data$y)
+    
+      ## fifth, writing and compiling the nimbleFunction we will use for part of GOF p-values calculations:
+    simulate_Ys.EC <- nimbleFunction(
+		setup = function(model,names.ref.list) {
+		    ### TO BE ADAPTED TO THE CASE AT HAND
+		  lengthy<-length(data$y)
+	    },
+    run = function(P = double(1),nrep= integer(0)) {
+      ## setting the new (sampled) values of parameters:
+		values(model,names.ref.list) <<- P
+		
+		  ## calculate the implications of these new parameter values for all the model
+		model$calculate()
+		
+		  ## preparing the object that will store the simulated y data:
+		    ### TO BE ADAPTED TO THE CASE AT HAND
+		ysim<-matrix(0,nrow=lengthy,ncol=nrep)
+		
+		  ## sixth, simulate the nrep values with Nimble using the includeData = TRUE option to be able to get it
+		for (i in 1:nrep)
+  		{
+		      ### TO BE ADAPTED TO THE CASE AT HAND
+		    model$simulate("y",includeData = TRUE)
+		      ### TO BE ADAPTED TO THE CASE AT HAND
+  		  ysim[,i]<-model$y
+	  	}
+		
+		    ## return the value
+		      ### TO BE ADAPTED TO THE CASE AT HAND
+      return(ysim)
+		      ### TO BE ADAPTED TO THE CASE AT HAND
+      returnType(double(2))
+    })
+    ## preparing and compiling the nimbleFunction
+    simulate_YsPrepared.EC <- simulate_Ys.EC(Model1.EC, names.samples.EC)
+    Csimulate_YsPrepared.EC <- compileNimble(Model1.EC, simulate_YsPrepared.EC)
+      
+    ## running the nimbleFunction
+    ysim<-Csimulate_YsPrepared.EC$simulate_YsPrepared.EC$run(random.parameters.EC,round(rep.EC/Nchains))
+    
+    ### simulating normalized randomized quantiles of simulated data:
+        ### TO BE ADAPTED TO THE CASE AT HAND
+    ynormsim<-sapply(1:round(rep.EC/Nchains),function(x){rnorm(lengthy)})
+    ## calculating the discrepancies on replicated data sets.
+      ### TO BE ADAPTED TO THE CASE AT HAND
+    replicated.disc.EC<-cbind(apply(ysim,2,function(x){var(x)/mean(x)}),t(apply(ynormsim,2,function(x){c(var(x),moments::skewness(x),moments::kurtosis(x))})))
+    
+    
+          return(replicated.disc.EC)
+          gc(verbose = FALSE)
+        })
+    
+   # replicated.disc.EC<-list.as.matrixbisdim1(out1)
+     replicated.disc.EC<-as.matrix(coda::as.mcmc.list(lapply(out1,coda::as.mcmc)))
+    
+    ## seventh, doing similar calculations on observed data y:
+      ### calculating normalized randomized quantile residual of y:
+        ### TO BE ADAPTED TO THE CASE AT HAND
+      ynorm.EC<-qnorm(ppois(data$y-1,random.parameters.EC["population.mean"])+runif(lengthy)*dpois(data$y,random.parameters.EC["population.mean"]))
+
+    ### calculating discrepancies on observed data sets
+        ### TO BE ADAPTED TO THE CASE AT HAND
+    observed.disc.EC<-c(ID.y=var(data$y)/mean(data$y),var(ynorm.EC),moments::skewness(ynorm.EC),moments::kurtosis(ynorm.EC))
+    
+    ### eighth, final calculations for producing the p-values
+    sapply(1:dim(replicated.disc.EC)[2],function(x)
+      {temp1<-sum(observed.disc.EC[x]<replicated.disc.EC[,x])
+      temp2<-sum(observed.disc.EC[x]==replicated.disc.EC[,x])
+      temp3<-sum(observed.disc.EC[x]>replicated.disc.EC[,x])
+      epsilon=runif(1)
+      temp<-rbeta(1,shape1=temp1+epsilon*temp2+1,shape2=temp3+(1-epsilon)*temp2+1)
+      min(temp,1-temp)*2
+      
+    })
+    }
+)
+   
+
+out.mcmc.GOF.NB.parallel<-runMCMC_btadjust(code=ModelCode, constants = ModelConsts, data = ModelData.NB, MCMC_language="Nimble",
+    Nchains=Nchains.parallel, params=params, inits=Inits[1:Nchains.parallel],
+    niter.min=1000, niter.max=300000,
+    nburnin.min=100, nburnin.max=200000, 
+    thin.min=1, thin.max=1000,
+    conv.max=1.05, neff.min=1000,
+    control=list(print.diagnostics=FALSE),
+    control.MCMC=list(includeAllStochNodes=TRUE,parallelize=TRUE,extraCalculations=calculations.for.GOFpvalues.parallel))
+#> [1] "control$seed is NULL. Replaced by 1"
+#> [1] "###################################################################################"
+#> [1] "###################################################################################"
+#> [1] "Raw multiplier of thin:  5.564"
+#> [1] "###################################################################################"
+#> [1] "Testing multiplier of thin:  6 :"
+#> [1] "Retained multiplier of thin:  6 :"
+#> [1] "###################################################################################"
+#> [1] "Case of niter update: Convergence and trying to reach end of MCMC at the end of next cycle"
+#> [1] "###################################################################################"
+#> [1] "###################################################################################"
+#> [1] "###################################################################################"
+#> [1] "Main MCMC sampling finished."
+#> [1] "###################################################################################"
+#> [1] "Final max raw multiplier of thin:  1.322"
+#> [1] "###################################################################################"
+#> [1] "Retained final multiplier of thin:  1"
+#> [1] "###################################################################################"
+#> [1] "###################################################################################"
+#> [1] "Performing extra calculations"
+#> [1] "###################################################################################"
+#> [1] "###################################################################################"
+#> [1] "MCMC has reached the required level of convergence."
+#> [1] "###################################################################################"
+#> [1] "MCMC has reached the required level of effective values."
+#> [1] "###################################################################################"
+
+attributes(out.mcmc.GOF.NB.parallel)$final.params$extra
+#> [1] 0.0056607635 0.0003295884 0.0009109636 0.0019528279
+```
+
+As expected, the four p-values are very surprizing, since they are all less than 1% with only 1,000 replicates. This means that data do criticize the model from the point of view of the four discrepancies used, which all diagnose the probability distribution of data. This is logical since the data were actually generated from a different probability distribution than the one in the statistical model.
+
+
+# Discussion
+
+An important property we have not stated regarding the `extraCalculations` argument in `runMCMC_btadjust` is that if the expression it contains produces an error, `runMCMC_btadjust` will not be stopped and the MCMC result will still be given. The only impact is that the `extra` component in the attributes of the resulting object will contain an error, and not what was intended to be calculated. In such a case, if the MCMC has been long to obtain, if the output contains all the required parameters, and if some debugging is necessary, it will be possible to keep the first MCMC result and run a second call to `runMCMC_btadjust` with a very low `niter.max` parameter and the corrected code in `extraCalculations`, now not with a reference to `samplesList.temp` which will now be nearly void and non-informative but to the output of the first call to `runMCMC_btadjust`.
+
+As we have stated above, the two examples we have shown above - calculations of information criteria and calculation of goodness-of-fit p-values - come with different levels of generality of the code we proposed: while the IC code should adapt to nearly every situation where mode-type DIC and classical DIC are wished, the GOF p-values calculations will have to be adapted to every model, first by specifying the objects (data or parameters) that have to be replicated and second the discrepancy functions used in the GOF p-values. IC calculations could in the next versions be put in hard code of `runMCMC_btadjust` (as WAIC was done in `NIMBLE`). At present, we keep it separate and propose to calculate it through additional code in `extraCalculations`. It also remains to be seen if use of - `NIMBLE` - online WAIC calculation - which at present requires extra MCMC sampling on one chain and thus can be numerically demanding - could be replaced by calculations with `extraCalculations` on the already fitted samples - thus removing the requirement of extra MCMC sampling for WAIC calculation.
+
+Of course, the calculations we propose to do through `extraCalculations` could also be done out of `runMCMC_btadjust`: the user would then need to rebuild the environment necessary to do it - especially the result of `nimbleModel` - which is not so difficult. Actually, I used to do these calculations both outside `runMCMC_btadjust` but also with non-`NIMBLE` functions - e.g. having to rewrite the log probabilities in R or C a second time. A first advantage of what I propose above is to use the `NIMBLE` objects to do so, first sparing some time to the analyst and second ensuring that the models/codes are well the ones that are wished and tha    t were used for model fitting. A second advantage of doing this inside `runMCMC_btadjust`, is in the case we use the `includeAllStochNodes=TRUE` option without saving all these nodes in the output - e.g. when these nodes are numerous:  then the approach proposed allows to spare some bytes in the ensuing RData files.
+
+# Conclusion
+
+We have here shown the capacities provided by the `extraCalculations` argument in `runMCMC_btadjust` which allows the analyst to use `runMCMC_btadjust` not only to fit a MCMC rigorously - which is its original aim - but also to provide other important information related to the model, such as information criteria or goodness-of-fit p-values. This enables us to provide a more rigorous use of MCMCs, first both to ensure convergence is reached and we have a sufficient number of quasi-independent samples from the posterior distribution but also to provide tools to compare the model with other models fit on the same data - information criteria - and to diagnose the coherence of the model with data - with GOF p-values.
+
+We insist that these possibilities have been developed and tested under Windows and that in some Linux environments these procedures might encounter problems that we hope we will solve soon (cf. <https://groups.google.com/g/nimble-users/c/MPpY4Y5NIgk>).
+
+# Acknowledgements
+I wished to thank the Nimble users mailing list.
+
+The initial development of this package (up to version 1.1.1) was performed within the GAMBAS project funded by the French Agence Nationale pour la Recherche (ANR-18-CE02-0025) (cf. <https://gambas.cirad.fr/>).
+
+<img src="../man/figures/logo_gambas.jpg">
+
+# References

@@ -1,0 +1,75 @@
+
+# Adaptive parallel tempering
+
+Our final try in terms of Nimble samplers will be the Adaptive Parallel Tempering (@Miasojedow2013649) provided by the `nimbleAPT` library. This is also a type of sampler that can help adapt tricky situations, especially multiple local maxima (or near-maxima) of the log posterior density. This is however unsure turning to APT by itself will be able to treat the correlation issue we have to deal with. The code to turn to APT is rather simple - and here we do not have to change the sampler as it is already included in the component `APT=TRUE` of `control.MCMC` . An important characteristic of `nimbleAPT` is that samplers for all parameters should be within the APT family: it is not possible at present to mix APT and non-APT samplers for different parameters - we initially wished to remove the APT sampler from parameter `population.sd` and replace it by the traditional random walk one to be more comparable to the ones above which also kept the random walk sampler for `population.sd` but this turned out to be impossible.
+
+```{r Nimble second run, with APT, cache=FALSE}
+
+
+
+out.mcmc.APT<-runMCMC_btadjust(code=ModelCode, constants = ModelConsts, data = ModelData, MCMC_language="Nimble",
+    Nchains=Nchains, params=params, inits=Inits,
+    niter.min=1000, niter.max=Inf,
+    nburnin.min=100, nburnin.max=Inf, 
+    thin.min=1, thin.max=Inf,
+    conv.max=1.05, neff.min=1000,
+    control=list(neff.method="Coda", time.max=120, print.diagnostics=FALSE),
+    control.MCMC=list(APT=TRUE, parallelize=TRUE, n.adapt=1000))
+```
+
+This model did not converge nor allow us to reach the required number of effective values. The traceplot of the Slope parameter indeed indicates a difficulty of convergence, which is however less extreme that in the case of the above (untempered) RW block sampler (not shown here due to problems with CRAN; you can run the code in the FALSE condition below to see it).
+
+```{r traceplot model with APT, cache=FALSE}
+
+if (FALSE) {traceplot(out.mcmc.APT[,"Slope"],main="Traceplot of Slope")}
+
+```
+
+
+By default, when turning `APT` to `TRUE` , `runMCMC_btadjust` puts a tempered random walk sampler - called `sampler_RW_tempered` - on each of the model's parameters. Staying in the realm of APT, we try an additional tempered sampler provided by the `nimbleAPT` library, the tempered block sampler - called `sampler_RW_block_tempered` - instead of the independent random walk samplers, still through the parameter  `confModel.expression.toadd`:
+
+```{r Nimble second run, with block APT, cache=FALSE}
+
+sampler.expression.toadd<-expression(
+  {ConfModel[[i]]$removeSamplers(c("Intercept","Slope"))
+    ConfModel[[i]]$addSampler(target = c("Intercept","Slope"),type = "sampler_RW_block_tempered",control=list(temperPriors=FALSE))
+  })
+
+out.mcmc.blockAPT<-runMCMC_btadjust(code=ModelCode, constants = ModelConsts, data = ModelData, MCMC_language="Nimble",
+    Nchains=Nchains, params=params, inits=Inits,
+    niter.min=1000, niter.max=Inf,
+    nburnin.min=100, nburnin.max=Inf, 
+    thin.min=1, thin.max=Inf,
+    conv.max=1.05, neff.min=1000,
+    control=list(neff.method="Coda", time.max=120, print.diagnostics=FALSE),
+    control.MCMC=list(confModel.expression.toadd=sampler.expression.toadd, APT=TRUE, parallelize=TRUE, n.adapt=1000))
+```
+
+This one converges but does not allow to reach a sufficient number of effective values. The associated summary is given below:
+
+```{r summary model with APT, cache=FALSE}
+
+summary(out.mcmc.blockAPT)
+
+effectiveSize(out.mcmc.blockAPT)
+
+```
+
+Summaries are fine in this case in the sense that the true parameters are within the credibility intervals.
+
+# Comparison of the above results
+
+Let us now compare the different above models in terms of their rapidly analyzed performances (convergence, reaching the number of effective values, duration...).
+
+```{r Nimble-Jags comparison efficiency without or with parallelization, echo=FALSE}
+
+names_components_to_display<-c("converged","neffs.reached","final.Nchains","burnin","thin","niter.tot","Nvalues","neff.min","neff.median","duration","duration.MCMC.preparation","duration.MCMC.transient","duration.MCMC.asymptotic","duration.MCMC.after")
+table.res<-cbind(unlist(attributes(out.mcmc.base)$final.params[names_components_to_display]),unlist(attributes(out.mcmc.RWblock)$final.params[names_components_to_display]),unlist(attributes(out.mcmc.AFslice)$final.params[names_components_to_display]),unlist(attributes(out.mcmc.HMC)$final.params[names_components_to_display]),unlist(attributes(out.mcmc.APT)$final.params[names_components_to_display]),unlist(attributes(out.mcmc.blockAPT)$final.params[names_components_to_display]))
+
+compar_MCMC_times<-format(table.res,digits=4,scientific=TRUE)
+knitr::kable(compar_MCMC_times[1:(dim(compar_MCMC_times)[1]-1),],col.names=c("default","RW.block","Slice.block","HMC","APT","APT.block"),align="r",caption="Comparison of the efficiency of the different types of samplers:")
+
+```
+
+We notice that `r format(sum(table.res["converged",]==1),digits=1)` methods reached convergence - `r if(table.res["converged",1]==1){ paste0("the default setting, ")}`the block slice sampler`r if(table.res["converged",4]==1){ paste0(", the Hamiltonian sampler")}``r if(table.res["converged",5]==1){paste0(", the APT sampler")}` and the block APT sampler - but only one reached the required number of effective values: the block slice sampler. `r if(table.res["converged",1]==1){ paste0("We have also noticed that the convergence of the default setting was very dubious. ")}` On the whole it therefore appears that block slice sampling clearly performs best on this case. The block APT sampler comes second since it converged and reached final numbers of effective values that were far greater than the default setting. The Hamiltonian was stopped soon in terms of number of iterations but its number of effective values was rather promising. 
+

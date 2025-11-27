@@ -1,0 +1,598 @@
+---
+title: "Variations in using runMCMCbtadjust with Nimble: samplers"
+author: "Frédéric Gosselin"
+email: "frederic.gosselin@inrae.fr"
+date: "2024-08-09"
+output: rmarkdown::html_vignette
+bibliography: references.bib
+csl: ecology.csl 
+vignette: >
+  %\VignetteEngine{knitr::knitr}
+  %\VignetteIndexEntry{2- Nimble samplers}
+  %\usepackage[UTF-8]{inputenc}
+---
+
+
+
+# Introduction
+
+This file is meant to present the possibilities of the function `runMCMC_btadjust` in the `runMCMCbtadjust` package when using Bayesian models written with the `Nimble` language, and the **capabilities of the packages `nimble`, `nimbleHMC` and `nimbleAPT` in terms of MCMC samplers**. The aim of the `runMCMC_btadjust` function is to run a Markov Chain Monte Carlo (MCMC) for a specified Bayesian model while adapting automatically the burn-in and thinning parameters to meet pre-specified targets in terms of MCMC convergence and number of effective values of MCMC outputs - where the term "number of effective values" for the MCMC outputs refers to sample size adjusted for autocorrelation. This is done in only one call to the function that repeatedly calls the MCMC until criteria for convergence and number of effective values are met. This allows to obtain a MCMC output that is out of the transient phase of the MCMC (convergence) and that contains a pre-specified number of nearly independent draws from the posterior distribution (number of effective values).
+
+This function has four main advantages: (i) it saves the analyst's programming time since he/she does not have to repeatedly diagnose and re-run MCMCs until desired levels of convergence and number of effective values are reached; (ii) it allows a minimal, normalized quality control of MCMC outputs by allowing to meet pre-specified levels in terms of convergence and number of quasi-independent values; (iii) it may save computer's time when compared to cases where we have to restart the MCMC from the beginning if it has not converged or reached the specified number of effective values (as e.g. with `runMCMC` function in `NIMBLE`); and (iv) it can be applied with different MCMC R languages, with a stronger integration with `NIMBLE`.
+
+We will **here restrict our attention on the `NIMBLE` language and show a first axis of strong integration with `NIMBLE`**. Indeed, the last versions of the package `nimble` provide a still **improved flexibility for the user, especially in terms of MCMC samplers** since `nimble` allows the user to choose the MCMC sampler parameter by parameter, which is one of its great strength. We will demonstrate the way we can use these possibilities on a very simple, yet problematic statistical model. The simulated data we wish to model correspond to a simple linear model with a strongly uncentered explanatory variable - a situation which is known to pose problems with classical MCMCs due top strong correlation of the Intercept and slope parameters.
+
+
+``` r
+set.seed(1)
+nobs<-1000
+x<-rnorm(nobs)+100
+y<-y1000<-rnorm(n=length(x),mean=x,sd=1)
+```
+
+
+
+
+We will analyse these data with the same likelihood function than the one used to generate the data and rather non-informative priors, and with data and initial values that of course include the explanatory variable and its associated slope.
+
+
+``` r
+library(runMCMCbtadjust)
+library(nimble)
+library(parallel)
+library(coda)
+
+ModelData <-list(y = y)
+ModelConsts <- list(x=x, nobs = length(y))
+
+ ModelCode<-nimbleCode(
+  {
+    # Priors
+    Intercept ~ dnorm(0,sd=100)
+    Slope ~ dnorm(0,sd=100)
+    population.sd ~ dunif(0,100)
+    
+    # Normal distribution parameterized by precision = 1/variance in Nimble
+    population.variance <- population.sd * population.sd
+    precision <- 1 / population.variance
+  
+    # Likelihood
+    for(i in 1:nobs){
+      meany[i]<-Intercept+Slope*x[i]
+      y[i] ~ dnorm(meany[i], precision)
+    }
+  })
+ 
+ 
+ ModelInits <- function()
+{list (Intercept = rnorm(1,0,1), Slope = rnorm(1,0,1), population.sd = runif(1, 1, 30))}
+
+### put here to pass CRAN tests: https://stackoverflow.com/questions/41307178/error-processing-vignette-failed-with-diagnostics-4-simultaneous-processes-spa
+options(mc.cores=2)
+
+### adapted the number of chains for the same reason
+Nchains <- 2
+
+set.seed(1)
+Inits<-lapply(1:Nchains,function(x){ModelInits()})
+
+#specifying the names of parameters to analyse and save:
+params <- c("Intercept", "Slope", "population.sd") 
+
+```
+
+# Default Nimble samplers
+
+We now fit this model with the `runMCMC_btadjust` function. As we infer there will be some convergence issues we restrict the duration of the fit to two minutes (or 120 seconds with parameter `time.max`). We will keep this restriction for all the attempts we will make in this vignette. This is a **source of non reproducibility of results** since the result depends on the speed of the computer - so that the reader should not be too surprised if he/she finds other results than those commented hereafter. In this specific case we also turn to FALSE `print.thinmult` as it would otherwise imply the printing of a much too long output.
+
+
+``` r
+out.mcmc.base<-runMCMC_btadjust(code=ModelCode, constants = ModelConsts, data = ModelData, MCMC_language="Nimble",
+    Nchains=Nchains, params=params, inits=Inits,
+    niter.min=1000, niter.max=Inf,
+    nburnin.min=100, nburnin.max=Inf, 
+    thin.min=1, thin.max=Inf,
+    conv.max=1.05, neff.min=1000,
+    control=list(neff.method="Coda", time.max=120, print.diagnostics=FALSE,print.thinmult=FALSE),
+    control.MCMC=list(parallelize=TRUE, n.adapt=1000))
+#> [1] "control$seed is NULL. Replaced by 1"
+#> [1] "###################################################################################"
+#> [1] "Case of niter update: Non convergence"
+#> [1] "###################################################################################"
+#> [1] "###################################################################################"
+#> [1] "Case of niter update: Non convergence"
+#> [1] "###################################################################################"
+#> [1] "###################################################################################"
+#> [1] "Case of niter update: Non convergence"
+#> [1] "###################################################################################"
+#> [1] "###################################################################################"
+#> [1] "Case of niter update: Non convergence"
+#> [1] "###################################################################################"
+#> [1] "###################################################################################"
+#> [1] "Case of niter update: Non convergence"
+#> [1] "###################################################################################"
+#> [1] "###################################################################################"
+#> [1] "Case of niter update: Convergence and trying to reach end of MCMC at the end of next cycle"
+#> [1] "###################################################################################"
+#> [1] "###################################################################################"
+#> [1] "Case of niter update: Non convergence"
+#> [1] "###################################################################################"
+#> [1] "Number of planned new iterations non-positive: end of MCMC cycles"
+#> [1] "###################################################################################"
+#> [1] "###################################################################################"
+#> [1] "Main MCMC sampling finished."
+#> [1] "###################################################################################"
+#> Warning in system.time({: The MCMC did not converge
+#> Warning in system.time({: The expected effective sample size was not reached
+#> [1] "###################################################################################"
+#> [1] "MCMC has NOT reached the required level of convergence."
+#> [1] "###################################################################################"
+#> [1] "MCMC has NOT reached the required level of effective values."
+#> [1] "###################################################################################"
+```
+
+
+
+The model finally did not converge and did not reach its required level of number of effective values.
+
+
+
+# Diagnosing correlation among parameters
+
+We now use the built-in `findMCMC_strong_corrs` function to identify where the model has problems in terms of autocorrelation.
+
+
+``` r
+
+
+knitr::kable(findMCMC_strong_corrs(out.mcmc.base),align="r",caption=paste0("Pairs of parameters that are strongly correlated"))
+```
+
+
+
+Table: Pairs of parameters that are strongly correlated
+
+| dimnames(Table)[[1]][Temp[, 1]]| dimnames(Table)[[1]][Temp[, 2]]| Table[Temp]|
+|-------------------------------:|-------------------------------:|-----------:|
+|                           Slope|                       Intercept|   -0.999862|
+|                       Intercept|                           Slope|   -0.999862|
+
+
+
+As expected, there is a very strong negative correlation between `Intercept` and `Slope` - this case was indeed built for this.
+
+
+# Block samplers
+
+We will therefore now try to fit the same model but with a sampler that allows parameters Intercept and Slope to be correlated. Indeed, so far, by default, Nimble used independent samplers for each of the parameters. We will now use a "RW_block" (Random walk block) sampler for `Intercept` and `Slope` to be updated together with a correlated update. This will be done through the component `confModel.expression.toadd` added in the parameter `control.MCMC` of the `runMCMC_btadjust` function. As its name suggests, it will be an expression to add in the step of model configuration for `NIMBLE` - with the `NIMBLE` function `configureMCMC` . The syntax is given below:
+
+
+``` r
+
+sampler.expression.toadd<-expression(
+  {ConfModel[[i]]$removeSamplers(c("Intercept","Slope"))
+  ConfModel[[i]]$addSampler(target = c("Intercept","Slope"),type = "RW_block")}  )
+
+out.mcmc.RWblock<-runMCMC_btadjust(code=ModelCode, constants = ModelConsts, data = ModelData, MCMC_language="Nimble",
+    Nchains=Nchains, params=params, inits=Inits,
+    niter.min=1000, niter.max=Inf,
+    nburnin.min=100, nburnin.max=Inf, 
+    thin.min=1, thin.max=Inf,
+    conv.max=1.05, neff.min=1000,
+    control=list(neff.method="Coda", time.max=120, print.diagnostics=FALSE),
+    control.MCMC=list(confModel.expression.toadd=sampler.expression.toadd, parallelize=TRUE, n.adapt=1000))
+#> [1] "control$seed is NULL. Replaced by 1"
+#> [1] "###################################################################################"
+#> [1] "Case of niter update: Non convergence"
+#> [1] "###################################################################################"
+#> [1] "###################################################################################"
+#> [1] "Case of niter update: Non convergence"
+#> [1] "###################################################################################"
+#> [1] "###################################################################################"
+#> [1] "Case of niter update: Non convergence"
+#> [1] "###################################################################################"
+#> [1] "###################################################################################"
+#> [1] "Case of niter update: Non convergence"
+#> [1] "###################################################################################"
+#> [1] "###################################################################################"
+#> [1] "Case of niter update: Non convergence"
+#> [1] "###################################################################################"
+#> [1] "###################################################################################"
+#> [1] "Case of niter update: Non convergence"
+#> [1] "###################################################################################"
+#> [1] "###################################################################################"
+#> [1] "Case of niter update: Non convergence"
+#> [1] "###################################################################################"
+#> [1] "Number of planned new iterations non-positive: end of MCMC cycles"
+#> [1] "###################################################################################"
+#> [1] "###################################################################################"
+#> [1] "Main MCMC sampling finished."
+#> [1] "###################################################################################"
+#> Warning in system.time({: The MCMC did not converge
+#> Warning in system.time({: The expected effective sample size was not reached
+#> [1] "###################################################################################"
+#> [1] "MCMC has NOT reached the required level of convergence."
+#> [1] "###################################################################################"
+#> [1] "MCMC has NOT reached the required level of effective values."
+#> [1] "###################################################################################"
+```
+
+In this case, we even do not reach convergence. This is confirmed by the traceplot of the Slope parameter (not shown here due to problems with CRAN; you can run the code in the FALSE condition below to see it).
+
+
+
+``` r
+if (TRUE) {traceplot(out.mcmc.RWblock[,"Slope"],main="Traceplot of Slope")}
+```
+
+![plot of chunk traceplot with Nimble second run, with RW_block](figure/traceplot with Nimble second run, with RW_block-1.png)
+
+
+Indeed, the two trajectories are completely separate showing a complete lack of convergence. Such is also the case for the Intercept parameter, but not for poluation.sd. This means that the  Random Walk block sampler did even worse than the original samplers. This is very likely due to a note/warning issued by Nimble but which we did not see due to the parallelization, that we can read without it. It reads:
+
+```         
+Assigning an RW_block sampler to nodes with very different scales can result in low MCMC efficiency.  If all nodes assigned to RW_block are not on a similar scale, we recommend providing an informed value for the "propCov" control list argument, or using the AFSS sampler instead.
+```
+
+We will actually try the second alternative: use the AF slice sampler: this is done in what follows:
+
+
+``` r
+
+sampler.expression.toadd<-expression(
+  {ConfModel[[i]]$removeSamplers(c("Intercept","Slope"))
+  ConfModel[[i]]$addSampler(target = c("Intercept","Slope"),type = "AF_slice")}  )
+
+out.mcmc.AFslice<-runMCMC_btadjust(code=ModelCode, constants = ModelConsts, data = ModelData, MCMC_language="Nimble",
+    Nchains=Nchains, params=params, inits=Inits,
+    niter.min=1000, niter.max=Inf,
+    nburnin.min=100, nburnin.max=Inf, 
+    thin.min=1, thin.max=Inf,
+    conv.max=1.05, neff.min=1000,
+    control=list(neff.method="Coda", time.max=120, print.diagnostics=FALSE),
+    control.MCMC=list(confModel.expression.toadd=sampler.expression.toadd, parallelize=TRUE, n.adapt=1000))
+#> [1] "control$seed is NULL. Replaced by 1"
+#> [1] "###################################################################################"
+#> [1] "Raw multiplier of thin:  9.497"
+#> [1] "###################################################################################"
+#> [1] "Testing multiplier of thin:  9 :"
+#> [1] "Testing multiplier of thin:  8 :"
+#> [1] "Testing multiplier of thin:  7 :"
+#> [1] "Testing multiplier of thin:  6 :"
+#> [1] "Testing multiplier of thin:  5 :"
+#> [1] "Retained multiplier of thin:  5 :"
+#> [1] "###################################################################################"
+#> [1] "Case of niter update: Convergence and trying to reach end of MCMC at the end of next cycle"
+#> [1] "###################################################################################"
+#> [1] "###################################################################################"
+#> [1] "###################################################################################"
+#> [1] "Main MCMC sampling finished."
+#> [1] "###################################################################################"
+#> [1] "Final max raw multiplier of thin:  1.325"
+#> [1] "###################################################################################"
+#> [1] "Retained final multiplier of thin:  1"
+#> [1] "###################################################################################"
+#> [1] "###################################################################################"
+#> [1] "MCMC has reached the required level of convergence."
+#> [1] "###################################################################################"
+#> [1] "MCMC has reached the required level of effective values."
+#> [1] "###################################################################################"
+```
+
+This now works very fine with both convergence and reaching the required number of effective values. The estimates are also fine with the true parameters we know, since the true values are within the credibility intervals:
+
+
+``` r
+
+summary(out.mcmc.AFslice)
+#> 
+#> Iterations = 104:5659
+#> Thinning interval = 5 
+#> Number of chains = 2 
+#> Sample size per chain = 1112 
+#> 
+#> 1. Empirical mean and standard deviation for each variable,
+#>    plus standard error of the mean:
+#> 
+#>                   Mean      SD  Naive SE Time-series SE
+#> Intercept     -0.07618 3.26137 0.0691565      0.0727508
+#> Slope          1.00090 0.03260 0.0006912      0.0007272
+#> population.sd  1.02866 0.02331 0.0004943      0.0005692
+#> 
+#> 2. Quantiles for each variable:
+#> 
+#>                  2.5%     25%     50%   75% 97.5%
+#> Intercept     -6.3407 -2.1744 -0.2191 2.113 6.514
+#> Slope          0.9349  0.9792  1.0025 1.022 1.063
+#> population.sd  0.9844  1.0131  1.0277 1.045 1.076
+```
+
+In line with the above, I have recently shifted my practice of block sampling to AF_slice sampler which in my experience behaves nicely in such cases of correlated parameters.
+
+
+
+# Hamiltonian Monte Carlo sampler
+
+We will in the sequel try two other possibilities provided by Nimble. The first one is to use an Hamiltonian sampler - similar in principle to the one provided by `STAN` - which is a priori well suited to such badly behaving cases. This will require rather numerous steps to do so. First, this will require the loading of the new `nimbleHMC` library as well as modifications of `nimbleOptions` in the component `parallelizeInitExpr` of parameter `control.MCMC`; this is done in what follows in the variable `newParallelizeInitExpr`. Second, we need to refer to the HMC sampler in the `confModel.expression.toadd` component. Third, we need to turn to TRUE the `buildDerivs` component of parameter `control.MCMC`. This actually means that the log posterior density should be derivable relative to all the parameters to use this sampler - or at least relative to the parameters on which this sampler is applied. This is what we now perform:
+
+
+``` r
+
+newParallelizeInitExpr<-expression({
+      library(nimble)
+      library(nimbleHMC)
+      nimbleOptions(MCMCusePredictiveDependenciesInCalculations = TRUE)
+      nimbleOptions(MCMCorderPosteriorPredictiveSamplersLast = FALSE)
+      nimbleOptions(enableDerivs = TRUE)
+      })
+
+sampler.expression.toadd<-expression(
+  {ConfModel[[i]]$removeSamplers(c("Intercept","Slope"))
+   nimbleHMC::addHMC(ConfModel[[i]], target=c("Intercept","Slope"))
+  }  )
+
+out.mcmc.HMC<-runMCMC_btadjust(code=ModelCode, constants = ModelConsts, data = ModelData, MCMC_language="Nimble",
+    Nchains=Nchains, params=params, inits=Inits,
+    niter.min=1000, niter.max=Inf,
+    nburnin.min=100, nburnin.max=Inf, 
+    thin.min=1, thin.max=Inf,
+    conv.max=1.05, neff.min=1000,
+    control=list(neff.method="Coda", time.max=120, print.diagnostics=FALSE),
+    control.MCMC=list(confModel.expression.toadd=sampler.expression.toadd, parallelizeInitExpr= newParallelizeInitExpr,buildDerivs=TRUE, parallelize=TRUE, n.adapt=1000))
+#> [1] "control$seed is NULL. Replaced by 1"
+#> [1] "###################################################################################"
+#> [1] "Case of niter update: Non convergence"
+#> [1] "###################################################################################"
+#> [1] "Number of planned new iterations non-positive: end of MCMC cycles"
+#> [1] "###################################################################################"
+#> [1] "###################################################################################"
+#> [1] "Main MCMC sampling finished."
+#> [1] "###################################################################################"
+#> Warning in system.time({: The MCMC did not converge
+#> Warning in system.time({: The expected effective sample size was not reached
+#> [1] "###################################################################################"
+#> [1] "MCMC has NOT reached the required level of convergence."
+#> [1] "###################################################################################"
+#> [1] "MCMC has NOT reached the required level of effective values."
+#> [1] "###################################################################################"
+```
+
+
+
+With these adaptations, within two minutes, the Hamiltonian Monte Carlo sampler does not go very far; it does not converge and does not reach the required number of effective values. This is due to a longer time per iteration and a longer time of MCMC preparation than with other samplers. The associated summary is given below:
+
+
+
+``` r
+summary(out.mcmc.HMC)
+#> 
+#> Iterations = 100:999
+#> Thinning interval = 1 
+#> Number of chains = 2 
+#> Sample size per chain = 900 
+#> 
+#> 1. Empirical mean and standard deviation for each variable,
+#>    plus standard error of the mean:
+#> 
+#>                 Mean      SD  Naive SE Time-series SE
+#> Intercept     0.2880 3.51863 0.0829349       0.252204
+#> Slope         0.9973 0.03518 0.0008291       0.002522
+#> population.sd 1.0270 0.02326 0.0005482       0.001527
+#> 
+#> 2. Quantiles for each variable:
+#> 
+#>                  2.5%     25%    50%   75% 97.5%
+#> Intercept     -5.9043 -2.0825 0.1268 2.537 7.136
+#> Slope          0.9286  0.9748 0.9989 1.021 1.059
+#> population.sd  0.9830  1.0143 1.0253 1.043 1.072
+
+effectiveSize(out.mcmc.HMC)
+#>     Intercept         Slope population.sd 
+#>      200.3512      200.0932      243.8469
+```
+
+
+
+
+# Adaptive parallel tempering
+
+Our final try in terms of Nimble samplers will be the Adaptive Parallel Tempering (@Miasojedow2013649) provided by the `nimbleAPT` library. This is also a type of sampler that can help adapt tricky situations, especially multiple local maxima (or near-maxima) of the log posterior density. This is however unsure turning to APT by itself will be able to treat the correlation issue we have to deal with. The code to turn to APT is rather simple - and here we do not have to change the sampler as it is already included in the component `APT=TRUE` of `control.MCMC` . An important characteristic of `nimbleAPT` is that samplers for all parameters should be within the APT family: it is not possible at present to mix APT and non-APT samplers for different parameters - we initially wished to remove the APT sampler from parameter `population.sd` and replace it by the traditional random walk one to be more comparable to the ones above which also kept the random walk sampler for `population.sd` but this turned out to be impossible.
+
+
+``` r
+
+
+
+out.mcmc.APT<-runMCMC_btadjust(code=ModelCode, constants = ModelConsts, data = ModelData, MCMC_language="Nimble",
+    Nchains=Nchains, params=params, inits=Inits,
+    niter.min=1000, niter.max=Inf,
+    nburnin.min=100, nburnin.max=Inf, 
+    thin.min=1, thin.max=Inf,
+    conv.max=1.05, neff.min=1000,
+    control=list(neff.method="Coda", time.max=120, print.diagnostics=FALSE),
+    control.MCMC=list(APT=TRUE, parallelize=TRUE, n.adapt=1000))
+#> [1] "control$seed is NULL. Replaced by 1"
+#> [1] "###################################################################################"
+#> [1] "Case of niter update: Non convergence"
+#> [1] "###################################################################################"
+#> [1] "###################################################################################"
+#> [1] "Case of niter update: Non convergence"
+#> [1] "###################################################################################"
+#> [1] "###################################################################################"
+#> [1] "Case of niter update: Non convergence"
+#> [1] "###################################################################################"
+#> [1] "###################################################################################"
+#> [1] "Case of niter update: Non convergence"
+#> [1] "###################################################################################"
+#> [1] "###################################################################################"
+#> [1] "Case of niter update: Non convergence"
+#> [1] "###################################################################################"
+#> [1] "###################################################################################"
+#> [1] "Case of niter update: Non convergence"
+#> [1] "###################################################################################"
+#> [1] "Number of planned new iterations non-positive: end of MCMC cycles"
+#> [1] "###################################################################################"
+#> [1] "###################################################################################"
+#> [1] "Main MCMC sampling finished."
+#> [1] "###################################################################################"
+#> Warning in system.time({: The MCMC did not converge
+#> Warning in system.time({: The expected effective sample size was not reached
+#> [1] "###################################################################################"
+#> [1] "MCMC has NOT reached the required level of convergence."
+#> [1] "###################################################################################"
+#> [1] "MCMC has NOT reached the required level of effective values."
+#> [1] "###################################################################################"
+```
+
+This model did not converge nor allow us to reach the required number of effective values. The traceplot of the Slope parameter indeed indicates a difficulty of convergence, which is however less extreme that in the case of the above (untempered) RW block sampler (not shown here due to problems with CRAN; you can run the code in the FALSE condition below to see it).
+
+
+``` r
+
+if (FALSE) {traceplot(out.mcmc.APT[,"Slope"],main="Traceplot of Slope")}
+```
+
+
+By default, when turning `APT` to `TRUE` , `runMCMC_btadjust` puts a tempered random walk sampler - called `sampler_RW_tempered` - on each of the model's parameters. Staying in the realm of APT, we try an additional tempered sampler provided by the `nimbleAPT` library, the tempered block sampler - called `sampler_RW_block_tempered` - instead of the independent random walk samplers, still through the parameter  `confModel.expression.toadd`:
+
+
+``` r
+
+sampler.expression.toadd<-expression(
+  {ConfModel[[i]]$removeSamplers(c("Intercept","Slope"))
+    ConfModel[[i]]$addSampler(target = c("Intercept","Slope"),type = "sampler_RW_block_tempered",control=list(temperPriors=FALSE))
+  })
+
+out.mcmc.blockAPT<-runMCMC_btadjust(code=ModelCode, constants = ModelConsts, data = ModelData, MCMC_language="Nimble",
+    Nchains=Nchains, params=params, inits=Inits,
+    niter.min=1000, niter.max=Inf,
+    nburnin.min=100, nburnin.max=Inf, 
+    thin.min=1, thin.max=Inf,
+    conv.max=1.05, neff.min=1000,
+    control=list(neff.method="Coda", time.max=120, print.diagnostics=FALSE),
+    control.MCMC=list(confModel.expression.toadd=sampler.expression.toadd, APT=TRUE, parallelize=TRUE, n.adapt=1000))
+#> [1] "control$seed is NULL. Replaced by 1"
+#> [1] "###################################################################################"
+#> [1] "Case of niter update: Non convergence"
+#> [1] "###################################################################################"
+#> [1] "###################################################################################"
+#> [1] "Case of niter update: Non convergence"
+#> [1] "###################################################################################"
+#> [1] "###################################################################################"
+#> [1] "Case of niter update: Non convergence"
+#> [1] "###################################################################################"
+#> [1] "###################################################################################"
+#> [1] "Case of niter update: Non convergence"
+#> [1] "###################################################################################"
+#> [1] "###################################################################################"
+#> [1] "Raw multiplier of thin:  49.388"
+#> [1] "###################################################################################"
+#> [1] "Testing multiplier of thin:  49 :"
+#> [1] "Retained multiplier of thin:  49 :"
+#> [1] "###################################################################################"
+#> [1] "Case of niter update: Convergence and trying to reach end of MCMC at the end of next cycle"
+#> [1] "###################################################################################"
+#> [1] "###################################################################################"
+#> [1] "Raw multiplier of thin:  2.43"
+#> [1] "###################################################################################"
+#> [1] "Testing multiplier of thin:  2 :"
+#> [1] "Retained multiplier of thin:  2 :"
+#> [1] "###################################################################################"
+#> [1] "Case of niter update: Convergence and trying to reach end of MCMC at the end of next cycle"
+#> [1] "###################################################################################"
+#> [1] "Number of planned new iterations non-positive: end of MCMC cycles"
+#> [1] "###################################################################################"
+#> [1] "###################################################################################"
+#> [1] "Main MCMC sampling finished."
+#> [1] "###################################################################################"
+#> [1] "Final max raw multiplier of thin:  2.43"
+#> [1] "###################################################################################"
+#> [1] "Testing final multiplier of thin:  2 :"
+#> [1] "Retained final multiplier of thin:  1"
+#> [1] "###################################################################################"
+#> Warning in system.time({: The expected effective sample size was not reached
+#> [1] "###################################################################################"
+#> [1] "MCMC has reached the required level of convergence."
+#> [1] "###################################################################################"
+#> [1] "MCMC has NOT reached the required level of effective values."
+#> [1] "###################################################################################"
+```
+
+This one converges but does not allow to reach a sufficient number of effective values. The associated summary is given below:
+
+
+``` r
+
+summary(out.mcmc.blockAPT)
+#> 
+#> Iterations = 3268:18115
+#> Thinning interval = 49 
+#> Number of chains = 2 
+#> Sample size per chain = 304 
+#> 
+#> 1. Empirical mean and standard deviation for each variable,
+#>    plus standard error of the mean:
+#> 
+#>                  Mean      SD Naive SE Time-series SE
+#> Intercept     -0.1127 3.52162 0.142820      0.2580538
+#> Slope          1.0013 0.03521 0.001428      0.0025798
+#> population.sd  1.0290 0.02310 0.000937      0.0009378
+#> 
+#> 2. Quantiles for each variable:
+#> 
+#>                  2.5%     25%     50%   75% 97.5%
+#> Intercept     -6.8666 -2.4423 -0.4271 2.231 6.716
+#> Slope          0.9331  0.9778  1.0046 1.025 1.069
+#> population.sd  0.9828  1.0125  1.0293 1.045 1.071
+
+effectiveSize(out.mcmc.blockAPT)
+#>     Intercept         Slope population.sd 
+#>      250.4521      250.1634      608.0000
+```
+
+Summaries are fine in this case in the sense that the true parameters are within the credibility intervals.
+
+# Comparison of the above results
+
+Let us now compare the different above models in terms of their rapidly analyzed performances (convergence, reaching the number of effective values, duration...).
+
+
+
+Table: Comparison of the efficiency of the different types of samplers:
+
+|                          |   default|  RW.block| Slice.block|       HMC|       APT| APT.block|
+|:-------------------------|---------:|---------:|-----------:|---------:|---------:|---------:|
+|converged                 | 0.000e+00| 0.000e+00|   1.000e+00| 0.000e+00| 0.000e+00| 1.000e+00|
+|neffs.reached             | 0.000e+00| 0.000e+00|   1.000e+00| 0.000e+00| 0.000e+00| 0.000e+00|
+|final.Nchains             | 2.000e+00| 2.000e+00|   2.000e+00| 2.000e+00| 2.000e+00| 2.000e+00|
+|burnin                    | 1.000e+02| 1.000e+02|   1.040e+02| 1.000e+02| 1.000e+02| 3.268e+03|
+|thin                      | 5.600e+01| 3.800e+01|   5.000e+00| 1.000e+00| 1.700e+01| 4.900e+01|
+|niter.tot                 | 2.212e+04| 3.879e+04|   5.662e+03| 1.000e+03| 1.715e+04| 1.813e+04|
+|Nvalues                   | 4.080e+02| 2.038e+03|   2.224e+03| 1.800e+03| 2.008e+03| 6.080e+02|
+|neff.min                  | 6.232e+00| 1.191e+01|   1.679e+03| 2.001e+02| 1.019e+02| 2.502e+02|
+|neff.median               | 6.280e+00| 3.025e+01|   2.009e+03| 2.004e+02| 1.019e+02| 2.505e+02|
+|duration                  | 1.441e+02| 1.504e+02|   8.736e+01| 1.424e+02| 1.415e+02| 1.383e+02|
+|duration.MCMC.preparation | 3.716e+01| 3.610e+01|   4.661e+01| 7.238e+01| 3.175e+01| 4.089e+01|
+|duration.MCMC.transient   | 1.223e+01| 1.062e+01|   1.265e+00| 2.778e+01| 3.166e+01| 5.052e+00|
+|duration.MCMC.asymptotic  | 0.000e+00| 0.000e+00|   6.368e+00| 0.000e+00| 0.000e+00| 1.758e+01|
+
+
+
+We notice that 2 methods reached convergence - the block slice sampler and the block APT sampler - but only one reached the required number of effective values: the block slice sampler.  On the whole it therefore appears that block slice sampling clearly performs best on this case. The block APT sampler comes second since it converged and reached final numbers of effective values that were far greater than the default setting. The Hamiltonian was stopped soon in terms of number of iterations but its number of effective values was rather promising. 
+
+
+
+
+# Conclusion
+
+We have here shown how to use the capabilities of `runMCMC_btadjust()` in terms of coupling with `NIMBLE` for changing and controlling MCMC samplers. This is something that I have found very powerful in various contexts, with also the possibility to write your own samplers. There are other samplers provided by Nimble that the user may find useful (cf. Nimble user guide, Nimble web site: https://r-nimble.org/ and Nimble users mailing list). This is a real strength of `NIMBLE` that `runMCMC_btadjust()` permits to use quite easily. 
+
+
+# Acknowledgements
+I wished to thank David Pleydell for help on the package `nimbleAPT` and the `NIMBLE` users mailing list.
+
+The initial development of this package (up to version 1.1.1) was performed within the GAMBAS project funded by the French Agence Nationale pour la Recherche (ANR-18-CE02-0025) (cf. <https://gambas.cirad.fr/>).
+
+<img src="../man/figures/logo_gambas.jpg">
+
+# References

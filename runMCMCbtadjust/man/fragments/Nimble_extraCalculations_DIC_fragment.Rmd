@@ -1,0 +1,163 @@
+
+# Mode-type DIC
+
+We will here calculate the mode-type Deviance Information Criterion (DIC) proposed by @Celeux2006651 to circumvent problems met with the classical version of the DIC (@Spiegelhalter2002583). This is done to show how to perform this extra calculation, not because we suspect a problem with classical DIC in the very simple model we will use.
+
+We first provide an example of extra calculations on a specific model without using parallelization. We start by presenting the simulated data as well as the associated model and then, come to coding extra-calculations in this model.
+
+## Mode-type DIC without parallelization
+
+We will develop these on the very simple data and model used in one of our previous vignettes, that we first recall below: inspired from @Kery_2010, we model data of weights of 1,000 Pilgrim falcons (*Falco peregrinus*) simulated from a Gaussian distribution with mean 600 grams and standard error 30 grams:
+
+```{r Simulating data}
+
+set.seed(1)
+
+y1000<-rnorm(n=1000,mean=600,sd=30)
+
+```
+
+```{r Nimble setup}
+
+library(runMCMCbtadjust)
+library(nimble)
+
+```
+
+As `NIMBLE` distinguishes data that have random distributions from other data, we specify two distinct lists to contain these:
+
+```{r Nimble Data}
+
+ModelData <-list(mass = y1000)
+ModelConsts <- list(nobs = length(y1000))
+
+```
+
+We then write our Bayesian code within R with the `nimbleCode` function in the `nimble` package:
+
+```{r Nimble Code}
+ ModelCode<-nimbleCode(
+  {
+    # Priors
+    population.mean ~ dunif(0,5000)
+    #population.mean ~ dnorm(0,sd=100)
+    population.sd ~ dunif(0,100)
+    
+    # Normal distribution parameterized by precision = 1/variance in Nimble
+    population.variance <- population.sd * population.sd
+    precision <- 1 / population.variance
+  
+    # Likelihood
+    for(i in 1:nobs){
+      mass[i] ~ dnorm(population.mean, precision)
+    }
+  })
+
+```
+
+The model is a simple linear - and Gaussian - model with only an intercept - actually the same model - for the likelihood section - as the probabilistic model used to generate the data.
+
+Our - optional - next step is to specify starting values for model's parameters. This is done by first writing a function that is repetitively called for each chain. We - also optionally - indicate the names of parameters to be saved and diagnosed in a vector called `params`:
+
+```{r Nimble Inits}
+ModelInits <- function()
+{list (population.mean = rnorm(1,600,90), population.sd = runif(1, 1, 30))}
+  
+Nchains <- 3
+
+set.seed(1)
+Inits<-lapply(1:Nchains,function(x){ModelInits()})
+
+#specifying the names of parameters to analyse and save:
+params <- c("population.mean", "population.sd") 
+
+
+```
+
+The associated estimation in which we will do extra calculations is the one with 3 chains below - which is not parallelized as parallelization is by default turned off and no mention to a `parallelize` argument is made in the call:
+
+```{r Nimble basic run, cache=FALSE}
+out.mcmc<-runMCMC_btadjust(code=ModelCode, constants = ModelConsts, data = ModelData, MCMC_language="Nimble",
+    Nchains=Nchains, params=params, inits=Inits,
+    niter.min=1000, niter.max=300000,
+    nburnin.min=100, nburnin.max=200000, 
+    thin.min=1, thin.max=1000,
+    conv.max=1.05, neff.min=1000)
+
+```
+
+This is now time to write the program for DIC calculations within this setting thanks to the `extraCalculations` component of `control.MCMC` in `runMCMC_btadjust`.
+
+Given that we want to do calculations of DIC - which is based on calculating the log probabilities of data - we will first **need to ensure that all the statistical parameters necessary to calculate these probabilities are included in `samplesList.temp` by `runMCMC_btadjust`**: this is done by turning the component **`includeParentNodes`** of `control.MCMC` to TRUE. Note that this will not change the saved parameters nor the monitored parameters. If you wish to also save all these parameters - for example for calculations outside of `runMCMC_btadjust` , you should use component `saveParentNodes` of `control.MCMC`. If you wish to also monitor all these parameters, you should use component `monitorParentNodes` of `control.MCMC`.
+
+The second step will be to go through all the parameters in **`samplesList.temp`** , give them to the `NIMBLE` model as values of parameters, calculate the variables other than the data variables and then  calculate the log probabilities associated with data. Our first idea was to use commands \$setInits and \$calculate of `NIMBLE` models compiled in C (that can be referred to by **`CModel[[1]]`** ) to do so - we will here make the calculations with only the model of the first chain as this is equivalent to doing it with the models associated with the other chains. Yet, it turned out to be numerically very ineffective (cf. <https://groups.google.com/g/nimble-users/c/4Mk03_RTzA8>). Instead, we will need to go through the writing of a function for `NIMBLE` with the `nimbleFunction` methodology to do so efficiently, which accelerated calculus more than 600 times. For further information on `nimbleFunction`s, the reader is referred to the Nimble user guide, the Nimble web site: https://r-nimble.org/ or the Nimble users mailing list.
+
+As a final add-on, we will add to the names of all the variables created in the expression the tag ".EC" for ExtraCalculations to ensure they will not erase other variables that are active in `runMCMC_btadjust`. Here is the code assigned in an expression to the object called `calculations.for.modalDIC`:
+
+```{r Nimble DIC run, cache=FALSE}
+
+
+calculations.for.modalDIC<-expression(
+  {
+    
+    Model1.EC<-Model[[1]]
+    
+    ## first preparing the sampled parameters in a matrix format; uses the as.matrix function specific to mcmc.list objects; also stocking names of the parameters
+    samples.List.matrix.EC<-as.matrix(samplesList.temp)
+    names.samples.EC<-dimnames(samples.List.matrix.EC)[[2]]
+    
+    ## second preparing the names of variables to calculate on:
+    varNames.EC<-Model1.EC$getVarNames()
+    DatavarNames.EC<-names(data)
+    notDatavarNames.EC<-setdiff(varNames.EC,DatavarNames.EC)
+    
+    ## third writing and compiling the nimbleFunction we will use:
+    logProbCalc.EC <- nimbleFunction(
+		setup = function(model,names.ref.list,notDatavarNames,DatavarNames) {
+	    },
+    run = function(P = double(1)) { ##NB: double(1) means this if of double type and has one dimension
+		values(model,names.ref.list) <<- P
+		model$calculate(notDatavarNames)
+        return(model$calculate(DatavarNames))
+        returnType(double(0))
+    })
+    logProbCalcPrepared.EC <- logProbCalc.EC(Model1.EC, names.samples.EC, notDatavarNames.EC, DatavarNames.EC)
+    ClogProbCalcPrepared.EC <- compileNimble(Model1.EC, logProbCalcPrepared.EC)
+
+
+    
+    ## fourth, running through all the samples in a sapply function to obtain the logLikelihoods corresponding to each set of parameters:
+    logLiks.EC<-sapply(1:(dim(samples.List.matrix.EC)[1]),function(toto) 
+      {
+      ClogProbCalcPrepared.EC$logProbCalcPrepared.EC$run(samples.List.matrix.EC[toto,])
+      })
+    ## fifth: calculating DICs and estimation of numbers of parameters:
+    
+    #mode type DIC; cf. Celeux et al. 2006 Bayesian analysis
+    DIC.mode.EC<--4*mean(logLiks.EC)+2*max(logLiks.EC)
+    p.DIC.mode.EC<--2*mean(logLiks.EC)+2*max(logLiks.EC)
+    
+    #calculation of classical DIC; cf. Celeux et al. 2006 Bayesian analysis
+    logLiks.meanparams.EC<-ClogProbCalcPrepared.EC$logProbCalcPrepared.EC$run(colMeans(samples.List.matrix.EC))
+    
+    DIC.EC<--4*mean(logLiks.EC)+2*logLiks.meanparams.EC
+    p.DIC.EC<--2*mean(logLiks.EC)+2*logLiks.meanparams.EC
+    
+    list(DIC.mode=DIC.mode.EC,p.DIC.mode=p.DIC.mode.EC,DIC=DIC.EC,p.DIC=p.DIC.EC)
+    }
+)
+
+out.mcmc<-runMCMC_btadjust(code=ModelCode, constants = ModelConsts, data = ModelData, MCMC_language="Nimble",
+    Nchains=Nchains, params=params, inits=Inits,
+    niter.min=1000, niter.max=300000,
+    nburnin.min=100, nburnin.max=200000, 
+    thin.min=1, thin.max=1000,
+    conv.max=1.05, neff.min=1000,
+    control=list(print.diagnostics=FALSE),
+    control.MCMC=list(includeParentNodes=TRUE,extraCalculations=calculations.for.modalDIC))
+
+attributes(out.mcmc)$final.params$extra
+
+```
+
+This works well. Results of both methods - modal DIC and classical DIC - are very close and both estimate correctly the number of parameters - here 2.

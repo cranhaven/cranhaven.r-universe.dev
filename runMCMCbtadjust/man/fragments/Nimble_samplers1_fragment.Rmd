@@ -1,0 +1,146 @@
+We will analyse these data with the same likelihood function than the one used to generate the data and rather non-informative priors, and with data and initial values that of course include the explanatory variable and its associated slope.
+
+```{r Nimble data & model & other elements}
+library(runMCMCbtadjust)
+library(nimble)
+library(parallel)
+library(coda)
+
+ModelData <-list(y = y)
+ModelConsts <- list(x=x, nobs = length(y))
+
+ ModelCode<-nimbleCode(
+  {
+    # Priors
+    Intercept ~ dnorm(0,sd=100)
+    Slope ~ dnorm(0,sd=100)
+    population.sd ~ dunif(0,100)
+    
+    # Normal distribution parameterized by precision = 1/variance in Nimble
+    population.variance <- population.sd * population.sd
+    precision <- 1 / population.variance
+  
+    # Likelihood
+    for(i in 1:nobs){
+      meany[i]<-Intercept+Slope*x[i]
+      y[i] ~ dnorm(meany[i], precision)
+    }
+  })
+ 
+ 
+ ModelInits <- function()
+{list (Intercept = rnorm(1,0,1), Slope = rnorm(1,0,1), population.sd = runif(1, 1, 30))}
+
+### put here to pass CRAN tests: https://stackoverflow.com/questions/41307178/error-processing-vignette-failed-with-diagnostics-4-simultaneous-processes-spa
+options(mc.cores=2)
+
+### adapted the number of chains for the same reason
+Nchains <- 2
+
+set.seed(1)
+Inits<-lapply(1:Nchains,function(x){ModelInits()})
+
+#specifying the names of parameters to analyse and save:
+params <- c("Intercept", "Slope", "population.sd") 
+
+
+```
+
+# Default Nimble samplers
+
+We now fit this model with the `runMCMC_btadjust` function. As we infer there will be some convergence issues we restrict the duration of the fit to two minutes (or 120 seconds with parameter `time.max`). We will keep this restriction for all the attempts we will make in this vignette. This is a **source of non reproducibility of results** since the result depends on the speed of the computer - so that the reader should not be too surprised if he/she finds other results than those commented hereafter. In this specific case we also turn to FALSE `print.thinmult` as it would otherwise imply the printing of a much too long output.
+
+```{r Nimble first run, cache=FALSE}
+out.mcmc.base<-runMCMC_btadjust(code=ModelCode, constants = ModelConsts, data = ModelData, MCMC_language="Nimble",
+    Nchains=Nchains, params=params, inits=Inits,
+    niter.min=1000, niter.max=Inf,
+    nburnin.min=100, nburnin.max=Inf, 
+    thin.min=1, thin.max=Inf,
+    conv.max=1.05, neff.min=1000,
+    control=list(neff.method="Coda", time.max=120, print.diagnostics=FALSE,print.thinmult=FALSE),
+    control.MCMC=list(parallelize=TRUE, n.adapt=1000))
+
+```
+
+`r if(as.logical(attributes(out.mcmc.base)$final.params$converged)&!as.logical(attributes(out.mcmc.base)$final.params$neffs.reached)){ paste0("The model finally did not reach its required level of number of effective values but converged correctly.")}`
+
+`r if(!as.logical(attributes(out.mcmc.base)$final.params$converged)&!as.logical(attributes(out.mcmc.base)$final.params$neffs.reached)){ paste0("The model finally did not converge and did not reach its required level of number of effective values.")}`
+
+
+
+# Diagnosing correlation among parameters
+
+We now use the built-in `findMCMC_strong_corrs` function to identify where the model has problems in terms of autocorrelation.
+
+```{r Analysis of correlations, cache=FALSE}
+
+
+knitr::kable(findMCMC_strong_corrs(out.mcmc.base),align="r",caption=paste0("Pairs of parameters that are strongly correlated"))
+
+
+```
+
+As expected, there is a very strong negative correlation between `Intercept` and `Slope` - this case was indeed built for this.
+
+
+# Block samplers
+
+We will therefore now try to fit the same model but with a sampler that allows parameters Intercept and Slope to be correlated. Indeed, so far, by default, Nimble used independent samplers for each of the parameters. We will now use a "RW_block" (Random walk block) sampler for `Intercept` and `Slope` to be updated together with a correlated update. This will be done through the component `confModel.expression.toadd` added in the parameter `control.MCMC` of the `runMCMC_btadjust` function. As its name suggests, it will be an expression to add in the step of model configuration for `NIMBLE` - with the `NIMBLE` function `configureMCMC` . The syntax is given below:
+
+```{r Nimble second run, with RW_block, cache=FALSE}
+
+sampler.expression.toadd<-expression(
+  {ConfModel[[i]]$removeSamplers(c("Intercept","Slope"))
+  ConfModel[[i]]$addSampler(target = c("Intercept","Slope"),type = "RW_block")}  )
+
+out.mcmc.RWblock<-runMCMC_btadjust(code=ModelCode, constants = ModelConsts, data = ModelData, MCMC_language="Nimble",
+    Nchains=Nchains, params=params, inits=Inits,
+    niter.min=1000, niter.max=Inf,
+    nburnin.min=100, nburnin.max=Inf, 
+    thin.min=1, thin.max=Inf,
+    conv.max=1.05, neff.min=1000,
+    control=list(neff.method="Coda", time.max=120, print.diagnostics=FALSE),
+    control.MCMC=list(confModel.expression.toadd=sampler.expression.toadd, parallelize=TRUE, n.adapt=1000))
+```
+
+`r if(!as.logical(attributes(out.mcmc.RWblock)$final.params$converged)){ paste0("In this case, we even do not reach convergence. This is confirmed by the traceplot of the Slope parameter (not shown here due to problems with CRAN; you can run the code in the FALSE condition below to see it).")}`
+
+
+```{r traceplot with Nimble second run, with RW_block, cache=FALSE}
+if (TRUE) {traceplot(out.mcmc.RWblock[,"Slope"],main="Traceplot of Slope")}
+
+```
+
+
+`r if(!as.logical(attributes(out.mcmc.RWblock)$final.params$converged)){ paste0("Indeed, the two trajectories are completely separate showing a complete lack of convergence. Such is also the case for the Intercept parameter, but not for poluation.sd. This means that the")}` `r if(as.logical(attributes(out.mcmc.RWblock)$final.params$converged)){ paste0("The")}` Random Walk block sampler did even worse than the original samplers. This is very likely due to a note/warning issued by Nimble but which we did not see due to the parallelization, that we can read without it. It reads:
+
+```         
+Assigning an RW_block sampler to nodes with very different scales can result in low MCMC efficiency.  If all nodes assigned to RW_block are not on a similar scale, we recommend providing an informed value for the "propCov" control list argument, or using the AFSS sampler instead.
+```
+
+We will actually try the second alternative: use the AF slice sampler: this is done in what follows:
+
+```{r Nimble second run, with AF_slice, cache=FALSE}
+
+sampler.expression.toadd<-expression(
+  {ConfModel[[i]]$removeSamplers(c("Intercept","Slope"))
+  ConfModel[[i]]$addSampler(target = c("Intercept","Slope"),type = "AF_slice")}  )
+
+out.mcmc.AFslice<-runMCMC_btadjust(code=ModelCode, constants = ModelConsts, data = ModelData, MCMC_language="Nimble",
+    Nchains=Nchains, params=params, inits=Inits,
+    niter.min=1000, niter.max=Inf,
+    nburnin.min=100, nburnin.max=Inf, 
+    thin.min=1, thin.max=Inf,
+    conv.max=1.05, neff.min=1000,
+    control=list(neff.method="Coda", time.max=120, print.diagnostics=FALSE),
+    control.MCMC=list(confModel.expression.toadd=sampler.expression.toadd, parallelize=TRUE, n.adapt=1000))
+```
+
+This now works very fine with both convergence and reaching the required number of effective values. The estimates are also fine with the true parameters we know, since the true values are within the credibility intervals:
+
+```{r summary model with AF_slice, cache=FALSE}
+
+summary(out.mcmc.AFslice)
+```
+
+In line with the above, I have recently shifted my practice of block sampling to AF_slice sampler which in my experience behaves nicely in such cases of correlated parameters.

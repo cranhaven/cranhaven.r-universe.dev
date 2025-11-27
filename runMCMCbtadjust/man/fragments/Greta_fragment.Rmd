@@ -1,0 +1,122 @@
+
+# Greta
+
+We finally run the `greta` version of our model with `runMCMC_btadjust()`. `greta` is rather different from `JAGS` and `NIMBLE` in that the model defines objects in R and thus does not require a model code to be passed to `runMCMC_btadjust()`, nor Data or Constants. The coding with `greta` is as follows:
+
+```{r greta model preparation}
+#in my setting I need to load not only greta but R6 & tensorflow packages
+library(greta)
+library (R6)
+library(tensorflow)
+
+#first requirement of greta: declaring the data that will be analyzed with the function as_data
+Y<-as_data(y1000)
+
+#we then proceed by writing the model directly in R, starting with the priors of the parameters using greta functions for probability distributions - here uniform()
+population.mean<-uniform(0,5000)
+population.sd<-uniform(0,100)
+    
+#we then define the distribution of the data - here with the normal distribution - by default parametrized with a standard deviation in greta:
+try({distribution(Y)<-normal(population.mean,population.sd) })
+
+#we finally declare the greta model, which will be the object passed to runMCMC_btadjust 
+m<-model(population.mean, population.sd)
+
+### we finally have to prepare initial values with a specific greta function - initials:
+ModelInits.Greta <- function()
+    {initials(population.mean = rnorm(1,600,90), population.sd = runif(1, 1, 30))}
+
+set.seed(1)
+  Inits.Greta<-lapply(1:Nchains,function(x){ModelInits.Greta()})
+
+```
+
+We are now ready to fit the model with `runMCMC_btadjust()`, specifying `MCMC_language="Greta"` and giving the argument `model` instead of `code` and `data`: 
+
+```{r greta model running with runMCMC_btadjust, cache=FALSE}
+out.mcmc.greta<-runMCMC_btadjust(model=m, MCMC_language="Greta",
+    Nchains=Nchains,params=params,inits=Inits.Greta,
+		niter.min=1000,niter.max=300000,
+    nburnin.min=100,nburnin.max=200000,
+		thin.min=1,thin.max=1000,
+		conv.max=1.05, neff.min=1000)
+
+
+```
+
+```{r greta model running with runMCMC_btadjust table, echo=FALSE}
+
+knitr::kable(format(summary(out.mcmc.greta)[[1]],digits=2,scientific=FALSE),align="r",caption="Summary of the statistical parameters of the greta model:")
+
+```
+
+
+We first check that estimations are similar to those with `NIMBLE` and `JAGS` with paired Kolmogorov-Smirnov tests:
+
+```{r Nimble-Jags-Greta comparison parameters, echo=FALSE, warning=FALSE }
+compar_MCMC_params<-format(cbind(c(ks.test(unlist(out.mcmc[,"population.mean"]),unlist(out.mcmc.greta[,"population.mean"]))$p.value, ks.test(unlist(out.mcmc.Jags[,"population.mean"]),unlist(out.mcmc.greta[,"population.mean"]))$p.value),c(ks.test(unlist(out.mcmc[,"population.sd"]),unlist(out.mcmc.greta[,"population.sd"]))$p.value
+,ks.test(unlist(out.mcmc.Jags[,"population.sd"]),unlist(out.mcmc.greta[,"population.sd"]))$p.value
+)),digits=4,scientific=FALSE)
+rownames(compar_MCMC_params)<-c("Nimble vs. greta","Jags vs. greta")
+knitr::kable(compar_MCMC_params,col.names=c("mean","sd"),align="r",caption="P-values of paired Kolmogorov-Smirnov tests of output parameters of the greta model with the default NIMBLE model and the JAGS model:")
+
+```
+
+We then report the efficiency of the MCMCs.
+
+```{r Nimble-Jags-Greta comparison efficiency, echo=FALSE}
+compar_MCMC_times<-format(cbind(unlist(attributes(out.mcmc)$final.params),unlist(attributes(out.mcmc.Jags)$final.params),unlist(attributes(out.mcmc.greta)$final.params)),digits=4,scientific=FALSE)
+knitr::kable(compar_MCMC_times[1:(dim(compar_MCMC_times)[1]-1),],col.names=c("Nimble.default","Jags","Greta"),align="r",caption="Comparison of the efficiency of the default NIMBLE, the JAGS and the greta models:")
+
+```
+
+MCMC time (rows `duration.MCMC.transient` & `duration.MCMC.asymptotic`) was far greater with `greta` than with `JAGS` and `NIMBLE`, for a minimum number of effective values with `greta` of `r attributes(out.mcmc.greta)$final.diags$neff_synth[,"min"]`. Total duration is rather close with `greta` compared with `NIMBLE`, due to the great time required by `NIMBLE` for MCMC preparation - while this preparation is done outside `runMCMC_btadjust()` with `greta`. Yet, when we compare CPU total durations (`CPUduration`), `greta` gets worse than `NIMBLE` while it was the reverse for total duration (`duration`), simply because `greta` parallelized its process and therefore required more CPU time per time unit. 
+
+We tried to give a second chance to `greta`, based on the following post: <https://forum.greta-stats.org/t/size-and-number-of-leapfrog-steps-in-hmc/332>. The idea was to let `greta` have more information to adapt its hmc parameters during the warm-up phase by just having more chains to run - hereafter, 15.
+
+```{r second greta model running with runMCMC_btadjust, cache=FALSE}
+Nchains.Greta<-15
+ModelInits.Greta <- function()
+    {initials(population.mean = rnorm(1,600,90), population.sd = runif(1, 1, 30))}
+
+set.seed(1)
+Inits.Greta<-lapply(1:Nchains.Greta,function(x){ModelInits.Greta()})
+  
+  out.mcmc.greta.morechains<-runMCMC_btadjust(model=m, MCMC_language="Greta",
+    Nchains=Nchains.Greta,params=params,inits=Inits.Greta,
+		niter.min=1000,niter.max=300000,
+    nburnin.min=100,nburnin.max=200000,
+		thin.min=1,thin.max=1000,
+		conv.max=1.05, neff.min=1000)
+  
+
+```
+
+```{r second greta model running with runMCMC_btadjust - inv, echo=FALSE}
+
+knitr::kable(format(summary(out.mcmc.greta.morechains)[[1]],digits=2,scientific=FALSE),align="r",caption=paste0("Summary of the statistical parameters of the greta model with ",Nchains.Greta," chains:"))
+
+
+```
+
+This run was indeed much faster. Parameter estimates were still not significantly different from those with `NIMBLE` and `JAGS` based on paired Kolmogorov-Smirnov tests:
+
+```{r Nimble-Jags-second Greta comparison parameters, echo=FALSE, warning=FALSE}
+compar_MCMC_params<-format(cbind(c(ks.test(unlist(out.mcmc[,"population.mean"]),unlist(out.mcmc.greta.morechains[,"population.mean"]))$p.value, ks.test(unlist(out.mcmc.Jags[,"population.mean"]),unlist(out.mcmc.greta.morechains[,"population.mean"]))$p.value),c(ks.test(unlist(out.mcmc[,"population.sd"]),unlist(out.mcmc.greta.morechains[,"population.sd"]))$p.value
+,ks.test(unlist(out.mcmc.Jags[,"population.sd"]),unlist(out.mcmc.greta.morechains[,"population.sd"]))$p.value
+)),digits=4,scientific=FALSE)
+rownames(compar_MCMC_params)<-c("Nimble vs. greta.morechains","Jags vs. greta.morechains")
+knitr::kable(compar_MCMC_params,col.names=c("mean","sd"),align="r",caption="P-values of paired Kolmogorov-Smirnov tests of output parameters of the greta model with 15 chains with the default NIMBLE model and the JAGS model:")
+
+```
+
+We now report the efficiency of the MCMCs:
+
+```{r Nimble-Jags-second Greta comparison efficiency, echo=FALSE}
+compar_MCMC_times<-format(cbind(unlist(attributes(out.mcmc)$final.params),unlist(attributes(out.mcmc.Jags)$final.params),unlist(attributes(out.mcmc.greta.morechains)$final.params)),digits=4,scientific=FALSE)
+knitr::kable(compar_MCMC_times[1:(dim(compar_MCMC_times)[1]-1),],col.names=c("Nimble.default","Jags","Greta.morechains"),align="r",caption="Comparison of the efficiency of the default NIMBLE, the JAGS and the greta.morechains models:")
+
+```
+
+We still observed more CPU duration with `greta`, although the associated number of effective values for `greta` was now `r attributes(out.mcmc.greta.morechains)$final.diags$neff_synth[,"min"]`, which rendered MCMC CPU efficiency with `greta` closer to `NIMBLE`.
+

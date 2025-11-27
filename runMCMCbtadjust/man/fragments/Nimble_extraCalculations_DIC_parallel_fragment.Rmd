@@ -1,0 +1,149 @@
+
+## Mode-type DIC with parallelization
+
+We now give the adapted code in case of parallelization on the same data but with another model.
+
+```{r More Simulated data}
+### important to take a seed different from the one prior to y1000 otherwise two vectors y1000 & x will be parallel
+set.seed(2)
+nobs<-1000
+x<-rnorm(nobs)
+
+library(parallel)
+
+ModelData <-list(mass = y1000)
+ModelConsts.X <- list(x=x, nobs = length(y1000))
+
+ ModelCode.X<-nimbleCode(
+  {
+    # Priors
+    Intercept ~ dnorm(0,sd=100)
+    Slope ~ dnorm(0,sd=100)
+    population.sd ~ dunif(0,100)
+    
+    # Normal distribution parameterized by precision = 1/variance in Nimble
+    population.variance <- population.sd * population.sd
+    precision <- 1 / population.variance
+  
+    # Likelihood
+    for(i in 1:nobs){
+      meany[i]<-Intercept+Slope*x[i]
+      mass[i] ~ dnorm(meany[i], precision)
+    }
+  })
+ 
+ 
+
+ModelInits.X <- function()
+{list (Intercept = rnorm(1,600,90),Slope = rnorm(1), population.sd = runif(1, 30,100))}
+
+### put here to pass CRAN tests: https://stackoverflow.com/questions/41307178/error-processing-vignette-failed-with-diagnostics-4-simultaneous-processes-spa
+options(mc.cores=2)
+
+### adapted the number of chains for the same reason
+Nchains.parallel<-2
+
+
+set.seed(1)
+Inits.X<-lapply(1:Nchains.parallel,function(x){ModelInits.X()})
+
+
+#specifying the names of parameters to analyse and save:
+params.X <- c("Intercept", "Slope", "population.sd") 
+
+
+```
+
+This model just has an extra parameter. The above code should adapt smoothly if running the code without parallelization. When parallelizing, another R object will be crucial: it is the series of "clusters" that have been created with the `parallel` library - one cluster per Markov chain. This set of clusters is named `cl` within `runMCMC_btadjust` and we will use them in the code below to do the extra calculations. 
+
+```{r Nimble DIC & parallel run, cache=FALSE}
+
+calculations.for.modalDIC.parallel<-expression(
+  {
+     
+    ##first, send to each cluster the set of sample parameters it will have to treat in a matrix format
+    for (j.EC in seq_along(cl))
+        {
+          samples.to.treat.EC<-as.matrix(samplesList.temp[[j.EC]])
+          parallel::clusterExport(cl[j.EC], "samples.to.treat.EC",envir=environment())
+        }
+    ## second, running calculations within each cluster with the parallel::clusterEvalQ function
+    out1 <- parallel::clusterEvalQ(cl, {
+      Model1.EC<-Model[[1]]
+      names.samples.EC<-dimnames(samples.to.treat.EC)[[2]]
+    
+      ## third preparing the names of variables to calculate on:
+      varNames.EC<-CModel[[1]]$getVarNames()
+      DatavarNames.EC<-names(data)
+      notDatavarNames.EC<-setdiff(varNames.EC,DatavarNames.EC)
+      
+      ## fourth writing and compiling the nimbleFunction we will use:
+    logProbCalc.EC <- nimbleFunction(
+		setup = function(model,names.ref.list,notDatavarNames,DatavarNames) {
+	    },
+    run = function(P = double(1)) {
+		values(model,names.ref.list) <<- P
+		model$calculate(notDatavarNames)
+        return(model$calculate(DatavarNames))
+        returnType(double(0))
+    })
+    logProbCalcPrepared.EC <- logProbCalc.EC(Model1.EC, names.samples.EC, notDatavarNames.EC, DatavarNames.EC)
+    ClogProbCalcPrepared.EC <- compileNimble(Model1.EC, logProbCalcPrepared.EC)
+
+
+      ## fifth, running through all the samples in a sapply function to obtain the logLikelihoods corresponding to each set of parameters:
+          logLiks<-sapply(1:(dim(samples.to.treat.EC)[1]),function(toto) 
+      {
+      ClogProbCalcPrepared.EC$logProbCalcPrepared.EC$run(samples.to.treat.EC[toto,])
+      })
+    
+          return(logLiks)
+          gc(verbose = FALSE)
+        })
+    
+    logLiks.EC<-unlist(out1)
+    
+    
+    ## sixth: calculating DICs and estimation of numbers of parameters - outside of clusters for the first type of DIC and having to go back yo one cluster - here taken as the first - to do the calculation of logLikelihood on the mean of parameters as required by the classical formula of DIC:
+    
+    #mode type DIC; cf. Celeux et al. 2006 Bayesian analysis
+    DIC.mode.EC<--4*mean(logLiks.EC)+2*max(logLiks.EC)
+    p.DIC.mode.EC<--2*mean(logLiks.EC)+2*max(logLiks.EC)
+    
+    #calculation of classical DIC; cf. Celeux et al. 2006 Bayesian analysis
+    samples.to.treat.EC<-colMeans(as.matrix(samplesList.temp))
+    parallel::clusterExport(cl[1], "samples.to.treat.EC",envir=environment())
+    out1 <- parallel::clusterEvalQ(cl[1], {
+          logLiks.EC<-ClogProbCalcPrepared.EC$logProbCalcPrepared.EC$run(samples.to.treat.EC)
+          return(logLiks.EC)
+          gc(verbose = FALSE)
+        })
+    logLiks.meanparams.EC<-unlist(out1)
+    DIC.EC<--4*mean(logLiks.EC)+2*logLiks.meanparams.EC
+    p.DIC.EC<--2*mean(logLiks.EC)+2*logLiks.meanparams.EC
+    
+    list(DIC.mode=DIC.mode.EC,p.DIC.mode=p.DIC.mode.EC,DIC=DIC.EC,p.DIC=p.DIC.EC)
+    
+  }
+)
+
+out.mcmc.X<-runMCMC_btadjust(code=ModelCode.X, constants = ModelConsts.X, data = ModelData, MCMC_language="Nimble",
+    Nchains=Nchains.parallel, params=params.X, inits=Inits.X,
+    niter.min=1000, niter.max=300000,
+    nburnin.min=100, nburnin.max=200000, 
+    thin.min=1, thin.max=1000,
+    conv.max=1.05, neff.min=1000,
+    control=list(print.diagnostics=FALSE),
+    control.MCMC=list(includeParentNodes=TRUE,extraCalculations=calculations.for.modalDIC.parallel,parallelize=TRUE))
+
+attributes(out.mcmc.X)$final.params$extra
+
+```
+
+Results of both methods are also aligned with the number of parameters we know in this model - 3. 
+`r if(attributes(out.mcmc.X)$final.params$extra$DIC.mode<attributes(out.mcmc)$final.params$extra$DIC.mode){ paste0("The results would indicate that models with the covariate x would be very slightly better than the ones without it (DIC difference of ", format(attributes(out.mcmc.X)$final.params$extra$DIC.mode-attributes(out.mcmc)$final.params$extra$DIC.mode,digits=3),") - yet if we retain the principle of only keeping more complicated models with DIC values reduced by at least 2 units from more simple models, this more complicated model would not be retained.")}`
+`r if(attributes(out.mcmc.X)$final.params$extra$DIC.mode>=attributes(out.mcmc)$final.params$extra$DIC.mode){ paste0("These last DIC values are greater than the ones for the first, simple model, indicating a preference for the simpler model which is logical since it actually has a likelihood that is the same as the probabilistic model that generated the data.")}`
+
+Mode-based DIC can be expected to provide better results than classical DIC in situations where the use of the mean of statistical parameters in classical DIC yields strange estimations of the number of parameters - esp. negative values. This can be due to the fact that distributions of parameters are not symmetric and /or multivariate distribution of parameters which is strongly non-linear. In this context, mode-based DIC makes more sense - I indeed used it in @Zilliox2014105 for this reason. Yet mode-based DIC will be dependent on how close the best of the sampled parameters is close to the mode. It could therefore make sense to calculate mode-based DIC with different numbers of samples and check the dependency of the DIC value from this number of parameters. A DIC value that stabilizes with the greatest number of parameters would indicate that we have a sufficiently high number of samples in our MCMC.
+
+This first example showed the reader how to perform extra calculations with `extraCalculations` component of `control.MCMC` in `runMCMCbtadjust` , both in an unaparallelized and a parallelized setting - here to calculate mode-based DIC and classical DIC. The code is rather generic in the sense that it should apply to any model without changing the code. A key point for numerical efficiency is to go through a `nimbleFunction` for what concerns calculations on the `NIMBLE` model.

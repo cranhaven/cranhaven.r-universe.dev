@@ -1,0 +1,129 @@
+## Sampled posterior GOF p-value with parallelization
+
+Let us finally end up these examples on using the `extraCalculations` argument in `runMCMC_btadjust` to **calculate goodness-of-fit (GOF) p-values, by now proposing some code to calculate it with parallelization.** We will do it on the same model but with other data, now generated from a negative binomial distribution, i.e. with overdispersion compared to the Poisson distribution used before:
+
+```{r Simulating overdispersed GOF data}
+set.seed(1)
+y1000NB<-rnbinom(n=1000,mu=1,size=1) 
+ModelData.NB <-list(y = y1000NB) 
+```
+
+We will here propose a completely parallelized version although it is unclear in this case that this has strong - numerical - advantages.
+
+```{r Nimble GOF calculation with parallelization, cache=FALSE}
+
+calculations.for.GOFpvalues.parallel<-expression(
+  {
+    
+    ## first putting the sampled parameters in a matrix format; uses the as.matrix function specific to mcmc.list objects
+    samples.List.matrix.EC<-as.matrix(samplesList.temp)
+    names.samples.EC<-dimnames(samples.List.matrix.EC)[[2]]
+    
+    
+    ## second, defining the number of replicated data to sample and the length of the object to replicate:
+    rep.EC<-1000
+      ### TO BE ADAPTED TO THE CASE AT HAND
+    lengthy<-length(data$y)
+    
+    ## third, randomly select a value in this matrix & send it to each cluster - as well as other info: the seed could be controlled here if this is wished: and give it as values of the model and calculate the model
+    random.parameters.EC<-samples.List.matrix.EC[sample(dim(samples.List.matrix.EC)[1],1),]
+    parallel::clusterExport(cl, c("Nchains","random.parameters.EC","rep.EC","names.samples.EC"),envir=environment())
+    
+    ## fourth, running calculations within each cluster with the parallel::clusterEvalQ function
+    
+    out1 <- parallel::clusterEvalQ(cl, {
+      Model1.EC<-Model[[1]]
+        ### TO BE ADAPTED TO THE CASE AT HAND
+      lengthy<-length(data$y)
+    
+      ## fifth, writing and compiling the nimbleFunction we will use for part of GOF p-values calculations:
+    simulate_Ys.EC <- nimbleFunction(
+		setup = function(model,names.ref.list) {
+		    ### TO BE ADAPTED TO THE CASE AT HAND
+		  lengthy<-length(data$y)
+	    },
+    run = function(P = double(1),nrep= integer(0)) {
+      ## setting the new (sampled) values of parameters:
+		values(model,names.ref.list) <<- P
+		
+		  ## calculate the implications of these new parameter values for all the model
+		model$calculate()
+		
+		  ## preparing the object that will store the simulated y data:
+		    ### TO BE ADAPTED TO THE CASE AT HAND
+		ysim<-matrix(0,nrow=lengthy,ncol=nrep)
+		
+		  ## sixth, simulate the nrep values with Nimble using the includeData = TRUE option to be able to get it
+		for (i in 1:nrep)
+  		{
+		      ### TO BE ADAPTED TO THE CASE AT HAND
+		    model$simulate("y",includeData = TRUE)
+		      ### TO BE ADAPTED TO THE CASE AT HAND
+  		  ysim[,i]<-model$y
+	  	}
+		
+		    ## return the value
+		      ### TO BE ADAPTED TO THE CASE AT HAND
+      return(ysim)
+		      ### TO BE ADAPTED TO THE CASE AT HAND
+      returnType(double(2))
+    })
+    ## preparing and compiling the nimbleFunction
+    simulate_YsPrepared.EC <- simulate_Ys.EC(Model1.EC, names.samples.EC)
+    Csimulate_YsPrepared.EC <- compileNimble(Model1.EC, simulate_YsPrepared.EC)
+      
+    ## running the nimbleFunction
+    ysim<-Csimulate_YsPrepared.EC$simulate_YsPrepared.EC$run(random.parameters.EC,round(rep.EC/Nchains))
+    
+    ### simulating normalized randomized quantiles of simulated data:
+        ### TO BE ADAPTED TO THE CASE AT HAND
+    ynormsim<-sapply(1:round(rep.EC/Nchains),function(x){rnorm(lengthy)})
+    ## calculating the discrepancies on replicated data sets.
+      ### TO BE ADAPTED TO THE CASE AT HAND
+    replicated.disc.EC<-cbind(apply(ysim,2,function(x){var(x)/mean(x)}),t(apply(ynormsim,2,function(x){c(var(x),moments::skewness(x),moments::kurtosis(x))})))
+    
+    
+          return(replicated.disc.EC)
+          gc(verbose = FALSE)
+        })
+    
+   # replicated.disc.EC<-list.as.matrixbisdim1(out1)
+     replicated.disc.EC<-as.matrix(coda::as.mcmc.list(lapply(out1,coda::as.mcmc)))
+    
+    ## seventh, doing similar calculations on observed data y:
+      ### calculating normalized randomized quantile residual of y:
+        ### TO BE ADAPTED TO THE CASE AT HAND
+      ynorm.EC<-qnorm(ppois(data$y-1,random.parameters.EC["population.mean"])+runif(lengthy)*dpois(data$y,random.parameters.EC["population.mean"]))
+
+    ### calculating discrepancies on observed data sets
+        ### TO BE ADAPTED TO THE CASE AT HAND
+    observed.disc.EC<-c(ID.y=var(data$y)/mean(data$y),var(ynorm.EC),moments::skewness(ynorm.EC),moments::kurtosis(ynorm.EC))
+    
+    ### eighth, final calculations for producing the p-values
+    sapply(1:dim(replicated.disc.EC)[2],function(x)
+      {temp1<-sum(observed.disc.EC[x]<replicated.disc.EC[,x])
+      temp2<-sum(observed.disc.EC[x]==replicated.disc.EC[,x])
+      temp3<-sum(observed.disc.EC[x]>replicated.disc.EC[,x])
+      epsilon=runif(1)
+      temp<-rbeta(1,shape1=temp1+epsilon*temp2+1,shape2=temp3+(1-epsilon)*temp2+1)
+      min(temp,1-temp)*2
+      
+    })
+    }
+)
+   
+
+out.mcmc.GOF.NB.parallel<-runMCMC_btadjust(code=ModelCode, constants = ModelConsts, data = ModelData.NB, MCMC_language="Nimble",
+    Nchains=Nchains.parallel, params=params, inits=Inits[1:Nchains.parallel],
+    niter.min=1000, niter.max=300000,
+    nburnin.min=100, nburnin.max=200000, 
+    thin.min=1, thin.max=1000,
+    conv.max=1.05, neff.min=1000,
+    control=list(print.diagnostics=FALSE),
+    control.MCMC=list(includeAllStochNodes=TRUE,parallelize=TRUE,extraCalculations=calculations.for.GOFpvalues.parallel))
+
+attributes(out.mcmc.GOF.NB.parallel)$final.params$extra
+
+```
+
+As expected, the four p-values are very surprizing, since they are all less than 1% with only 1,000 replicates. This means that data do criticize the model from the point of view of the four discrepancies used, which all diagnose the probability distribution of data. This is logical since the data were actually generated from a different probability distribution than the one in the statistical model.

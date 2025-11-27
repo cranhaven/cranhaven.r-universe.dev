@@ -1,0 +1,168 @@
+We will exemplify the calculus of the sampled p-value on a very simple model
+
+```{r Simulating GOF data}
+
+set.seed(1)
+
+y1000<-rpois(n=1000,lambda=1)
+
+```
+
+As `NIMBLE` distinguishes data that have random distributions from other data, we specify two distinct lists to contain these:
+
+```{r Nimble GOF Data}
+
+ModelData <-list(y = y1000)
+ModelConsts <- list(nobs = length(y1000))
+
+```
+
+We then write our Bayesian code within R with the `nimbleCode` function in the `nimble` package:
+
+```{r Nimble GOF Code}
+ ModelCode<-nimbleCode(
+  {
+    # Prior
+    log.population.mean ~ dnorm(0,sd=10)
+    
+    population.mean<-exp(log.population.mean)
+    
+    # Likelihood
+    for(i in 1:nobs){
+      y[i] ~ dpois(population.mean)
+    }
+  })
+
+```
+
+The model is a simple Poisson generalized linear model with only an intercept - actually the same model - for the likelihood section - as the probabilistic model used to generate the data.
+
+Our - optional - next step is to specify starting values for model's parameters. This is done by first writing a function that is repetitively called for each chain. We - also optionally - indicate the names of parameters to be saved and diagnosed in a vector called `params`:
+
+```{r Nimble GOF Inits}
+ModelInits <- function()
+{list (log.population.mean = rnorm(1,0,3))}
+  
+Nchains <- 3
+
+set.seed(1)
+Inits<-lapply(1:Nchains,function(x){ModelInits()})
+
+#specifying the names of parameters to analyse and save:
+params <- c("log.population.mean","population.mean") 
+
+
+```
+
+## Sampled posterior GOF p-value without parallelization
+
+We now write the code for GOF p-values associated to different discrepancy functions: the index of dispersion of the data and the variance, skewness and kurtosis of the normalized random quantile residuals of data. Given that the statistical model fits well with the data generation model, these p-values should not be surprising, i.e. given the way we will construct them, they should not be very close to 0. To render the process numerically efficient we will use a `nimbleFunction` as done in the first example but adapt it to the calculation of GOF p-values. We also use the option `includeAllStochNodes=TRUE` of `control.MCMC` to ensure that all the stochastic nodes are collected and therefore available in the object `samplesList.temp` so as to develop GOF p-values with all the required parameters. We will here develop the GOF p-values around the data `y`. This is one of the part of the code that will have to be tailored to each case; it is possible that multiple objects are used for GOF p-values. The other part that is to be adapted to each case is the choice of the discrepancy functions used. Sections of the code that have to be adapted to each case study are marked with the tag `### TO BE ADAPTED TO THE CASE AT HAND`.
+
+```{r Nimble GOF calculation without parallelization, cache=FALSE}
+
+
+calculations.for.GOFpvalues<-expression(
+  {
+    ## putting the Nimble model in a new R object and the length of the object on which to build GOF p-values
+    Model1.EC<-Model[[1]]
+      ### TO BE ADAPTED TO THE CASE AT HAND
+    lengthy<-length(data$y)
+    
+    
+    ## first putting the sampled parameters in a matrix format; uses the as.matrix function specific to mcmc.list objects:
+    samples.List.matrix.EC<-as.matrix(samplesList.temp)
+    names.samples.EC<-dimnames(samples.List.matrix.EC)[[2]]
+    
+    ## second randomly select a value in this matrix: the seed could be controlled here if this is wished: 
+    random.parameters.EC<-samples.List.matrix.EC[sample(dim(samples.List.matrix.EC)[1],1),]
+    
+    
+    ## third writing and compiling the nimbleFunction we will use for part of GOF calculus:
+    simulate_Ys.EC <- nimbleFunction(
+      ## preparing R objects that will be send to C/C++
+		setup = function(model,names.ref.list) {
+		    ### TO BE ADAPTED TO THE CASE AT HAND
+		  lengthy<-length(data$y)
+	    },
+    run = function(P = double(1),nrep= integer(0)) {
+      ## setting the new (sampled) values of parameters:
+		values(model,names.ref.list) <<- P
+		
+		  ## calculate the implications of these new parameter values for all the model
+		model$calculate()
+		
+		  ## preparing the object that will store the simulated y data:
+		    ### TO BE ADAPTED TO THE CASE AT HAND
+		ysim<-matrix(0,nrow=lengthy,ncol=nrep)
+		
+		  ## simulate the nrep values with Nimble using the includeData = TRUE option to be able to get it
+		for (i in 1:nrep)
+  		{
+		      ### TO BE ADAPTED TO THE CASE AT HAND
+		    model$simulate("y",includeData = TRUE)
+		      ### TO BE ADAPTED TO THE CASE AT HAND
+  		  ysim[,i]<-model$y
+	  	}
+		
+		    ## return the value
+		      ### TO BE ADAPTED TO THE CASE AT HAND
+      return(ysim)
+		      ### TO BE ADAPTED TO THE CASE AT HAND
+      returnType(double(2))
+    })
+    
+    ## preparing and compiling the nimbleFunction
+    simulate_YsPrepared.EC <- simulate_Ys.EC(Model1.EC, names.samples.EC)
+    Csimulate_YsPrepared.EC <- compileNimble(Model1.EC, simulate_YsPrepared.EC)
+
+
+    
+    ## fourth, defining the number of replicated data to sample, sample them with the model and the sampled parameters, and calculate the discrepancy functions on each of the simulated data:
+    rep.EC<-1000
+    ## running the nimbleFunction
+      ### TO BE ADAPTED TO THE CASE AT HAND
+    ysim<-Csimulate_YsPrepared.EC$simulate_YsPrepared.EC$run(random.parameters.EC,rep.EC)
+    ## calculating the replicated data sets for normalized quantile residuals
+      ### TO BE ADAPTED TO THE CASE AT HAND
+    ynormsim<-sapply(1:rep.EC,function(x){rnorm(lengthy)})
+    ## calculating the discrepancies on replicated data sets.
+      ### TO BE ADAPTED TO THE CASE AT HAND
+    replicated.disc.EC<-cbind(apply(ysim,2,function(x){var(x)/mean(x)}),t(apply(ynormsim,2,function(x){c(var(x),moments::skewness(x),moments::kurtosis(x))})))
+    
+    ## fifth, doing similar calculations on observed data y:
+      ### calculating normalized randomized quantile residual of y:
+        ### TO BE ADAPTED TO THE CASE AT HAND
+      ynorm.EC<-qnorm(ppois(data$y-1,random.parameters.EC["population.mean"])+runif(lengthy)*dpois(data$y,random.parameters.EC["population.mean"]))
+      ### calculating discrepancies on observed data sets
+        ### TO BE ADAPTED TO THE CASE AT HAND
+      observed.disc.EC<-c(ID.y=var(data$y)/mean(data$y),var(ynorm.EC),moments::skewness(ynorm.EC),moments::kurtosis(ynorm.EC))
+    
+    ## sixth, final calculations for producing the p-values; cf. Gosselin (2011), Plos One
+    sapply(1:dim(replicated.disc.EC)[2],function(x)
+      {temp1<-sum(observed.disc.EC[x]<replicated.disc.EC[,x])
+      temp2<-sum(observed.disc.EC[x]==replicated.disc.EC[,x])
+      temp3<-sum(observed.disc.EC[x]>replicated.disc.EC[,x])
+      epsilon=runif(1)
+      temp<-rbeta(1,shape1=temp1+epsilon*temp2+1,shape2=temp3+(1-epsilon)*temp2+1)
+      min(temp,1-temp)*2
+      
+    })
+    }
+)
+   
+
+out.mcmc.GOF<-runMCMC_btadjust(code=ModelCode, constants = ModelConsts, data = ModelData, MCMC_language="Nimble",
+    Nchains=Nchains, params=params, inits=Inits,
+    niter.min=1000, niter.max=300000,
+    nburnin.min=100, nburnin.max=200000, 
+    thin.min=1, thin.max=1000,
+    conv.max=1.05, neff.min=1000,
+    control=list(print.diagnostics=FALSE),
+    control.MCMC=list(includeAllStochNodes=TRUE,extraCalculations=calculations.for.GOFpvalues))
+
+attributes(out.mcmc.GOF)$final.params$extra
+
+```
+
+As expected, the four p-values are not surprising, since they are not very close to 0 (e.g. less than 0.05). This means that data do not criticize the model from the point of view of the four discrepancies we used.
+
