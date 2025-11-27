@@ -1,0 +1,122 @@
+#' autoRasch Optimization Parameters Setting
+#'
+#' Returns and updates the default settings used by the functions in \strong{autoRasch} package.
+#'
+#' @param x A name of single parameter setting that is wanted to be shown. \code{NULL} means returns all parameters.
+#'
+#' @details
+#' \code{cd_control} lists the parameters used to control the coordinate descent optimization procedure. The paramaters are:
+#' \itemize{
+#'     \item{\code{init.step}}{   Initial value of the delta parameters updating step. The default is \code{1}.}
+#'     \item{\code{scale.down}}{   A constant value to scale down the updating step. The default is \code{0.5}.}
+#'     \item{\code{maxit.cd.higher}}{   Maximum iteration in the higher level coordinate descent. The default is \code{500}.}
+#'     \item{\code{maxit.cd.lower}}{   Maximum iteration for every coordinate optimization in the lower level coordinate descent. The default is \code{500}.}
+#'     \item{\code{abs.tol}}{   The convergence tolerance. The algorithm stops if it is unable to reduce the negative log likelihood value by the given tolerance. The default is \code{1e-12}.}
+#'     \item{\code{max.dif.par}}{   The convergence tolerance. The algorithm stops if it is unable to update all of the parameters' value by the given tolerance. The default is \code{1e-8}.}
+#' }
+#'
+#'
+#' @return
+#' \item{fixed_par}{   A vector of names of the parameter types that are set to be fixed. It means that these parameters are not going to be estimated.}
+#' \item{fixed_theta}{   A vector of \code{theta} values when \code{theta} are listed in the \code{fixed_par}. If it is not set, it will be set to zero.}
+#' \item{fixed_beta}{   A vector of \code{beta} values when \code{beta} are listed in the \code{fixed_par}. If it is not set, it will be set to zero.}
+#' \item{fixed_gamma}{   A vector of \code{gamma} (natural logarithm of discrimination parameters, \eqn{\alpha = exp(\gamma)}) values when \code{gamma} are listed in the \code{fixed_par}. If it is not set, it will be set to zero.}
+#' \item{fixed_delta}{   A vector of \code{delta} values when \code{delta} are listed in the \code{fixed_par}. If it is not set, it will be set to zero.}
+#' \item{isPenalized_theta}{   It is a logical parameter whether, in the estimation procedure, \code{theta} is penalized or not.}
+#' \item{isPenalized_gamma}{   It is a logical parameter whether, in the estimation procedure, \code{gamma} is penalized or not.}
+#' \item{isPenalized_delta}{   It is a logical parameter whether, in the estimation procedure, \code{delta} is penalized or not.}
+#' \item{groups_map}{   A matrix \eqn{n x f} to map the subject into DIF groups, where \eqn{n} is number of subjects and \eqn{f} is number of focal groups.}
+#' \item{optz_method}{    Options of the optimization method used. The default is \code{optim} which implies on applying the PJMLE which is implemented using \code{optim()}.
+#' When it is set to \code{mixed} means that it applies the coordinate descent.}
+#' \item{optim_control}{   A list of setting parameters of the \code{optim()}. For complete settings can be seen in \code{\link[stats:optim]{stats::optim()}}.}
+#' \item{lambda_theta}{   The regularization parameter to the \code{theta}. The default value is \code{0.05}}
+#' \item{lambda_in}{   The regularization parameter to the \code{gamma} in the included itemset. The default value is \code{50}.}
+#' \item{lambda_out}{   The regularization parameter to the \code{gamma} in the excluded itemset. The default value is \code{1}.}
+#' \item{lambda_delta}{   The regularization parameter to the \code{delta}. The default value is \code{10}.}
+#' \item{randomized}{    A logical parameter whether the initial values of the estimated parameters are randomized or not.}
+#' \item{random.init.th}{   A threshold value to limit the range of the initial values. The default value is \code{1e-2}, means that the initial values range between \code{[-0.01,0.01]}}
+#' \item{isHessian}{   A logical parameter whether, in the estimation procedure, need to return the Hessian matrix or not. The default value is \code{TRUE}, which means the Hessian matrix will be computed.}
+#' \item{cd_control}{   A list of coordinate descent optimization setting.}
+#' \item{mode}{   An option setting to use "DIF" or "DSF" mode.}
+#' \item{isTraced}{   A logical value whether the progress need to be tracked or not.}
+#'
+#' @examples
+#' ### To show the default values
+#' autoRaschOptions()
+#' autoRaschOptions(x = "isHessian")
+#'
+#' ### To change the default values
+#' adj_setting <- autoRaschOptions()
+#' adj_setting$isHessian <- TRUE
+#' pcm_res <- pcm(shortDIF, setting = adj_setting)
+#'
+#' @importFrom graphics hist layout legend lines matlines matplot par plot points text
+#' @importFrom utils combn write.csv
+#'
+#' @export
+autoRaschOptions <- function(x = NULL){
+
+  aRoptions <- autoRasch_options_default()
+
+  if(!is.null(x)) {
+    if(is.character(x)) {
+
+      # check if x is in names(aRoptions)
+      not.ok <- which(!x %in% names(aRoptions))
+      if(length(x) > 1L) {
+        stop("autoRasch ERROR: `x' could only opt an option.")
+      }
+      if(length(not.ok) > 0L) {
+        # only warn if multiple options were requested
+          warning("autoRasch WARNING: option `", x[not.ok],
+                  "' not available")
+        x <- x[ -not.ok ]
+
+      }
+
+      # return(aRoptions[[x]])
+      # return requested option(s)
+      if(length(x) == 0L) {
+      } else {
+        return(aRoptions[[x]])
+      }
+    } else {
+      stop("autoRasch ERROR: `x' must be a string.")
+    }
+  } else {
+    class(aRoptions) <- c("aR_opt",class(aRoptions))
+    return(aRoptions)
+  }
+}
+
+autoRasch_options_default <- function(){
+
+  opt <- list(
+    fixed_par = c(),
+    fixed_theta = c(),
+    fixed_beta = c(),
+    fixed_gamma = c(),
+    fixed_delta = c(),
+    isPenalized_gamma = TRUE,
+    isPenalized_delta = TRUE,
+    isPenalized_theta = TRUE,
+    groups_map = c(),
+    optz_method = "mixed",
+    optim_control = list(maxit = 2e+4, reltol = 1e-12, fnscale = 10),
+    lambda_theta = 0.05,
+    lambda_in = 50,
+    lambda_out = 1,
+    lambda_delta = 10,
+    eps = 0.0,
+    randomized = FALSE,
+    random.init.th = 1e-2,
+    isHessian = FALSE,
+    cd_control = list("init.step" = 0.7, scale.down = 0.25, maxit.cd.higher = 500, maxit.cd.lower = 500, maxit.optim = 1e+4,
+                      abs.tol = 1e-12, max.diff.par = 1e-8),
+    mode = "DIF",
+    isTraced = FALSE
+  )
+
+  return(opt)
+
+}
