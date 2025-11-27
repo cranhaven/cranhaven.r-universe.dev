@@ -1,0 +1,212 @@
+---
+title: "PPLasso package"
+author: "Wencan Zhu, Céline Lévy-Leduc, Nils Ternès"
+date: ' '
+output: pdf_document
+vignette: >
+ %\VignetteEngine{knitr::knitr}
+ %\VignetteIndexEntry{WLasso package}
+ %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(message = FALSE,warning = FALSE)
+library(PPLasso)
+library(ggplot2)
+library(cvCovEst)
+set.seed(123456)
+```
+
+# Introduction
+This package provides functions for implementing the PPLasso (Prognostic Predictive Lasso) approach described in [1] to identify prognostic and predictive biomarkers in high dimensional settings. This method is designed by taking into account the correlations that may exist between the biomarkers. It consists in rewriting the initial high-dimensional linear model to remove the correlation existing between the predictors and in applying the generalized Lasso criterion. We refer the reader to the paper for further details.
+
+We suppose that the response variable $\boldsymbol{y}$ satisfy the following linear model:
+\begin{equation}\label{eq:mod_lin}
+\boldsymbol{y}=\boldsymbol{X}\boldsymbol{\gamma}+\boldsymbol{\epsilon},
+\end{equation}
+where
+ $$
+ \boldsymbol{X}=\begin{bmatrix}
+    1 & 0 & X_{11}^{1} & X_{11}^{2} & \ldots & X_{11}^{p} &   0 & 0 & \ldots & 0  \\
+    1 & 0 &  X_{12}^{1} & X_{12}^{2} & \ldots & X_{12}^{p} & 0 & 0 & \ldots & 0  \\
+  \vdots &  \vdots & \vdots& \vdots& &  \vdots & & & \\
+  1 &  0 & X_{1n_{1}}^{1} & X_{1n_{1}}^{2} & \ldots & X_{1n_{1}}^{p} & 0 & 0 & \ldots & 0  \\
+    0 &  1 & 0 & 0 & \ldots & 0 &  X_{21}^{1} & X_{21}^{2} & \ldots & X_{21}^{p} \\
+    0 &  1 &  0 & 0 & \ldots & 0 &    X_{22}^{1} & X_{22}^{2} & \ldots & X_{22}^{p} \\
+     \vdots &  \vdots & \vdots& \vdots& & \vdots& \vdots&\vdots & &\vdots\\
+    0 & 1 & 0 & 0 & \ldots & 0 & X_{2n_{2}}^{1} & X_{2n_{2}}^{2} & \ldots & X_{2n_{2}}^{p}
+   \end{bmatrix},
+   $$
+with $\boldsymbol{\gamma}=(\alpha_1,\alpha_2, \boldsymbol{\beta}_{1}', \boldsymbol{\beta}_{2}')'$. $\alpha_1$ (resp. $\alpha_2$) corresponding to the effects of treatment $t_1$ (resp. $t_2$). 
+ Moreover, $\boldsymbol{\beta}_1=(\beta_{11}, \beta_{12}, \ldots, \beta_{1p})'$ (resp. $\boldsymbol{\beta}_2=(\beta_{21}, \beta_{22}, \ldots, \beta_{2p})'$) are the coefficients associated to each of the $p$ biomarkers in treatment $t_1$ (resp. $t_2$) group.
+ When $t_1$ stands for the standard treatment (placebo), prognostic (resp. predictive) biomarkers are defined as those having non-zero coefficients
+ in $\boldsymbol{\beta}_{1}$ (resp. in $\boldsymbol{\beta}_{1}-\boldsymbol{\beta}_{2}$) and non prognostic (resp. non predictive) biomarkers  correspond to the indices having null coefficients in $\boldsymbol{\beta}_{1}$ (resp. in $\boldsymbol{\beta}_{1}-\boldsymbol{\beta}_{2}$). The vector $\boldsymbol{\beta}_{1}$ and $\boldsymbol{\beta}_{2}-\boldsymbol{\beta}_{1}$ are assumed to be sparse, \textit{i.e.} a majority of its components is equal to zero. The goal of the PPLasso approach is to retrieve the indices of the nonzero components of $\boldsymbol{\beta}_{1}$ and $\boldsymbol{\beta}_{2}-\boldsymbol{\beta}_{1}$.
+ 
+Concerning the biomarkers,
+\begin{equation}\label{eq:X1_X2}
+\boldsymbol{X}_1= \begin{bmatrix}
+   X_{11}^{1} & X_{11}^{2} & \ldots & X_{11}^{p} \\
+   X_{12}^{1} & X_{12}^{2} & \ldots & X_{12}^{p} \\
+   ...\\
+   X_{1n_{1}}^{1} & X_{1n_{1}}^{2} & \ldots & X_{1n_{1}}^{p} 
+\end{bmatrix}\textrm{  and  }\boldsymbol{X}_2=\begin{bmatrix}
+   X_{21}^{1} & X_{21}^{2} & \ldots & X_{21}^{p} \\
+   X_{22}^{1} & X_{22}^{2} & \ldots & X_{22}^{p} \\
+   ...\\
+   X_{2n_{2}}^{1} & X_{2n_{2}}^{2} & \ldots & X_{2n_{2}}^{p}
+   \end{bmatrix}
+ \end{equation}
+are the design matrices for $t_1$ and $t_2$ groups, respectively. 
+The rows of $\boldsymbol{X}_1$ and $\boldsymbol{X}_2$ are assumed to be the realizations of independent centered Gaussian random vectors having a covariance matrix equal to $\boldsymbol{\Sigma}$.
+
+
+# Data generation
+
+## Correlation matrix $\boldsymbol{\Sigma}$
+We consider a correlation matrix having the following block structure:
+
+\begin{equation}
+     \label{eq:SPAC}
+     \boldsymbol{\Sigma}=
+       \begin{bmatrix}
+         \boldsymbol{\Sigma}_{11} &  \boldsymbol{\Sigma}_{12} \\
+         \boldsymbol{\Sigma}_{12}^{T} &  \boldsymbol{\Sigma}_{22}
+       \end{bmatrix}
+\end{equation}
+      
+where $\boldsymbol{\Sigma}_{11}$ is the correlation matrix of active variables (non null associated coefficients) with off-diagonal entries equal to $a_1$, $\boldsymbol{\Sigma}_{22}$ is the one of non active variables (null associated coefficients) with off-diagonal entries equal to $a_3$ and $\boldsymbol{\Sigma}_{12}$ is the correlation matrix between active and non active variables with entries equal to $a_2$. In the following example: $(a_1,a_2,a_3)=(0.3, 0.5, 0.7)$.    
+The first 10 variables are assumed to be active, among which the first 5 are also predictive. 
+
+In the following,
+$p=50$ and $n=50$ are used for the example but the approach can handle much larger values of $n$ and $p$ as it is shown in the paper describing PPLasso.
+
+```{r generate Sigma}
+p <- 50 # number of variables 
+d <- 10 # number of actives
+n <- 50 # number of samples
+actives <- 1:d
+nonacts <- c(1:p)[-actives]
+Sigma <- matrix(0, p, p)
+Sigma[actives, actives] <- 0.3
+Sigma[-actives, actives] <- 0.5
+Sigma[actives, -actives] <- 0.5
+Sigma[-actives, -actives] <- 0.7
+diag(Sigma) <- rep(1,p)
+actives_pred <- 1:5
+```
+
+
+## Generation of $\boldsymbol{X}$ and $\boldsymbol{y}$
+The design matrix is then generated with the correlation matrix $\boldsymbol{\Sigma}$ previously defined by using the function \texttt{mvrnorm} and the response variable $\boldsymbol{y}$ 
+is generated according to the linear model \eqref{eq:mod_lin} where the non null components of 
+$\boldsymbol{\beta}_{1}$ are equal to 1 and non null components of $\boldsymbol{\beta}_{2}-\boldsymbol{\beta}_{1}$ are equal to 0.5, $\alpha_{1}=0$ and $\alpha_{2}=1$.
+
+```{r X}
+X_bm <- MASS::mvrnorm(n = n, mu=rep(0,p), Sigma, tol = 1e-6, empirical = FALSE)
+colnames(X_bm) <- paste0("X",(1:p))
+n1=n2=n/2 # 1:1 randomized
+beta1 <- rep(0,p)
+beta1[actives] <- 1
+beta2 <- beta1
+beta2[actives_pred] <- 2
+beta <- c(beta1, beta2)
+TRT1 <- c(rep(1,n1), rep(0,n2))
+TRT2 <- c(rep(0,n1), rep(1,n2))
+Y <- cbind(X_bm*TRT1,X_bm*TRT2)%*%beta+TRT2+rnorm(n,0,1)
+```
+
+# Estimation of $\boldsymbol{\Sigma}$ 
+Given $\boldsymbol{y}$ and $\boldsymbol{X}$, we can estimate the block-wise correlation matrix 
+$\boldsymbol{\Sigma}$ containing the correlations between the columns of $\boldsymbol{X}$. We propose to use the function \verb|cvCovEst| of the R package \texttt{cvCovEst} by keeping the default parameters. 
+
+```{r est Sigma}
+cv_cov_est_out <- cvCovEst(
+      dat = X_bm,
+      estimators = c(
+        linearShrinkLWEst, denseLinearShrinkEst,
+        thresholdingEst, poetEst, sampleCovEst
+      ),
+      estimator_params = list(
+        thresholdingEst = list(gamma = c(0.2, 0.4)),
+        poetEst = list(lambda = c(0.1, 0.2), k = c(1L, 2L))
+      ),
+      cv_loss = cvMatrixFrobeniusLoss,
+      cv_scheme = "v_fold",
+      v_folds = 5
+    )
+Sigma_est <- cov2cor(cv_cov_est_out$estimate) 
+```
+
+The optimal estimation of $\boldsymbol{\Sigma}$ can be obtained by the object \verb|estimate| in the output.
+
+# Variable selection
+With the previous $\boldsymbol{X}$ and $\boldsymbol{y}$, the function \verb|ProgPredLasso| of the package \texttt{PPLasso} can be used to select the active variables. If the parameter \verb|cor_matrix| (correlation matrix) is not provided, it will be automatically estimated by the function \verb|cvCovEst|
+of the R package \texttt{cvCovEst} presented in the previous section. However, it can also be provided by the users. Here we use the previously estimated $\widehat{\boldsymbol{\Sigma}}$: \verb|Sigma_est|. 
+
+```{r WLasso model, warning = FALSE, message = FALSE}
+mod <- ProgPredLasso(X1 = X_bm[1:n1, ], X2 = X_bm[(n1+1):n, ], Y = Y, cor_matrix = Sigma_est)
+```
+
+Additional arguments:
+
+* \texttt{delta}: parameter of thresholding appearing in the method described in [1] which is set to 0.95 by default.
+* \texttt{maxsteps}: integer specifying the maximum number of steps for the generalized Lasso algorithm. Its default value is 500.
+
+Outputs: 
+
+* \texttt{lambda}: all the $\lambda$ considered. 
+* \texttt{beta}: matrix of the estimations of $\boldsymbol{\gamma}$ for all the $\lambda$ considered. Each row of
+\texttt{beta} corresponds to $\widehat{\gamma}$ for a given $\lambda$. More precisely, the first (resp. second) column corresponds to the estimation of treatment effect $\alpha_1$ (resp. $\alpha2$). The 3rd to $(p+2)$th columns correspond to the estimation of $\boldsymbol{\beta}_{1}$ and the last $p$ columns correspond to the estimation of  $\boldsymbol{\beta}_{2}-\boldsymbol{\beta}_{1}$.
+* \texttt{beta.min}: estimation of $\boldsymbol{\gamma}$ obtained for the $\lambda$ minimizing the BIC criterion. 
+* \texttt{bic}: BIC criterion for all the $\lambda$ considered.
+* \texttt{mse}: MSE (Mean Squared Error) for all the $\lambda$ considered.
+
+
+##  Estimation of $\boldsymbol{\gamma}$
+
+The estimation of the treatment effects $\alpha_1$ and $\alpha_2$ are obtained as follows:
+```{r}
+#alpha1
+ mod$beta.min[1]
+```
+
+```{r}
+#alpha2 
+ mod$beta.min[2]
+```
+
+The identified prognostic (resp. predictive) biomarkers are displayed on the left (resp. right) of Figure \ref{fig:fig1} with true prognostic or predictive biomarkers in blue and false positives in red.
+
+```{r variable selection, figures-side, fig.show="hold", out.width="50%",echo=FALSE,fig.cap="\\label{fig:fig1}Left: Identified prognostic biomarkers. Right: Identified predictive biomarkers."}
+beta_min <- mod$beta.min[-c(1,2)]
+df_beta <- data.frame(beta_est=beta_min, Status = ifelse(c(beta1, beta2-beta1)==0, "non-active", "active"))
+df_prog <- data.frame(beta_est=beta_min[1:p], Status = ifelse(beta1==0, "false positive", "true prognostic"), index=c(1:p))
+
+df_pred <- data.frame(beta_est=beta_min[(p+1):(2*p)], Status = ifelse(c(beta2-beta1)==0, "false positive", "true predictive"), index=c(1:p))
+
+df_plot_prog <- df_prog[which(df_prog$beta_est!=0), ]
+df_plot_pred <- df_pred[which(df_pred$beta_est!=0), ]
+
+ggplot2::ggplot(data=df_plot_prog, mapping=aes(y=beta_est, x=index, color=Status))+geom_point()+
+  theme_bw()+ylab("Estimated coefficients")+xlab("Indices of selected variables")
+
+ggplot2::ggplot(data=df_plot_pred, mapping=aes(y=beta_est, x=index, color=Status))+geom_point()+
+  theme_bw()+ylab("Estimated coefficients")+xlab("Indices of selected variables")
+```
+
+
+To find the biomarkers identified as prognostic: 
+```{r}
+which(beta_min[1:p]!=0)
+```
+
+and the biomarkers identified as predictive: 
+```{r}
+which(beta_min[(p+1):(2*p)]!=0)
+```
+
+\bigskip
+
+\large \textbf{References}
+
+[1] W. Zhu, C. Lévy-Leduc, N. Ternès. Identification of prognostic and predictive biomarkers in high-dimensional data with PPLasso, 2022, Arxiv: 2202.01970.
