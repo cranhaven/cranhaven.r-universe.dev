@@ -1,0 +1,161 @@
+---
+title: "Unofficial API"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{unofficial-api}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  eval = TRUE
+)
+```
+
+The unofficial or hidden API is essentially what the TikTok website uses to display you content.
+Originally based on a translation of [Deen Freelon's `Pyktok` Python module](https://github.com/dfreelon/pyktok), `traktok` contains functions to simulate a browser accessing some of these API endpoints.
+How these endpoints work was discovered through reverse engineering and TikTok might change how these endpoints operate at any moment.
+As of writing this (2025-11-18), there are functions that can:
+
+- search videos using a search term
+- get video details and the video files from a given video URL
+- get user videos
+- get user info
+- get who follows a user
+- get who a user is following
+
+To use these functions, you have to log into <tiktok.com> first and then give `R` the cookies the browser uses to identify itself.
+
+
+# Authentication
+
+The easiest way to get the cookies needed for authentication is to export the necessary cookies from your browser using a browser extension (after logging in at TikTok.com at least once).
+I can recommend ["Get cookies.txt"](https://chromewebstore.google.com/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc) for Chromium based browsers or ["cookies.txt"](https://addons.mozilla.org/en-US/firefox/addon/cookies-txt/) for Firefox (note that almost all browsers used today are based on one of these).
+
+`r knitr::include_graphics("cookies.png")`
+
+Save the cookies.txt file, which will look something like this:
+
+```
+# Netscape HTTP Cookie File
+# https://curl.haxx.se/rfc/cookie_spec.html
+# This is a generated file! Do not edit.
+
+.tiktok.com	TRUE	/	TRUE	1728810805	cookie-consent	{%22ga%22:true%2C%22af%...
+.tiktok.com	TRUE	/	TRUE	1700471788	passport_csrf_token	e07d3487c11ce5258a3...
+.tiktok.com	TRUE	/	FALSE	1700471788	passport_csrf_token_default	e07d3487c11...
+#HttpOnly_.tiktok.com	TRUE	/	TRUE	1700493610	multi_sids	71573310862246389...
+#HttpOnly_.tiktok.com	TRUE	/	TRUE	1700493610	cmpl_token	AgQQAPORF-RO0rNtH...
+...
+```
+
+**It does not matter if you download all cookies or just the ones specific to TikTok**, as we use the `cookiemonster` package to deal with that.
+To read the cookies into a specific encrypted file, simply use:
+
+```{r eval=FALSE}
+cookiemonster::add_cookies("tiktok.com_cookies.txt")
+```
+
+And that's it!
+`traktok` will access these cookies whenever necessary.
+To check if authentication was successful, you can use:
+
+```{r}
+auth_check()
+```
+
+# Usage
+## Search videos
+
+To search for videos, you can use either `tt_search` or `tt_search_hidden`, which do the same, as long as you do not have a token for the Research API.
+The function opens a browser in the background (or you can see what is happening with `headless = TRUE`) and scrolls down.
+Below, we let it scroll for up to one minute and solve captchas if they appear:
+
+```{r tt_search_hidden}
+rstats_df <- tt_search_hidden("#rstats", solve_captchas = TRUE, scroll = "1m")
+rstats_df
+```
+
+![video of a captcha being solved](captcha.mp4)
+
+This already gives you pretty much all information you could want about the videos that were found.
+
+## Get metadata and download videos
+
+If you already have URLs, you can obtain some more information, including the video files, using `tt_videos`:
+
+```{r}
+rstats_df2 <- tt_videos(rstats_df$video_url[1:2], save_video = TRUE)
+rstats_df2
+```
+
+Per default, the function waits between one and ten seconds (chosen at random) between making two calls, to not make it too obvious that data is scraped from TikTok.
+You can speed up the process (at your own risk), by changing the `sleep_pool` argument, which controls the minimum and maximum number of seconds to wait:
+
+```{r}
+rstats_df3 <- tt_videos(
+  rstats_df$video_url[3:4],
+  save_video = TRUE,
+  sleep_pool = 0.1
+)
+rstats_df3
+```
+
+When you are scraping a lot of URLs, the function might fail eventually, due to a poor connection or because TikTok is blocking your requests.
+It therefore usually makes sense to save your progress in a cache directory:
+
+```{r}
+rstats_df3 <- tt_videos(rstats_df$video_url[5:6], cache_dir = "rstats")
+list.files("rstats")
+```
+
+Note that the video files are downloaded into the `dir` directory (your working directory by default), independently from your cache directory.
+
+If there are information that you feel are missing from the `data.frame` `tt_videos` returns, you can look at the raw, unparsed json data using:
+
+```{r eval=FALSE}
+rstats_list1 <- tt_request_hidden(rstats_df$video_url[1]) |>
+  jsonlite::fromJSON()
+```
+
+Parsing the result into a list using `fromJSON`, results in a rather complex nested list.
+You can look through this and see for yourself if the data you are interested in is there
+
+## Get followers and who a user is following
+
+To get followers and who a user is following, we need to first look up their SecID, which is a special ID for users.
+We can do so using the `tt_user_info_hidden` function:
+
+```{r}
+user_info <- tt_user_info_hidden("tiktok")
+user_info$secUid
+```
+
+Once you have the `secUid` you can look up a maximum of 5,000 followers per account:
+
+```{r}
+tt_get_follower_hidden(
+  secuid = "MS4wLjABAAAAwiH32UMb5RenqEN7duyfLIeGQgSIx9WtgtOILt55q6ueUXgz4gHqZC5HFx4nabPi",
+  verbose = FALSE
+)
+```
+
+Likewise, you can also check who this account follows:
+
+```{r}
+tt_get_following_hidden(
+  secuid = "MS4wLjABAAAAwiH32UMb5RenqEN7duyfLIeGQgSIx9WtgtOILt55q6ueUXgz4gHqZC5HFx4nabPi",
+  verbose = FALSE
+)
+```
+
+
+```{r include=FALSE}
+list.files(pattern = ".mp4") |>
+  unlink()
+unlink("rstats", recursive = TRUE)
+```
+
