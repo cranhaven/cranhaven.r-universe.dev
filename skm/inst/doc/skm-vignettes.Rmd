@@ -1,0 +1,309 @@
+---
+title: "skm: selective k-means."
+author: "Guang Yang"
+date: "2016-07-02"
+output: 
+  rmarkdown::html_document:
+    toc: true
+    toc_float: true
+    fig_caption: yes
+    theme: united
+vignette: >
+  %\VignetteIndexEntry{skm: selective k-means.}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+# Overview
+
+A set of algorithm for solving __minimize the sum of the column minimal of a subset k rows from a given matrix__. This is equivalent to solve a k-means problem when the matrix is square and the matrix entries are euclidean distance. The __skm__ package provides a set of __c-level class and solvers to solve the problem with rectangluar matrix, and with arbitrary distance metric defined__, and an __r-level wrapper over one particular c-level solver__.
+
+# An introduction example
+
+Let's first understand what does __minimize the sum of the column minimal of a subset k rows from a given matrix__ mean via a concrete small example. Imagine that there are 3 internet service providers in the area where you owned 5 houses, and the matrix below shows the monthly charges for internet access from each service providers to each of your house.
+
+```{r}
+#- an introduction example
+
+mm <- matrix(
+  data = c(
+    1,  5,  8,  5, 8,
+    3, 13,  3, 13, 3,
+    2,  2, 21,  2, 21
+  ), 
+  nrow = 3, ncol = 5, byrow = TRUE, 
+  dimnames = list(
+    paste0("s", 1:3), paste0("t", 1:5)
+  ))
+
+mm
+
+```
+
+Of course, you would like to save the cost by paying as less as possible. If it is possible to use all 3 service providers, you can select s1 for t1, s3 for t2, s2 for t3, s3 for t4 and s2 for t5, and pay __sum of minimial of each column from the given matrix__. However, what if you can select only 1 service provider? Then, you have to find the k = 1 row such that can __minimize the sum of the column minimial of k = 1 rows from the matrix__. This is as straightforward as finding the k = 1 row that gives the minimial row sum, which is the row s1. What if you can select 2 service providers? Then, you want to find the k = 2 rows such that can __minimize the sum of the column minimial of k = 2 rows from the matrix__. And, the problem is start to get interest as it becomes a combinatorial optimization problem. It is best to select row s2 and s3, after screening all combinations of s1 and s2 which leads to a total cost of 17, s2 and s3 which leads to a total cost of 12, and s3 and s1 which leads to a total cost of 22.
+
+Ok, that sounds simple. Now, what if you have 51 candidate locations, one in each U.S. states, and you have 28,844 target houses, one in each U.S. zip codes, from each candidate locations to each target houses there is a cost associated with distance and time in transit, and you want select 10 from the 51 candidate locations to build warehouses so that you can minimize the cost? Of course, you can brute force to go over all __choose(51, 10) = 12,777,711,870__ possible combinations. How about using __skm__ to find k = 10 candidate locations (rows) that minimize the overall cost (distance) from the closet warehouse to each target houses (sum of the column minimial)?
+
+# __skm__ package design
+
+Let's concretize the example above with datasets come with __skm__ package. There are two datasets in __skm__: __zip2012__ is a data.table with latitude, longitude, population and average income for each 28,844 U.S. zip code, and __source_zip_list__ is a character vector of 51 zip, one for each U.S. states. The zip in the __source_zip_list__ are the candidate locations which often being the center of the states that minimize the population weighed average distance to other zip within the state. And, the objective is to find 10 locations from the __source_zip_list__, which minimize the overall population weighed average distance to all 28,844 zip codes.
+
+```{r message=FALSE, results='hide'}
+#- a zip find example
+library(skm) # also load data.table, magrittr and Rcpp
+
+#- create source - target - population weighted distance matrix
+
+#- source
+dsrc <- skm::zip2012[zip %in% skm::source_zip_list, .(s = zip, s_lat = lat, s_lng = lng)]
+
+#- target
+ddst <- skm::zip2012[ , .(t = zip, t_lat = lat, t_lng = lng, p_pop = p_pop)]
+
+#- create source - target - population weighted distance data.table
+
+#- CJ.data.table extends CJ from data.table to cross join data.table - see yg::CJ.dt
+CJ.data.table <- function(X, Y) {
+
+  stopifnot(is.data.table(X), is.data.table(Y))
+
+  k = NULL
+
+  X = X[, c(k = 1L, .SD)]
+  setkey(X, k)
+
+  Y = Y[, c(k = 1L, .SD)]
+  setkey(Y, NULL)
+
+  return( X[Y, allow.cartesian=TRUE][, k := NULL][] )
+
+}
+
+ddzt <- CJ.data.table(dsrc, ddst) %>% setorder(s, t) %>%
+  .[ , `:=`(d = skm::dist_wlatlng(s_lat, s_lng, t_lat, t_lng), w = p_pop)]
+
+#- ddzt has 1,471,044 row each with source zip in s, target zip in t, 
+#- and population weighted distance in d
+
+#- convert source - target - population weighted distance data.table into matrix
+dmtx <- ddzt %>%
+  .[ , `:=`(
+    wd = d * w
+  )] %>%
+  data.table::dcast(
+    s ~ t, value.var = "wd"
+  )
+
+sname <- dmtx[["s"]]
+
+set(dmtx, i = NULL, j = 1L, value = NULL) # dmtx[ , `:=`(s = NULL)]
+
+tname <- names(dmtx)
+
+dmtx <- as.matrix(dmtx)
+
+rownames(dmtx) <- sname
+colnames(dmtx) <- tname
+
+```
+
+A quick overview of the __dmtx__:
+
+```{r}
+round(dmtx[1L:4L, 1L:10L] * 10L^4L, 4L)
+```
+
+Thus, the objective is to find k = 10 rows (source locations) from the matrix __dmtx__ to minimize the sum of each column minimial (the distance from closest source to each target location). The __skm__ package aims solve a selective k-means problem like this one. Let's define a __selective k-means problem__ as finding __k__ rows in an __m x n__ matrix such that the sum of each column minimial is minimized. In the scenairo when __m == n__ and each cell value is a valid distance metric, this is equivalent to a k-means problem. The selective k-means extends the k-means problem in the sense that it is possible to have __m != n__, often with __m < n__ which implies we want to limit the search within a small set of candidates. Also, the selective k-means extends the k-means problem in the sense that the instance in row set can be instantce not seen in the column set, e.g, zip in source set __s__ not necessary in target set __t__.
+
+The __skm__ solves the selective k-means problems using a method similar to the standard k-means algorithm, e.g., start with an initial solution, repeat with an assignment (expectation) step and an update (minimization) step until converge to an (often local) optimial. The available solvers are discussed one by one in the next subsections. The most important solvers are the C-level solver __skm_mls_cpp__ and the R-level solver __skm_mls__, and also the C-level solver __skm_gbp_cpp__ for extreme large problems.
+
+## C-level class and solver
+
+<!-- 
+
+### __skm_minmax_cpp__
+
+The __skm__ solver family starts with the function __skm_minmax_cpp__ which implements a minmax approach to select __n__ rows from a __m x n__ matrix that minimize the sum of column minimial. The function __skm_minmax_cpp__ assumes often m >= n. And, if m <= n then all m rows will be selected. Thus, in precise, the __skm_minmax_cpp__ function implements a minmax approach to select __min(m, n)__ rows from a __m x n__ matrix that minimize the sum of column minimial. The function __skm_minmax_cpp__ is designed as a subroutine of __skm_sgl_cpp__, rather than a solver of selective k-means problem.
+
+-->
+
+### __skm_sgl_cpp__
+
+The function __skm_sgl_cpp__ takes four inputs: the distance matrix __x__ (double matrix), a single fixed initialization __s_init__ (integer vector of row indicies matrix __x__, indexed from 0), a set of row indicies must be included in the final solution __s_must__ (integer vector of row indicies matrix __x__, indexed from 0), and maximum number of iteration __max_it__ (integer scalar), and returns an __skmSolution__ instance.
+
+The __skm__ implements a class __skmSolution__ to store the solution from various solvers. An instance of __skmSolution__ has two member variables, an optimial objective __o__ which is a double scalar value, an optimial source set __s__ which is an integer vector of row indicies indexed from 0. 
+
+The function __skm_sgl_cpp__ uses __s_init__ as a single fixed initial point to find the optimial solution, which will be returned as an __skmSolution__ instance.
+
+```{r}
+
+#- select 10 from 51 candidate locations to provide service for 28,444 houses 
+#- with the objective of minimizing the population weighted average distances
+#- note that the row indicies are indexed from 0 following the cpp convention
+m0 <- skm::skm_sgl_cpp(
+  x = dmtx, s_init = c(0L, 1L, 2L, 3L, 5L, 8L, 13L, 21L, 34L, 4L), s_must = integer(0), max_it = 1000L
+)
+
+m0$o # objective: sum of column minimial
+
+m0$s # selected source: row index set indexed from 0 so c(0L, 4L) implies rownames(dmtx)[c(1L, 5L)] = c("02124", "05452")
+
+sname[m0$s + 1L]
+
+#- must have candidate locations rownames(dmtx)[c(5L, 11L)] = c("05452", "20011") in the solution
+m1 <- skm::skm_sgl_cpp(
+  x = dmtx, s_init = c(0L, 1L, 2L, 3L, 5L, 8L, 13L, 21L, 34L, 4L), s_must = c(4L, 10L), max_it = 1000L
+)
+
+m1$o
+
+sname[m1$s + 1L]
+
+```
+
+### __skm_rgi_cpp__
+
+The function __skm_rgi_cpp__ is built on __skm_sgl_cpp__, in which __skm_rgi_cpp__ takes an integer __k__ and initialized the search for optimial solution with a random __s_init__, rather than a fixed manual specified __s_init__ as in __skm_sgl_cpp__.
+
+```{r}
+m2 <- skm::skm_rgi_cpp(
+  x = dmtx, k = 10L, s_must = integer(0), max_it = 1000L
+)
+
+m2$o
+
+sname[m2$s + 1L]
+
+```
+
+### __skm_rgs_cpp__
+
+The function __skm_rgs_cpp__ is built on __skm_rgi_cpp__, in which __skm_rgs_cpp__ takes an extra argument indicates group __g__. The __skm_rgs_cpp__ function generates the random initial solution __s_init__ using a stratified sampling strategy with resepect to the grouping defined by __g__, rather than a simple random __s_init__ in __skm_rgi_cpp__.
+
+```{r}
+
+#- g is important when the size of s is large
+#- g should be an integer vector same length as s, value indicate groups
+gname <- sname %>% vapply(substr, "", 1L, 1L) %>% unname %>% as.integer()
+
+m3 <- skm::skm_rgs_cpp(
+  x = dmtx, k = 10L, g = gname, s_must = integer(0), max_it = 1000L
+)
+
+m3$o
+
+sname[m3$s + 1L]
+
+```
+
+### __skm_mlp_cpp__
+
+The function __skm_mlp_cpp__ is built on __skm_rgi_cpp__, in which __skm_mlp_cpp__ takes an extra argument indicates number of random initializations __max_at__, e.g., number of attempt to initialize a different __s_init__ to find optimial solution. This aims to overcome the local optimial issue with multiple random initial points. The __skm_mlp_cpp__ will return an __Rcpp::List__ which in addition to the objective __o__ and selected source __s__, it also includes all the objectives __olist__ (double vector) and the selected source __slist__ (integer matrix) reached along with each random initialized solution.  
+
+```{r}
+
+#- multiple random initial points to overcome local optimial issue
+m4 <- skm::skm_mlp_cpp(
+  x = dmtx, k = 10L, s_must = integer(0), max_it = 1000L, max_at = 4L
+)
+
+m4$o
+
+sname[m4$s + 1L]
+
+m4$o_list # optimial objective find with each of the 4 random initial points
+
+#- str(m4$s_list) is num [1:4, 1:10] but not a matrix?
+apply(m4$s_list, 2L, function(s) { sname[s + 1L] }) # selected sources obtained with each of the 4 random initial points
+
+```
+
+### __skm_mls_cpp__
+
+The function __skm_mls_cpp__ combines __skm_rgs_cpp__ and __skm_mlp_cpp__ in the sense it solves selective k-mean problem with multiple random initial points and the initial solution __s_init__ are initialized using stratified sampling on source __s__ with respect to grouping __g__. This is the core C-level solver that should be called in most cases.
+
+```{r}
+
+#- multiple random initial points initialized using stratified sampling w.r.t g
+m5 <- skm::skm_mls_cpp(
+  x = dmtx, k = 10L, g = gname, s_must = integer(0), max_it = 1000L, max_at = 4L
+)
+
+m5$o
+
+sname[m5$s + 1L]
+
+m5$o_list
+
+apply(m5$s_list, 2L, function(s) { sname[s + 1L] })
+
+```
+
+### __skmRpl_mlp_cpp__
+
+The function __skm_mlp_cpp__ and __skm_mls_cpp__ solving the selective k-means with multiple random initial points. These multiple runs are running in serial. The function __skmRpl_mlp_cpp__, which is built on __skmRpl_rgi_cpp__, implements the same algorithm as __skm_mlp_cpp__ while having multiple runs running in parallel. This solver often works fine, however, it is not stable at this moment and could crash R sometimes, mostly due to my lack of knowledge on RcppParallel. Thus, I didn't go forward for __skmRpl_mls_cpp__ yet. Let me know if you have good suggestions.
+
+## R-level class and solver
+
+### __skm_mls__
+
+The function __skm_mls__ is an R-level function wrapping over __skm_mls_cpp__ with the following features. 
+
+At first, the input data __x__ is expected to be a __data.table__ instead of __matrix__. The __data.table x__ is expected to have four columns: source indicator __s__ (character or integer), target indicator __t__ (character or integer), and the distance metric __d__ (double), and an optional column for weight __w__. The column name for source, target, distance and weight can be specified using __s_column__, __t_column__, __d_column__ and __w_column__, with default __s__, __t__, __d__, and __NULL__. If __weight w__ is not __NULL__ then the weighted average distance will be minimized rather than the simple average distance. 
+
+Also, it can take a set of __k__ all at once, e.g. __k = c(1L:10L)__, rather than a single __k__. The group structure can be specified using argument __s_ggrp__. The argument __s_ggrp__ is expected a data.table contains source to group mapping. The argument __auto_create_ggrp__ is a boolean indicator indicating whether to create group structure using the first letter of __s__ when __s_ggrp__ is __integer(0L)__, default is __TRUE__. And, the argument __max_at__ and __max_it__ are inherited from __skm_mls_cpp__. 
+
+```{r}
+s_ggrp <- data.table(s = sname, g = gname)
+s_ggrp[c(5L, 8L, 13L, 21L, 34L)]
+```
+
+At last, the argument __extra_immaculatism__ is an indicator indicating whether making extra runs for improving solution consistency, e.g., when specifying __k = c(9L, 10L)__, the algorithm will first solve k = 9, and then when solve k = 10, it will have several extra runs with initial points using the solution found in k = 9 with one additional source. The argument __extra_at__ defines how many such extra runs.
+
+The function __skm_mls__ will return a more meaningful data.table compared to the __skm_mls_cpp__ returned Rcpp::List. The function __skm_mls__ returns data.table that has five columns: the objective name __o__ (character) which is the input value of __d_colname__, the weighting scale __w__ (character) which is the input value of __w_colname__ (character), the number of sources __k__ (integer), the source list __s__ (character vector), and the objective distance __d__ (double). 
+
+```{r message=FALSE}
+# ddzt <- ddzt[ , .(s, t, d, w)]
+
+m6 <- skm::skm_mls(
+  x = ddzt, k = 1L:10L, s_colname = "s", t_colname = "t", d_colname = "d", w_colname = "w",
+  s_ggrp = integer(0L), s_must = integer(0L), max_it = 1000L, max_at = 1000L, 
+  auto_create_ggrp = TRUE, extra_immaculatism = TRUE, extra_at = 200L
+)
+
+m6
+
+```
+
+## C-level solver for selective k-means problem of extreme large size
+
+### __skm_gdp_cpp__
+
+The __skm__ package also ships with a function __skm_gdp_cpp__, which implements a greedy algorithm for solving selective k-means of extreme large size, e.g., a matrix with thousands of rows and millions of columns. The function __skm_gdp_cpp__ runs fast and returns simply a row index vector indexed from 0, so it requires a little bit more effort to obtain the objective and etc.
+
+```{r message=FALSE}
+
+m7 <- skm::skm_gdp_cpp(
+  x = dmtx, k = 10L
+)
+
+m7
+
+# obtain the objective population weighted average distance from the row index vector m7
+sum(apply(dmtx[m7 + 1L, ], 2L, min))
+
+```
+
+# Some practical examples
+
+## [Optimal Warehouse Locator](https://gyang.shinyapps.io/skm_owl/)
+
+A shiny application that use [__skm__](https://CRAN.R-project.org/package=skm) to find the optimal locations for building warehouses: [OWL - Optimal Warehouse Locator](https://gyang.shinyapps.io/skm_owl/).
+
+<!--
+
+## [How Jet.com design the set of boxes for packing millions customer's orders?](./link)
+
+A document explains how Jet.com use [__skm__](https://CRAN.R-project.org/package=skm), combined with the package [__gbp__](https://CRAN.R-project.org/package=gbp), for designing boxes used in warehouse for packing millions of customer's orders.
+
+-->
