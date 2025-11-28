@@ -1,0 +1,352 @@
+---
+title: "poolABC"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{poolABC}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+<style>
+body {
+text-align: justify}
+</style>
+---
+
+```{r options, include = FALSE}
+knitr::opts_chunk$set(
+  out.width = '80%', dpi = 300,
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+# 1. Introduction
+
+An implementation of Approximate Bayesian Computation (ABC) methods applied to pooled sequencing (Pool-seq) data is available in R language in the package `poolABC`. The purpose of this vignette is to provide an in-depth overview of the capabilities of the package, highlighting the usage of its main functions.
+
+```{r setup}
+library(poolABC)
+```
+
+The initial sections of this vignette detail how to import pooled sequencing data from files in the `_rc` format. We also show how to randomly select multiple subsets of the observed data, compute summary statistics for those subsets and use those summary statistics as target for parameter estimation and model selection with ABC.
+
+<br>
+
+This vignette also teaches users how to simulate Pool-seq data under pre-defined models. Note that the simulation of Pool-seq data requires functions included in the `poolHelper` package. We then exemplify how the imported data and the simulated data can be used to perform parameter inference. The `poolABC` package allows the use of genome-wide multilocus data for ABC by using multiple subsets of simulated and observed loci.
+
+<br>
+
+Briefly, we obtain one set of summary statistics for each set of simulated loci and for each random subset of observed data. Each set of summary statistics computed from a unique subset of observed data is used as an independent target for parameter estimation. Thus, with the `poolABC` package, users obtain one posterior distribution, for each parameter of interest and for each subset of observed loci. Then, our package allows users to combine those multiple posteriors to obtain a single estimate per parameter. This merging is performed with the Epanechnikov kernel and weighting according to the distance between the mean summary statistics of a subset of loci and the mean across the genome, giving more weight to subsets of loci with a mean closer to the overall mean. Finally, the `poolABC` package also includes functions to compute point estimates and produce plots of those merged posterior distributions.
+
+<br>
+
+<br>
+
+# 2. Import dataset
+
+This package uses pooled sequencing data stored on `_rc` format files. These `_rc` files are created by running the `SNP-frequency-diff.pl` function of `popoolation2`. Briefly, this is an example of a typical `_rc` file with only two populations:
+
+```{r example, tidy=TRUE}
+data.frame(chr = c("NC297", "NC297"), pos =c(3530, 5450), rc = c("A", "T"), allele_count = 2, allele_states = c("A/G", "T/A"), deletion_sum = 0, snp_type = "pop", major_alleles = c("AA", "TT"), minor_alleles = c("GG", "AN"), maa_1 = c("54/55", "51/54"), maa_2 = c("76/78",  "96/96"), mia_1 = c("1/55", "3/54"), mia_2 = c("2/78", "0/96"))
+```
+
+More information about these files can be found at: <https://sourceforge.net/p/popoolation2/wiki/Main/>
+
+<br>
+
+If you have your data in `_rc` files in a folder of your computer, you can simply use the `importContigs` function.
+
+```{r import data, eval=FALSE, include=TRUE}
+# load multiple files and organize information by contig
+files <- importContigs(path = "/home/myawesomedata", pops = c(1, 4, 7, 10))
+```
+
+The `path` input of this function indicates the path to the folder where the `_rc` files are located. By default, the `importContigs` function will import all files present in the folder that include the `_rc` pattern in their name. The index of populations to import is defined by the `pops` input argument. For instance, the input `pops = c(1, 4, 7, 10)` will import the major and minor allele for the first, fourth, seventh and tenth population in the `_rc` files.
+
+<br>
+
+The `importContigs` function also includes several optional input arguments. The `files` input argument allows you to specify the index of the files to import. For instance, by setting `files = 1:5`, only the first five files listed in the output of `list.files(path = path)` will be imported. Additionally, specific contigs can be removed from the data by adding their names to the `remove` input argument.
+
+<br>
+
+The `min.minor` input argument allows you to filter the data by the number of minor allele reads. For instance, if `min.minor = 2` all sites where the total number of minor allele reads across all populations of the `pops` input argument is below 2, will be removed from the data. Alternatively, by setting `filter = TRUE`, you can filter the data by the frequency of the minor allele. When `filter = TRUE`, the user can define a `threshold` for the minimum allowed frequency of the minor allele. If no `threshold` is defined, the `importContigs` function will assume that at least one minor allele read per site should exist. Finally, it is possible to include an header when importing the data. This header can be created with the `createHeader` function.
+
+<br>
+
+<br>
+
+# 3. Random subset of loci
+
+Random windows of a given size (in base pairs) can be selected from the imported data with the `pickWindows` function. The data imported with the `importContigs` function is a list with all the elements required for the `pickWindows` function. You can assign each of those list elements to an individual object or use them directly as input argument of the `pickWindows` function.
+
+```{r select blocks, eval=FALSE, include=TRUE, tidy=TRUE}
+# randomly select blocks of a given size from several contigs
+blocks <- pickWindows(freqs, positions, range, rMajor, rMinor, coverage, window = 1000, nLoci = 100)
+```
+
+With this function, users can randomly select a subset of the complete pooled sequencing data at their disposal. More specifically, the `pickWindows` function allows users to randomly select `nLoci` blocks of `window` size (in base pairs) from the data imported in the previous section. In other words, this function will randomly select select `nLoci` contigs and then select one random block with a user defined size (defined by the `window` input) per contig.
+
+<br>
+
+<br>
+
+# 4. Compute stats for observed data
+
+The next step is the computation of a set of summary statistics from the observed data. To compute summary statistics from the observed data, we can use the `statsContig` function. This function will compute the same set of summary statistics used in the simulations from the multiple random subset of loci obtained in the previous step.
+
+```{r observed sumstats, eval=FALSE, include=TRUE}
+# compute a set of observed summary statitstics
+obs <- statsContig(randomWindows = blocks, nPops = 4, stat.names = stat.names)
+```
+
+Note that we are using the `blocks` object created with the `pickWindows` function as the `randomWindows` input argument. The `statsContig` function will compute summary statistics from those randomly selected blocks of observed data. Also, the use of names for the summary statistics is strongly recommended. To ensure that the set of observed summary statistics is named, we should obtain the name of the simulated summary statistics and include those in the `stat.names` input argument of the `statsContig` function.
+
+<br>
+
+<br>
+
+# 5. Simulate data for two or four-population models
+
+With this package, you also have the ability to simulate pooled sequencing data under three different models by using the `poolSim` function. The `model` input argument allows the user to define which model to simulate. At the moment, this package includes three different models: an isolation with migration model with two populations, a model representing a single origin of two divergent ecotypes and a third model representing a parallel origin of those ecotypes.
+
+<br>
+
+To simulate data using the two populations model, you have to define the mean depth of coverage and the variance of the coverage for those two populations. You also need to create a list with the number of individuals per pool and per population. In the next chunk, you can see how to simulate data using this model:
+
+```{r two populations, tidy=TRUE}
+# set the mean and variance of the coverage
+sMean <- c(84.34, 66.76); sVars <- c(1437.22, 912.43) 
+# create a list containing the information of the pool sizes by population
+size <- rep(list(rep(10, 10)), 2)
+# run simulation for a two-populations model
+sims <- poolSim(model="2pops", nDip=200, nPops=2, nLoci=100, nSites=2000, mutrate=2e-8, size=size, mean=sMean, variance=sVars, minimum=15, maximum=180, min.minor=1, Nref=c(25000, 25000), ratio=c(0.1, 3), pool=c(5, 180), seq=c(0.0001, 0.001), split=c(0, 3), CW=c(1e-13, 1e-3), WC=c(1e-13, 1e-3), bT=c(0, 0.5))
+```
+
+The `poolSim` function requires several input arguments, that are explained in detail in the help page of the function. However, note that most of those input arguments define the minimum and maximum values for a variety of relevant parameters. To simulate data using a four populations model:
+
+```{r four populations, tidy=TRUE}
+# set the mean and variance of the coverage
+sMean <- c(84.34, 66.76, 65.69, 68.83); sVars <- c(1437.22, 912.43, 848.02, 1028.23)
+# create a list containing the information of the pool sizes by population
+size <- rep(list(rep(5, 20)), 4)
+# run simulation for a four-populations model
+sims <- poolSim(model="Single", nDip=400, nPops=4, nLoci=100, nSites=2000, mutrate=2e-8, size=size, mean=sMean, variance=sVars, minimum=15, maximum=180, min.minor=2, Nref=c(25000, 25000), ratio=c(0.1, 3), pool=c(5, 180), seq=c(0.0001, 0.001), split=c(0, 3), CW=c(1e-13, 1e-3), WC=c(1e-13, 1e-3), CC=c(1e-13, 1e-3), WW=c(1e-13, 1e-3), ANC=c(1e-13, 1e-3), bT=c(0, 0.5), bCW=c(0, 0.5), bWC=c(0, 0.5))
+```
+
+<br>
+
+## 5.1. multiple simulations
+
+The `poolSim` function can be used to perform a single simulation. However, most of the times, you will want to perform thousands of simulations. One way to accomplish this is to use `replicate` function together with our `poolSim` function. We recommend that you do the following:
+
+```{r multiple simulations, tidy=TRUE}
+# set the mean and variance of the coverage
+sMean <- c(84.34, 66.76); sVars <- c(1437.22, 912.43) 
+# create a list containing the information of the pool sizes by population
+size <- rep(list(rep(5, 20)), 2)
+# define how many simulations to run 
+nSims <- 10
+# run one batch of simulations
+sims <- t(replicate(n = nSims, unlist(poolSim(model="2pops", nDip=200, nPops=2, nLoci=100, nSites=1000, mutrate=2e-8, size=size, mean=sMean, variance=sVars, minimum=20, maximum=185, min.minor=2, Nref=c(25000, 25000), ratio=c(0.1, 3), pool=c(5, 180), seq=c(0.0001, 0.001), split=c(0, 3), CW=c(1e-13, 1e-3), WC=c(1e-13, 1e-3), bT=c(0, 0.5)))))
+```
+
+By using the `replicate` function, you can perform multiple simulations. By unlisting and then transposing the output of those simulations, you obtain a matrix where each row corresponds to a different simulation and each column is a different parameter or summary statistic.
+
+<br>
+
+<br>
+
+# 6. Perform parameter estimation
+
+The observed summary statistics computed in the previous sections and the simulations performed in the previous one can then be used to perform parameter estimation with Approximate Bayesian Computation (ABC).
+
+<br>
+
+We included with this package a small dataset simulated under the two populations model. This includes one matrix (`sumstats`) with the summary statistics computed from the simulated data, one matrix (`params`) with the simulated parameter values and a final matrix (`limits`) with the minimum and maximum value of the prior distribution for each parameter.
+
+```{r load data}
+# load the data included in the package
+data("sumstats"); data("params"); data("limits")
+```
+
+The `poolABC` package aims at streamlining the process of parameter inference with Pool-seq data. One of the key components of that design is the `ABC` function.
+
+<br>
+
+By using this function, users can simultaneously perform parameter estimation with ABC for multiple targets. The `ABC` function requires the data, imported with the `importContigs` function and then uses both the `pickWindows` and `statsContig` functions to select multiple random subset of loci from the observed data and compute a set of observed summary statistics for each of those subsets. Thus, for each subset of loci we obtain a vector of summary statistics and each vector acts as an independent target for parameter estimation. The `ABC` function can be used by doing:
+
+```{r ABC, eval=FALSE, include=TRUE, tidy=TRUE}
+# parameter estimation with ÃBC function
+myabc <- ABC(nPops = 2, ntrials = 10, freqs = freqs, positions = positions, range = range, rMajor = rMajor, rMinor = rMinor, coverage = coverage, window = 1000, nLoci = 100, limits = limits, params = params, sumstats = sumstats, tol = 0.01, method = "regression")
+```
+
+The `ntrials` input argument defines the number of independent targets for parameter estimation. In this example, we are performing parameter inference for 10 different targets. Each of those targets was obtained by computing summary statistics from windows of 1000 base pairs (`window = 1000`) from 100 (`nLoci = 100`) randomly selected contigs of the observed data.
+
+<br>
+
+Note that you should also define the `method` and tolerance rate, `tol`, to use. The `tol` is defined as the percentage of accepted simulation. You should strive to keep a low tolerance rate, to avoid accepting simulations that are too distant from the observed data, but it is also important to avoid very stringent tolerance rates that may lead to few accepted values. A typical value of `tol = 0.01` or `tol = 0.05` is recommended but you should test different `tol` values in the cross-validation analysis (see more about this in subsequent sections).
+
+<br>
+
+This package implements two ABC algorithms for constructing the posterior distribution from the accepted simulations: a rejection method and a regression-based correction using a local linear regression. When `method` is "rejection", simulations are accepted if the Euclidean distance between the set of summary statistics computed from the simulated data and the target is sufficiently small and these accepted simulations are considered a sample from the posterior distribution. When `method` is "regression", an additional step is used to correct for the imperfect match between the summary statistics computed from the simulated data and the summary statistics computed from the observed data. For this reason, we recommend that you select the regression method because it will, most often than not, lead to more precise parameter estimates.
+
+<br>
+
+<br>
+
+# 7. Merge multiple posteriors
+
+After using the `ABC` function to perform parameter estimation with Approximate Bayesian Computation for several targets, we need to merge the multiple posteriors obtained (one for each target) into a single posterior per parameter.
+
+<br>
+
+This can be performed with the `mergepost` function. One of the required input arguments of this function is the `global` input. This input should be a vector with the observed summary statistics computed from the entire dataset. We recommend that you use the `pickWindows` function to select a large number of loci and then use that random selection as the input argument of the `statsContig` function.
+
+```{r global sumstat, eval=FALSE, include=TRUE, tidy=TRUE}
+# load multiple files and organize information by contig
+blocks <- pickWindows(freqs = freqs, positions = positions, range = range, rMajor = rMajor, rMinor = rMinor, coverage = coverage, window = 1000, nLoci = 800)
+# compute a set of summary statistics from the observed data
+global <- statsContig(randomWindows = blocks, nPops = 2, stat.names = stat.names)
+```
+
+The global vector can then be used in the `mergepost` function. The remaining required input arguments are the matrix with the `target` for the parameter inference and the list containing the posteriors (`post`) for each target and parameter. It is also possible to include the regression weights in the `wtreg` option.
+
+```{r merge posteriors, eval=FALSE, message=FALSE, include=TRUE, tidy=TRUE}
+# merge posterior distributions
+myabc <- mergepost(target = myabc$target, global = global, post = myabc$adjusted, wtreg = myabc$weights)
+```
+
+Briefly, this function will merge the different posteriors into a single one, using different weighting methods for the merging. Details about the various elements of the `mergepost` output can be found in the help page of the function. Note that the `merge`, `weighted`, `merge_reg` and `weighted_reg` entries contain, for each parameter, a `locfit` object, obtained after merging the multiple posteriors using the corresponding method. The `merged_stat`, `weighted_stat`, `merge_reg_stat` and `weighted_reg_stat` are the posterior point estimates for the corresponding merging method.
+
+<br>
+
+<br>
+
+# 8. Posterior point estimates and plots
+
+Users can then plot the resulting merged posterior distribution with the `plot_weighted` function. You should include your matrix with the simulated parameter values in the `prior` input argument of this function to also plot the prior distribution of the chosen parameter. This allows for a comparison, in the same plot, of the prior and posterior shape.
+
+<br>
+
+You should include the output of the `mergepost` function as the `merged_posterior` input argument and a matrix with the `limits` of the prior distribution for each parameter. Then, you just need to define which parameter to plot with the `index` input argument.
+
+```{r plot param, eval=FALSE, message=FALSE, include=TRUE}
+# plot the density estimation of a parameter
+plot_weighted(prior = params, merged_posterior = myabc, limits = limits, index = 2)
+```
+
+The `plot_weighted` function plots the posterior density of the chosen parameter, together with the prior distribution of the same plot.
+
+<br>
+
+<br>
+
+# 9. Model selection
+
+The `poolABC` package also allows users to perform model selection by estimating the posterior model probabilities, comparing two scenarios of ecotype formation: the single and the parallel origin scenario. The `modelSelect` function can be used to perform model selection with ABC.
+
+<br>
+
+One of the required input arguments of the `modelSelect` function is the `index`. This is a vector of model indices that should have the same `length` as `nrow(sumstats)` to indicate to which model a particular row of `sumstats` belongs. The remaining input arguments are explained in the help page of the function. As before, you should also define the tolerance rate (`tol`) and the `method` to use. A tolerance of 0.01 and the "regression" method are recommended.
+
+```{r model, message=FALSE, tidy=TRUE}
+# create a vecto of model indices
+index <- c(rep("model1", nrow(sumstats)/2), rep("model2", nrow(sumstats)/2))
+# select a random simulation to act as target
+target <- sumstats[10, ]
+# perform model selection with ABC
+mysel <- modelSelect(target = target, index = index, sumstats = sumstats, tol = 0.1, method = "regression")
+# display the structure of the mysel object
+str(mysel)
+```
+
+The output of the `modelSelect` function is a list with six entries. To quickly view the results of the model selection, you can use the `summary_modelSelect` function. This function will provide an easy to read display of the posterior model probabilities and Bayes factors. The only required input argument of the `summary_modelSelect` function is the object created with the the `modelSelect` function.
+
+```{r summary model}
+# check results of model selection
+msel <- summary_modelSelect(object = mysel)
+```
+
+As you can see, by running the `summary.modelSelect` function we get an output with the proportion of accepted simulation for each model under a rejection method and posterior model probabilities under the regression method. If we print the object itself
+
+```{r Bayes factors}
+# print results of model selection 
+msel
+```
+
+we can also see the Bayes factors between pairs of models for both the rejection and the regression methods.
+
+<br>
+
+<br>
+
+# 10. Cross validation for Approximate Bayesian Computation
+
+A fundamental part of any ABC analysis is the validation of the results obtained in the parameter estimation and model selection steps. The `poolABC` package includes tools to perform cross validation for both analysis, computing prediction errors for both parameter inference and model selection.
+
+<br>
+
+## 10.1 Parameter inference
+
+One important component of this validation process is the calculation of prediction errors for each parameter. This allows us to evaluate the confidence of the estimates and the effect of various point estimates and/or tolerance rates.
+
+<br>
+
+To perform a leave-one-out cross validation for ABC, you can use the `simulationABC` function. This functions requires the simulated parameter values, `params`, the simulated summary statistics, `sumstats` and a matrix with the `limits` of the prior distributions. You should also define the size of the cross-validation sample, `nval`, the tolerance rate, `tol`, and the type of ABC algorithm to be applied in the `method` input.
+
+```{r compute error, warning=FALSE, tidy=TRUE}
+# perform an Approximate Bayesian Computation simulation study
+mycv <- simulationABC(params = params, sumstats = sumstats, limits = limits, nval = 100, tol = 0.01, method = "regression")
+# display the structure of the mycv object
+str(mycv, max.level = 2)
+```
+
+The output of the `simulationABC` function is a list with three elements. Details about each list element are available in the help page of the function. A quick way to visualize the results of the leave-one-out cross validation is to plot the the cross-validation results.
+
+<br>
+
+The `poolABC` package includes the `plot_errorABC` function to allow this visual evaluation of the quality of the estimation. This function requires as input the output of the `simulationABC` function. Additionally, you need to define the ABC algorithm (either "reg" for regression or "rej" for rejection) and which point estimate ("mode", "median" or "mean") to plot. You should also define which parameter to plot, by selecting the corresponding `index`.
+
+```{r plot error, fig.height=5, fig.width=6, message=FALSE}
+# plot the prediction errors 
+plot_errorABC(x = mycv, method = "reg", statistic = "median", index = 1)
+```
+
+As you can see, this produces a plot with the true parameter value in x-axis and the estimate value of the parameter in the y-axis. Thus, the closer the points are to the diagonal line, the higher is the quality of the estimation.
+
+<br>
+
+## 10.2 Model selection
+
+It is also possible to evaluate how much confidence we should place in the model selection results by performing a leave-one-out cross validation for model selection with ABC via subsequent calls to the function `modelSelect`. Briefly, several simulations from each model are selected to act as validation simulations, while the remaining simulations are used as training simulations. For each validation simulation, the function `modelSelect` is called to estimate the posterior model probabilities.
+
+```{r simulate model selection}
+# perform a leave-one-out cross validation for model selection
+modelSim <- sim_modelSel(index = index, sumstats = sumstats, nval = 100, tol = 0.1)
+# display the structure of the modelSim object
+str(modelSim)
+```
+
+The output of this leave-one-out cross validation for model selection is a list with 5 different elements that can be used in the `error_modelSel` function to compute the confusion matrix and the mean misclassification probabilities of models.
+
+<br>
+
+Users can also define a `threshold` for the posterior model probabilities. This `threshold` corresponds to the minimum posterior probability of assignment. Thus, a simulation where the posterior probability of any model is below the threshold will not be assigned to a model and will instead be classified as `unclear`.
+
+```{r model selection error}
+# compute the mean misclassification probabilities  
+mselError <- error_modelSel(object = modelSim)
+```
+
+The `error_modelSel` function outputs the confusion matrix and the mean model posterior probabilities obtained with the regression method. It will also output other useful information such as the mean posterior probability of correctly assigned models and the mean posterior probability when each model is not correctly assigned.
+
+<br>
+
+For a more visual interpretation of these results, it is also possible to display a barplot of the model misclassification. By using the `plot_msel` function we can plot the confusion matrix, either in colour (if `color = TRUE`) or in grey (if `color = FALSE`).
+
+```{r barplot, fig.height=3, fig.width=5, message=FALSE}
+# display a barplot of model misclassification
+plot_msel(object = mselError)
+```
+
+Using the output of the `error_modelSel` function as the input of the `plot_msel` function, we can produce this barplot showing the proportion of simulations classified to any of the models.
