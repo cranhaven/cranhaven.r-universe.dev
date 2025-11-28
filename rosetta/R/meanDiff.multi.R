@@ -1,0 +1,319 @@
+###########################################################
+###
+### R file with the function meanDiff.multi, which
+### explores difference in means for a combination of
+### dichotomous and interval variables, generating a
+### dataframe with the results and a number of plots.
+###
+### File created by Gjalt-Jorn Peters. Questions? You can
+### contact me through http://behaviorchange.eu. Additional
+### functions can be found at http://github.com/matherion
+###
+###########################################################
+
+### Note: this is necessary to prevent Rcmd CHECK from throwing a note;
+### otherwise it think these variable weren't defined yet.
+# utils::globalVariables(c('g', 'g.ci.lo', 'g.ci.hi', 'ci.lo', 'ci.hi',
+#                          'coord_flip', 'geom_hline'));
+
+###########################################################
+### Define functions
+###########################################################
+
+
+
+#' meanDiff.multi
+#'
+#' The meanDiff.multi function compares many means for many groups. It presents
+#' the results in a dataframe summarizing all relevant information, and
+#' produces plot showing the confidence intervals for the effect sizes for each
+#' predictor (i.e. dichotomous variable). Like meanDiff, it computes Cohen's d,
+#' the unbiased estimate of Cohen's d (Hedges' g), and performs a t-test. It
+#' also shows the achieved power, and, more usefully, the power to detect
+#' small, medium, and large effects.
+#'
+#' This function uses the meanDiff function, which uses the formulae from
+#' Borenstein, Hedges, Higgins & Rothstein (2009) (pages 25-32).
+#'
+#' @param dat The dataframe containing the variables involved in the mean
+#' tests.
+#' @param y Character vector containing the list of interval variables to
+#' include in the tests.
+#' @param x Character vector containing the list of the dichotomous variables
+#' to include in the tests. If x is empty, paired samples t-tests will be
+#' conducted.
+#' @param var.equal String; only relevant if x & y are independent; can be
+#' "test" (default; test whether x & y have different variances), "no" (assume
+#' x & y have different variances; see the Warning below!), or "yes" (assume x
+#' & y have the same variance)
+#' @param conf.level Confidence of confidence intervals you want.
+#' @param digits With what precision you want the results to print.
+#' @param powerDigits With what precision you want the power to print.
+#' @param orientation Whether to plot the effect size confidence intervals
+#' vertically (like a forest plot, the default) or horizontally.
+#' @param zeroLineColor Color of the horizontal line at an effect size of 0
+#' (set to 'white' to not display the line; also adjust the size to 0 then).
+#' @param zeroLineSize Size of the horizontal line at an effect size of 0 (set
+#' to 0 to not display the line; also adjust the color to 'white' then).
+#' @param envir The environment where to search for the variables (useful when
+#' calling meanDiff from a function where the vectors are defined in that
+#' functions environment).
+#' @param ... Additional arguments are passed on to the [meanDiff()] print methods.
+#' @return An object is returned with the following elements:
+#' \item{results.raw}{Objects returned by the calls to meanDiff.}
+#' \item{plots}{For every comparison, a plot with the datapoints, means, and
+#' confidence intervals in the two groups.} \item{results.compiled}{Dataframe
+#' with the most important results from each comparison.}
+#' \item{plots.compiled}{For every dichotomous (x) variable, a plot with the
+#' confidence interval for the effect size of each dependent (y) variable.}
+#' \item{input}{The arguments with which the function was called.}
+#' @section Warning: Note that when different variances are assumed for the
+#' t-test (i.e. the null-hypothesis test), the values of Cohen's d are still
+#' based on the assumption that the variance is equal. In this case, the
+#' confidence interval might, for example, not contain zero even though the
+#' NHST has a non-significant p-value (the reverse can probably happen, too).
+#' @references Borenstein, M., Hedges, L. V., Higgins, J. P., & Rothstein, H.
+#' R. (2011). Introduction to meta-analysis. John Wiley & Sons.
+#' @keywords utilities
+#' @rdname meanDiff.multi
+#' @examples
+#'
+#' ### Create simple dataset
+#' dat <- data.frame(x1 = factor(rep(c(0,1), 20)),
+#'                   x2 = factor(c(rep(0, 20), rep(1, 20))),
+#'                   y=rep(c(4,5), 20) + rnorm(40));
+#' ### Compute mean difference and show it
+#' meanDiff.multi(dat, x=c('x1', 'x2'), y='y', var.equal="yes");
+#'
+#' @export meanDiff.multi
+meanDiff.multi <- function(dat, y, x=NULL, var.equal = "yes",
+                           conf.level = .95, digits = 2,
+                           orientation = "vertical",
+                           zeroLineColor = "grey",
+                           zeroLineSize = 1.2,
+                           envir = parent.frame()) {
+
+  ### Check basic arguments
+  if (!is.character(var.equal) || length(var.equal) != 1) {
+    stop("Argument 'var.equal' must be either 'test', 'yes', or 'no'!");
+  }
+  var.equal <- tolower(var.equal);
+
+  if (!is.numeric(conf.level) || length(conf.level) != 1 || conf.level < 0 || conf.level > 1) {
+    stop("Argument 'conf.level' must be a number between 0 and 1!");
+  }
+
+  if (!is.numeric(digits) || length(digits) != 1 || digits < 0 || (round(digits) != digits)) {
+    stop("Argument 'digits' must be a whole, positive number!");
+  }
+
+  ### Check whether y is a character vector
+  if (!is.vector(y) | length(y) < 1 | !is.character(y)) {
+    stop("y argument must be a character vector with at least ",
+         "one variable name!");
+  }
+
+  ### Create object to store results
+  res <- list();
+  res$results.raw <- list();
+  res$plots <- list();
+  res$dlvPlots <- list();
+  res$results.compiled <- data.frame();
+  res$plots.compiled <- list();
+  res$input <- list();
+  res$input$dat <- dat;
+  res$input$x <- x;
+  res$input$y <- y;
+  res$input$var.equal <- var.equal;
+  res$input$conf.level <- conf.level;
+  res$input$digits <- digits;
+  res$input$envir <- envir;
+
+  ### Check whether we have to do independent or dependent t-tests
+  if (is.null(x)) {
+    ### Dependent t-tests
+    ### Check whether we have at least two variables to compare
+    if (length(y) < 2) {
+      stop("For a dependent test, the y argument must be a character ",
+           "vector with at least two variable names!");
+    }
+    for (xVar in 1:length(y)) {
+      for (yVar in 2:length(y)) {
+        res$results.raw[[length(res$results.raw) + 1]] <-
+          meanDiff(x=dat[[x[xVar]]], y=dat[[y[yVar]]], paired=TRUE,
+                   conf.level=conf.level, digits=digits, envir=envir);
+        tempData <- data.frame(x=factor(c(rep(0, length(dat[[x[xVar]]])),
+                                          rep(1, length(dat[[y[yVar]]])))),
+                               y=c(dat[[x[xVar]]], dat[[y[yVar]]]));
+        ### Build dataframe for plot
+        tempData <-
+          data.frame(y = c(res$results.raw[[length(res$results.raw)]]$x,
+                           res$results.raw[[length(res$results.raw)]]$y));
+        tempData$x <- factor(c(rep(0, length(res$results.raw[[length(res$results.raw)]]$x)),
+                               rep(1, length(res$results.raw[[length(res$results.raw)]]$y))),
+                             levels=c(0,1), labels=c(res$results.raw[[length(res$results.raw)]]$groups[1],
+                                                     res$results.raw[[length(res$results.raw)]]$groups[2]));
+        ### Store plot
+        res$plots[[length(res$plots) + 1]] <-
+          ggplot2::ggplot(tempData,
+                          ggplot2::aes(y=y, x=x, group=x)) +
+          ggplot2::geom_point() +
+          ggplot2::stat_summary(fun.data = "mean_cl_boot", colour = "red");
+
+        ### Extract information for compilation
+        res$results.compiled[nrow(res$results.compiled)+1, 'x'] <- x[xVar];
+        res$results.compiled[nrow(res$results.compiled), 'y'] <- y[yVar];
+
+        res$results.compiled[nrow(res$results.compiled), 'group1'] <-
+          res$results.raw[[length(res$results.raw)]]$groups[1];
+        res$results.compiled[nrow(res$results.compiled), 'group2'] <-
+          res$results.raw[[length(res$results.raw)]]$groups[2];
+        res$results.compiled[nrow(res$results.compiled), 'mean1'] <-
+          res$results.raw[[length(res$results.raw)]]$mean[1];
+        res$results.compiled[nrow(res$results.compiled), 'mean2'] <-
+          res$results.raw[[length(res$results.raw)]]$mean[2];
+        res$results.compiled[nrow(res$results.compiled), 'sd1'] <-
+          res$results.raw[[length(res$results.raw)]]$sd[1];
+        res$results.compiled[nrow(res$results.compiled), 'sd2'] <-
+          res$results.raw[[length(res$results.raw)]]$sd[2];
+        res$results.compiled[nrow(res$results.compiled), 'n1'] <-
+          res$results.raw[[length(res$results.raw)]]$n[1];
+        res$results.compiled[nrow(res$results.compiled), 'n2'] <-
+          res$results.raw[[length(res$results.raw)]]$n[2];
+
+        res$results.compiled[nrow(res$results.compiled), 'g'] <-
+          res$results.raw[[length(res$results.raw)]]$meanDiff.g;
+        res$results.compiled[nrow(res$results.compiled), 'g.ci.lo'] <-
+          res$results.raw[[length(res$results.raw)]]$meanDiff.g.ci.lower;
+        res$results.compiled[nrow(res$results.compiled), 'g.ci.hi'] <-
+          res$results.raw[[length(res$results.raw)]]$meanDiff.g.ci.upper;
+
+        res$results.compiled[nrow(res$results.compiled), 'pwr.g'] <-
+          res$results.raw[[length(res$results.raw)]]$power$power;
+        res$results.compiled[nrow(res$results.compiled), 'pwr.small'] <-
+          res$results.raw[[length(res$results.raw)]]$power.small$power;
+        res$results.compiled[nrow(res$results.compiled), 'pwr.medium'] <-
+          res$results.raw[[length(res$results.raw)]]$power.medium$power;
+        res$results.compiled[nrow(res$results.compiled), 'pwr.large'] <-
+          res$results.raw[[length(res$results.raw)]]$power.large$power;
+
+        res$results.compiled[nrow(res$results.compiled), 't'] <-
+          res$results.raw[[length(res$results.raw)]]$t;
+        res$results.compiled[nrow(res$results.compiled), 'df'] <-
+          res$results.raw[[length(res$results.raw)]]$df;
+        res$results.compiled[nrow(res$results.compiled), 'p'] <-
+          res$results.raw[[length(res$results.raw)]]$p;
+
+      }
+    }
+  }
+  else {
+    ### Independent t-tests
+    for (xVar in 1:length(x)) {
+      for (yVar in 1:length(y)) {
+
+        meanDiffFormula <- stats::formula(paste0('dat$', y[yVar], " ~ ",
+                                          'dat$', x[xVar]));
+
+        res$results.raw[[length(res$results.raw) + 1]] <-
+           meanDiff(x=meanDiffFormula, paired=FALSE,
+                    var.equal=var.equal,
+                    conf.level=conf.level, digits=digits, envir=envir);
+
+        ### Build dataframe for plot
+        tempData <-
+          data.frame(y = c(res$results.raw[[length(res$results.raw)]]$x,
+                           res$results.raw[[length(res$results.raw)]]$y));
+        tempData$x <- factor(c(rep(0, length(res$results.raw[[length(res$results.raw)]]$x)),
+                               rep(1, length(res$results.raw[[length(res$results.raw)]]$y))),
+                             levels=c(0,1), labels=c(res$results.raw[[length(res$results.raw)]]$groups[1],
+                                                     res$results.raw[[length(res$results.raw)]]$groups[2]));
+
+        ### Store dlvPlot
+        res$dlvPlots[[length(res$dlvPlots) + 1]] <- dlvPlot(tempData, y="y", x="x", conf.level=conf.level);
+
+        ### Store regular plot with lines, use dlvPlot descriptives
+        res$plots[[length(res$plots) + 1]] <- ggplot2::ggplot(tempData,
+                                                              ggplot2::aes(y=y, x=x, group=x)) +
+          ggplot2::geom_point() +
+          ggplot2::geom_pointrange(data=res$dlvPlots[[length(res$dlvPlots)]]$descr,
+                          ggplot2::aes_string(x="x",
+                                              y="mean",
+                                              ymin="ci.lo",
+                                              ymax="ci.hi"), color="red");
+
+        ### Extract information for compilation
+        res$results.compiled[nrow(res$results.compiled)+1, 'x'] <- x[xVar];
+        res$results.compiled[nrow(res$results.compiled), 'y'] <- y[yVar];
+
+        res$results.compiled[nrow(res$results.compiled), 'group1'] <-
+          res$results.raw[[length(res$results.raw)]]$groups[1];
+        res$results.compiled[nrow(res$results.compiled), 'group2'] <-
+          res$results.raw[[length(res$results.raw)]]$groups[2];
+        res$results.compiled[nrow(res$results.compiled), 'mean1'] <-
+          res$results.raw[[length(res$results.raw)]]$mean[1];
+        res$results.compiled[nrow(res$results.compiled), 'mean2'] <-
+          res$results.raw[[length(res$results.raw)]]$mean[2];
+        res$results.compiled[nrow(res$results.compiled), 'sd1'] <-
+          res$results.raw[[length(res$results.raw)]]$sd[1];
+        res$results.compiled[nrow(res$results.compiled), 'sd2'] <-
+          res$results.raw[[length(res$results.raw)]]$sd[2];
+        res$results.compiled[nrow(res$results.compiled), 'n1'] <-
+          res$results.raw[[length(res$results.raw)]]$n[1];
+        res$results.compiled[nrow(res$results.compiled), 'n2'] <-
+          res$results.raw[[length(res$results.raw)]]$n[2];
+
+        res$results.compiled[nrow(res$results.compiled), 'g'] <-
+          res$results.raw[[length(res$results.raw)]]$meanDiff.g;
+        res$results.compiled[nrow(res$results.compiled), 'g.ci.lo'] <-
+          res$results.raw[[length(res$results.raw)]]$meanDiff.g.ci.lower;
+        res$results.compiled[nrow(res$results.compiled), 'g.ci.hi'] <-
+          res$results.raw[[length(res$results.raw)]]$meanDiff.g.ci.upper;
+
+        res$results.compiled[nrow(res$results.compiled), 'pwr.g'] <-
+          res$results.raw[[length(res$results.raw)]]$power$power;
+        res$results.compiled[nrow(res$results.compiled), 'pwr.small'] <-
+          res$results.raw[[length(res$results.raw)]]$power.small$power;
+        res$results.compiled[nrow(res$results.compiled), 'pwr.medium'] <-
+          res$results.raw[[length(res$results.raw)]]$power.medium$power;
+        res$results.compiled[nrow(res$results.compiled), 'pwr.large'] <-
+          res$results.raw[[length(res$results.raw)]]$power.large$power;
+
+        res$results.compiled[nrow(res$results.compiled), 't'] <-
+          res$results.raw[[length(res$results.raw)]]$t;
+        res$results.compiled[nrow(res$results.compiled), 'df'] <-
+          res$results.raw[[length(res$results.raw)]]$df;
+        res$results.compiled[nrow(res$results.compiled), 'p'] <-
+          res$results.raw[[length(res$results.raw)]]$p;
+      }
+      tempDat <- res$results.compiled[res$results.compiled$x==x[xVar], ];
+      res$plots.compiled[[x[xVar]]] <- ggplot2::ggplot(tempDat,
+                                                       ggplot2::aes_string(x="y", y="g",
+                                                  ymin="g.ci.lo",
+                                                  ymax="g.ci.hi"));
+      if (tolower(orientation) == "vertical") {
+        res$plots.compiled[[x[xVar]]] <- res$plots.compiled[[x[xVar]]] +
+          ggplot2::coord_flip();
+      }
+      res$plots.compiled[[x[xVar]]] <- res$plots.compiled[[x[xVar]]] +
+        ggplot2::geom_hline(yintercept=0, color=zeroLineColor, size=zeroLineSize) +
+        ggplot2::geom_pointrange(size=1) +
+        ggplot2::labs(x="interval variable",
+                                         y="effect size g (unbiased estimate of Cohen's d)") +
+        ggplot2::ggtitle(x[xVar]);;
+    }
+  }
+
+  ### Set class & return result
+  class(res) <- c("meanDiff.multi");
+  return(res);
+}
+
+#' @method print meanDiff.multi
+#' @rdname meanDiff.multi
+#' @export
+print.meanDiff.multi <- function (x, digits=x$digits, powerDigits=x$digits + 2, ...) {
+  print(x$results.compiled, digits=digits, powerDigits=powerDigits, ...);
+  print(x$plots.compiled, digits=digits, powerDigits=powerDigits, ...);
+  invisible(x);
+}

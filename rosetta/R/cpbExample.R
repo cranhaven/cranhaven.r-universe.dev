@@ -1,0 +1,20 @@
+#' A test dataset
+#'
+#' The data are about the attitudes of employees of an organisation that is in the middle of a reorganization.
+#' The model predicts that feelings of procedural injustice  may lead to cynicism and less trust in the management.
+#' This relation may be stronger among employees who are insecure about their job continuation.
+#' Cynisicm may lead to contra-productive behaviour (CPB). However, strong personal norms may prevent CPB.
+#' Cynicism is expected to increase with age, and men may be more inclined towards CPB than women.
+#'
+#' @format A data frame with 320 rows and 8 variables:
+#' \describe{
+#'   \item{gender}{gender participant}
+#'   \item{age}{age participant}
+#'   \item{procJustice}{prodedural justice}
+#'   \item{trust}{trust in management}
+#'   \item{cynicism}{cynicism about the management}
+#'   \item{CPB}{contr-productive behaviour }
+#'   \item{insecure}{insecure about job continuation }
+#'   \item{norms}{personal norms about CPB}
+#'   }
+"cpbExample"
