@@ -1,0 +1,201 @@
+#' @title
+#'  Calculate geographical metrics
+#'
+#' @family utils
+#'
+#' @description
+#'   Calculate geographical metrics (distance, area) for two or three geographical locations.
+#'
+#' @details
+#'   \code{geodist} calculates distance between two geographical locations on \emph{Earth},
+#'   whereas \code{geoarea} calculates the area of spherical triangle between
+#'   three geographical locations.
+#'   Both functions use absolute positions of geographical locations described by
+#'   \href{https://en.wikipedia.org/wiki/Geographic_coordinate_system}{
+#'   geographical coordinate system}
+#'   in
+#'   \href{https://en.wikipedia.org/wiki/Decimal_degrees}{decimal degrees}
+#'   units denoted as \emph{DD}. The
+#'   \href{https://en.wikipedia.org/wiki/Haversine_formula}{haversine formula}
+#'   is applied to calculate the distance, and so the spherical model of
+#'   \emph{Earth} is considered in both functions.
+#'
+#'   Since several variants of \emph{Earth} radius can be accepted,
+#'   the user is welcome to provide its own value.
+#'   \href{https://en.wikipedia.org/wiki/World_Geodetic_System#WGS84}{WGS-84}
+#'   \href{https://en.wikipedia.org/wiki/Earth_radius}{mean radius of semi-axes},
+#'   \eqn{R_1}, is the default value.
+#'
+#'   The resulting distance is expressed in
+#'   \href{https://en.wikipedia.org/wiki/Metre}{metres} (\emph{m}), 
+#'   whereas the area is expressed in 
+#'   \href{https://en.wikipedia.org/wiki/Square_kilometre}{square kilometers}(\emph{km^2}).
+#'
+#' @param lat1
+#'   latitude of the first geographical location, [\emph{DD}].
+#'   Type: \code{\link{assert_double}}.
+#'
+#' @param lon1
+#'   longitude of the first geographical location, [\emph{DD}].
+#'   Type: \code{\link{assert_double}}.
+#'
+#' @param lat2
+#'   latitude of the second geographical location, [\emph{DD}].
+#'   Type: \code{\link{assert_double}}.
+#'
+#' @param lon2
+#'   longitude of the second geographical location, [\emph{DD}].
+#'   Type: \code{\link{assert_double}}.
+#'
+#' @param lat3
+#'   latitude of the third geographical location, [\emph{DD}].
+#'   Type: \code{\link{assert_double}}.
+#'
+#' @param lon3
+#'   longitude of the third geographical location, [\emph{DD}].
+#'   Type: \code{\link{assert_double}}.
+#'
+#' @param earth
+#'   \emph{Earth} radius, [\emph{m}]. See \strong{Details}.
+#'   Type: \code{\link{assert_numeric}}.
+#'
+#' @return
+#'   \describe{
+#'     \item{For \code{geodist}:}{distance between two geographical locations, [\emph{m}].}
+#'     \item{For \code{geoarea}:}{area of spherical triangle between three geographical locations, [\emph{km^2}].}
+#'   }
+#'   Type: \code{\link{assert_double}}.
+#'
+#' @export
+#'
+#' @examples
+#' library(pipenostics)
+#'
+#' # Consider the longest linear pipeline segment in Krasnoyarsk, [DD]:
+#' pipe <- list(
+#'   lat1 = 55.98320350, lon1 = 92.81257226,
+#'   lat2 = 55.99302417, lon2 = 92.80691885
+#' )
+#'
+#' # and some official Earth radii, [m]:
+#' R <- c(
+#'   nominal_zero_tide_equatorial = 6378100.0000,
+#'   nominal_zero_tide_polar      = 6356800.0000,
+#'   equatorial_radius            = 6378137.0000,
+#'   semiminor_axis_b             = 6356752.3141,
+#'   polar_radius_of_curvature    = 6399593.6259,
+#'   mean_radius_R1               = 6371008.7714,
+#'   same_surface_R2              = 6371007.1810,
+#'   same_volume_R3               = 6371000.7900,
+#'   WGS84_ellipsoid_axis_a       = 6378137.0000,
+#'   WGS84_ellipsoid_axis_b       = 6356752.3142,
+#'   WGS84_ellipsoid_curvature_c  = 6399593.6258,
+#'   WGS84_ellipsoid_R1           = 6371008.7714,
+#'   WGS84_ellipsoid_R2           = 6371007.1809,
+#'   WGS84_ellipsoid_R3           = 6371000.7900,
+#'   GRS80_axis_a                 = 6378137.0000,
+#'   GRS80_axis_b                 = 6356752.3141,
+#'   spherical_approx             = 6366707.0195,
+#'   meridional_at_the_equator    = 6335439.0000,
+#'   Chimborazo_maximum           = 6384400.0000,
+#'   Arctic_Ocean_minimum         = 6352800.0000,
+#'   Averaged_center_to_surface   = 6371230.0000
+#' )
+#'
+#' # Calculate length of the pipeline segment for different radii:
+#' len <- with(
+#'   pipe, vapply(
+#'     R, geodist, double(1), lat1 = lat1, lon1 = lon1, lat2 = lat2, lon2 = lon2
+#'   )
+#' )
+#'
+#' print(range(len))
+#'
+#' # [1] 1140.82331483 1152.37564656 #  [m]
+#'
+#'
+#' # Consider some remarkable objects on Earth, [DD]:
+#' objects <- rbind(
+#'   Mount_Kailash      = c(lat = 31.069831297551982, lon =  81.31215667724196),
+#'   Easter_Island_Moai = c(lat =-27.166873910247862, lon =-109.37092217323053),
+#'   Great_Pyramid      = c(lat = 29.979229451772856, lon =  31.13418110843685),
+#'   Antarctic_Pyramid  = c(lat = -79.97724194984573, lon = -81.96170583068950),
+#'   Stonehendge        = c(lat = 51.179036665131870, lon =-1.8262150017463086)
+#' )
+#'
+#' # Consider all combinations of distances between them:
+#' path <- t(combn(rownames(objects), 2))
+#'
+#' d <- geodist(
+#'   lat1 = objects[path[, 1], "lat"],
+#'   lon1 = objects[path[, 1], "lon"],
+#'   lat2 = objects[path[, 2], "lat"],
+#'   lon2 = objects[path[, 2], "lon"]
+#' )*1e-3
+#'
+#' cat(
+#'   paste(
+#'     sprintf("%s <--- %1.4f km ---> %s", path[, 1], d, path[, 2]),
+#'     collapse = "\n"
+#' )
+#' )
+#'
+#' # Consider two areas 
+#' #         * Bermuda triangle     * Polynesian Triangle
+#' lat1 <- c(Miami   =  25.789106,  Hawaii       =   19.820680)
+#' lon1 <- c(Miami   = -80.226529,  Hawaii       = -155.467989)
+#'
+#' lat2 <- c(Bermuda =  32.294887,  NewZeland    =  -43.443219)
+#' lon2 <- c(Bermuda = -64.781380,  NewZeland    =  170.271360)
+#'
+#' lat3 <- c(SanJuan =  18.466319,  EasterIsland =  -27.112701)
+#' lon3 <- c(SanJuan = -66.105743,  EasterIsland = -109.349668)
+#'
+#' # Area provided by manually operated Google Earth:
+#' GETriangleArea <- c(
+#'   Bermuda    =  1147627.48,  # [km^2]
+#'   Polynesian = 28775517.77   # [km^2]
+#' )
+#' 
+#' # Show the discrepancy in calculations, [km^2]:
+#' print(geoarea(lat1, lon1, lat2, lon2, lat3, lon3)) 
+#'  
+#'  #   Bermuda Polynesian 
+#'  # 0.4673216 11.1030971    
+#'
+#' @export
+geodist <- function(lat1, lon1, lat2, lon2, earth = 6371008.7714){
+  checkmate::assert_double(
+    lat1, lower = -90, upper = 90, any.missing = FALSE, min.len = 1
+  )
+  checkmate::assert_double(
+    lon1, lower = -180, upper = 180, any.missing = FALSE, min.len = 1
+  )
+  checkmate::assert_double(
+    lat2, lower = -90, upper = 90, any.missing = FALSE, min.len = 1
+  )
+  checkmate::assert_double(
+    lon2, lower = -180, upper = 180, any.missing = FALSE, min.len = 1
+  )
+  checkmate::assert_true(commensurable(c(
+    length(lat1), length(lon1), length(lat2), length(lon2)
+  )))
+  checkmate::assert_number(earth, lower = 6335439.0000, upper = 6399593.6259)
+
+  POW <- .Primitive("^")
+  PI  <- base::pi
+
+  lat1 = lat1*PI/180
+  lat2 = lat2*PI/180
+
+  cl1 = cos(lat1)
+  cl2 = cos(lat2)
+  sl1 = sin(lat1)
+  sl2 = sin(lat2)
+  delta = (lon2 - lon1)*PI/180
+  cos_delta = cos(delta)
+
+  y = sqrt(POW(cl2 * sin(delta), 2) + POW(cl1 * sl2 - sl1 * cl2 * cos_delta, 2))
+  x = sl1 * sl2 + cl1 * cl2 * cos_delta
+  atan2(y,x) * earth
+}
