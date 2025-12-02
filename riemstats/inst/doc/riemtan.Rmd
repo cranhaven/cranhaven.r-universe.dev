@@ -1,0 +1,179 @@
+---
+title: "riemstats"
+author: "Nicolas Escobar, Jaroslaw Harezlak"
+date: "2025-02-12"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{riemstats}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+# Introduction
+
+The `riemstats` package provides specialized statistical methods for analyzing brain connectivity matrices (connectomes) from multi-site neuroimaging studies. When working with functional or structural connectivity data represented as symmetric positive definite (SPD) matrices, this package offers both harmonization techniques to address site-specific effects and ANOVA methods that respect the Riemannian geometry of SPD matrices.
+
+## The Multi-Site Connectome Challenge
+
+Modern neuroimaging studies often collect brain connectivity data across multiple sites to increase sample size and generalizability. However, this introduces significant challenges associated to the fact that different scanners, protocols, and populations introduce systematic biases.
+
+Traditional statistical methods fail to address these challenges simultaneously, either ignoring the geometric structure of SPD matrices or lacking appropriate harmonization capabilities.
+
+## Core Capabilities
+
+`riemstats` addresses these challenges through two complementary sets of tools:
+
+1. **Harmonization Methods**: Remove unwanted site/scanner effects while preserving biological signals
+  - ComBat harmonization adapted for SPD matrices (see Honorro et al.)
+  - Rigid geometric alignment methods (see Simeon et al.)
+
+2. **ANOVA Methods**: Test for group differences while respecting SPD geometry
+  - Fréchet ANOVA using Riemannian distances (see Muller et al.)
+  - Riemannian ANOVA (closer to classical MANOVA, see Escobar, Harezlak.)
+    - Wilks' lambda and Pillai's trace statistics on the tangent space  
+    - Bootstrap inference for robust significance testing
+
+By integrating harmonization and ANOVA within a Riemannian framework, `riemstats` enables rigorous statistical analysis of multi-site connectome data while preserving the geometric properties that make these matrices meaningful representations of brain connectivity.
+
+# Why Standard Methods Fail for Connectome Data
+
+Brain connectivity matrices (connectomes) are symmetric positive definite (SPD) matrices - they have special mathematical properties that make standard statistical methods inappropriate. This section explains why ordinary ComBat and ANOVA fail for SPD data and why specialized Riemannian methods are necessary.
+
+## The Problem with Treating SPD Matrices as Vectors
+
+Standard methods like ordinary ComBat and ANOVA treat matrices as if they were simple vectors in Euclidean space. This approach has critical flaws:
+
+### 1. Distance Distortions
+
+Standard Euclidean distance between matrices ignores their geometric structure:
+- Two very similar connectivity patterns might appear far apart
+- Two different patterns might appear close
+- Statistical tests based on these distances give misleading results
+
+### 2. Site Effect Removal Violations
+
+Ordinary ComBat removes site effects by:
+1. Treating each matrix element independently
+2. Applying location/scale adjustments element-wise
+3. Ignoring the constraint that results must be SPD
+
+This can produce "harmonized" data that:
+- No longer represents valid connectivity matrices
+- Has lost important geometric relationships
+- Contains negative eigenvalues (mathematically invalid for correlations)
+
+## Why Ordinary ANOVA Fails
+
+Standard ANOVA assumes data lies in Euclidean space where:
+- The mean is computed by simple averaging
+- Distances are measured with straight lines
+- Variance has the same meaning everywhere
+
+For SPD matrices, these assumptions break down.
+
+## The Riemannian Solution
+
+The key insight is that SPD matrices form a Riemannian manifold - a curved geometric space. By respecting this geometry, `riemstats` ensures:
+- All operations produce valid SPD matrices
+- Statistical tests have correct Type I error rates
+- Biological signals are preserved during harmonization
+- Results are interpretable as actual brain connectivity patterns
+
+Indeed, Riemannian methods in `riemstats` solve these problems by:
+
+1. **Proper Averaging**: Using the Fréchet mean, which always produces valid SPD matrices
+2. **Correct Distances**: Measuring distances along the manifold (geodesics) rather than through Euclidean space
+3. **Geometry-Preserving Harmonization**: Removing site effects while maintaining SPD structure
+4. **Valid Statistical Tests**: ANOVA methods that account for manifold curvature
+
+# Typical Workflow
+
+This section demonstrates a complete analysis pipeline for multi-site connectome data using `riemstats`. We'll walk through loading data, applying harmonization, and performing statistical tests.
+
+## Loading the Package and Data
+
+```{r load-package}
+library(riemstats)
+library(riemtan) # Required for CSuperSample and CSample classes
+data("airm")  # Load the AIRM metric
+
+# Create example SPD matrices for demonstration
+test_pd_mats <- list(
+  Matrix::Matrix(c(2.0, 0.5, 0.5, 3.0), nrow = 2) |>
+    Matrix::nearPD() |> _$mat |> Matrix::pack(),
+  Matrix::Matrix(c(1.5, 0.3, 0.3, 2.5), nrow = 2) |>
+    Matrix::nearPD() |> _$mat |> Matrix::pack()
+)
+
+# Create samples for two sites/groups
+sample1 <- test_pd_mats |>
+  purrr::map(\(x) (2 * x) |> Matrix::unpack() |> as("dpoMatrix") |> Matrix::pack()) |>
+  CSample$new(metric_obj = airm)
+sample2 <- test_pd_mats |> CSample$new(metric_obj = airm)
+
+# Combine into a supersample for analysis
+super_sample <- list(sample1, sample2) |> CSuperSample$new()
+```
+
+## Data Harmonization
+
+When working with multi-site data, harmonization is crucial to remove site-specific effects while preserving biological signals:
+
+```{r harmonization}
+# Apply ComBat harmonization for SPD matrices
+# Input must be a CSuperSample object
+harmonized_super_sample <- combat_harmonization(super_sample)
+
+# Alternative: Rigid geometric alignment
+# Also works with CSuperSample objects
+aligned_super_sample <- rigid_harmonization(super_sample)
+```
+
+## Statistical Analysis with Riemannian ANOVA
+
+After harmonization, test for group differences using methods that respect the SPD geometry:
+
+```{r anova-analysis, eval=FALSE}
+# Fréchet ANOVA for overall group differences
+# Returns p-value directly
+frechet_p_value <- frechet_anova(super_sample)
+
+# Riemannian ANOVA with permutation test inference
+# Can use log_wilks_lambda (default) or pillais_trace as stat_fun
+riemann_p_value_wilks <- riem_anova(
+  ss = super_sample,
+  stat_fun = log_wilks_lambda,
+  nperm = 100 # Number of permutations (use 1000+ in practice)
+)
+
+# Using Pillai's trace
+riemann_p_value_pillai <- riem_anova(
+  ss = super_sample,
+  stat_fun = pillais_trace,
+  nperm = 100 # Number of permutations (use 1000+ in practice)
+)
+
+# Display results
+cat("Fréchet ANOVA p-value:", frechet_p_value, "\n")
+cat("Riemannian ANOVA (Wilks) p-value:", riemann_p_value_wilks, "\n")
+cat("Riemannian ANOVA (Pillai) p-value:", riemann_p_value_pillai, "\n")
+```
+
+## Interpreting Results
+
+The analysis provides several key outputs:
+
+- **Test statistics**: Quantify the magnitude of group differences
+- **P-values**: Assess statistical significance (adjusted for multiple comparisons when applicable)
+- **Effect sizes**: Measure the practical importance of observed differences
+- **Bootstrap confidence intervals**: Provide robust inference without parametric assumptions
+
+
+
