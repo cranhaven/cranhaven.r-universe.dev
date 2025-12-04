@@ -1,0 +1,121 @@
+#' Mapping \eqn{\psi} (\code{psi0}) to the prior Sharpe ratio of factors (\code{priorSR}), and vice versa.
+#'
+#' @description This function provides the one-to-one mapping between \eqn{\psi} and the prior Sharpe ratio of factors.
+#'              See Section II.A.3 in \insertCite{bryzgalova2023bayesian;textual}{BayesianFactorZoo}.
+#'
+#' @param f A matrix of factors with dimension \eqn{t \times k}, where \eqn{k} is the number of factors
+#'        and \eqn{t} is the number of periods;
+#' @param R A matrix of test assets with dimension \eqn{t \times N}, where \eqn{t} is the number of periods
+#'        and \eqn{N} is the number of test assets;
+#' @param psi0 The hyper-parameter in the prior distribution of risk prices (see \bold{Details} in the function \code{continuous_ss_sdf});
+#' @param priorSR The prior Sharpe ratio of all factors (see \bold{Details});
+#' @param aw The hyper-parameter in the prior of \eqn{\gamma} (default value = 1, see \bold{Details});
+#' @param bw The hyper-parameter in the prior of \eqn{\gamma} (default value = 1, see \bold{Details});
+#'
+#' @details
+#'
+#' According to equation (27) in \insertCite{bryzgalova2023bayesian;textual}{BayesianFactorZoo}, we learn that
+#' \deqn{\frac{E_{\pi} [ SR^2_f \mid \gamma, \sigma^2 ] }{E_{\pi} [ SR^2_{\alpha} \mid \sigma^2] } = \frac{\psi \sum^K_{k=1} r(\gamma_k) \tilde{\rho}^\top_k \tilde{\rho}_k }{N}, }
+#' where \eqn{SR^2_f} and \eqn{SR^2_{\alpha}} denote the Sharpe ratios of all factors (\eqn{f_t}) and of the pricing errors
+#' (\eqn{\alpha}), and \eqn{E_{\pi}} denotes prior expectations.
+#'
+#' The prior \eqn{\pi (\omega)} encodes the belief about the sparsity of the true model using the prior distribution
+#' \eqn{\pi (\gamma_j = 1 | \omega_j) = \omega_j, \ \ \omega_j \sim Beta(a_\omega, b_\omega) .} We further integrate out
+#' \eqn{\gamma_j} in \eqn{E_{\pi} [ SR^2_f \mid \gamma, \sigma^2 ]} and show the following:
+#'
+#' \deqn{\frac{E_{\pi} [ SR^2_f \mid \sigma^2 ] }{E_{\pi} [ SR^2_{\alpha} \mid \sigma^2 ] } \approx \frac{a_\omega}{a_\omega+b_\omega} \psi \frac{ \sum^K_{k=1} \tilde{\rho}^\top_k \tilde{\rho}_k }{N}, \ as \ r \to 0 .}
+#'
+#' Since we can decompose the Sharpe ratios of all test assets, \eqn{SR^2_R}, into \eqn{SR^2_f} and \eqn{SR^2_{\alpha}} (i.e., \eqn{SR^2_R = SR^2_f + SR^2_{\alpha}}), we can
+#' represent \eqn{SR^2_f} as follows:
+#'
+#' \deqn{ E_{\pi} [ SR^2_f \mid \sigma^2 ] \approx \frac{\frac{a_\omega}{a_\omega+b_\omega} \psi \frac{ \sum^K_{k=1} \tilde{\rho}^\top_k \tilde{\rho}_k }{N}}{1 + \frac{a_\omega}{a_\omega+b_\omega} \psi \frac{ \sum^K_{k=1} \tilde{\rho}^\top_k \tilde{\rho}_k }{N}} SR^2_R.}
+#'
+#' We define the prior Sharpe ratio implied by the factor models as \eqn{\sqrt{E_{\pi} [ SR^2_f \mid \sigma^2 ]}}.
+#' Given \eqn{a_\omega}, \eqn{b_\omega}, \eqn{\frac{ \sum^K_{k=1} \tilde{\rho}^\top_k \tilde{\rho}_k }{N}}, and the observed
+#' Sharpe ratio of test assets, we have one-to-one mapping between \eqn{\psi} and \eqn{\sqrt{E_{\pi} [ SR^2_f \mid \sigma^2 ]}}.
+#'
+#' If the user aims to convert \eqn{\psi} to the prior Sharpe ratio, she should input only \code{psi0}.
+#' In contrast, if she wants to convert the prior Sharpe ratio to \eqn{\psi}, \code{priorSR} should be entered.
+#'
+#' @references
+#' \insertRef{bryzgalova2023bayesian}{BayesianFactorZoo}
+#'
+#'
+#' @return
+#' The return of \code{psi_to_priorSR} is:
+#' \itemize{
+#'    \item \code{psi0} or \code{priorSR}.
+#' }
+#'
+#' @export
+#'
+#' @examples
+#'
+#' ## Load the example data
+#' data("BFactor_zoo_example")
+#' HML <- BFactor_zoo_example$HML
+#' lambda_ols <- BFactor_zoo_example$lambda_ols
+#' R2.ols.true <- BFactor_zoo_example$R2.ols.true
+#' sim_f <- BFactor_zoo_example$sim_f
+#' sim_R <- BFactor_zoo_example$sim_R
+#' uf <- BFactor_zoo_example$uf
+#'
+#' ## If the user aims to convert \eqn{\psi} to the prior Sharpe ratio:
+#' print(psi_to_priorSR(sim_R, sim_f, priorSR=0.1))
+#'
+#' ## If the user  wants to convert the prior Sharpe ratio to \eqn{\psi}:
+#' psi0_to_map <- psi_to_priorSR(sim_R, sim_f, priorSR=0.1)
+#' print(psi_to_priorSR(sim_R, sim_f, psi0=psi0_to_map))
+#'
+#' ## If we enter both psi0 and priorSR (or forget to input them simultaneously),
+#' ## a warning will be printed:
+#' print(psi_to_priorSR(sim_R, sim_f))
+#' print(psi_to_priorSR(sim_R, sim_f, priorSR=0.1, psi0=2))
+#'
+#'
+#'
+
+
+# f <- sim_f
+# R <- sim_R
+# priorSR <- 0.1
+# psi0 <- NULL
+# aw <- 1
+# bw <- 1
+#
+# print(psi_to_priorSR(R, f, priorSR=0.1))
+#
+# print(psi_to_priorSR(R, f, psi0=psi_to_priorSR(R, f, priorSR=0.1)))
+#
+# print(psi_to_priorSR(R, f))
+# print(psi_to_priorSR(R, f, priorSR=0.1, psi0=2))
+
+
+psi_to_priorSR <- function(R, f, psi0=NULL, priorSR=NULL, aw=1, bw=1) {
+
+  if ((is.null(psi0)&is.null(priorSR)) | (isFALSE(is.null(psi0))&isFALSE(is.null(priorSR)))) {
+    #cat("Please enter either psi0 or priorSR!")
+    return("Please enter either psi0 or priorSR!")
+  }
+
+  ### In-sample squared Sharpe ratio
+  SharpeRatio <- function(R) {
+    ER <- matrix(colMeans(R), ncol=1)
+    covR <- cov(R)
+    return(t(ER)%*%solve(covR)%*%ER)
+  }
+
+  SR.max <- sqrt(SharpeRatio(R))[1,1]
+  N <- dim(R)[2]
+  corr_Rf <- cor(R, f)
+  corr_Rf.demean <- corr_Rf - matrix(1, ncol = 1, nrow = N) %*% matrix(colMeans(corr_Rf), nrow = 1)
+  eta <- (aw/(aw+bw))*sum(diag(t(corr_Rf.demean)%*%corr_Rf.demean)) / N
+
+  if (is.null(psi0)&isFALSE(is.null(priorSR))) {
+    return(priorSR^2 / ((SR.max^2-priorSR^2)*eta))
+  } else {
+    return(sqrt((psi0*eta/(1+psi0*eta))) * SR.max)
+  }
+
+}
+
