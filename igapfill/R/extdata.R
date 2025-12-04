@@ -1,0 +1,51 @@
+#' Time series images of Cerro de Garnica, Mexico  (2000-2024)
+#' 
+#' Spatial subsets of the MOD13Q1 v061 NDVI product, in \emph{.tif} format, covering Cerro
+#' de Garnica National Park (https://simec.conanp.gob.mx/ficha.php?anp=66&reg=11) located at 
+#' Michoacan, Mexico. These subsets were collected from February 16, 2000 to December 16, 2024. 
+#' The spatial and temporal resolutions of these images are 250m and 16 days, respectively. 
+#' 
+#' Due to the amount and characteristics of these images, they are stored in two files
+#' which we describe in what follows:
+#'
+#' @section garnica_250m_16_days_NDVI.tif:
+#' 
+#' This file contains 572 layers of Normalized Difference Vegetation Index 
+#' (\href{https://en.wikipedia.org/wiki/Normalized_difference_vegetation_index}{NDVI}). 
+#' By definition, NDVI = (NIR-RED)/(NIR+RED) where NIR and RED  are the Near Infrared 
+#' and Red spectral bands, respectively. Although by definition, the NDVI is a value
+#' belonging to the (-1, 1) interval, NASA distributes this product in integer (\code{INT2S})
+#' data type; the scale parameter is 1e4.
+#' 
+#' More information about this \href{https://modis.gsfc.nasa.gov/about/}{MODIS}
+#' product can be found \href{https://lpdaac.usgs.gov/products/mod13q1v061/}{here}.
+#' 
+#' @section garnica_250m_16_days_pixel_reliability.tif:
+#' 
+#' This file contains 572 pixel reliability layers. That is, in any of these layers,
+#' the value of any pixel is either -1 (Fill/No data), 0 (Good quality), 1 (Marginal data), 
+#' 2 (Snow/Ice) or 3 (Cloudy).
+#' 
+#' @name garnica
+#' 
+#' @note About the naming convention
+#' 
+#' Any layer in these files has the following naming convention:
+#' 
+#' MOD13Q1.AYYYYDDD.h08v07.061.YYYYDDDHHMMSS.250m_16_days_PRODUCT.tif
+#' 
+#' where:
+#' \itemize{
+#' \item MOD13Q1 is the product short name
+#' \item AYYYYDDD is the Julian date of acquisition
+#' \item h08v07 is the tile identifier
+#' \item 061 is the product version
+#' \item YYYYDDDHHMMSS is the Julian date of production
+#' \item 250m is the spatial resolution
+#' \item 16_days is the temporal resolution
+#' \item PRODUCT is either NDVI or pixel_reliability
+#' }
+#' 
+NULL
+
+

@@ -1,0 +1,550 @@
+---
+title: "igapfill: A console-based interface for the R package gapfill"
+author: "Inder Tecuapetla"
+date: "`r Sys.Date()`"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{igapfill: A console-based interface for the R package gapfill}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+<style>
+  .scrollable {
+  overflow-x: scroll;
+  white-space: nowrap;
+}
+</style>
+
+```{r setup, include = FALSE}
+library(terra)
+library(igapfill)
+library(heatmaply)
+library(htmltools)
+
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+
+# WD <- "/home/series_tiempo/Escritorio/Rtest/igapfill/PNG"
+```
+
+The functions and methods of `igapfill` provide an intuitive, user-friendly, console-based interface that allows 
+us to fill missing values of time series of satellite images (TSSI); the main engine for filling these missing values
+is the spatio-temporal approach implemented in the `R` package `gapfill`. 
+
+Throughout this note, we will employ the Garnica dataset, also included in `igapfill`, to showcase the use of this package.
+
+## Garnica dataset
+
+This dataset is comprised of two `.tif` files which store a TSSI recorded over the National Park _Cerro de Garnica_ located in Michoacan, Mexico.
+The file `garnica_250m_16_days_NDVI.tif` contains 572 layers of the Normalized Differenced Vegetation Index (NDVI). The accompanying file `garnica_250m_16_days_pixel_reliability.tif` contains information about the quality
+of each pixel of the 572 NDVI layers. Both datasets are spatial subsets extracted
+from larger images belonging to the MOD13Q1 NASA's product. Due to the temporal resolution of this product -16 days- the 572 layers correspond to a time series
+of images starting on the 49-th Julian date of 2000 and ending on the 353-rd Julian date of
+2024.
+
+We can access to this dataset as follows:
+
+```{r datasetUploading}
+ndvi_path <- system.file("extdata", "garnica_250m_16_days_NDVI.tif", 
+                         package = "igapfill")
+reliability_path <- system.file("extdata", 
+                                "garnica_250m_16_days_pixel_reliability.tif", 
+                                package = "igapfill")
+
+spatNDVI <- rast(ndvi_path)
+spatRELIABILITY <- rast(reliability_path)
+```
+
+Although by definition the NDVI takes values on the interval `(-1,1)`, NASA uses `1e4` as an scale factor and distributes the NDVI MOD13Q1 product through files that when read in the `R` environment, the stored information has
+the `INT4S` datatype. Thus `spatNDVI` has values ranging from `-1e4` to `1e4`.
+
+## mvSieve: A sieve with the amount of missing values in TSSI
+
+How much of the information contained in the Garnica NDVI TSSI can be used with high reliability
+in a scientific study? 
+
+`mvSieve` counts the amount of missing values in a TSSI and hence
+it gives us a fair estimate of the overall quality of this type of datasets. Now, prior to use `mvSieve`,
+let's see how to use the pixel realiability product to yield a highly reliable NDVI product.
+
+For scientific purposes, it is mandatory to filter out those pixels with low reliability from a TSSSI dataset.
+Quality layers, such as those provided in `spatRELIABILITY`, allow us to pursuit this task.
+
+Specifically, for the Garnica dataset, the quality flags are 0 (Good data), 1 (Marginal data), 2 (Snow/clouds) 
+and 3 (No data). It 
+is known that a reliable scientific dataset based on TSSI can be built upon pixels with
+Good and Marginal data quality flags. In the Appendix, there is code to generate the product
+`garnica_250m_16_days_NDVI_QA` that results from filtering out ( _masking_ ) those NDVI pixels 
+whose reliability is either equal to Snow/clouds or No data.^[We have saved the layers of this product in sub-directories organized by years, the first being 2000 and the last one being 2024.]
+
+```{r mSieve-prelim, echo=FALSE}
+garnicaNDVIQAdir <- paste0( getwd(), "/garnica/250m_16_days_NDVI_QA" )
+
+dir.create( path = garnicaNDVIQAdir, recursive = TRUE )
+
+YEARS <- 2000:2024
+ndviNAMES <- names(spatNDVI)
+reliabilityNAMES <- names(spatRELIABILITY)
+ndviQANAMES <- sapply(ndviNAMES, 
+                      function(s) paste0( strsplit(s, ".tif")[[1]][1], "_QA.tif" ))
+
+for(i in 1:20){
+  
+  if(!dir.exists( paste0( garnicaNDVIQAdir, "/", YEARS[1] ) )){
+    dir.create( paste0( garnicaNDVIQAdir, "/", YEARS[1] ) )
+  }
+  
+  TEMPndvi <- subset(spatNDVI,i)
+  
+  TEMPreliability <- subset(spatRELIABILITY,i)
+  
+  TEMPndvi[ TEMPreliability >= 2] <- NA
+  writeRaster(TEMPndvi, 
+              filename = paste0( garnicaNDVIQAdir, "/", YEARS[1], "/",
+                                 ndviQANAMES[i] ),
+              datatype = "INT2S", overwrite = TRUE)
+}
+
+for (i in 2:length(YEARS)) {
+  
+  if(!dir.exists( paste0( garnicaNDVIQAdir, "/", YEARS[i] ) )){
+    dir.create( paste0( garnicaNDVIQAdir, "/", YEARS[i] ) )
+  }
+  
+  for(j in 1:23){
+    count <- 20 + ((i-2)*23) + j
+    TEMPndvi <- subset(spatNDVI,  count)
+    TEMPreliability <- subset(spatRELIABILITY,count)
+    TEMPndvi[ TEMPreliability >= 2 ] <- NA
+    
+    writeRaster(TEMPndvi, 
+                filename = paste0( garnicaNDVIQAdir, "/", YEARS[i], "/",
+                                   ndviQANAMES[count] ),
+                datatype = "INT2S", overwrite = TRUE)
+  }
+}
+```
+
+The function `mvSieve()` can now be applied to the `NDVI_QA` product. Observe that `mvSieve`'s argument `dirs` 
+is equal to a character vector pointing to the sub-directories containing the TSSI files. The remaining arguments are straightforward: `filesPerDir=23`, `startPeriod=2001`, `endPeriod=2024` and `colNames`
+is a character vector defined below:^[Although the TSSI starts in 2000, there are only 20 images for that year. Starting in 2001, every year has 23 NDVI images. Hence in our example `startPeriod=2001`.]
+
+```{r mSieve-usage, warning=FALSE, message=FALSE}
+garnicaNDVIQAdir <- paste0( getwd(), "/garnica/250m_16_days_NDVI_QA" )
+dir.create( path = garnicaNDVIQAdir, recursive = TRUE )
+
+DIRS <- list.dirs(path = garnicaNDVIQAdir)[-1]
+
+COLNAMES <- paste0( "DoY-", seq(1,365,by=16) )
+
+missingValueSieve <- mvSieve(dirs=DIRS[-1],
+                             filesPerDir = 23,
+                             startPeriod = 2001,
+                             endPeriod = 2024,
+                             colNames = COLNAMES)
+```
+
+
+`missingValueSieve` can be construed as a missing values matrix and thanks to the `R` package `heatmaply` we can 
+display this kind of matrices in a graphical form. Below is the missing value matrix of the
+Garnica dataset as a heatmap.
+
+```{r mSieve-heatmaply, echo=FALSE, fig.align='center'}
+out <- heatmaply((missingValueSieve/max(missingValueSieve)) * 100,
+          limits = c(0,100),
+          colors = cool_warm,
+          dendrogram = "none",
+          xlab = "", ylab = "",
+          width = 900,
+          height = 650,
+          main = "% of missing values in NDVI TS of Cerro de Garnica (2001-2024)",
+          scale = "none",
+          draw_cellnote=TRUE,
+          cellnote_textposition = "middle center",
+          cellnote_size = 10,
+          margins = c(60, 100, 40, 20),
+          titleX = FALSE,
+          hide_colorbar = TRUE,
+          labRow = rownames(missingValueSieve),
+          labCol = colnames(missingValueSieve),
+          heatmap_layers = theme(axis.line = element_blank()))
+
+html_out <- as.tags(out)
+
+scrollable_out <- tags$div(
+  class = "scrollable",
+  style = "width: 100%;",
+  html_out
+)
+
+scrollable_out
+```
+
+This heatmap allows us to spot a recurrent feature in NDVI TS, i.e. that during the period of vegetation growth, this kind of datasets usually exhibit a fair amount of information loss. In particular,
+for the Garnica dataset, there is a non-negligible amount of missing values in the interval between the 145-th day of the year (DoY) and the 289-th. That is, for this example, between May and October -arguably the season of vegetation growth- there is an important information loss.
+
+The spatio-temporal approach of `gapfill` is applied to **blocks** of $d \times d$ images.
+It is clear that in order to reduce significantly the amount of missing values in the entire dataset, `gapfill` has to be applied
+sequentially on a series of blocks whose dimensions can be of order $d=2,3,4,\ldots$.
+
+Based on a heatmap such as the one above, it may be not too difficult to select a block of $2\times 2$,
+images from which to start reducing the amount of overall missing values in the dataset.
+For instance, we can define `block0` as the $2\times 2$ set comprised of the images acquired in the 113-th and 129-th DoY of 2011 and 2012.
+This block-selection task can become automatic due to the `minmaxBlock()` function, though.
+
+<!-- The spatio-temporal approach of `gapfill` is applied to _blocks_ of $d \times d$ images. For instance, -->
+<!-- based on the heatmap above, we can define `block0` as the $2\times 2$ set comprised of the images acquired in the 113-th and 129-th DoY of 2011 and 2012. -->
+<!-- It is clear that in order to reduce the amount of missing values on the entire dataset, `gapfill` has to be applied -->
+<!-- sequentially on a series of blocks whose dimensions can be of order $d=2,3,4,\ldots$. -->
+
+<!-- Based on a heatmap such as the one above, it may be not too difficult to select a block of $2\times 2$, -->
+<!-- images from which to start reducing the amount of overall missing values in  -->
+<!-- the dataset. This selection task can become automatic due to the `minmaxBlock()` function, though. -->
+
+## minmaxBlock: establishing blocks with minimal (or maximal) missingness
+
+For those studies in which the task of establishing a block of images with the smallest (or largest) amount of missing values requires something more than a quick visual inspection we have developed `minmaxBlock()`. This function has three arguments, `sieve`, `type` and `rank`. In order to set the first argument, we can use a missing values matrix, such as `missingValueSieve`.
+The argument `type` defines whether you seek for a block with minimal or a maximal amount of missing values.
+The last argument is a `numeric` controlling the size of the search grid on which the block with the minimal or maximal amount of missing values will be found. In what follows we provide details for the case `type="min"`, the other case is analogous.
+
+`minmaxBlock` searches for the minimal $2\times 2$, non-zero, sub-matrix
+of a general missing values matrix with entries denoted as $m_{i,j}$. For any given
+$2\times 2$ block we have defined `blockMissingness` as $\log( \texttt{cumsum} (m_{i,j}) )$ for $1\leq i,j\leq 2$. The minimal block is defined as that block with the minimum block missingness. We preferred the `cumsum` function rather than others, such as `cumprod` or `det`, because a general missing values matrix could have a large amount of zeros.
+
+The search for the minimal block runs over the values of a non-zero numeric vector of length equal to the value of the `rank` argument; for simplicity we call this vector as the _rank vector_. The entries of this vector are non-zero values of the missing values matrix provided by the `sieve` argument. Consider a given entry of the rank vector and notice that this number can occupy any of the four entries of a $2 \times 2$ sub-matrix of the original missing values matrix `sieve`. Correspondingly, based on this value, four different $2 \times 2$ matrices are defined and the block missingness of each of these matrices is calculated. This process is applied to each value of the rank vector. Having calculated all the possible blocks, and their corresponding missingness, we define the minimal block of the `sieve` as the $2\times 2$ block with the smallest missingness.
+
+Below it is established that for the Garnica's missing values matrix, the $2\times 2$ minimal block is comprised by the images acquired in the 113-rd and 129-th DoY of 2011 and 2012.
+
+```{r minmaxBlock}
+SIEVE <- (missingValueSieve/max(missingValueSieve)) * 100
+
+minmaxBlock(sieve=SIEVE, rank=10)
+```
+
+In the next section we show how to fill the missing values of this block.
+
+## Using gapfill to fill missing values in TSSI
+
+Now that we have found a block of images to apply the spatio-temporal approach introduced
+in the `R` package `gapfill` let's make a sub-directory ( _block0_ ) in which we make safe copies
+of the images to be filled.
+
+```{r block0}
+DIRS <- list.dirs(path = garnicaNDVIQAdir)[-1]
+
+files2011 <- list.files(path = DIRS[12],
+                        pattern = ".tif$",
+                        full.names = TRUE)
+
+files2012 <- list.files(path = DIRS[13],
+                        pattern = ".tif$",
+                        full.names = TRUE)
+
+block0DIR <- paste0( getwd(), "/garnica/block0" )
+
+if( !dir.exists(block0DIR) ){
+  dir.create( block0DIR )
+}
+
+file.copy(from=files2011[8:9], to=block0DIR)
+
+file.copy(from=files2012[8:9], to=block0DIR)
+```
+
+### `create_dirs()`
+
+Speaking of safety, we have found extremely useful to create a set of sub-directories in which
+we can store all the auxiliary files that are generated through the process of setting arguments for
+applying `gapfill` functions; we encourage to the users to avoid saving auxiliary files in hard-to-remember locations of their systems. With `create_dirs()`, as shown below, we can create this directory tree.
+
+```{r create-dirs, message=FALSE, echo=FALSE}
+# knitr::include_graphics(normalizePath(paste0(WD, "/create_dirs.png")))
+knitr::include_graphics("figs/create_dirs.png")
+```
+
+The directory tree with _block0_ as its root looks as follows
+
+```{r dirTREE, echo=FALSE}
+# knitr::include_graphics(normalizePath(paste0(WD, "/garnica_block0_directoryTree.png")))
+knitr::include_graphics("figs/garnica_block0_directoryTree.png")
+```
+
+### `dimsReport()`
+
+In order to avoid memory overflow and/or to reduce execution time, it is recommended to know
+the spatial dimensions of the images to be processed with `gapfill`; obviously, having a fair
+understanding of your systems characteristics is highly recommended too. In addition to information about the spatial dimensions (number of rows and columns) of the images, `dimsReport()` returns all the divisors of these dimensions. A direct application of this function returns something as shown below:
+
+```{r dimsReport, echo=FALSE}
+# knitr::include_graphics(normalizePath(paste0(WD, "/dimsReport.png")))
+knitr::include_graphics("figs/dimsReport.png")
+```
+
+
+```{r dimsReport-ignore, include=FALSE, eval=FALSE}
+knitr::include_graphics(normalizePath(paste0(WD, "/dimsReport.png")))
+
+html_out <- as.tags(out)
+
+scrollable_out <- tags$div(
+  class = "scrollable",
+  style = "width: 100%;",
+  html_out
+)
+
+scrollable_out
+```
+
+### `sort_split()`
+
+Depending on system characteristics, the execution time of the `gapfill`'s functions tends to increase in direct relationship with the images dimension. We have found that an effective way of speeding up the gap-filling process consists of splitting the original images into smaller spatio-temporal chunks.
+
+The `sort_split()` function takes care of the splitting process through a console-based application. That
+is, the user is asked to pass a series of arguments. By accepting the default arguments of `sort_split()`, we ensure that the general workflow of `igapfill()` is followed but the user has the flexibility of changing this workflow. When its arguments `nrow_split`
+and `ncol_split` are not provided,  `sort_split()` integrates `dimsReport()` in its execution as it can be seen below:
+
+```{r sort_split, include=FALSE, eval=FALSE}
+# knitr::include_graphics(normalizePath(paste0(WD, "/sort_split_3.png")))
+```
+
+<div style="overflow-x: auto; max-width; 100%; border: 1px solid #ccc; padding: 10px;">
+  <img src="figs/sort_split_3.png" style="max-height: auto; width: auto; display: block;"/>
+</div>
+
+As seen above, the last message of `sort_split()` returns the location where the recently generated chunks were saved. Once we have these chunks, we will continue our workflow by applying the `gapfill`'s functions to each chunk.
+
+<!-- and finally, we will glue together ( _mosaicking_ ) the resulting chunks from the  step; at this stage a mosaic is the resulting _gapfilled_, with less or none missing values, image. -->
+
+
+### `applyGapfill()`
+
+Now that we have our original images splitted in smaller chunks, we can explode parallel computing and apply `Gapfill()` -the main function of the `R` package
+`gapfill()`- and reduce the amount of missing values in our images.^[In general, depending on the amount of missing information in the chosen block the reduction can be total or marginal.]
+
+Since we have created a directory to host our original images, moreover, we have a directory tree to store all the auxiliary files of this process,
+now we can simply take advantage of this structure. That is, by setting a vector with absolute directory names we can set the `inputDir`, `outputDir` and
+`progressDir` arguments easily. The arguments `lat` and `lon` are vectors containing numeric values associated to the latitude and longitude coordinates of
+each pixel within the images to fill; the functions `get_LAT()` and `get_LON()` can be used to calculate appropriate values for these arguments.^[The length of these vectors must coincide with the number of rows and columns of the `spatRaster` generated by the images to fill.] The arguments `days` and `years` are intended to register the days of the year and the years, respectively, involved in the spatio-temporal chunk defined
+by the images.^[The length of these vectors must coincide with the number of images to process by year and with the number of years to process.] Notice that these four parameters contribute to define a 4-dimensional array and, in effect, `Gapfill()` is applied to this 4-dimensional structure. More details about this
+4-dimensional set are given in the documentation of the functions `get_3Darray()` and `get_4Darray()`.
+
+In spite of having splitted the original images, a large execution time could still be an issue without parallel computing. With the argument
+`numCores` we indicate how many processing cores are willing to employ in this gap-filling process. Our argument `clipRange` is equivalent to `gapfill`'s
+argument `clip`; this vector defines an interval for valid predicted (filling) values.  
+
+As it is well-known, the NDVI takes values on the interval $(-1,1)$, this interval is the default value for the `clipRange` argument. In the code below,
+the value for `clipRange` reflects the fact that the Garnica dataset contains NDVI values recorded in `INT4S` datatype, that is, these NDVI images take values on the interval `(-1e4, 1e4)`. Accordingly, the `scale` argument is set equal to 1, reflecting that we are using the NDVI images without scaling them; when the default value for `clipRange` is used then `scale` must be set accordingly.
+
+```{r applyGapfill-aux, echo=FALSE, eval=FALSE}
+block0DIR <- "~/garnica/block0" # made a copy in /home
+```
+
+```{r applyGapfill, eval=FALSE}
+allDIRS <- list.dirs(path = block0DIR, full.names = TRUE)#[-1]
+
+block0FILES <- list.files(path = block0DIR, pattern = ".tif$", 
+                          full.names = TRUE)
+
+LAT <- get_LAT(stack = stack(block0FILES))
+
+LON <- get_LON(stack = stack(block0FILES))
+
+applyGapfill(inputDir = allDIRS[7],
+             outputDir = allDIRS[5],
+             progressDir = allDIRS[6],
+             lat = LAT,
+             lon = LON,
+             days = c(113,129),
+             years = 2011:2012,
+             numCores = 10,
+             scale = 1e0,
+             clipRange = c(-1e4,1e4))
+```
+
+The output of `applyGapfill()` is a set of `.RData` files store at the path given by the argument `outputDir`. Each file contains a 4-dimensional `array` object. That is, for all practical purposes, at this stage the process has produced a series of numeric matrices. Thus, _rasterizing_ and _mosaicking_ these matrices is in order. 
+
+### parallel_mosaic()
+
+In order to obtain the gap-filled images, we must _rasterize_ the matrices contained in each array and then the resulting
+rasters must be glued together. It is straightforward to obtain values for the arguments `inputDirImages`, `inputDirRData`, `inputDirMaster`, `outputDir` and `progressReportDir` due to the auxiliary objects defined above. Below we use `scaleFactor = 1e0` and `dataType = "INT4S"` reflecting that our original images contain NDVI values recorded in `INT4S` datatype. With the arguments utilized above in `sort_split()` we ended up with 5 splits, so below we use `numCores = 3`; in general we recommend that the value for `numCores` does not exceed the number of splits.
+
+```{r parallel-mosaic, eval=FALSE}
+parallel_mosaic(inputDirImages = block0DIR,
+                inputDirRData = allDIRS[5],
+                inputDirMaster = allDIRS[4],
+                outputDir = allDIRS[3],
+                progressReportDir = allDIRS[6],
+                scaleFactor = 1e0,
+                dataType = "INT4S",
+                numCores = 3) # numCores must not exceed number of splits
+```
+
+The output of `parallel_mosaic()` is a set of GeoTiff files stored at the path indicated by the argument `outputDir`.  In order to verify that the images associated with these files have a reduced amount of missing values we can employ the code below.
+
+First, we read the original images and plot them.
+
+```{r before-igapfill, eval=FALSE}
+initFILES <- list.files(path = block0DIR,
+                        pattern = ".tif$",
+                        full.names = TRUE)
+
+gapfilledFILES <- list.files(path = allDIRS[3],
+                             pattern = ".tif$",
+                             full.names = TRUE)
+
+initIMAGES <- rast(initFILES)
+gapfilledIMAGES <- rast(gapfilledFILES)
+
+par(mfrow=c(2,2))
+plot(initIMAGES, cex.main=0.75,
+     main=sapply(c("Day113, 2011", "Day129, 2011", "Day113, 2012", "Day129, 2012"), 
+                 function(s) paste("Original:", s)))
+     
+```
+
+<div style="overflow-x: auto; max-width; 100%; border: 1px solid #ccc; padding: 10px;">
+  <h3 style="text-align:center;">Original block0 images</h3>
+  <img src="figs/garnica_before_igapfill.png" style="max-height: auto; width: auto; display: block;"/>
+</div>
+
+Then, we compared them with their corresponding igapfilled-versions.
+
+```{r after-igapfill, eval=FALSE}
+plot(gapfilledIMAGES, cex.main=0.75,
+     main=sapply(c("Day113, 2011", "Day129, 2011", "Day113, 2012", "Day129, 2012"), 
+                 function(s) paste("Gapfill:", s)))
+```
+
+<div style="overflow-x: auto; max-width; 100%; border: 1px solid #ccc; padding: 10px;">
+  <h3 style="text-align:center;">block0 images after igapfill()</h3>
+  <img src="figs/garnica_after_igapfill.png" style="max-height: auto; width: auto; display: block;"/>
+</div>
+
+## igapfill(): A fully console-based user interface
+
+Most of the steps presented above lead to `igapfill()`, a console-based wrap-up of `create_dirs()`, `dimsReport()`, 
+`sort_split()`, `applyGapfill()` and `parallel_mosaic()`. All that is left to the users is the selection of the images that
+are to be gap-filled, but as shown above this can be easily done with a combination of `mvSieve()`, `minmaxBlock()` and `R` base code.
+
+Although in our application we applied `igapfill`'s functions to try and fill most of the missing values in the entire Garnica dataset, we conclude this vignette by showing `igapfill()`'s output when it is applied to a block of $3 \times 3$ matrices that combined had a _blockMissingness_ of `2.835768`. This is _block14_ in our application, that is, the following results correspond to the 15-th application of `igapfill()`'s functions to distinct blocks of Garnica's images.^[Recall that we started with _block0_.]
+
+First, `igapfill()` takes care of setting up the directory tree and splitting the original images:
+
+<div style="overflow-x: auto; max-width; 100%; border: 1px solid #ccc; padding: 10px;">
+  <img src="figs/igapfill-part1.png" style="max-height: auto; width: auto; display: block;"/>
+</div>
+
+Then, the gap-filling process starts and some parameters are requested. Once this process has finished, 
+another set of parameters are requested prior to embark ourselves into rasterizing and mosaicking the final output:
+
+<div style="overflow-x: auto; max-width; 100%; border: 1px solid #ccc; padding: 10px;">
+  <img src="figs/igapfill-part2.png" style="max-height: auto; width: auto; display: block;"/>
+</div>
+
+Finally, as done above, we read and plot the original block14´s images:
+
+<div style="overflow-x: auto; max-width; 100%; border: 1px solid #ccc; padding: 10px;">
+  <h3 style="text-align:center;">block14 images before igapfill()</h3>
+  <img src="figs/block14_before_igapfill.png" style="max-height: auto; width: auto; display: block;"/>
+</div>
+
+And then, we can plot the final result of applying `igapfill()` to block14's images.
+
+<div style="overflow-x: auto; max-width; 100%; border: 1px solid #ccc; padding: 10px;">
+  <h3 style="text-align:center;">block14 images after igapfill()</h3>
+  <img src="figs/block14_after_igapfill.png" style="max-height: auto; width: auto; display: block;"/>
+</div>
+
+
+<h2 style="border-top: 2px solid #8DB600">Appendix</h2>
+
+<details>
+<summary><he style="">Auxiliary code used in the `mvSieve` section</summary>
+
+```{r mSieve-usage-Appendix, eval=FALSE}
+# --- Auxiliary code used in mvSieve section ---
+
+garnicaNDVIQAdir <- paste0( getwd(), "/garnica/250m_16_days_NDVI_QA" )
+
+dir.create( path = garnicaNDVIQAdir, recursive = TRUE )
+
+YEARS <- 2000:2024
+ndviNAMES <- names(spatNDVI)
+reliabilityNAMES <- names(spatRELIABILITY)
+ndviQANAMES <- sapply(ndviNAMES, 
+                      function(s) paste0( strsplit(s, ".tif")[[1]][1], "_QA.tif" ))
+
+for(i in 1:20){ #### Year 2000 has 20 images only
+  
+  if(!dir.exists( paste0( garnicaNDVIQAdir, "/", YEARS[1] ) )){
+    dir.create( paste0( garnicaNDVIQAdir, "/", YEARS[1] ) )
+  }
+  
+  TEMPndvi <- subset(spatNDVI,i)
+  
+  TEMPreliability <- subset(spatRELIABILITY,i)
+  
+  TEMPndvi[ TEMPreliability >= 2] <- NA
+  writeRaster(TEMPndvi, 
+              filename = paste0( garnicaNDVIQAdir, "/", YEARS[1], "/",
+                                 ndviQANAMES[i] ),
+              datatype = "INT2S", overwrite = TRUE)
+}
+
+for (i in 2:length(YEARS)) {
+  
+  if(!dir.exists( paste0( garnicaNDVIQAdir, "/", YEARS[i] ) )){
+    dir.create( paste0( garnicaNDVIQAdir, "/", YEARS[i] ) )
+  }
+  
+  for(j in 1:23){
+    count <- 20 + ((i-2)*23) + j
+    TEMPndvi <- subset(spatNDVI,  count)
+    TEMPreliability <- subset(spatRELIABILITY,count)
+    TEMPndvi[ TEMPreliability >= 2 ] <- NA
+    
+    writeRaster(TEMPndvi, 
+                filename = paste0( garnicaNDVIQAdir, "/", YEARS[i], "/",
+                                   ndviQANAMES[count] ),
+                datatype = "INT2S", overwrite = TRUE)
+  }
+}
+```
+
+```{r mSieve-heatmaply-Appendix, eval=FALSE}
+# --- Auxiliary code used in mSieve section ---
+out <- heatmaply((missingValueSieve/max(missingValueSieve)) * 100,
+          limits = c(0,100),
+          colors = cool_warm,
+          dendrogram = "none",
+          xlab = "", ylab = "",
+          width = 900,
+          height = 650,
+          main = "% of missing values in NDVI TS of Cerro de Garnica (2001-2024)",
+          scale = "none",
+          draw_cellnote=TRUE,
+          cellnote_textposition = "middle center",
+          cellnote_size = 6,
+          margins = c(60, 100, 40, 20),
+          titleX = FALSE,
+          hide_colorbar = TRUE,
+          labRow = rownames(missingValueSieve),
+          labCol = colnames(missingValueSieve),
+          heatmap_layers = theme(axis.line = element_blank()))
+
+html_out <- as.tags(out)
+
+scrollable_out <- tags$div(
+  class = "scrollable",
+  style = "width: 100%;",
+  html_out
+)
+
+scrollable_out
+```
+
+</details>
+
