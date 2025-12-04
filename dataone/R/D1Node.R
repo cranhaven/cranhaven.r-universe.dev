@@ -1,0 +1,1017 @@
+#
+#   This work was created by participants in the DataONE project, and is
+#   jointly copyrighted by participating institutions in DataONE. For
+#   more information on DataONE, see our web site at https://dataone.org.
+#
+#     Copyright 2011-2013
+#
+#   Licensed under the Apache License, Version 2.0 (the "License");
+#   you may not use this file except in compliance with the License.
+#   You may obtain a copy of the License at
+#
+#     https://www.apache.org/licenses/LICENSE-2.0
+#
+#   Unless required by applicable law or agreed to in writing, software
+#   distributed under the License is distributed on an "AS IS" BASIS,
+#   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#   See the License for the specific language governing permissions and
+#   limitations under the License.
+#
+
+#' @include auth_request.R
+#' @title A base class for CNode and MNode.
+#' @description D1Node is a base class for CNode and MNode classes and contains class slots and
+#' methods that are common between these two child classes.
+#' @rdname D1Node-class
+#' @aliases D1Node-class
+#' @slot identifier A character string containing a URN that uniquely identifiers the node
+#' @slot name A character string containing a plain text name for the node
+#' @slot description A character string describing the node
+#' @slot baseURL A character string of the registered baseURL for the node, which does not include the version string
+#' @slot subject A character string containing the Distinguished Name of this node, used for authentication
+#' @slot contactSubject The Distinguished Name of contact person for this node
+#' @slot replicate  A logical flag indicating whether the node accepts replicas
+#' @slot type The node type, either 'mn' or 'cn'
+#' @slot state A character string that indicates whether or not the node is accessible, either 'up' or 'down'
+#' @slot services A data.frame containing the service tiers supported by this node.
+#' @slot serviceUrls A data.frame that contains DataONE service Urls
+#' @slot APIversion A character string indicating version of the DataONE API for this node, e.g. "v2"
+#' @slot env A character string, either 'prod' if this node is in the production environment, otherwise 'test'
+#' @section Methods:
+#' \itemize{
+#'  \item{\code{\link{D1Node-initialize}{initialize}}}{: Initialize a D1Node}
+#'  \item{\code{\link{D1Node}}}{: Create a MNode object representing a DataONE Member Node repository.}
+#'  \item{\code{\link{archive}}}{: Change the state of an object so that it is hidden from searches.}
+#'  \item{\code{\link{describeObject}}}{: Get header information for a given pid.} 
+#'  \item{\code{\link{getChecksum}}}{: Get the checksum for the data object associated with the specified pid.}
+#'  \item{\code{\link{getObject}}}{: Get the bytes associated with an object on a node.}
+#'  \item{\code{\link{getQueryEngineDescription}}}{: Query a node for the list of query engines available on the node.}
+#'  \item{\code{\link{getSystemMetadata}}}{: Get the metadata describing system properties associated with an object on the Node.}
+#'  \item{\code{\link{listObjects}}}{: Retrieve the list of objects that match the search parameters.}
+#'  \item{\code{\link{listQueryEngines}}}{: Query a node for the list of query engines available on the node.}
+#'  \item{\code{\link{ping}}}{: Test if a node is online and accepting DataONE requests.}
+#'  \item{\code{\link{encodeSolr}}}{: Encode the input for Solr Queries.}
+#'  \item{\code{\link{query}}}{: Search DataONE for data and metadata objects.}
+#'  \item{\code{\link{isAuthorized}}}{: Check if an action is authorized for the specified identifier.} 
+#' }
+#' @import methods
+#' @importFrom utils URLencode
+#' @export
+setClass("D1Node",
+         slots = c(	identifier = "character",
+					name = "character",
+					description = "character",
+					baseURL = "character",
+					#services,
+					#synchronization,
+					#nodeReplicationPolicy,
+					#ping,
+					subject = "character",
+					contactSubject = "character",
+					replicate = "character",
+					type = "character",
+					state = "character",
+					services = "data.frame",
+          serviceUrls = "data.frame",
+					APIversion = "character",
+					env = "character"
+					)
+)
+
+#########################
+## Node constructors
+#########################
+
+#' Create a D1Node object.
+#' @param xml An XML object that describes the node to be initialized (see \link{listNodes}).
+#' @param ... (not yet used)
+#' @rdname D1Node
+#' @return the Node object representing the DataONE environment
+#' @export
+setGeneric("D1Node", function(xml, ...) {
+  standardGeneric("D1Node")
+})
+
+#' Initialize a D1Node
+#' @param .Object the D1Node object
+#' @rdname D1Node-initialize
+#' @aliases D1Node-initialize
+setMethod("initialize", "D1Node",function(.Object) {
+    info <- sessionInfo()
+    # Force loading of packages now, to get package info
+   return(.Object)
+})
+
+#' @rdname D1Node
+#' @export
+setMethod("D1Node", signature("XMLInternalElementNode"), function(xml) {
+  # create new Node object
+	node <- new("D1Node")
+	newnode <- parseCapabilities(node, xml)
+	return(newnode)
+})
+
+##########################
+## Methods
+##########################
+
+# The MN and CN APIs have several services with the same name, i.e. "get', 'getSystemMetadata', etc.,
+# so MNode.R and CNode.R have several methods that also share the same name. The generic functions for these 
+# methods are defined here in the parent class, so that the generic is defined for all child classes (MNode.R, CNode.R), where
+# the corresponding methods are defined.
+
+#' Archive an object on a Member Node or Coordinating Node, which hides it from casual searches.
+#' @description This method provides the ability to archive a data or metadata object on the Member Node
+#' provided in the \code{'mnode'} parameter.  Archiving removes the object from DataONE search functions,
+#' thereby making it more difficult to find without completely removing the object.  Archive is intended
+#' for objects that should not be used by current researchers, but for which there is a desire to maintain
+#' a historical record, such as when journal articles might cite the object.  Users can still obtain the
+#' contents of archived objects if they have the identifier, but will not discover it through searches.
+#' @details This operation requires an X.509 certificate to be present in the default location of the file 
+#' system. This certificate provides authentication credentials from 
+#' CILogon \url{https://cilogon.org/?skin=DataONE}.  See \code{\link{CertificateManager}} for details.
+#' For DataONE Version 2.0, an authentication token can also be used for authentication. 
+#' Also, administrator privilege is required to run archive() on a DataONE Coordinating Node.
+#' @param x The MNode or CNode instance on which the object will be created
+#' @param pid The identifier of the object to be created
+#' @param ... (Not yet used)
+#' @return The pid that was archived if successful, otherwise NULL
+#' @rdname archive
+#' @aliases archive
+#' @seealso \code{\link[=D1Node-class]{D1Node}}{ class description.}
+#' @export
+#' @examples \dontrun{
+#' library(dataone)
+#' library(uuid)
+#' library(digest)
+#' library(datapack)
+#' # First create a new object
+#' cn <- CNode("STAGING")
+#' mn <- getMNode(cn, "urn:node:mnStageUCSB2")
+#' testdf <- data.frame(x=1:10,y=11:20)
+#' csvfile <- paste(tempfile(), ".csv", sep="")
+#' write.csv(testdf, csvfile, row.names=FALSE)
+# # Have Dataone create an identifier for you (requires authentication)
+#' \dontrun{
+#' newid <- generateIdentifier(mn, "UUID")
+#' }
+#' # Create an identifier manually
+#' newid <- paste("urn:uuid:", UUIDgenerate(), sep="") 
+#' format <- "text/csv"
+#' size <- file.info(csvfile)$size
+#' sha256 <- digest(csvfile, algo="sha256", serialize=FALSE, file=TRUE)
+#' sysmeta <- new("SystemMetadata", identifier=newid, formatId=format, size=size, checksum=sha256)
+#' sysmeta <- addAccessRule(sysmeta, "public", "read")
+#' # Create (upload) the object to DataONE (requires authentication)
+#' \dontrun{
+#' create(mn, newid, csvfile, sysmeta)
+#' # Now for demonstration purposes, archive the object
+#' # Archive the object (requires authentication)
+#' archivedId <- archive(mn, newid)
+#' }
+#' }
+setGeneric("archive", function(x, ...) {
+  standardGeneric("archive")
+})
+
+#' @rdname archive
+setMethod("archive", signature("D1Node"), function(x, pid) {
+    url <- paste(x@endpoint, "archive", URLencode(pid, reserved=TRUE), sep="/")
+    response <- auth_put(url, node=x, body=NULL)
+    if(response$status_code != "200") {
+        warning(sprintf("Error archiving %s\n", pid), getErrorDescription(response))
+        return(NULL)
+    } else {
+        # Comment out body handling because httr::PUT is not returning a response body at all
+        #resultText <- content(response, as="text")
+        #doc <- xmlInternalTreeParse(resultText)
+        # XML doc is similiar to: <d1:identifier xmlns:d1="https://ns.dataone.org/service/types/v1">WedSep91341002015-ub14</d1:identifier>
+        #nodes <- getNodeSet(doc, "/d1:identifier")
+        #id <- xmlValue(nodes[[1]])
+        # Return the identifier as a character value
+        #return(id)
+        return(pid)
+    }
+})
+
+#' Get the bytes associated with an object on this Node.
+#' @details This operation acts as the 'public' anonymous user unless an X.509 certificate is
+#' present in the default location of the file system, in which case the access will be authenticated.
+#' @param x The Node instance from which the pid will be downloaded
+#' @param pid The identifier of the object to be downloaded
+#' @param ... (Not yet used).
+#' @rdname getObject
+#' @aliases getObject
+#' @return the bytes of the object
+#' @seealso \code{\link{D1Node-class}{D1Node}}{ class description.}
+#' @export
+#' @examples \dontrun{
+#' library(dataone)
+#' cn <- CNode()
+#' mn <- getMNode(cn, "urn:node:KNB")
+#' pid <- "solson.5.1"
+#' obj <- getObject(mn, pid)
+#' df <- read.csv(text=rawToChar(obj))
+#' }
+setGeneric("getObject", function(x, ...) {
+  standardGeneric("getObject")
+})
+
+#' Get the checksum for the data object associated with the specified pid.
+#' @description A checksum is calculated for an object when it is uploaded to DataONE and
+#' is submitted with the object's system metadata. The \code{'getChecksum'} method retrieves
+#' the checksum from the specified coordinating node
+#' @rdname getChecksum
+#' @aliases getChecksum
+#' @param x The CNode instance from which the checksum will be retrieved
+#' @param pid The identifier of the object
+#' @param ... (Not yet used)
+#' @return character the checksum value, with the checksum algorithm as the attribute "algorithm"
+#' @seealso \code{\link{D1Node-class}{D1Node}}{ class description.}
+#' @export
+#' @examples \dontrun{ 
+#' library(dataone)
+#' cn <- CNode()
+#' mn <- getMNode(cn, "urn:node:KNB")
+#' pid <- "doi:10.5063/F1QN64NZ"
+#' chksum <- getChecksum(mn, pid)
+#' }
+setGeneric("getChecksum", function(x, ...) {
+  standardGeneric("getChecksum")
+})
+
+#' Query a node for the list of query engines available on the node
+#' @param x The CNode or MNode to query
+#' @param ... (Additional arguments - not yet used.)
+#' @param queryEngineName The query engine name to get a description for.
+#' @return list The query engine description
+#' @rdname getQueryEngineDescription
+#' @aliases getQueryEngineDescription
+#' @export
+#' @examples \dontrun{
+#' library(dataone)
+#' cn <- CNode("PROD")
+#' engineDesc <- getQueryEngineDescription(cn, "solr")
+#' cat(sprintf("Query engine version: %s\n", engineDesc$queryEngineVersion))
+#' cat(sprintf("Query engine name: %s\n", engineDesc$name))
+#' engineDesc <- getQueryEngineDescription(cn, "solr")
+#' head(engineDesc$queryFields, n=3L)
+#' }
+setGeneric("getQueryEngineDescription", function(x, ...) {
+  standardGeneric("getQueryEngineDescription")
+})
+
+#' @rdname getQueryEngineDescription
+#' @export
+setMethod("getQueryEngineDescription", signature("D1Node"), function(x, queryEngineName) {
+  
+  url <- paste(x@endpoint, "query", queryEngineName, sep="/")
+  # Send the request
+  response<-GET(url)
+  if(response$status_code != "200") {
+    warning(sprintf("Error getting query engine description %s\n", getErrorDescription(response)))
+    return(list())
+  }
+  if (is.raw(response$content)) {
+    tmpres <- content(response, as="raw")
+    resultText <- rawToChar(tmpres)
+  } else {
+    # Use charset 'utf-8' if not specified in response headers
+    charset <- "utf-8"
+    if("content-type" %in% names(response$headers)) {
+      media <- parse_media(response$headers[['content-type']])
+      if("params" %in% names(media) && "charset" %in% names(media$params)) {
+        charset <- media$params$charset
+      }
+    } 
+    resultText <- content(response, as="text", encoding=charset)
+  }
+  
+  xml <- xmlParse(resultText)
+  docRoot <- xmlRoot(xml)
+  qfNodes <- getNodeSet(xml, "//queryField")
+  qfs <- data.frame(name=character(), type=character(), searchable=character(),
+                    returnable=character(), sortable=character(),
+                    multivalued=character(), row.names=NULL, stringsAsFactors = F)
+  
+  for (i in 1:length(qfNodes)) {
+    qfs <- rbind(qfs, data.frame(name = xmlValue(qfNodes[[i]][["name"]]),
+    type = xmlValue(qfNodes[[i]][["type"]]),
+    searchable = xmlValue(qfNodes[[i]][["searchable"]]),
+    returnable = xmlValue(qfNodes[[i]][["returnable"]]),
+    sortable = xmlValue(qfNodes[[i]][["sortable"]]),
+    multivalued = xmlValue(qfNodes[[i]][["multivalued"]]),
+    row.names=NULL, stringsAsFactors = F))
+  }
+  
+  qed <- list(queryEngineVersion=xmlValue(docRoot[['queryEngineVersion']]),
+              querySchemaVersion=xmlValue(docRoot[['querySchemaVersion']]),
+              name=xmlValue(docRoot[['name']]),
+              queryFields=qfs)
+  
+  return(qed)
+})
+
+#' Get the metadata describing system properties associated with an object on this Node.
+#' @description The SystemMetadata includes information about the identity, type, access control, and other system
+#' level details about the object.
+#' @details This operation acts as the 'public' anonymous user unless an X.509 certificate is
+#' present in the default location of the file system, in which case the access will be authenticated.
+#' @param x The Node instance from which the SystemMetadata will be downloaded
+#' @param pid The identifier of the object
+#' @param ... (Not yet used.)
+#' @return SystemMetadata for the object
+#' @import datapack
+#' @export
+#' @examples \dontrun{ 
+#' library(dataone)
+#' cn <- CNode()
+#' mn <- getMNode(cn, "urn:node:KNB")
+#' pid <- "doi:10.5063/F1QN64NZ"
+#' sysmeta <- getSystemMetadata(mn, pid)
+#' }
+setGeneric("getSystemMetadata", function(x, ...) {
+  standardGeneric("getSystemMetadata")
+})
+
+#' Efficiently get systemmetadata for an object.
+#' @description This method provides a lighter weight mechanism than getSystemMetadata() for a client to
+#' determine basic properties of the referenced object. This operation requires read privileges for the
+#' object specified by \code{'pid'}, as is granted with a DataONE authentication token or X.509 certificate.
+#' @param x The MNode or CNode instance to send request to.
+#' @param pid Identifier for the object in question. May be either a PID or a SID. Transmitted as
+#' part of the URL path and must be escaped accordingly.
+#' @param ... (Not yet used)
+#' @rdname describeObject
+#' @aliases describeObject
+#' @return A list of header elements
+#' @seealso \url{https://purl.dataone.org/architecture/apis/MN_APIs.html#MNRead.describe}
+#' @examples \dontrun{
+#' library(dataone)
+#' mn_uri <- "https://knb.ecoinformatics.org/knb/d1/mn/v1"
+#' mn <- MNode(mn_uri)
+#' pid <- "knb.473.1"
+#' describeObject(mn, pid)
+#' describeObject(mn, "adfadf") # warning message when wrong pid
+#' }
+#' @export
+setGeneric("describeObject", function(x, ...) {
+  standardGeneric("describeObject")
+})
+
+#' @rdname describeObject
+#' @export
+setMethod("describeObject", signature("D1Node"), function(x, pid) {
+  stopifnot(is.character(pid))
+  url <- file.path(x@endpoint, "object", URLencode(pid, reserved=T))
+  response <- auth_get(url, node=x)
+  if(response$status_code != "200") {
+    d1_errors(response)
+  } else { 
+    return(unclass(response$headers))
+  }
+})
+
+#' Retrieve the list of objects that match the search parameters
+#' @details The list of objects that is returned is paged according to the \code{'start'} and
+#' \code{'count'} values, so that large result sets can be returned over multiple calls.
+#' @param x The Node instance from which the SystemMetadata will be downloaded
+#' @param ... (Not yet used.)
+#' @rdname listObjects
+#' @aliases listObjects
+#' @return list Objects that met the search criteria
+#' @export
+#' @examples \dontrun{
+#' library(dataone)
+#' cn <- CNode("STAGING")
+#' fromDate <- "2013-01-01T01:01:01.000+00:00"
+#' toDate <- "2015-12-31T01:01:01.000+00:00"
+#' formatId <- "eml://ecoinformatics.org/eml-2.1.0"
+#' start <- 0
+#' count <- 5
+#' objects <- listObjects(cn, fromDate=fromDate, toDate=toDate, 
+#'     formatId=formatId, start=start, count=count)
+#' # Inspect id of first object 
+#' objects[1]$objectInfo$identifier
+#' }
+setGeneric("listObjects", function(x, ...) {
+  standardGeneric("listObjects")
+})
+
+#' @param fromDate Entries with a modified date greater than \code{'fromDate'} will be returned.
+#' This value must be specified in ISO 8601 format, i.e. "YYYY-MM-DDTHH:MM:SS.mmm+00:00"
+#' @param toDate Entries with a modified date less than \code{'toDate'} will be returned.
+#' This value must be specified in ISO 8601 format, i.e. "YYYY-MM-DDTHH:MM:SS.mmm+00:00"
+#' @param formatId The format to match, for example "eml://ecoinformatics.org/eml-2.1.1"
+#' @param replicaStatus A logical value that determines if replica (object not on it's origin node) should be returned. Default is TRUE.
+#' @param start An integer that specifies the first element of the result set that will be returned
+#' @param count An integer that specifies how many results will be returned
+#' @return list Objects that met the search criteria
+#' @seealso \url{https://purl.dataone.org/architecture/apis/MN_APIs.html#MN_read.listObjects}
+#' @import parsedate
+#' @export
+#' @rdname listObjects
+setMethod("listObjects", signature("D1Node"), function(x, 
+                                                      fromDate=as.character(NA), toDate=as.character(NA),
+                                                      formatId=as.character(NA), replicaStatus=as.logical(TRUE), 
+                                                      start=as.integer(0), count=as.integer(1000)) {
+  
+  # Build a parameter list with the specified arguments. Don't include parameters that
+  # have not be specified and do not have default values, as each parameter included in the
+  # list will be sent in the http query parameters.
+  params <- list()
+  if (!is.na(fromDate)) {
+    chkDT <- parse_iso_8601(fromDate)
+    if(is.na(chkDT)) stop(sprintf('Invalid parameter "fromDate=%s". Value must be in ISO 8601 format\n', fromDate))
+    params <- c(params, fromDate=fromDate)
+  }
+  if (!is.na(toDate)) {
+    chkDT <- parse_iso_8601(toDate)
+    if(is.na(chkDT)) stop(sprintf('Invalid parameter "toDate=%s". Value must be in ISO 8601 format\n', toDate))
+    params <- c(params, toDate=toDate)
+  }
+  if (!is.na(formatId)) {
+    params <- c(params, formatId=URLencode(formatId))
+  }
+  params <- c(params, replicaStatus=as.character(replicaStatus))
+  params <- c(params, start=as.character(start))
+  params <- c(params, count=as.character(count))
+  
+  url <- paste(x@endpoint, "object", sep="/")
+  # Send the request
+  response<-GET(url, query=params)
+  if (is.raw(response$content)) {
+    tmpres <- content(response, as="raw")
+    resultText <- rawToChar(tmpres)
+  } else {
+    charset <- "utf-8"
+    if("content-type" %in% names(response$headers)) {
+      media <- parse_media(response$headers[['content-type']])
+      if("params" %in% names(media) && "charset" %in% names(media$params)) {
+        charset <- media$params$charset
+      }
+    }  
+    resultText <- content(response, as="text", encoding=charset)
+  }
+  
+  # Parse the returned XML into a list
+  objects<-(xmlToList(xmlParse(resultText)))
+  return(objects)
+})
+
+#' Query a node for the list of query engines available on the node
+#' @param x The CNode or MNode to list the query engines for.
+#' @param ... (Not yet used.)
+#' @return list The list of query engines.
+#' @rdname listQueryEngines
+#' @aliases listQueryEngines
+#' @export
+#' @examples \dontrun{
+#' cn <- CNode("STAGING")
+#' engines <- listQueryEngines(cn)
+#' }
+setGeneric("listQueryEngines", function(x, ...) {
+  standardGeneric("listQueryEngines")
+})
+
+#' @rdname listQueryEngines
+#' @export
+setMethod("listQueryEngines", signature("D1Node"), function(x) {
+  
+  url <- paste(x@endpoint, "query", sep="/")
+  # Send the request
+  response<-GET(url)
+  if (is.raw(response$content)) {
+    tmpres <- content(response, as="raw")
+    resultText <- rawToChar(tmpres)
+  } else {
+    charset <- "utf-8"
+    if("content-type" %in% names(response$headers)) {
+      media <- parse_media(response$headers[['content-type']])
+      if("params" %in% names(media) && "charset" %in% names(media$params)) {
+        charset <- media$params$charset
+      }
+    }  
+    resultText <- content(response, as="text", encoding=charset)
+  }
+  
+  # Parse the returned XML into a list
+  resultList <-(xmlToList(xmlParse(resultText)))
+  
+  queryEngines <- list()
+  # Reformat the list for easier consumption
+  for (i in 1:length(resultList)) {
+    queryEngines <- c(queryEngines, resultList[i]$queryEngine)
+  }
+
+  return(queryEngines)
+})
+
+#' Construct a Node, using a passed in capabilities XML
+#' @param x The node to which capabilities should be applied.
+#' @param xml The XML capabilities representing the node to be created
+#' @param ... (not yet used)
+#' @return The Node object with modified capabilities properties from the XML
+## @export
+setGeneric("parseCapabilities", function(x, ...) {
+  standardGeneric("parseCapabilities")
+})
+
+#' @rdname parseCapabilities
+## @export
+setMethod("parseCapabilities", signature("D1Node"), function(x, xml) {
+  
+  stopifnot(is.element("XMLInternalElementNode", class(xml)))
+  # Parse the rest of the node information
+  x@identifier <- xmlValue(xml[["identifier"]])
+  x@name <- xmlValue(xml[["name"]])
+  x@description <- xmlValue(xml[["description"]])
+  x@baseURL <- xmlValue(xml[["baseURL"]])
+  x@subject <- xmlValue(xml[["subject"]])
+  x@contactSubject <- xmlValue(xml[["contactSubject"]])
+  attrs <- xmlAttrs(xml)
+  x@replicate <- attrs[["replicate"]]
+  x@type <- attrs[["type"]]
+  x@state <- attrs[["state"]]
+  # Store the available services for this node in a data.frame
+  services <- data.frame(name=character(), version=character(), available=character(), row.names=NULL, stringsAsFactors=FALSE)
+  reportedServices <- xml[['services']]
+  if(!is.null(reportedServices)) {
+      hasServices <- xmlToList(reportedServices)
+      for (i in 1:length(hasServices)) {
+          thisService <- hasServices[[i]]
+          services <- rbind(services, data.frame(name=thisService[['name']], version=thisService[['version']], 
+                                                 available=thisService[['available']], row.names=NULL, stringsAsFactors=FALSE))
+      }
+  }
+  x@services <- services
+  # Set the node API version based on MNCore (tier 1)
+  coreServices <- x@services[grepl("NCore", x@services$name) & x@services$version > "v1" & x@services$available=="true",]
+  serviceVersion <- "v1"
+  if(nrow(coreServices) > 0) {
+    for (i in 1:nrow(coreServices)) {
+      thisVersion <- coreServices[i,]$version
+      # Comparing strings of format "vn"
+      if (thisVersion > serviceVersion) serviceVersion <- thisVersion
+    }
+  }
+  x@APIversion <- serviceVersion
+  return(x)
+})
+
+#' Test if a node is online and accepting DataONE requests
+#' @param x The CNode or MNode to check
+#' @param ... (Not yet used)
+#' @return logical A logical value set to TRUE if the node is up and FALSE if it is not
+#' @rdname ping
+#' @aliases ping
+#' @return logical A logical value set to TRUE if the node is up and FALSE if it is not
+#' @export
+#' @examples \dontrun{
+#' cn <- CNode()
+#' mn <- getMNode(cn, "urn:node:KNB")
+#' isAlive <- ping(mn)
+#' }
+setGeneric("ping", function(x, ...) {
+  standardGeneric("ping")
+})
+
+#' @rdname ping
+#' @export
+setMethod("ping", signature("D1Node"), function(x) {
+  
+  url <- paste(x@endpoint, "monitor/ping", sep="/")
+  # Send the request
+  response<-GET(url)
+
+  if (response$status_code == 200) {
+    return(TRUE)
+  } else {
+    return(FALSE)
+  }
+})
+
+#' This function parses a DataONE service response message for errors, and extracts and
+#' prints error information.
+#' @param x The DataONE service response
+d1_errors <- function(x){
+  headnames <- names(x$headers)
+  tmp <- grep('dataone-exception-description', headnames, value = TRUE)
+  exc_name <- x$headers$`dataone-exception-name`
+  detailcode <- x$headers$`dataone-exception-detailcode`
+  mssg <- sub('dataone-exception-description: ', '', tmp)
+  cat(sprintf('Exception name: %s', exc_name), "\n")
+  cat(sprintf('Exception detail code: %s', detailcode), "\n")
+  cat(sprintf('Exception description: %s', mssg), "\n")
+  #  list(exc_name=exc_name, detailcode=detailcode, message=mssg)
+}
+
+#' Extract an error message from an http response. 
+#' @description Http requests can fail
+#' for a variety of reasons, so getErrorDescription first tries to
+#' determine what type of response was sent. 
+#' @details
+#' The return types handled by this function are:
+#'   o An incorrect url is sent to DataONE and an error is returned by
+#'     the web server, not a specified DataONE service url. In this case,
+#'     a generic error message may be returned, e.g. status=404, URL not found
+#'   o A DataONE service was called, and returned an error message. In this
+#'     case the DataONE response is parsed in an attempt to retrieve a
+#'     meaningful error message.
+#'
+#' @param response The httr response object to extract the error description from. 
+getErrorDescription <- function(response) {
+  # Return NA if no error message found
+  errorMsg <- as.character(NA)
+  charset <- "utf-8"
+  if("content-type" %in% names(response$headers)) {
+      media <- parse_media(response$headers[['content-type']])
+      if("params" %in% names(media) && "charset" %in% names(media$params)) {
+        charset <- media$params$charset
+      }
+  }
+  
+  responseContent <- content(response, as="text", encoding=charset)
+  # DataONE services return XML
+  if (grepl("text/xml", headers(response)[['content-type']], fixed=TRUE)) {
+     msgNode <- getNodeSet(xmlParse(responseContent), "/error/description")
+     if (length(msgNode) > 0) {
+       errorMsg <- xmlValue(msgNode[[1]])
+     } else {
+       # Don't know how to get error, so return generic error
+       errorMsg <- http_status(response)$message
+     }
+  } else if (grepl("text/html", headers(response)[['content-type']], fixed=TRUE)) {
+    # To complex to try to get an error message from HTML, so
+    # just get info from the response object. This will be a
+    # generic message, so not as informative as specific msg from DataONE
+    errorMsg <- http_status(response)$message
+  }
+  
+  return(errorMsg)
+}
+
+#' Encode the input for Solr Queries
+#' @description Treating all special characters and spaces as literals, backslash escape special
+#' characters, and double-quote if necessary.
+#' @param x : a string to encode
+#' @param ... (not yet used.)
+#' @return the encoded form of the input
+#' @examples encodeSolr("this & that")
+#' @export
+setGeneric("encodeSolr", function(x, ... ) {
+    standardGeneric("encodeSolr")
+})
+
+#' @rdname encodeSolr
+#' @export
+setMethod("encodeSolr", signature(x="character"), function(x, ...) {
+    inter <- gsub("([-+:?*~&^!|\"\\(\\)\\{\\}\\[\\]])","\\\\\\1",x, perl=TRUE) 
+    if (grepl(" ",inter)) {
+        return(paste0("\"",inter,"\""))
+    }
+    return(inter)
+})
+
+#' Search DataONE for data and metadata objects
+#' @description The DataONE search index is searched for data that matches the specified query parameters. 
+#' @details The \code{"query"} method sends a query to a DataONE search index that uses the Apache Solr search 
+#' engine \url{https://solr.apache.org/}. This same Solr search engine is the underlying mechanism used by the
+#' DataONE online search tool available at \url{https://search.dataone.org/}.
+#' 
+#' The \code{"solrQuery"} argument is used to specify search terms that data of interest must match. This parameter uses
+#' Solr query terms, so some familiarity with Solr is helpful, however, fairly simple queries can be effective. This
+#' argument can be created as either a single character string containing the Solr query, for example: \code{solrQuery = "q=id:doi*&rows=2&wt=json"},
+#' or as a list of key value pairs: \code{solrQuery = list(q = "id:doi*", rows = "2", wt = "json")}. These two queries produce the same result.
+#' 
+#' As an alternative to specifying the Solr query terms using the \code{"solrquery"} argument, the \code{"searchTerms"} argument
+#' can be specified, which does not require any Solr syntax. This parameter is a list with query field / value pairs, i.e. 
+#' \code{searchTerms=list(abstract=kelp, attribute=biomass)}.
+#' The query fields can be listed for a DataONE node using \code{\link{getQueryEngineDescription}}.
+#' Either \code{"searchTerms"} or \code{"solrQuery"} must be specified.
+#' 
+#' The \code{"as"} argument is used to specify the query result to be returned as: "json", xml", "list", "data.frame".
+#' 
+#' The \code{"parsed"} argument, if specified as TRUE, causes the query result to be converted to appropriate R data types.
+#' For example, if \code{ar = "xml"} and \code{parsed = TRUE}, then the query result is returned as an R XMLInternalDocument, or 
+#' If \code{'parsed = FALSE'} then a character variable with the XML string is returned. Specify \code{as = "list"} to have 
+#' the result parsed to an R list, with each list element containing one Solr query result of the total result set.
+#' @param x The CNode or MNode instance to send the query to.
+#' @param ... (Not yet used.)
+#' @return search results as a list, data.frame or XML document
+#' @rdname query
+#' @aliases query
+## Need plyr for rbind.fill in query()
+#' @import plyr
+#' @examples \dontrun{
+#' library(dataone)
+#' cn <- CNode("PROD")
+#' queryParams <- list(q="id:doi*", rows="5", 
+#'     fq="(abstract:chlorophyll AND dateUploaded:[2000-01-01T00:00:00Z TO NOW])", 
+#'     fl="title,id,abstract,size,dateUploaded,attributeName")
+#' # Return result as a list.
+#' result <- query(cn, queryParams, as="list")
+#' 
+#' # Query and return the result as a data.frame of character values.
+#' queryParams <- list(q="id:doi*", rows="3", 
+#'     fq="(abstract:chlorophyll AND dateUploaded:[2000-01-01T00:00:00Z TO NOW])", 
+#'     fl="title,id,abstract,size,dateUploaded,attributeName")
+#' result <- query(cn, queryParams, as="data.frame", parse=FALSE)
+#' 
+#' # Return the result as JSON
+#' queryParams <- "q=id:doi*&rows=2&wt=json"
+#' result <- query(cn, queryParams, as="json")
+#' 
+#' # The following query shows how to embed quotes
+#' cn <- CNode("SANDBOX2")
+#' queryParamList <- list(q="(attribute:lake) and (attribute:\"Percent Nitrogen\")", rows="1000",
+#'                        fl="title,id,abstract,size,dateUploaded,attributeName", wt="xml")
+#' result <- query(cn, queryParamList, as="data.frame")
+#' 
+#' # The following query uses the searchTerms parameter
+#' cn <- CNode()
+#' mn <- getMNode(cn, "urn:node:KNB")
+#' mySearchTerms <- list(abstract="kelp", attribute="biomass")
+#' result <- query(mn, searchTerms=mySearchTerms, as="data.frame")
+#' }
+#' @export
+setGeneric("query", function(x, ...) {
+  standardGeneric("query")
+})
+
+#' @rdname query
+#' @param solrQuery The query search terms, either as a string or as list with named members.
+#' @param encode A logical, if \code{TRUE} then the query is URL encoded. The default is \code{TRUE}.
+#' @param as The return type. Possible values: "json", "xml", "list" or "data.frame" with "list" as the default.
+#' @param parse A logical value. If TRUE, then the result is parsed and converted to appropriate R data types. If FALSE, character values are returned.
+#' @param searchTerms A list of name / value pairs (an alternative to \code{solrQuery}). 
+#' @param encodeReserved A logical, if TRUE then reserved characters in the query are URL encoded (FALSE is default). See \code{URLencode} for details.
+#' @export
+setMethod("query", signature("D1Node"), function(x, solrQuery=as.character(NA), encode=TRUE, as="list", parse=TRUE, 
+                                                 searchTerms=as.character(NA), 
+                                                 encodeReserved=FALSE, ...) {
+  
+  returnTypes <- c("json", "xml", "list", "data.frame")
+  if (!is.element(as, returnTypes)) {
+    stop(sprintf("Invalid return type: \"%s\". Please specify one of \"%s\"", as, paste(returnTypes, collapse=",")))
+  }
+  
+  if( all(is.na(solrQuery)) && all(is.na(searchTerms)) ) {
+    stop(sprintf("Please specify either \"solrQuery\" or \"searchTerms\" parameters"))
+  }
+  
+  if(!all(is.na(solrQuery)) && !all(is.na(searchTerms)) ) {
+    stop(sprintf("Please specify either \"solrQuery\" or \"searchTerms\" parameters, not both"))
+  }
+  
+  # The CN API has a slightly different format for the solr query engine than the MN API,
+  # so the appropriate URL is set in the CNode or MNode class.
+  serviceUrl <- x@serviceUrls[x@serviceUrls$service=="query.solr", "Url"]
+  
+  if (!all(is.na(solrQuery))) {
+    # The 'solrQuery' parameter can be specified as either a character string or a named list
+    if (is(solrQuery, "list")) {
+      encodedKVs <- character()
+      for(key in attributes(solrQuery)$names) {
+        # Convert query terms to character if not already
+        if(!inherits(solrQuery[[key]], "character")) {
+            solrQuery[[key]] <- as.character(solrQuery[[key]])
+        }
+        if (encode) {
+          kv <- paste0(key, "=", URLencode(solrQuery[[key]], reserved=encodeReserved))
+        } else {
+          kv <- paste0(key, "=", solrQuery[[key]])
+        }
+        encodedKVs[length(encodedKVs)+1] <- kv
+      }
+      queryParams <- paste(encodedKVs,collapse="&")
+    } else {
+      if (encode) {
+        queryParams <- URLencode(solrQuery, reserved=encodeReserved)
+      } else {
+        queryParams <- solrQuery
+      }
+    }
+  } else {
+    # Process 'searchTerms'
+    encodedKVs <- character()
+    for(key in attributes(searchTerms)$names) {
+      value <- sprintf('"%s"', searchTerms[[key]])
+      if (encode) {
+        kv <- sprintf("&fq=%s:%s", URLencode(key, reserved=encodeReserved), URLencode(value, reserved=encodeReserved))
+      } else {
+        kv <- sprintf("&fq=%s:%s", key, value) 
+      }
+      encodedKVs[length(encodedKVs)+1] <- kv
+    }
+    queryParams <- sprintf("q=id:*%s", paste(encodedKVs,collapse=""))
+  }
+    
+  queryUrl <- paste(serviceUrl, queryParams, sep="")
+
+  response <- NULL
+  # Send the query to the Node
+  tryCatch({
+    response <- auth_get(queryUrl, node=x)
+  }, error = function(err) {
+      msg <- sprintf("Error accessing %s: %s\n", queryUrl, conditionMessage(err))
+      message(msg)
+  })
+  
+  if(is.null(response)) return(NULL)
+  
+  if(response$status_code != "200") {
+    message(sprintf("Error accessing %s: %s\n", queryUrl, getErrorDescription(response)))
+    return(NULL)
+  }
+  
+  # The CNs return the response content as binary regardless of Solr response writer specified or http request header
+  # "Accept" type specified, so check the response and parse it to parsed XML, if necessary.
+  if (is.raw(response$content)) {
+    tmpres <- content(response, as="raw")
+    resultText <- rawToChar(tmpres)
+  } else {
+    resultText <- content(response, as="text")
+  }
+  
+  # Return result as unparsed XML text returned from Solr
+  if (as == "xml") {
+    if (parse) {
+      # Return as XML tree structure
+      res <- xmlInternalTreeParse(resultText, asText=TRUE)
+    } else {
+      res <- resultText
+    }
+  } else if (as == "json") {
+    # if json return type, only unparsed text is supported
+    res <- resultText
+  } else if (as == "list") {
+    # Return as a list, with data in each column returned as the appropriate R data type
+    xmlDoc <- xmlInternalTreeParse(resultText, asText=TRUE)
+    res <- parseSolrResult(xmlDoc, parse)
+  } else if (as == "data.frame") {
+    # Return as a data frame, all values represented as strings
+    xmlDoc <- xmlInternalTreeParse(resultText, asText=TRUE)
+    # First get a result as a list, then convert the list to a data frame
+    res <- parseSolrResult(xmlDoc, parse)
+    dfAll <- data.frame()
+    if (length(res) > 0) {
+        # Simplify each result and cast to a data.frame, returning a list of
+        # data.frames that will be combined by rbind.fill
+        simplified <- lapply(res, function(r) {
+            # Simplify multi-valued fields into space-separated character vectors
+            for (n in names(r)) {
+                if(typeof(r[[n]]) == "list") {
+                   # Get R type from result set
+                   c1 <- class(r[[n]][[1]])
+                   # flatten list, then reassign R type, as unlist removes attributes
+                   u1 <- unlist(r[[n]])
+                   # Reassign type to values
+                   class(u1) <- c1
+                   # Wrap value vector in a list so as.data.frame to appease as.data.frame, other
+                   # will get error "arguments imply differing number of rows: 1, 2, 3 "
+                   r[[n]] <- I(list(u1))
+                }
+            }
+          
+            as.data.frame(r, stringsAsFactors = FALSE)
+        })
+        
+        # rbind.file combines a list of data.frames into one
+        dfAll <- do.call(rbind.fill, simplified)
+    }
+    res <- dfAll
+  }
+  
+  return(res)
+})
+
+#' Parse Solr output into an R list
+#' @description Solr output that is specified with a writer type of XML \code{'&wt="xml"'}
+#' @param doc The Solr result to parse, in XML format
+#' @param parse A logical value, if TRUE the result is parsed to appropriate R types.
+#' @param ... (Not yet used.)
+#' @return resultList The Solr result as an R list
+#' @rdname parseSolrResult
+#' @aliases parseSolrResult
+#' @export
+setGeneric("parseSolrResult", function(doc, ...) {
+  standardGeneric("parseSolrResult")
+})
+
+#' @rdname parseSolrResult
+#' @export
+setMethod("parseSolrResult", signature("XMLInternalDocument"), function(doc, parse, ...) {
+  resultList <- xpathApply(doc, "/response/result/doc", parseResultDoc, parse)
+  return (resultList)
+  
+})
+
+## Internal functions
+
+# Parse a Solr result "<doc>" XML element inta an R list
+parseResultDoc <- function(xNode, parse) {
+  childNodes <- getNodeSet(xNode, "*")
+  thisDocList <- list()
+  for (child in childNodes) {
+    thisDocList <- parseResultNode(child, thisDocList, parse)
+  }
+  return(thisDocList)
+}
+
+# Parse a Solr result field
+parseResultNode <- function(xNode, resultList, parse) {
+  nodeName <- xmlName(xNode)
+  # parse a Solr result "arr" (arrary) into an R list
+  if (nodeName == "arr") {
+    childNodes <- getNodeSet(xNode, "*")
+    # If we are not parseing Solr results to R types, then return this
+    # list as a comma separated list of values
+    if (parse) {
+      resultList[[xmlGetAttr(xNode, "name")]] <- lapply(childNodes, parseSolrField, parse)
+    } else {
+      resultList[[xmlGetAttr(xNode, "name")]] <- paste(lapply(childNodes, parseSolrField, parse), collapse=",")
+    }
+    #xmlVals <- xpathApply(xNode, "*", parseResultNode, resultList=resultList)
+  } else {
+    # parse a Solr result atomic value into an R variable
+    resultList[[xmlGetAttr(xNode, "name")]] <- parseSolrField(xNode, parse)
+    # cat(sprintf("name: %s, value %d\n", valueType, nodeValue))
+  }
+  return(resultList)
+}
+
+# parse a Solr result field into an R variable
+parseSolrField <- function(xNode, parse) {
+  nodeName <- xmlName(xNode)
+  if (parse) {
+    if (nodeName == "arr") {
+      warning(sprintf("Unable to process solr 'arr' field"))
+      return(as.character(NULL))
+    } else if (nodeName == "long" || nodeName == "float") {
+      return(as.numeric(xmlValue(xNode)))
+    } else if (nodeName == "str") {
+      return(as.character(xmlValue(xNode)))
+    } else if (nodeName == "bool") {
+      return(as.logical(xmlValue(xNode)))
+    } else if (nodeName == "int") {
+      return(as.numeric(xmlValue(xNode)))
+    } else if (nodeName == "date") {
+      return(as.POSIXct(xmlValue(xNode), tz="UTC", format="%Y-%m-%dT%H:%M:%S"))
+    } else {
+      warning(sprintf("Unhandled Solr field data type: %s\n", nodeName))
+    }
+  } else {
+    return(xmlValue(xNode))
+  }
+}
+
+#' Check if an action is authorized for the specified identifier
+#' @description Test if the user identified by the provided token has 
+#' authorization for operation on the specified object.
+#' @details The identifier parameter may be either a DataONE persistent identifier (pid)
+#' or series identifier (sid).
+#' @rdname isAuthorized
+#' @aliases isAuthorized
+#' @param x The node to send the request to. This is either a \code{"CNode"} or \code{"MNode"} instance.
+#' @param ... (Not yet used)
+#' @return a logical, TRUE if the action is authorized, false if not.
+#' @seealso \code{\link[=CNode-class]{CNode}}{ class description.}
+#' @export
+#' @examples \dontrun{
+#' # Send an authorization check to the D1 production CN.
+#' cn <- CNode("PROD")
+#' pid <- "doi:10.6073/pasta/7fcb8fea57843fae65f63094472f502d"
+#' canRead <- isAuthorized(cn, pid, "read")
+#' canWrite <- isAuthorized(cn, pid, "write")
+#' canChange <- isAuthorized(cn, pid, "changePermission")
+#' 
+#' # Now send a check to a member node.
+#' mn <- getMNode(cn, "urn:node:KNB")
+#' pid <- "doi:10.6085/AA/pisco_recruitment.149.1"
+#' canRead <- isAuthorized(mn, pid, "read")
+#' canWrite <- isAuthorized(mn, pid, "write")
+#' canChange <- isAuthorized(mn, pid, "changePermission")
+#' }
+setGeneric("isAuthorized", function(x, ...) {
+    standardGeneric("isAuthorized")
+})
+
+#' @rdname isAuthorized
+#' @param id The DataONE identifier (pid or sid) to check access for.
+#' @param action The DataONE action to check, possible values: "read", "write", "changePermission"
+#' @export
+setMethod("isAuthorized", signature("D1Node"), function(x, id, action) {
+    url <- sprintf("%s/isAuthorized/%s?action=%s", x@endpoint,URLencode(id, reserved=T),action)
+    response <- auth_get(url, node=x)
+    # Status = 200 means that the action is authorized for the id.
+    # Status = 401 means that the subject is not authorized for the action, not an error.
+    if(response$status_code == "401") {
+        return(FALSE)
+    } else if (response$status_code != "200") {
+        warning(sprintf("Error checking authorized for action \"%s\" on id:\" %s\": %s", action, id, getErrorDescription(response)))
+        return(FALSE)
+    } else {
+        return(TRUE)
+    }
+})
