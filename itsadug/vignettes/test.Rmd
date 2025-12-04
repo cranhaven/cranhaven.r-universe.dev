@@ -1,0 +1,216 @@
+---
+title: "Testing for significance"
+author: "Jacolien van Rij"
+date: "15 March 2016"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Testing for significance}
+  %\VignetteEngine{knitr::rmarkdown}
+  \usepackage[utf8]{inputenc}
+---
+
+<style>
+pre{
+  padding:10pt 10pt;
+  margin: 10pt 50pt;
+}
+td{
+  padding:5pt;
+}
+table{
+  border:0pt;
+}
+</style>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(itsadug)
+infoMessages('off')
+```
+
+Generally, there are three methods to test whether a certain predictor or interaction is significantly contributing to the model's account of the data:
+
+1. Model comparison procedure
+
+2. Inspection of the summary
+
+3. Visual inspection of the model's estimates
+
+
+## Example
+<div class="example">
+Loading the data:
+
+```{r}
+library(itsadug)
+library(mgcv)
+data(simdat)
+# select subset of data to reduce processing time:
+select <- 1:18
+select <- select[select %% 3 ==0]
+simdat <- droplevels(simdat[simdat$Subject %in% c(sprintf("a%02d",select), sprintf("c%02d", select)),])
+```
+
+```{r}
+# add start.event and Event columns:
+simdat <- start_event(simdat, column="Time", event=c("Subject", "Trial"), label.event="Event")
+```
+
+#### Starting model
+
+For this simulated data set, we would like to investigate whether children and adults react differently on `Condition` (for example, stimulus onset asynchrony, or frequency or some other continuous measure) on the measurement `Y`. 
+
+If we would like to employ a backward-fitting model comparison procedure we could start with a model like this:
+
+```{r}
+m1 <- bam(Y ~ Group + s(Time, by=Group) + s(Condition, by=Group, k=5) + ti(Time, Condition, by=Group) + s(Time, Subject, bs='fs', m=1, k=5) + s(Event, bs='re'), data=simdat, discrete=TRUE, method="fREML")
+```
+
+**Note** that to keep the model simple for illustration purposes / time reasons, we left out other effects, such as `Trial`, and random smooths over `Event`. instead, we account for autocorrelation in the residuals due to the underfit of the model by including an AR1 model. See `vignette("acf", package"itsadug")` for more information.
+
+```{r}
+r1 <- start_value_rho(m1)
+m1Rho <- bam(Y ~ Group + s(Time, by=Group) + s(Condition, by=Group, k=5) + ti(Time, Condition, by=Group) + s(Time, Subject, bs='fs', m=1, k=5) + s(Event, bs='re'), data=simdat, method="fREML", AR.start=simdat$start.event, rho=r1)
+```
+
+
+## 1. Model comparison
+
+To test whether the three-way interaction between `Time`, `Condition` and `Group` is significant, we can compare the model with a model that does not include this three-way interaction:
+
+```{r}
+m2Rho <- bam(Y ~ Group + s(Time, by=Group) + s(Condition, by=Group, k=5) + ti(Time, Condition) + s(Time, Subject, bs='fs', m=1, k=5) + s(Event, bs='re'), data=simdat, method="fREML", AR.start=simdat$start.event, rho=r1)
+```
+
+
+#### Function `compareML`
+
+The function `compareML` compares two models on the basis of the minimized smoothing parameter selection score specified in the model, and performes a $\chi^2$ test on the difference in scores and the difference in degrees of freedom.
+
+```{r}
+# make sure that info messages are printed to the screen:
+infoMessages('on')
+compareML(m1Rho, m2Rho)
+```
+```{r, include=FALSE}
+infoMessages('off')
+```
+
+The following conclusions can be derived from the output:
+
+- Model `m1Rho` has a lower fREML score (lower indicates better fit).
+
+- But model `m1Rho` is also more complex: it uses more degrees of freedom (`Edf`).
+
+**Note** that `Edf` in the model comparison are different from the `edf` that are presented in the model summary. The first are reflecting the complexity of the model (number of model terms, complexity of model terms), and the second are reflecting the complexity of the smooth or surface pattern (i.e., number of knots or underlying base functions used).
+
+- Model `m1Rho` is preferred, because the difference in fREML is significant given the difference in degrees of freedom: $\chi^2$(3)=21.836, p < .001. 
+
+
+#### Some notes on model comparison
+
+Model comparison procedure provides an indication for the best fitting model, but can rarely used on it's own for determining significance.
+
+- For testing the difference in fixed effects predictors the method fREML does not provide the most reliable test. Rather use ML. However, ML takes longer to run (that is why it is not included here), and penalizes wigglyness more.
+
+- An alternative test is AIC, but when an AR1 model is included, AIC does not provide a reliable test. (Like here!)
+
+```{r}
+AIC(m1Rho, m2Rho)
+```
+
+
+## 2. Inspection of the model summary
+
+Beside model comparison the model summary (e.g., `summary(m1Rho)`)  could provide useful information on whether or not a model term is significantly contributing to the model.
+
+To include the summary in a R markdown or knitr report use the function `gamtabs`:
+
+```{r, results="asis"}
+gamtabs(m1Rho, type="HTML")
+```
+
+The summary provides the following information:
+
+- There is an overall difference in Y for children and adults (parametric terms)
+
+- The F values / p-values of the 'fixed' effects smooth terms indicate that all these smooth terms are significantly different from 0, so each line or surface is significantly wiggly. 
+
+- However, we can **NOT** conclude that the lines or surfaces are different from each other. This is only possible when we would use *difference* smooths or tensors, with *ordered factors* or binomial predictors. See below for an example.
+
+- For the random effects the statistics indicates whether or not these terms contribute to the model (`s(Event)`) or not (`s(Time,Subject)`).
+
+
+#### Using ordered factors (advanced)
+
+It is possible to change the contrasts for grouping predictors in `mgcv` so that the smooth terms represent *differences* with the reference level, similar to the treatment coding used in `lmer` or in the summary of parametric terms in GAMMs. The trick is to first convert the factors to *ordered factors* so that `gam()` and `bam()` won't use the default contrast coding.
+
+
+Here's an example:
+
+```{r}
+simdat$OFGroup <- as.ordered(simdat$Group) 
+contrasts(simdat$OFGroup) <- "contr.treatment"
+contrasts(simdat$OFGroup)
+```
+
+**Note** that in the case of using *ordered factors* we need to include the reference curves or surfaces as well. 
+
+```{r}
+m1Rho.OF <- bam(Y ~ OFGroup + s(Time) + s(Time, by=OFGroup) + s(Condition, k=5) + s(Condition, by=OFGroup, k=5) + ti(Time, Condition) + ti(Time, Condition, by=OFGroup) + s(Time, Subject, bs='fs', m=1, k=5) + s(Event, bs='re'), data=simdat, method="fREML", AR.start=simdat$start.event, rho=r1)
+```
+
+With the ordered factors suddenly the lines `s(Time):OFGroupAdults` and similar lines represent the *difference* between the adults and the reference group, the children. When the smooth term is significant, the difference smooth is is significantly different from zero. So that means that the two groups are different from each other: 
+
+```{r, results="asis"}
+gamtabs(m1Rho.OF, type="HTML")
+```
+
+In summary, with continuous predictors or ordered factors we can use the summary startistics to determine the difference of smooth terms.
+
+The function `report_stats` describes how one could report the smooth terms in the text of an article:
+
+```{r}
+report_stats(m1Rho.OF)
+```
+
+
+## 3. Visual inspection of the model's estimates
+
+#### Function `plot_diff`
+
+The function `plot_diff` allows to plot the (1 dimensional) estimated difference between two conditions. The argument `rm.ranef=TRUE` indicates that random effects should be excluded first, and the argument `cond` can be used to specify values for other predictors.
+
+The plots below visualize the difference between adults and children. 
+
+```{r, fig.width=8, fig.height=4}
+par(mfrow=c(1,2))
+
+# PLOT 1:
+plot_diff(m1Rho, view="Time", comp=list(Group=c("Adults", "Children")), cond=list(Condition=1), rm.ranef=TRUE, ylim=c(-15,15))
+plot_diff(m1Rho, view="Time", comp=list(Group=c("Adults", "Children")),  cond=list(Condition=4), add=TRUE, col='red')
+# add legend:
+legend('bottom', legend=c("Condition=1", "Condition=4"), col=c(1,2), lwd=1, cex=.75, bty='n')
+
+# PLOT 2:
+plot_diff(m1Rho, view="Condition", comp=list(Group=c("Adults", "Children")), cond=list(Time=1000), rm.ranef=TRUE, ylim=c(-15,15))
+plot_diff(m1Rho, view="Condition", comp=list(Group=c("Adults", "Children")),  cond=list(Time=2000), add=TRUE, col='red')
+# add legend:
+legend('bottom', legend=c("Time=1000", "Time=2000"), col=c(1,2), lwd=1, cex=.75, bty='n')
+```
+
+
+#### Function `plot_diff2`
+
+The function `plot_diff` allows to plot the (2 dimensional) estimated difference between two conditions. The argument `rm.ranef=TRUE` indicates that random effects should be excluded first, and the argument `cond` can be used to specify values for other predictors.
+
+The plots below visualize the difference between adults and children. 
+
+```{r, fig.width=8, fig.height=4}
+par(mfrow=c(1,2), cex=1.1)
+plot_diff2(m1Rho, view=c("Time", "Condition"), comp=list(Group=c("Adults", "Children")), zlim=c(-15,15), se=0, rm.ranef=TRUE)
+
+# with CI:
+plot_diff2(m1Rho, view=c("Time", "Condition"), comp=list(Group=c("Adults", "Children")), zlim=c(-15,15), se=1.96, rm.ranef=TRUE, show.diff = TRUE)
+```
+
