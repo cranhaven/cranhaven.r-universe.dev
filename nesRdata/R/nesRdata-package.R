@@ -1,0 +1,52 @@
+#' National Eutrophication Survey Data
+#'
+#' A dataset containing hydrologic and water quality data for approximately 800
+#' lakes in the continental United States.
+#'
+#' \tabular{ccc}{
+#' variable name \tab description              \tab units \cr
+#'   pdf \tab  pdf identifier (474 - 477) \tab  integer \cr
+#'   pagenum \tab  page number of the pdf (not the report page number) \tab  integer \cr
+#'   storet_code     \tab  identifier which links measurement to coordinate locations\tab character \cr
+#'   state                \tab  state where the water body resides \tab character \cr
+#'   name               \tab  name of the water body\tab character \cr
+#'   county              \tab  county where the water body resides \tab character \cr
+#'   lake_type         \tab  natural or impoundment \tab character \cr
+#'   drainage_area \tab  the total drainage area \tab  square kilometers \cr
+#'   surface_area   \tab  the area of the water surface\tab sq km \cr
+#'   mean_depth    \tab  the volume of the water body divided by the surface area in square meters\tab  meters \cr
+#'   total_inflow      \tab  the mean of the inflows of all tributaries and the immediate drainage \tab  cubic meters per second \cr
+#'   retention_time \tab  a mean value determined by dividing the lake volume, in cubic meters, by the mean annual outflow in cubic meters per unit of time in years or days \cr
+#'   retention_time_units \tab  the units of time for each retention entry\tab years or days \cr
+#'   alkalinity \tab  alkalinity\tab milligrams per liter \cr
+#'   conductivity \tab  conductivity\tab microohms \cr
+#'   secchi \tab  secchi\tab meters \cr
+#'   tp \tab  total phosphorus\tab  milligrams per liter \cr
+#'   po4 \tab  orthophosphate\tab  milligrams per liter \cr
+#'   tin \tab  total inorganic nitrogen\tab  milligrams per liter \cr
+#'   tn \tab  total nitrogen\tab  milligrams per liter \cr
+#'   p_pnt_source_muni \tab  municipal point source phosphorus loading\tab  kilograms per year \cr
+#'   p_pnt_source_industrial \tab  industrial point source phosphorus loading\tab  kilograms per year \cr
+#'   p_pnt_source_septic \tab  septic point source phosphorus loading\tab  kilograms per year \cr
+#'   p_nonpnt_source \tab  nonpoint source phosphorus loading\tab  kilograms per year \cr
+#'   p_total \tab  total phosphorus loading\tab  kilograms per year \cr
+#'   n_pnt_source_muni \tab  municipal point source nitrogen loading\tab  kilograms per year \cr
+#'   n_pnt_source_industrial \tab  industrial point source nitrogen loading\tab  kilograms per year \cr
+#'   n_pnt_source_septic \tab  septic point source nitrogen loading\tab  kilograms per year \cr
+#'   n_nonpnt_source \tab  nonpoint source nitrogen loading\tab  kilograms per year \cr
+#'   n_total \tab  total nitrogen loading\tab  kilograms per year \cr
+#'   p_total_out \tab  total phosphorus outlet load\tab  kilograms per year \cr
+#'   p_percent_retention \tab  percent phosphorus retention\tab  percent \cr
+#'   p_surface_area_loading \tab  phosphorus surface area loading\tab  grams per square meter per year \cr
+#'   n_total_out \tab  total nitrogen outlet load\tab  kilograms per year \cr
+#'   n_percent_retention \tab  percent nitrogen retention\tab percent \cr
+#'   n_surface_area_loading \tab  nitrogen surface area loading\tab  grams per square meter per year \cr
+#'   lat \tab  latitude\tab decimal degrees \cr
+#'   long \tab  longitude\tab decimal degrees
+#' }
+#'
+#' @aliases nes
+#' @examples
+#' data(nes)
+#' head(nes)
+"nes"
