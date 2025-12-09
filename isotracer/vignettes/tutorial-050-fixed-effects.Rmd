@@ -1,0 +1,473 @@
+---
+title: "Including fixed effects of covariates"
+date: "2025-03-07"
+vignette: >
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+  %\VignetteIndexEntry{Including fixed effects of covariates}
+output:
+  rmarkdown::html_vignette
+---
+
+
+
+
+
+In the tutorial about [how to handle replication units](tutorial-020-replication.html), we learned how to incorporate replicates in a network model. However, the parameter values estimated by the model were shared across all replicates.
+
+In this tutorial, we'll learn how we can use replicates to estimate the fixed effect of some covariates on the model parameters when the covariates vary across replicates.
+
+We will use a simulated dataset quite similar to the one from the [replication tutorial](tutorial-020-replication.html). The modelled foodweb has three compartments:
+
+- dissolved ammonium NH$_4^+$ (`NH4`), which is enriched in $^{15}$N at the
+  beginning of the experiment
+- planctonic algae which incorporate NH$_4^+$
+- *Daphnia* which graze on algae and excrete ammonium into the water.
+
+The experiment is done in two aquariums as before, but this time one aquarium is exposed to light while the other is kept in the dark. How does this treatment affect nitrogen flow? Note that in a real life experiment, we would need more than one replicate per level of the light treatment (otherwise we could not differentiate between treatment effect and replicate effect) - the example in this tutorial is kept excessively simple to focus on the package interface to specify fixed effects.
+
+
+``` r
+library(isotracer)
+library(tidyverse)
+```
+
+
+## Data preparation
+
+The simulated data we use in this example can be loaded into your R session by running the code below:
+
+
+``` r
+exp <- tibble::tribble(
+  ~time.day,  ~species, ~biomass, ~prop15N, ~treatment,
+          0,     "NH4",    0.205,    0.739,    "light",
+          2,     "NH4",    0.232,    0.403,    "light",
+          4,     "NH4",       NA,    0.199,    "light",
+          6,     "NH4",       NA,    0.136,    "light",
+          8,     "NH4",    0.306,       NA,    "light",
+         10,     "NH4",    0.323,   0.0506,    "light",
+          0,   "algae",    0.869,  0.00305,    "light",
+          2,   "algae",       NA,   0.0875,    "light",
+          4,   "algae",     0.83,    0.131,    "light",
+          6,   "algae",    0.706,       NA,    "light",
+         10,   "algae",    0.666,   0.0991,    "light",
+          0, "daphnia",     2.13,  0.00415,    "light",
+          2, "daphnia",     1.99,       NA,    "light",
+          4, "daphnia",     1.97,   0.0122,    "light",
+          6, "daphnia",       NA,   0.0284,    "light",
+          8, "daphnia",       NA,   0.0439,    "light",
+         10, "daphnia",      1.9,   0.0368,    "light",
+          0,     "NH4",    0.474,     0.98,     "dark",
+          2,     "NH4",    0.455,     0.67,     "dark",
+          4,     "NH4",    0.595,    0.405,     "dark",
+          6,     "NH4",       NA,    0.422,     "dark",
+         10,     "NH4",    0.682,    0.252,     "dark",
+          0,   "algae",     1.06,  0.00455,     "dark",
+          2,   "algae",        1,   0.0637,     "dark",
+          4,   "algae",    0.862,   0.0964,     "dark",
+          6,   "algae",       NA,    0.222,     "dark",
+          8,   "algae",       NA,    0.171,     "dark",
+         10,   "algae",    0.705,    0.182,     "dark",
+          0, "daphnia",     1.19,  0.00315,     "dark",
+          4, "daphnia",     1.73,   0.0204,     "dark",
+          6, "daphnia",     1.75,       NA,     "dark",
+          8, "daphnia",     1.54,   0.0598,     "dark",
+         10, "daphnia",     1.65,   0.0824,     "dark"
+  )
+```
+
+As shown in the dataset, the first aquarium is exposed to light and the second one is kept in the dark. We trace the nitrogen fluxes by adding $^{15}$N-enriched ammonium at the beginning of the experiment. Let's visualize the data:
+
+
+``` r
+library(ggplot2)
+library(gridExtra)
+p1 <- ggplot(exp, aes(x = time.day, y = biomass, col = species)) +
+    geom_point() + ggtitle("Biomass data") + ylab("Biomass (mg N)") +
+    facet_wrap(~ treatment)
+p2 <- ggplot(exp, aes(x = time.day, y = prop15N, col = species)) +
+    geom_point() + ggtitle("Heavy isotope proportions") + ylab("Proportion of 15N")  +
+    facet_wrap(~ treatment)
+grid.arrange(p1, p2, nrow = 2)
+```
+
+<img src="figures/z-fig-050-unnamed-chunk-5-1.jpeg" style="display: block; margin: auto;" />
+
+## Building the model
+
+We separate the initial conditions and the observations:
+
+
+``` r
+inits <- exp %>% filter(time.day == 0)
+obs <- exp %>% filter(time.day > 0)
+```
+
+We build the network model, using `treatment` as a grouping variable:
+
+
+``` r
+m <- new_networkModel() %>%
+  set_topo("NH4 -> algae -> daphnia -> NH4") %>%
+  set_init(inits, comp = "species", size = "biomass", prop = "prop15N",
+           group_by = "treatment") %>%
+  set_obs(obs, time = "time.day")
+m
+```
+
+```
+## # A tibble: 2 × 5
+##   topology           initial          observations      parameters       group    
+##   <list>             <list>           <list>            <list>           <list>   
+## 1 <topology [3 × 3]> <tibble [3 × 3]> <tibble [14 × 4]> <tibble [8 × 2]> <chr [1]>
+## 2 <topology [3 × 3]> <tibble [3 × 3]> <tibble [13 × 4]> <tibble [8 × 2]> <chr [1]>
+```
+
+The network model object `m` has two rows, corresponding to the two treatments:
+
+
+``` r
+groups(m)
+```
+
+```
+## # A tibble: 2 × 1
+##   treatment
+##   <chr>    
+## 1 light    
+## 2 dark
+```
+
+If we go on and run the MCMC now, the two treatments will share the same parameter values and will only act as simple replicates, without any covariate effect. We need to specify that the `treatment` grouping variable is to be used as a covariate for some of the parameters estimated by the model.
+
+## Specifying fixed effect covariates
+
+We specify covariates with the `add_covariates()` function and the formula syntax `parameters ~ covariates` where `parameters` is the list of parameters affected by one or several covariates specified in `covariates`.
+
+For example, to tell the model that the nitrogren flux from NH$_4^+$ to algae should depend on the treatment, we type:
+
+
+``` r
+m <- m %>% add_covariates(upsilon_NH4_to_algae ~ treatment)
+```
+
+Let's have a look at the model parameters at this stage:
+
+
+``` r
+params(m)
+```
+
+```
+## # A tibble: 9 × 2
+##   in_model                   value
+##   <chr>                      <dbl>
+## 1 eta                           NA
+## 2 lambda_algae                  NA
+## 3 lambda_daphnia                NA
+## 4 lambda_NH4                    NA
+## 5 upsilon_algae_to_daphnia      NA
+## 6 upsilon_daphnia_to_NH4        NA
+## 7 upsilon_NH4_to_algae|dark     NA
+## 8 upsilon_NH4_to_algae|light    NA
+## 9 zeta                          NA
+```
+
+We can see that there are now two entries for `upsilon_NH4_to_algae`: `upsilon_NH4_to_algae|light` and `upsilon_NH4_to_algae|dark`. All the other parameters are unaffected by the treatment covariate.
+
+We can specify covariate specifications sequentially. For example, we can now tell the model that the nitrogen flux from algae to *Daphnia* also depends on the treatment:
+
+
+``` r
+m <- m %>% add_covariates(upsilon_algae_to_daphnia ~ treatment)
+```
+
+and we can have a detailed look at the current covariate specification by looking at the parameter mapping in each replicate:
+
+
+``` r
+m$parameters
+```
+
+```
+## [[1]]
+## # A tibble: 8 × 2
+##   in_replicate             in_model                      
+##   <chr>                    <chr>                         
+## 1 eta                      eta                           
+## 2 lambda_algae             lambda_algae                  
+## 3 lambda_daphnia           lambda_daphnia                
+## 4 lambda_NH4               lambda_NH4                    
+## 5 upsilon_algae_to_daphnia upsilon_algae_to_daphnia|light
+## 6 upsilon_daphnia_to_NH4   upsilon_daphnia_to_NH4        
+## 7 upsilon_NH4_to_algae     upsilon_NH4_to_algae|light    
+## 8 zeta                     zeta                          
+## 
+## [[2]]
+## # A tibble: 8 × 2
+##   in_replicate             in_model                     
+##   <chr>                    <chr>                        
+## 1 eta                      eta                          
+## 2 lambda_algae             lambda_algae                 
+## 3 lambda_daphnia           lambda_daphnia               
+## 4 lambda_NH4               lambda_NH4                   
+## 5 upsilon_algae_to_daphnia upsilon_algae_to_daphnia|dark
+## 6 upsilon_daphnia_to_NH4   upsilon_daphnia_to_NH4       
+## 7 upsilon_NH4_to_algae     upsilon_NH4_to_algae|dark    
+## 8 zeta                     zeta
+```
+
+Here, we can see that `upsilon_NH4_to_algae` and `upsilon_algae_to_daphnia` within each replicate depend on `light` and `dark`, while all the other parameters are shared across replicates.
+
+The formula syntax in `add_covariates()` is quite versatile and can perform partial matching. For example, if we want **all** the loss rates to depend on the treatment, we can use:
+
+
+``` r
+m <- m %>% add_covariates(lambda ~ treatment)
+```
+
+and all the parameters containing the string `lambda` will be affected in one go:
+
+
+``` r
+m$parameters
+```
+
+```
+## [[1]]
+## # A tibble: 8 × 2
+##   in_replicate             in_model                      
+##   <chr>                    <chr>                         
+## 1 eta                      eta                           
+## 2 lambda_algae             lambda_algae|light            
+## 3 lambda_daphnia           lambda_daphnia|light          
+## 4 lambda_NH4               lambda_NH4|light              
+## 5 upsilon_algae_to_daphnia upsilon_algae_to_daphnia|light
+## 6 upsilon_daphnia_to_NH4   upsilon_daphnia_to_NH4        
+## 7 upsilon_NH4_to_algae     upsilon_NH4_to_algae|light    
+## 8 zeta                     zeta                          
+## 
+## [[2]]
+## # A tibble: 8 × 2
+##   in_replicate             in_model                     
+##   <chr>                    <chr>                        
+## 1 eta                      eta                          
+## 2 lambda_algae             lambda_algae|dark            
+## 3 lambda_daphnia           lambda_daphnia|dark          
+## 4 lambda_NH4               lambda_NH4|dark              
+## 5 upsilon_algae_to_daphnia upsilon_algae_to_daphnia|dark
+## 6 upsilon_daphnia_to_NH4   upsilon_daphnia_to_NH4       
+## 7 upsilon_NH4_to_algae     upsilon_NH4_to_algae|dark    
+## 8 zeta                     zeta
+```
+
+<div class="alert-primary" role="alert">
+
+<b>Note:</b> To avoid partial matching when calling `add_covariates()`, you can use the argument `regexpr = FALSE`.
+
+</div>
+
+To affect all parameters, one can use `.` on the left-hand side of the formula:
+
+
+``` r
+m <- m %>% add_covariates(. ~ treatment)
+```
+
+Finally, to specify that a parameter does not depend on any covariate and is shared across replicates, one can use `1` on the right-hand side of the formula:
+
+
+``` r
+m <- m %>% add_covariates(zeta ~ 1)
+```
+
+which means that we can remove all fixed effects for all parameters with:
+
+
+``` r
+m <- m %>% add_covariates(. ~ 1)
+```
+
+For this tutorial, let's assume that all nitrogen fluxes across compartments can depend on the light treatment. The parameters corresponding to those fluxes are the ones starting with `upsilon`:
+
+
+``` r
+m <- m %>% add_covariates(upsilon ~ treatment)
+params(m)
+```
+
+```
+## # A tibble: 11 × 2
+##    in_model                       value
+##    <chr>                          <dbl>
+##  1 eta                               NA
+##  2 lambda_algae                      NA
+##  3 lambda_daphnia                    NA
+##  4 lambda_NH4                        NA
+##  5 upsilon_algae_to_daphnia|dark     NA
+##  6 upsilon_algae_to_daphnia|light    NA
+##  7 upsilon_daphnia_to_NH4|dark       NA
+##  8 upsilon_daphnia_to_NH4|light      NA
+##  9 upsilon_NH4_to_algae|dark         NA
+## 10 upsilon_NH4_to_algae|light        NA
+## 11 zeta                              NA
+```
+
+## Running the MCMC
+
+We quickly set some reasonable vague priors for the particular model at hand:
+
+
+``` r
+m <- set_priors(m, normal_p(0, 4), "")
+priors(m)
+```
+
+```
+## # A tibble: 11 × 2
+##    in_model                       prior                     
+##    <chr>                          <list>                    
+##  1 eta                            <trun_normal(mean=0,sd=4)>
+##  2 lambda_algae                   <trun_normal(mean=0,sd=4)>
+##  3 lambda_daphnia                 <trun_normal(mean=0,sd=4)>
+##  4 lambda_NH4                     <trun_normal(mean=0,sd=4)>
+##  5 upsilon_algae_to_daphnia|dark  <trun_normal(mean=0,sd=4)>
+##  6 upsilon_algae_to_daphnia|light <trun_normal(mean=0,sd=4)>
+##  7 upsilon_daphnia_to_NH4|dark    <trun_normal(mean=0,sd=4)>
+##  8 upsilon_daphnia_to_NH4|light   <trun_normal(mean=0,sd=4)>
+##  9 upsilon_NH4_to_algae|dark      <trun_normal(mean=0,sd=4)>
+## 10 upsilon_NH4_to_algae|light     <trun_normal(mean=0,sd=4)>
+## 11 zeta                           <trun_normal(mean=0,sd=4)>
+```
+
+We run the MCMC as usual:
+
+
+``` r
+run <- run_mcmc(m, iter = 2000)
+plot(run)
+# Note: the figure below only shows a few of the traceplots for vignette concision
+```
+
+<img src="figures/z-fig-050-unnamed-chunk-21-1.jpeg" style="display: block; margin: auto;" />
+
+and we do a posterior predictive check:
+
+
+``` r
+predictions <- predict(m, run)
+plot(predictions, facet_row = c("group", "type"),
+     facet_col = "compartment",
+     scale = "all")
+```
+
+<img src="figures/z-fig-050-unnamed-chunk-23-1.jpeg" style="display: block; margin: auto;" />
+
+## Interpreting the output
+
+Let's see if the upsilon parameters were actually different between the light and dark treatments:
+
+
+``` r
+summary(run %>% select(upsilon))
+```
+
+```
+## 
+## Iterations = 1001:2000
+## Thinning interval = 1 
+## Number of chains = 4 
+## Sample size per chain = 1000 
+## 
+## 1. Empirical mean and standard deviation for each variable,
+##    plus standard error of the mean:
+## 
+##                                   Mean       SD  Naive SE Time-series SE
+## upsilon_algae_to_daphnia|dark  0.12338 0.015711 0.0002484     0.00028100
+## upsilon_algae_to_daphnia|light 0.13911 0.019829 0.0003135     0.00033573
+## upsilon_daphnia_to_NH4|dark    0.05696 0.009938 0.0001571     0.00018649
+## upsilon_daphnia_to_NH4|light   0.04064 0.004668 0.0000738     0.00008513
+## upsilon_NH4_to_algae|dark      0.08584 0.011417 0.0001805     0.00021184
+## upsilon_NH4_to_algae|light     0.28320 0.025936 0.0004101     0.00043828
+## 
+## 2. Quantiles for each variable:
+## 
+##                                   2.5%     25%     50%     75%   97.5%
+## upsilon_algae_to_daphnia|dark  0.09509 0.11274 0.12249 0.13311 0.15639
+## upsilon_algae_to_daphnia|light 0.10417 0.12546 0.13811 0.15057 0.18115
+## upsilon_daphnia_to_NH4|dark    0.04036 0.05008 0.05598 0.06266 0.07987
+## upsilon_daphnia_to_NH4|light   0.03187 0.03749 0.04039 0.04359 0.05057
+## upsilon_NH4_to_algae|dark      0.06614 0.07779 0.08508 0.09266 0.11150
+## upsilon_NH4_to_algae|light     0.23373 0.26632 0.28228 0.29921 0.33807
+```
+
+Looking at a table of numbers is not the easiest way to visualize the differences between parameter values. One could take advantage of the `bayesplot` package for a more visual output:
+
+
+``` r
+library(bayesplot)
+mcmc_intervals(run %>% select(upsilon)) +
+    coord_trans(x = "log10")
+```
+
+<img src="figures/z-fig-050-unnamed-chunk-25-1.jpeg" style="display: block; margin: auto;" />
+
+Based on this plot, it looks like only the rates from ammonium to algae (`upsilon_NH4_to_algae`) actually differ between the `light` and the `dark` treatments.
+
+Let's check this more rigorously. One nice thing about Bayesian MCMC is that we can combine the traces of **primary parameters** sampled during the MCMC to generate posteriors for **derived parameters**. We want to see the posterior for the ratio between the uptake rate coefficients for `NH4 -> algae` in the light and in the dark treatments:
+
+
+``` r
+ratio_upsilons_NH4_algae <- (run[, "upsilon_NH4_to_algae|light"] /
+                             run[, "upsilon_NH4_to_algae|dark"])
+plot(ratio_upsilons_NH4_algae)
+```
+
+<img src="figures/z-fig-050-unnamed-chunk-26-1.jpeg" style="display: block; margin: auto;" />
+
+As we can see above, the posterior for the ratio $\frac{\upsilon_{NH4 \rightarrow algae}|light}{\upsilon_{NH4 \rightarrow algae}|dark}$ is far from one. We can check that with the numerical summary:
+
+
+``` r
+summary(ratio_upsilons_NH4_algae)
+```
+
+```
+## 
+## Iterations = 1001:2000
+## Thinning interval = 1 
+## Number of chains = 4 
+## Sample size per chain = 1000 
+## 
+## 1. Empirical mean and standard deviation for each variable,
+##    plus standard error of the mean:
+## 
+##           Mean             SD       Naive SE Time-series SE 
+##       3.358536       0.551588       0.008721       0.009415 
+## 
+## 2. Quantiles for each variable:
+## 
+##  2.5%   25%   50%   75% 97.5% 
+## 2.393 2.981 3.319 3.695 4.563
+```
+
+The model tells us that the algae uptake ammonium more rapidly in the light treatment. What about the nitrogen flows between algae and *Daphnia*? Are the uptake rate coefficients estimated in the light and the dark treatments different?
+
+
+``` r
+ratio_upsilons_algae_daphnia <- (run[, "upsilon_algae_to_daphnia|light"] /
+                                 run[, "upsilon_algae_to_daphnia|dark"])
+plot(ratio_upsilons_algae_daphnia)
+```
+
+<img src="figures/z-fig-050-unnamed-chunk-28-1.jpeg" style="display: block; margin: auto;" />
+
+For this comparison, the posterior of the ratio overlaps one quite generously: the model does not support an effect of the light/dark treatment on the nitrogen flux between algae and *Daphnia*.
+
+<nav aria-label="Page navigation">
+ <ul class="pagination justify-content-end">
+  <li class="page-item"><a class="page-link" href="tutorial-040-pulse-drip-events.html">Previous: Defining pulse or drip events</a></li>
+  <li class="page-item"><a class="page-link" href="tutorial-060-units-priors.html">Next: Units and priors</a></li>
+ </ul>
+</nav>

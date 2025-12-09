@@ -1,0 +1,468 @@
+---
+title: "How to simulate experiments"
+date: "2025-03-07"
+vignette: >
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+  %\VignetteIndexEntry{How to simulate experiments}
+output:
+  rmarkdown::html_vignette
+---
+
+
+
+Simulating data is a good way to test an experimental design prior to running a costly experiment. The **isotracer** package provides some basic functionality to simulate data for a network model in which the true parameter values are given by the user.
+
+In this vignette, you will learn:
+
+- how to create a network model and set the "true" values for its parameters
+- how to generate simulated data from this network
+- how to use the simulated data to fit a model and try to capture the original parameter values.
+
+By repeating those basic steps, one can test different assumptions on the real system under study and different experimental designs to decide on the most cost-effective approach for the real experiment to be run.
+
+
+``` r
+library(isotracer)
+library(tidyverse)
+```
+
+
+## Creating a network model
+
+In this vignette, we will use the same example as in the [Including Fixed Effects of Covariates](tutorial-050-fixed-effects.html) tutorial. The modelled foodweb has three compartments:
+
+- dissolved ammonium NH$_4^+$ (`NH4`), which is enriched in $^{15}$N at the
+  beginning of the experiment
+- planctonic algae which incorporate NH$_4^+$ (`algae`)
+- *Daphnia* which graze on algae and excrete ammonium into the water.
+
+The experiment is done in two aquariums, with one aquarium exposed to light while the other is kept in the dark.
+
+### Building the network model
+
+The first step is to build the network model structure. This is done in exactly the same way as in the previous vignettes: we have to specify the network topology, some initial values, and potentially some covariates.
+
+Let's start with the topology:
+
+
+``` r
+mod <- new_networkModel() %>%
+    set_topo("NH4 -> algae -> daphnia -> NH4")
+```
+
+```
+## Using default distribution family for proportions ("gamma_cv").
+```
+
+```
+##   (eta is the coefficient of variation of gamma distributions.)
+```
+
+```
+## Using default distribution family for sizes ("normal_cv").
+```
+
+```
+##   (zeta is the coefficient of variation of normal distributions.)
+```
+
+We prepare a table of initial values which could be used in the real-life experiment we want to prepare:
+
+
+``` r
+inits <- tibble::tribble(
+     ~comps, ~sizes, ~props, ~treatment,
+      "NH4",    0.2,    0.8,    "light",
+    "algae",      1,  0.004,    "light",
+  "daphnia",      2,  0.004,    "light",
+      "NH4",    0.5,    0.8,     "dark",
+    "algae",    1.2,  0.004,     "dark",
+  "daphnia",    1.3,  0.004,     "dark")
+```
+
+We had the initial values to the model, and we indicate that we want to group initial values by `"treatment"`:
+
+
+``` r
+mod <- set_init(mod, inits, comp = "comps", size = "sizes",
+                prop = "props", group_by = "treatment")
+mod
+```
+
+```
+## # A tibble: 2 × 5
+##   topology           initial          observations parameters       group    
+##   <list>             <list>           <list>       <list>           <list>   
+## 1 <topology [3 × 3]> <tibble [3 × 3]> <NULL>       <tibble [8 × 2]> <chr [1]>
+## 2 <topology [3 × 3]> <tibble [3 × 3]> <NULL>       <tibble [8 × 2]> <chr [1]>
+```
+
+### Setting parameter values
+
+We have the basic model ready to be given some "true" parameter values. What are the parameters we have to specify?
+
+
+``` r
+params(mod)
+```
+
+```
+## # A tibble: 8 × 2
+##   in_model                 value
+##   <chr>                    <dbl>
+## 1 eta                         NA
+## 2 lambda_algae                NA
+## 3 lambda_daphnia              NA
+## 4 lambda_NH4                  NA
+## 5 upsilon_algae_to_daphnia    NA
+## 6 upsilon_daphnia_to_NH4      NA
+## 7 upsilon_NH4_to_algae        NA
+## 8 zeta                        NA
+```
+
+Let's say that we want to simulate an effect of `"treatment"` (light/dark) on the uptake of NH4 by the algae:
+
+
+``` r
+mod <- add_covariates(mod, upsilon_NH4_to_algae ~ treatment)
+```
+
+Now we have more parameters to specify:
+
+
+``` r
+params(mod)
+```
+
+```
+## # A tibble: 9 × 2
+##   in_model                   value
+##   <chr>                      <dbl>
+## 1 eta                           NA
+## 2 lambda_algae                  NA
+## 3 lambda_daphnia                NA
+## 4 lambda_NH4                    NA
+## 5 upsilon_algae_to_daphnia      NA
+## 6 upsilon_daphnia_to_NH4        NA
+## 7 upsilon_NH4_to_algae|dark     NA
+## 8 upsilon_NH4_to_algae|light    NA
+## 9 zeta                          NA
+```
+
+We can set the parameter values with the `set_params()` function:
+
+
+``` r
+mod <- mod %>%
+  set_params(c("eta" = 0.2, "lambda_algae" = 0, "lambda_daphnia" = 0,
+               "lambda_NH4" = 0, "upsilon_NH4_to_algae|light" = 0.3,
+               "upsilon_NH4_to_algae|dark" = 0.1,
+               "upsilon_algae_to_daphnia" = 0.13,
+               "upsilon_daphnia_to_NH4" = 0.045, "zeta" = 0.1))
+```
+
+Once the parameter values are stored in the network model, they are visible in the `parameters` column:
+
+
+``` r
+mod$parameters
+```
+
+```
+## [[1]]
+## # A tibble: 8 × 3
+##   in_replicate             in_model                   value
+##   <chr>                    <chr>                      <dbl>
+## 1 eta                      eta                        0.2  
+## 2 lambda_algae             lambda_algae               0    
+## 3 lambda_daphnia           lambda_daphnia             0    
+## 4 lambda_NH4               lambda_NH4                 0    
+## 5 upsilon_algae_to_daphnia upsilon_algae_to_daphnia   0.13 
+## 6 upsilon_daphnia_to_NH4   upsilon_daphnia_to_NH4     0.045
+## 7 upsilon_NH4_to_algae     upsilon_NH4_to_algae|light 0.3  
+## 8 zeta                     zeta                       0.1  
+## 
+## [[2]]
+## # A tibble: 8 × 3
+##   in_replicate             in_model                  value
+##   <chr>                    <chr>                     <dbl>
+## 1 eta                      eta                       0.2  
+## 2 lambda_algae             lambda_algae              0    
+## 3 lambda_daphnia           lambda_daphnia            0    
+## 4 lambda_NH4               lambda_NH4                0    
+## 5 upsilon_algae_to_daphnia upsilon_algae_to_daphnia  0.13 
+## 6 upsilon_daphnia_to_NH4   upsilon_daphnia_to_NH4    0.045
+## 7 upsilon_NH4_to_algae     upsilon_NH4_to_algae|dark 0.1  
+## 8 zeta                     zeta                      0.1
+```
+
+The model is now complete and can be used to generate data!
+
+## Generating simulated data
+
+One can calculate predicted trajectories with the `project()` function:
+
+
+``` r
+proj <- mod %>% project(end = 10)
+plot(proj, facet_row = "type", facet_col = "group")
+```
+
+<img src="figures/z-fig-120-unnamed-chunk-12-1.jpeg" style="display: block; margin: auto;" />
+
+Real-life data will incorporate some variability around those trajectories. To simulate data with variability around expected compartment size (coefficient of variation `"zeta"`) and around expected proportion of tracer (c.v. `"eta"`), one can use the `sample_from()` function:
+
+
+``` r
+spl <- mod %>% sample_from(at = 1:10)
+spl
+```
+
+```
+## # A tibble: 60 × 5
+##     time comp   size   prop treatment
+##    <dbl> <chr> <dbl>  <dbl> <chr>    
+##  1     1 algae 0.958 0.0459 light    
+##  2     2 algae 0.842 0.0895 light    
+##  3     3 algae 0.930 0.0783 light    
+##  4     4 algae 0.875 0.103  light    
+##  5     5 algae 0.936 0.153  light    
+##  6     6 algae 0.843 0.116  light    
+##  7     7 algae 0.677 0.0982 light    
+##  8     8 algae 0.750 0.0935 light    
+##  9     9 algae 0.904 0.0775 light    
+## 10    10 algae 0.888 0.0968 light    
+## # ℹ 50 more rows
+```
+
+To visualize the simulated data, we can add it to the projected trajectories:
+
+
+``` r
+proj <- proj %>%
+  set_obs(spl, comp = "comp", size = "size", prop = "prop", time = "time",
+          group = "treatment")
+plot(proj, facet_row = "type", facet_col = "group")
+```
+
+<img src="figures/z-fig-120-unnamed-chunk-14-1.jpeg" style="display: block; margin: auto;" />
+
+## Fitting a model on the simulated data
+
+We can use the simulated data in `spl` to fit parameters using MCMC. By using different versions of the dataset, we can compare different experimental designs. Here, to **test how sample size affects the uncertainty of parameter estimates**, we will perform MCMC runs with either the full `spl` dataset (ten time points) or a reduced dataset with only three time points:
+
+
+``` r
+spl_reduced <- spl %>% filter(time %in% c(4, 7, 10))
+```
+
+<img src="figures/z-fig-120-unnamed-chunk-16-1.jpeg" style="display: block; margin: auto;" />
+
+### Run with ten time points
+
+We add the simulated data to the model as we would do for real data:
+
+
+``` r
+mod_full <- mod %>%
+  set_obs(spl, comp = "comp", size = "size", prop = "prop", time = "time",
+          group = "treatment")
+```
+
+We have to define the priors for our model:
+
+``` r
+mod_full <- mod_full %>%
+  set_priors(normal_p(0, 5), "lambda|upsilon") %>%
+  set_priors(normal_p(0, 2), "eta")
+```
+
+```
+## Prior modified for parameter(s): 
+##   - lambda_algae
+##   - lambda_daphnia
+##   - lambda_NH4
+##   - upsilon_algae_to_daphnia
+##   - upsilon_daphnia_to_NH4
+##   - upsilon_NH4_to_algae|dark
+##   - upsilon_NH4_to_algae|light
+```
+
+```
+## Prior modified for parameter(s): 
+##   - eta
+##   - zeta
+```
+
+We run the MCMC:
+
+
+``` r
+run_full <- run_mcmc(mod_full, iter = 2000)
+plot(run_full)
+# Note: the figure below only shows a few of the traceplots for vignette concision
+```
+
+<img src="figures/z-fig-120-unnamed-chunk-20-1.jpeg" style="display: block; margin: auto;" />
+
+and we do a posterior predictive check:
+
+
+``` r
+pred_full <- predict(mod_full, run_full)
+plot(pred_full, facet_row = c("group", "type"),
+     facet_col = "compartment",
+     scale = "all")
+```
+
+<img src="figures/z-fig-120-unnamed-chunk-22-1.jpeg" style="display: block; margin: auto;" />
+
+### Run with three time points
+
+We use the reduced dataset this time:
+
+
+``` r
+mod_red <- mod %>%
+  set_obs(spl_reduced, comp = "comp", size = "size", prop = "prop",
+          time = "time", group = "treatment")
+```
+
+We set the priors:
+
+
+``` r
+mod_red <- mod_red %>%
+  set_priors(normal_p(0, 5), "lambda|upsilon") %>%
+  set_priors(normal_p(0, 2), "eta")
+```
+
+```
+## Prior modified for parameter(s): 
+##   - lambda_algae
+##   - lambda_daphnia
+##   - lambda_NH4
+##   - upsilon_algae_to_daphnia
+##   - upsilon_daphnia_to_NH4
+##   - upsilon_NH4_to_algae|dark
+##   - upsilon_NH4_to_algae|light
+```
+
+```
+## Prior modified for parameter(s): 
+##   - eta
+##   - zeta
+```
+
+We run the MCMC:
+
+
+``` r
+run_red <- run_mcmc(mod_red, iter = 2000)
+plot(run_red)
+# Note: the figure below only shows a few of the traceplots for vignette concision
+```
+
+<img src="figures/z-fig-120-unnamed-chunk-26-1.jpeg" style="display: block; margin: auto;" />
+
+and we do a posterior predictive check:
+
+
+``` r
+pred_red <- predict(mod_red, run_red)
+plot(pred_red, facet_row = c("group", "type"),
+     facet_col = "compartment",
+     scale = "all")
+```
+
+<img src="figures/z-fig-120-unnamed-chunk-28-1.jpeg" style="display: block; margin: auto;" />
+
+### Comparison
+
+Does using ten time points (`spl`) instead of three (`spl_reduced`) improve a lot the parameter estimates? Let's compare the uncertainty in their posteriors:
+
+
+``` r
+signif(summary(run_full)$quantiles, 2)
+```
+
+```
+##                                2.5%     25%    50%    75%  97.5%
+## eta                        0.180000 0.20000 0.2100 0.2200 0.2500
+## lambda_algae               0.000240 0.00190 0.0041 0.0069 0.0140
+## lambda_daphnia             0.000046 0.00064 0.0015 0.0028 0.0061
+## lambda_NH4                 0.000160 0.00170 0.0034 0.0065 0.0140
+## upsilon_algae_to_daphnia   0.120000 0.12000 0.1300 0.1300 0.1400
+## upsilon_daphnia_to_NH4     0.048000 0.05000 0.0510 0.0530 0.0550
+## upsilon_NH4_to_algae|dark  0.088000 0.09400 0.0970 0.1000 0.1100
+## upsilon_NH4_to_algae|light 0.280000 0.30000 0.3100 0.3200 0.3400
+## zeta                       0.070000 0.07800 0.0830 0.0890 0.1000
+```
+
+``` r
+signif(summary(run_red)$quantiles, 2)
+```
+
+```
+##                                2.5%     25%    50%    75%  97.5%
+## eta                        0.180000 0.22000 0.2500 0.3000  1.100
+## lambda_algae               0.000180 0.00290 0.0066 0.0130  0.030
+## lambda_daphnia             0.000071 0.00093 0.0023 0.0046  0.011
+## lambda_NH4                 0.000350 0.00360 0.0075 0.0140  0.033
+## upsilon_algae_to_daphnia   0.110000 0.12000 0.1300 0.1400  4.700
+## upsilon_daphnia_to_NH4     0.044000 0.04900 0.0520 0.0560  2.000
+## upsilon_NH4_to_algae|dark  0.075000 0.08900 0.0970 0.1100  5.100
+## upsilon_NH4_to_algae|light 0.240000 0.27000 0.2900 0.3200 11.000
+## zeta                       0.070000 0.09100 0.1100 0.1300  0.180
+```
+
+
+``` r
+library(bayesplot)
+library(cowplot)
+plot_grid(nrow = 2, 
+  mcmc_intervals(run_full %>% select("lambda")) + xlim(0, 0.025) +
+    ggtitle("10 time points"),
+  mcmc_intervals(run_red %>% select("lambda")) + xlim(0, 0.025) +
+    ggtitle("3 time points")
+  )
+```
+
+```
+## Warning: Removed 1 row containing missing values or values outside the scale range
+## (`geom_segment()`).
+```
+
+<img src="figures/z-fig-120-unnamed-chunk-30-1.jpeg" style="display: block; margin: auto;" />
+
+``` r
+plot_grid(nrow = 2, 
+  mcmc_intervals(run_full %>% select("upsilon")) + xlim(0, 0.35) +
+    ggtitle("10 time points"),
+  mcmc_intervals(run_red %>% select("upsilon")) + xlim(0, 0.35) + 
+    ggtitle("3 time points")
+)
+```
+
+```
+## Warning: Removed 4 rows containing missing values or values outside the scale range
+## (`geom_segment()`).
+```
+
+<img src="figures/z-fig-120-unnamed-chunk-30-2.jpeg" style="display: block; margin: auto;" />
+
+The experiment with three time points seems quite good at estimating parameters despite the low number of observations, but the uncertainties are definitely reduced when 10 time points are used.
+
+## To go further
+
+This example only used one simulated dataset. When preparing a real-life experiment, it would make sense to try a range of "true" values for the parameters to be estimated and different initial conditions in addition to different experimental designs (number of replicates, number of samples, timing of sampling).
+
+A convenient way to structure many data simulations is to create a tibble containing the simulation variables (e.g. parameter values, sampling points, alternative models) and store the resulting simulated datasets and their corresponding MCMC fits in list columns to make the analysis of the simulations easier.
+
+<nav aria-label="Page navigation">
+ <ul class="pagination justify-content-end">
+  <li class="page-item"><a class="page-link" href="tutorial-110-derived-parameters.html">Previous: Calculating derived parameters</a></li>
+  <li class="page-item"><a class="page-link" href="tutorial-130-parameter-identifiability.html">Next: Testing parameter identifiability</a></li>
+ </ul>
+</nav>

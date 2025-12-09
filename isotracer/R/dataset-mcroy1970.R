@@ -1,0 +1,64 @@
+#' Eelgrass phosphate incorporation data (McRoy & Barsdate 1970)
+#'
+#' Dataset built from the article "Phosphate absorption in eelgrass" by McRoy
+#' and Barsdate (1970)
+#'
+#' In brief, the experimental setup consists in individual eelgrass plants
+#' placed in 250 ml containers. Each container is partitioned by a layer of
+#' paraffin into an upper water compartment (containing the leaves and stems)
+#' and a lower water compartment (containing the roots and rhizomes).
+#'
+#' Radioactive phosphorus (32P) is added as phosphate either in the upper or
+#' lower water compartment in each container. Containers were incubated either
+#' in light or dark conditions.
+#'
+#' Tissue samples were collected and dried at various time points and 32P
+#' activity was measured (Figure 2 in the original paper). Biomass estimates in
+#' initial conditions were given in Table 1 of the original paper.
+#' 
+#' @section Data preparation:
+#'
+#' The data for 32P abundance per mg is extracted from Figure 2 of the original
+#' article. Atom counts per mg were derived from cpm per mg using a half-life
+#' value of 14.268 days for 32P.
+#'
+#' For simplicity and in order to be able to match the 32P data with the
+#' biomass data (see below), only four compartments are considerd in the
+#' package dataset. Upper and lower water compartments match the compartments
+#' from the original article. "Leaf and stem" pools the original compartments
+#' "leaf tip", "leaf middle", "leaf base", and "stem". "Roots and rhizome"
+#' pools the original compartments "root" and "rhizome". Pooling is done by
+#' averaging the cpm per mg data, thereby making the rough approximation that
+#' each component of the pool contributes the same biomass as the other
+#' components.
+#'
+#' The biomass data is taken from Table 1 in the original paper. Experimental
+#' containers had 160 cc of seawater in the upper compartment and 80 cc of
+#' seawater in the lower compartment. Based on comparison with data from
+#' Risgaard-Petersen 1998, I assumed that the biomasses for tissues were given
+#' in dry weight. I assumed that this was also the case for the cpm/mg data
+#' (i.e. cpm/mg of dry weight).
+#' 
+#' @source Data was taken from the figures and tables of the original
+#'     paper. The original paper is: McRoy, C. Peter, and Robert
+#'     J. Barsdate. “Phosphate Absorption in Eelgrass1.” Limnology and
+#'     Oceanography 15, no. 1 (January 1, 1970):
+#'     6–13. https://doi.org/10.4319/lo.1970.15.1.0006.
+#'
+#' @format Tibble with columns
+#' \describe{
+#'   \item{light_treatment}{Light treatment: "light" or "dark".}
+#'   \item{addition_site}{The location where 32P phosphate was added: in the
+#'     "upper" water compartment or in the "lower" water compartment.}
+#'   \item{compartment}{Obsered compartment, one of "leaves_stem",
+#'     "roots_rhizome", "upper_water", or "lower_water".}
+#'   \item{time_min}{Elapsed time in minutes since the 32P addition.}
+#'   \item{n_32P_per_mg}{Number of 32P atoms per mg (estimated from Figure 2 of
+#'     the original paper).}
+#'   \item{mass_mg}{Compartment mass in mg (taken from Table 1 of the original
+#'     paper). Assumed constant during the experiment.}
+#'   \item{n_32P}{Number of 32P atoms in the compartment. Calculated from the
+#'     two previous columns.}
+#' }
+
+"eelgrass"
