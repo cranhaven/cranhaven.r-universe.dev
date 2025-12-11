@@ -1,0 +1,13 @@
+utils::globalVariables(c("seed",
+                         "resample_obj",
+                         "permutation_type",
+                         "metrics",
+                         "confusion",
+                         "predict",
+                         "Variable",
+                         "parser_inst",
+                         "data.table",
+                         ".",
+                         "id",
+                         "Feature",
+                         "Shap"))
