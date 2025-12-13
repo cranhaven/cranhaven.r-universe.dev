@@ -1,0 +1,131 @@
+
+R version 3.6.2 (2019-12-12) -- "Dark and Stormy Night"
+Copyright (C) 2019 The R Foundation for Statistical Computing
+Platform: x86_64-pc-linux-gnu (64-bit)
+
+R is free software and comes with ABSOLUTELY NO WARRANTY.
+You are welcome to redistribute it under certain conditions.
+Type 'license()' or 'licence()' for distribution details.
+
+R is a collaborative project with many contributors.
+Type 'contributors()' for more information and
+'citation()' on how to cite R or R packages in publications.
+
+Type 'demo()' for some demos, 'help()' for on-line help, or
+'help.start()' for an HTML browser interface to help.
+Type 'q()' to quit R.
+
+> library("model4you")
+Loading required package: partykit
+Loading required package: grid
+Loading required package: libcoin
+Loading required package: mvtnorm
+> library("mvtnorm")
+> library("survival")
+> set.seed(123)
+> 
+> ## function to simulate the data
+> sim_data <- function(n = 500, p = 10, beta = 3, sd = 1){
++ 
++   ## treatment
++   lev <- c("C", "A")
++   a <- rep(factor(lev, labels = lev, levels = lev), length = n)
++ 
++   ## correlated z variables
++   sigma <- diag(p)
++   sigma[sigma == 0] <- 0.2
++   ztemp <- rmvnorm(n, sigma = sigma)
++   z <- (pnorm(ztemp) * 2 * pi) - pi
++   colnames(z) <- paste0("z", 1:ncol(z))
++   z1 <- z[,1]
++ 
++   ## outcome
++   y <- 7 + 0.2 * (a %in% "A") + beta * cos(z1) * (a %in% "A") + rnorm(n, 0, sd)
++ 
++   data.frame(y = y, a = a, z)
++ }
+> 
+> ## simulate data
+> beta <- 3
+> ntrain <- 500
+> ntest <- 100
+> simdata <- simdata_s <- sim_data(p = 5, beta = beta, n = ntrain)
+> tsimdata <- tsimdata_s <- sim_data(p = 5, beta = beta, n = ntest)
+> simdata_s$cens <- rep(1, ntrain)
+> tsimdata_s$cens <- rep(1, ntest)
+> 
+> ## base model
+> basemodel_lm <- lm(y ~ a, data = simdata)
+> basemodel_wb <- survreg(Surv(y, cens) ~ a, data = simdata_s)
+> 
+> ## forest
+> frst_lm <- pmforest(basemodel_lm, ntree = 10,
++                     perturb = list(replace = FALSE, fraction = 0.632),
++                     control = ctree_control(mincriterion = 0, lookahead = TRUE))
+No data given. I'm using data set simdata from the current environment parent.frame(). Please check if that is what you want.
+> frst_wb <- pmforest(basemodel_wb, ntree = 10,
++                     perturb = list(replace = FALSE, fraction = 0.632),
++                     control = ctree_control(mincriterion = 0, lookahead = TRUE))
+No data given. I'm using data set simdata_s from the current environment parent.frame(). Please check if that is what you want.
+> 
+> ## personalised models
+> coefs_lm <- pmodel(x = frst_lm, newdata = tsimdata)
+> summary(coefs_lm)
+  (Intercept)          aA         
+ Min.   :6.319   Min.   :-2.2799  
+ 1st Qu.:6.929   1st Qu.:-1.1221  
+ Median :7.104   Median : 0.2540  
+ Mean   :7.093   Mean   : 0.0459  
+ 3rd Qu.:7.302   3rd Qu.: 1.0339  
+ Max.   :7.567   Max.   : 2.7587  
+> 
+> 
+> coeffun <- function(model) {
++   ## model coefficients
++   coefs <- c(coef(model), scale = model$scale)
++ 
++   ## difference in median survival
++   p = 0.5
++   coefs["median_s0"] <- qweibull(p = p, shape = 1/coefs["scale"],
++                                  scale = exp(coefs["(Intercept)"]))
++   coefs["median_s1"] <- qweibull(p = p, shape = 1/coefs["scale"],
++                                  scale = exp(coefs["(Intercept)"] + coefs["aA"]))
++   coefs["median_sdiff"] <- coefs["median_s1"] - coefs["median_s0"]
++ 
++   return(coefs)
++ }
+> coefs_wb <- pmodel(x = frst_wb, newdata = tsimdata_s,
++                    fun = coeffun)
+> ## IGNORE_RDIFF_BEGIN
+> summary(coefs_wb)
+  (Intercept)          aA               scale          median_s0    
+ Min.   :1.873   Min.   :-0.36744   Min.   :0.1086   Min.   :5.798  
+ 1st Qu.:1.957   1st Qu.: 0.03179   1st Qu.:0.1622   1st Qu.:6.552  
+ Median :1.987   Median : 0.14243   Median :0.1906   Median :6.816  
+ Mean   :1.982   Mean   : 0.10863   Mean   :0.1974   Mean   :6.759  
+ 3rd Qu.:2.008   3rd Qu.: 0.21164   3rd Qu.:0.2212   3rd Qu.:6.963  
+ Max.   :2.098   Max.   : 0.33714   Max.   :0.3557   Max.   :7.616  
+   median_s1      median_sdiff    
+ Min.   :5.265   Min.   :-2.3418  
+ 1st Qu.:6.805   1st Qu.: 0.2223  
+ Median :7.823   Median : 1.0440  
+ Mean   :7.606   Mean   : 0.8467  
+ 3rd Qu.:8.519   3rd Qu.: 1.6195  
+ Max.   :9.331   Max.   : 2.5813  
+> ## IGNORE_RDIFF_END 
+> 
+> 
+> ## Variable importance
+> set.seed(123)
+> (vi_lm <- varimp(frst_lm))
+        z1         z2         z3         z4         z5 
+479.272990  56.304019   1.554203  44.625821  35.586728 
+> ## IGNORE_RDIFF_BEGIN
+> (vi_wb <- varimp(frst_wb))
+       z1        z2        z3        z4        z5 
+153.05987  28.35612  36.75283  23.65575  34.97163 
+> ## IGNORE_RDIFF_END 
+> 
+> proc.time()
+   user  system elapsed 
+ 17.469   0.138  17.606 

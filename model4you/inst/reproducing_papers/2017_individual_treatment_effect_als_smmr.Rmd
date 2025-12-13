@@ -1,0 +1,132 @@
+---
+title: 'model4you reproducing: Individual treatment effect prediction for amyotrophic
+  lateral sclerosis patients'
+author: "Heidi Seibold"
+date: "December 22, 2017"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, cache = TRUE)
+```
+
+
+```{r}
+library("model4you")
+library("survival")
+library("ggplot2")
+load("data/ALSFRSdata.rda")
+load("data/ALSsurvdata.rda")
+```
+
+## Base models
+```{r}
+bm_alsfrs <- glm(ALSFRS.halfYearAfter ~ Riluzole + offset(log(ALSFRS.Start)), 
+                 data = ALSFRSdata, family = gaussian(link = "log"))
+summary(bm_alsfrs)
+
+bm_alssurv <- survreg(Surv(survival.time, cens) ~ Riluzole, 
+                      data = ALSsurvdata, dist = "weibull")
+summary(bm_alssurv)
+```
+## Forests
+```{r}
+set.seed(123)
+
+frst_alsfrs <- pmforest(bm_alsfrs, ntree = 100, 
+                        control = ctree_control(teststat = "max", testtype = "Univ",
+                                                mincriterion = 0.95, minsplit = 40, 
+                                                minbucket = 30, lookahead = TRUE))
+
+frst_alssurv <- pmforest(bm_alssurv, ntree = 100, 
+                         control = ctree_control(teststat = "max", testtype = "Univ",
+                                                 mincriterion = 0.95, minsplit = 40, 
+                                                 minbucket = 30, lookahead = TRUE))
+```
+
+## Personalised models
+```{r}
+pm_alsfrs <- pmodel(frst_alsfrs)
+
+
+coeffun <- function(model) {
+  ## model coefficients
+  coefs <- c(coef(model), scale = model$scale)
+  
+  ## difference in median survival 
+  p = 0.5
+  coefs["median_s0"] <- qweibull(p = p, shape = 1/coefs["scale"], 
+                                 scale = exp(coefs["(Intercept)"]))
+  coefs["median_s1"] <- qweibull(p = p, shape = 1/coefs["scale"], 
+                                 scale = exp(coefs["(Intercept)"] + coefs["aA"]))
+  coefs["median_sdiff"] <- coefs["median_s1"] - coefs["median_s0"]
+  
+  return(coefs)
+}
+pm_alssurv <- pmodel(frst_alssurv, fun = coeffun)
+```
+
+
+## Variable importance
+```{r varimp}
+set.seed(123)
+vi_alsfrs <- varimp(frst_alsfrs)
+var <- names(vi_alsfrs)
+vi_alsfrs_d <- data.frame(variable = factor(var, levels = var[order(vi_alsfrs)]), 
+                          VI = vi_alsfrs)
+
+ggplot(vi_alsfrs_d, aes(x = variable, y = VI)) + 
+  geom_bar(stat = "identity", width = .1) +
+  coord_flip() +
+  theme(panel.grid.major.y = element_blank())
+
+
+vi_alssurv <- varimp(frst_alssurv)
+var <- names(vi_alssurv)
+vi_alssurv_d <- data.frame(variable = factor(var, levels = var[order(vi_alssurv)]), 
+                          VI = vi_alssurv)
+
+ggplot(vi_alssurv_d, aes(x = variable, y = VI)) + 
+  geom_bar(stat = "identity", width = .1) +
+  coord_flip() +
+  theme(panel.grid.major.y = element_blank())
+```
+
+
+
+## dependence plot
+```{r}
+dp_plot <- function(var, data) {
+  p <- ggplot(data, aes_string(y = "RiluzoleYes", x = var))
+  
+  if(is.factor(data[, var])) {
+    p <- p + geom_boxplot()
+  } else {
+    p <- p + geom_point() + geom_smooth(se = FALSE)
+  }
+  
+  print(p)
+}
+
+dp_alsfrs <- cbind(pm_alsfrs, ALSFRSdata)
+
+dp_plot("time_onset_treatment", dp_alsfrs)
+dp_plot("value_creatinine", dp_alsfrs)
+dp_plot("value_phosphorus", dp_alsfrs)
+dp_plot("subjectliters_fvc", dp_alsfrs)
+
+
+dp_alssurv <- cbind(pm_alssurv, ALSsurvdata)
+
+dp_plot("age", dp_alssurv)
+dp_plot("time_onset_treatment", dp_alssurv)
+dp_plot("weakness", dp_alssurv)
+dp_plot("height", dp_alssurv)
+
+```
+
+
+
+
