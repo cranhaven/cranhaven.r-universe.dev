@@ -1,0 +1,480 @@
+---
+title: "Introduction to eclust"
+author: "Sahir Rai Bhatnagar"
+date: "`r Sys.Date()`"
+header-includes:
+   - \usepackage{mathtools}
+output:
+  html_vignette:
+    number_sections: yes
+    self_contained: yes
+    toc: true  
+---
+<!--
+  %\VignetteIndexEntry{Introduction to eclust}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+-->
+
+
+
+**Author**: [Sahir Bhatnagar](http://sahirbhatnagar.com/) (sahir.bhatnagar@gmail.com)
+
+**Notes**:
+
+* This vignette was built with `R markdown` and `knitr`. The source code for this vignette can be found [here](https://raw.githubusercontent.com/sahirbhatnagar/eclust/master/vignettes/eclust.Rmd).
+
+
+* This is a brief introduction to the eclust package. This package clusters gene expression or DNA methylation data that is sensitive to environmental exposures. It is the companion package to the paper 
+
+>  Bhatnagar, SR., Yang, Y., Blanchette, M., Bouchard, L.,
+   Khundrakpam, B., Evans, A., Greenwood, CMT. (2017+). An analytic
+   approach for interpretable predictive models in high dimensional data, in
+   the presence of interactions with exposures. [Preprint](http://sahirbhatnagar.com/slides/manuscript1_SB_v4.pdf)
+
+The following figure is an overview of what the ECLUST method does:
+
+![](http://i.imgur.com/lqsjLte.png)
+
+* A more comprehensive documentation is available at [http://sahirbhatnagar.com/eclust/](http://sahirbhatnagar.com/eclust/).
+
+*************************
+
+
+# Installation
+
+You can install `eclust` from CRAN:
+
+```R
+install.packages("eclust")
+```
+
+Alternatively, you can install the development version of `eclust` from [GitHub](https://github.com/sahirbhatnagar/eclust) with:
+
+```{r eval=FALSE, echo=TRUE}
+install.packages("pacman")
+pacman::p_install_gh("sahirbhatnagar/eclust")
+```
+
+
+*************************
+
+
+```{r setup, message=FALSE, echo=FALSE}
+library(knitr)
+library(eclust)
+library(data.table)
+options(scipen = 1, digits = 5)
+```
+
+
+
+# Data
+
+There are two datasets included in this package that can be loaded into your `R` session via `data(tcgaov)` and `data(simdata)`:
+
+1. `tcgaov`: A dataset containing a subset of the TCGA mRNA Ovarian serous cystadenocarcinoma data generated using Affymetrix HTHGU133a arrays. 511 samples (rows) and 881 genes (columns).
+2. `simdata`: A dataset containing simulated data for example use of the `eclust` package functions. A matrix with 100 rows 500 genes, a continuous response Y and a binary environment vector E. 
+
+
+*************************
+
+# Overview of Functions
+
+This package has three sets of functions starting with either `r_`, `s_` or `u_` 
+
+1. `r_` (**real data functions**): related to analysis of real data. Most users will apply this set of functions to their data. 
+
+```{r, echo=FALSE}
+pander::pander(data.frame(`function name` = grep("^r_",pacman::p_functions("eclust"), value = T)))
+```
+
+
+2. `s_` (**simulation functions**): related to the simulations conducted in the [paper](http://sahirbhatnagar.com/slides/manuscript1_SB_v4.pdf). There are functions to simulate data, run the analyses on these data, and output performance metrics.
+
+```{r, echo=FALSE}
+pander::pander(data.frame(`function name` = grep("^s_",pacman::p_functions("eclust"), value = T)))
+```
+
+
+3. `u_` (**utility functions**): functions that are used by both simulation and real data analysis functions. Not really meant to be called by the user.  
+
+```{r, echo=FALSE}
+pander::pander(data.frame(`function name` = grep("^u_",pacman::p_functions("eclust"), value = T)))
+```
+
+
+
+# Real data analysis functions (`r_`)
+
+We will use the `data(tcgaov)` dataset included in this package, which contains a subset of the TCGA mRNA Ovarian serous cystadenocarcinoma data generated using Affymetrix HTHGU133a arrays. See `?tcgaov` for details about the data.  
+
+In the example below we use the `r_cluster_data` to create the environment based clusters, and their summaries. We then use the `r_prepare_data` function to get it into proper form for regression routines such as `earth::earth`, `glmnet::cv.glmnet`, and `ncvreg::ncvreg`.
+
+## Extract the relevant data
+
+```{r, eval = TRUE}
+# load the data
+data("tcgaov")
+tcgaov[1:5,1:6, with = FALSE]
+
+# use log survival as the response
+Y <- log(tcgaov[["OS"]])
+
+# specify the environment variable
+E <- tcgaov[["E"]]
+
+# specify the matrix of genes only
+genes <- as.matrix(tcgaov[,-c("OS","rn","subtype","E","status"),with = FALSE])
+
+# for this example the training set will be all subjects.
+# change `p` argument to create a train and test set.
+trainIndex <- drop(caret::createDataPartition(Y, p = 1, list = FALSE, times = 1))
+testIndex <- trainIndex
+```
+
+
+## Cluster the data and calculate cluster representations
+
+We cluster the genes using the correlation matrix (specified by `cluster_distance = "corr"`) and the difference of the exposure dependent correlation matrices (specified by `eclust_distance = "diffcorr"`)
+
+```{r}
+cluster_res <- r_cluster_data(data = genes,
+                              response = Y,
+                              exposure = E,
+                              train_index = trainIndex,
+                              test_index = testIndex,
+                              cluster_distance = "corr",
+                              eclust_distance = "diffcorr",
+                              measure_distance = "euclidean",
+                              clustMethod = "hclust",
+                              cutMethod = "dynamic",
+                              method = "average",
+                              nPC = 1,
+                              minimum_cluster_size = 30)
+
+# the number of clusters determined by the similarity matrices specified
+# in the cluster_distance and eclust_distance arguments. This will always be larger
+# than cluster_res$clustersAll$nclusters which is based on the similarity matrix
+# specified in the cluster_distance argument
+cluster_res$clustersAddon$nclusters
+
+# the number of clusters determined by the similarity matrices specified
+# in the cluster_distance argument only
+cluster_res$clustersAll$nclusters
+
+# what's in the cluster_res object
+names(cluster_res)
+```
+
+## Prepare data for input in any regression routine
+
+Now we use the `r_prepare_data` function, where we are using the average expression from each cluster as feaand their interaction with E as features in the regression model:
+
+```{r}
+# prepare data for use with earth function
+avg_eclust_interaction <- r_prepare_data(data = cbind(cluster_res$clustersAddon$averageExpr, 
+                                                     Y = Y[trainIndex],
+                                                     E = E[trainIndex]),
+                                        response = "Y", exposure = "E")
+
+head(avg_eclust_interaction[["X"]])
+```
+
+
+## Fit a regression model
+
+At this stage, you can decide which regression model to use. Here we choose the MARS model from the `earth` package, but you may choose regression models from any number of packages (e.g. see the [extensive list of models](https://topepo.github.io/caret/available-models.html) of models available in the `caret` package).
+
+```{r}
+# install and load earth package
+pacman::p_load(char = "earth")
+
+fit_earth <- earth::earth(x = avg_eclust_interaction[["X"]], y = avg_eclust_interaction[["Y"]], 
+                          pmethod = "backward", 
+                          keepxy = TRUE, degree = 2, trace = 1, nk = 1000)
+
+coef(fit_earth)
+```
+
+You can also install the `plotmo` package to visualise the relationships between the hinge functions and the response using `plotmo::plotmo(fit_earth)`. 
+
+## Determine the features that have been selected
+
+The `u_extract_selected_earth` is a utility function in this package to extract the selected predictors from the MARS model: 
+```{r}
+u_extract_selected_earth(fit_earth)
+```
+
+We that genes in clusters 1, 7 and 9 were selected. We also see that the interaction between the genes in cluster 5 and the environment was selected and has the highest variable importance. We can see the genes involved using the `cluster_res$clustersAddonMembership` object: 
+
+```{r}
+# Genes in cluster 5
+cluster_res$clustersAddonMembership[cluster %in% 5]
+
+# variable importance
+earth::evimp(fit_earth)
+```
+
+
+# Simulation functions (`s_`)
+
+The `s_` functions were used to conduct the simulation studies in the _Bhatnagar et.al (2017+)_. The `s_modules`, `s_generate_data` and `s_generate_data_mars` are the main functions to generate the simulated data. 
+
+In the paper we designed 6 simulation scenarios that are constructed to illustrate different kinds of relationships between the variables and the response. For all scenarios, we have created high dimensional data sets with $p$ predictors, and sample sizes of $n$.  We also assume that we have two data sets for each simulation - a training data set where the parameters are estimated, and a testing data set where prediction performance is evaluated, each of equal size $n_{train} = n_{test}$. The number of subjects who were exposed ($n_{E=1}=100$) and unexposed ($n_{E=0}=100$) and the number of truly associated parameters ($0.10 * p$) remain fixed across the 6 simulation scenarios. 
+
+Let
+\begin{equation}
+Y = Y^* + k \cdot \varepsilon \label{eq:response}
+\end{equation} 
+where $Y^*$ is the linear predictor, the error term $\varepsilon$ is generated from a standard normal distribution, and $k$ is chosen such that the signal-to-noise ratio $SNR = \left(Var(Y^*)/Var(\varepsilon)\right)$ is 0.2, 1 and 2  (e.g. the variance of the response variable $Y$ due to $\varepsilon$ is $1/SNR$ of the variance of $Y$ due to $Y^*$).
+
+
+## The Design Matrix
+
+We generate covariate data in 5 blocks using the `s_modules` function which is a wrapper of the `simulateDatExpr` function from the `WGCNA` package in `R` (version 1.51). This generates data from a latent vector:  first a seed vector is simulated, then covariates are generated with varying degree of correlation with the seed vector in a given block. 
+
+For the unexposed observations ($E=0$), only the predictors in the yellow block were simulated with correlation, while all other covariates were independent within and between blocks. For the exposed observations ($E=1$), all 5 blocks contained predictors that are correlated. 
+
+For simplicity, we will refer to the simulated data as gene expression data, with each column of the design matrix being a gene. First we generate gene expression data for $p=1000$ genes, independently for the 100 unexposed (`d0`) and 100 exposed (`d1`) subjects using the `s_modules` function. The exposed subjects are meant to have correlated genes while the unexposed subject don't. The `modProportions` argument is a numeric vector with length equal the number of modules you want to generate plus one, containing fractions of the total number of genes to be put into each of the modules and into the "grey module", which means genes not related to any of the modules. In the following examples we generate 5 modules of equal size (15\% of $p$ each module) plus 1 "grey" module (25\% of $p$)
+
+```{r}
+pacman::p_load(eclust)
+d0 <- s_modules(n = 100, p = 1000, rho = 0, exposed = FALSE,
+                modProportions = c(0.15,0.15,0.15,0.15,0.15,0.25),
+                minCor = 0.01,
+                maxCor = 1,
+                corPower = 1,
+                propNegativeCor = 0.3,
+                backgroundNoise = 0.5,
+                signed = FALSE,
+                leaveOut = 1:4)
+
+d1 <- s_modules(n = 100, p = 1000, rho = 0.9, exposed = TRUE,
+                modProportions = c(0.15,0.15,0.15,0.15,0.15,0.25),
+                minCor = 0.4,
+                maxCor = 1,
+                corPower = 0.3,
+                propNegativeCor = 0.3,
+                backgroundNoise = 0.5,
+                signed = FALSE)
+
+# get the true cluster labels
+truemodule1 <- d1$setLabels
+table(truemodule1)
+```
+
+
+Next we create the design matrix and label it. Note that the rows are the subjects and the columns are the genes. The first 100 rows correspond to the unexposed subjects, and the next 100 subjects correspond to the exposed subjects:
+
+```{r}
+pacman::p_load(magrittr)
+
+X <- rbind(d0$datExpr, d1$datExpr) %>%
+  magrittr::set_colnames(paste0("Gene", 1:1000)) %>%
+  magrittr::set_rownames(paste0("Subject",1:200))
+```
+
+Here we used the `pheatmap` and `viridis` packages to show the correlation matrices of the genes stratified by exposure status. The first figure corresponds to the unexposed $(E=0)$ subjects, and the second figure corresponds to the exposed $(E=1)$ subjects:
+
+```{r, fig.show='hold', tidy=FALSE}
+pacman::p_load(pheatmap)
+pacman::p_load(viridis)
+
+pheatmap::pheatmap(cor(X[1:100,]),
+                   show_rownames = F, 
+                   show_colnames = F, 
+                   color = viridis(100))
+
+pheatmap::pheatmap(cor(X[101:200,]),
+                   show_rownames = F, 
+                   show_colnames = F, 
+                   color = viridis(100))
+```
+
+
+## The response
+
+The first three simulation scenarios differ in how the linear predictor $Y^*$ is defined, and also in the choice of regression model used to fit the data. In simulations 1 and 2 we use lasso (Tibshirani 1996) and elasticnet (Zou 2005) to fit linear models; then we use MARS (Friedman 1991) in simulation 3 to estimate non-linear effects. Simulations 4, 5 and 6 use the GLM version of these models, respectively, since the responses are binary.
+
+### Linear Relationship
+
+For simulations 1 and 2 we used the `s_generate_data` function to generate linear relationships beteween the response and genes, of the form:
+
+\begin{equation}
+Y^* = \sum_{\substack{j\in \left\lbrace 1, \ldots, 50 \right\rbrace\\ j \in \textrm{ red, green block}}}  \beta_j X_j + \beta_E E 
+\end{equation}
+where $\beta_j \sim \textrm{Unif}\left[ 0.9,1.1\right]$ and \mbox{$\beta_E = 2$}. That is, only the first 50 predictors of both the red and green blocks are active. In this setting, only the main effects model is being fit to the simulated data. 
+
+We used the `s_generate_data` with the `include_interaction = TRUE` argument to generate responses of the form:
+
+\begin{equation}
+Y^* = \sum_{\substack{j\in \left\lbrace 1, \ldots, 50 \right\rbrace\\ j \in \textrm{ red, green block}}} \beta_j X_j + \alpha_{j} X_j E + \beta_E E 
+\end{equation}
+
+where $\beta_j \sim \textrm{Unif}\left[ 0.9,1.1\right]$, $\alpha_{j} \sim \textrm{Unif}\left[ 0.4,0.6\right]$, and $\beta_E = 2$. In this setting, both the main effects and their interactions with E are being fit to the simulated data. 
+
+
+In this example we generate a response which depends on both the main effects and their interactions with E. We first generate the true $\beta$ vector:
+
+```{r, eval=T}
+betaMainEffect <- vector("double", length = 1000)
+betaMainInteractions <- vector("double", length = 1000)
+
+# the first 25 in the 3rd block are active
+betaMainEffect[which(truemodule1 %in% 3)[1:50]] <- runif(50, 0.9, 1.1)
+
+# the first 25 in the 4th block are active
+betaMainEffect[which(truemodule1 %in% 4)[1:50]] <- runif(50, 0.9, 1.1)
+
+# the interaction effects
+betaMainInteractions[which(betaMainEffect!=0)] <- runif(50, 0.4, 0.6)
+
+# the environment effect
+betaE <- 2
+
+# the total beta vector
+beta <- c(betaMainEffect, betaE, betaMainInteractions)
+```
+
+
+Next we run the `s_generate_data` function to get the necessary results for the analysis step of the simulation study. This function creates a training and a test set of equal size by evenly divinding the subjects such that there are an equal number of exposed and unexposed in both training and test sets. 
+
+There are several choices to make here, but these are the most important arguments:
+
+1. `cluster_distance`: How should the genes, ignoring the exposure status of the individuals, be clustered? We choose the $TOM$ matrix based on all subjects.
+2. `eclust_distance`: How should the genes, accounting for the exposure status of the individuals, be clustered? We choose the difference of the exposure sensitive TOM matrices: $TOM(X_{\textrm{diff}}) = |TOM_{E=1} - TOM_{E=0}|$
+3. `cut_method`: How should the number of clusters be determined? We choose the `dynamicTreeCut::cutreeDynamic()` algorithm which automatically selects the number of clusters. 
+
+```{r}
+result <- s_generate_data(p = 1000, 
+                          X = X,
+                          beta = beta,
+                          include_interaction = TRUE,
+                          cluster_distance = "tom",
+                          n = 200, 
+                          n0 = 100,
+                          eclust_distance = "difftom",
+                          signal_to_noise_ratio = 1,
+                          distance_method = "euclidean",
+                          cluster_method = "hclust",
+                          cut_method = "dynamic",
+                          agglomeration_method = "average",
+                          nPC = 1)
+names(result)
+```
+
+
+
+
+### Non-Linear Relationship
+
+We used the `s_generate_data_mars` function to generate non-linear effects of the predictors on the phenotype, of the form:
+
+\begin{equation}
+Y_i^* = \sum_{\substack{j\in \left\lbrace 1, \ldots, 50 \right\rbrace\\ j \in \textrm{ red, green block}}}  \beta_j X_{ij}  + \beta_E E_i + \alpha_Q E_i \cdot f(Q_i) \label{eq:sim3}
+\end{equation} where 
+\begin{align}
+Q_i &= - \max_{\substack{ j\in \left\lbrace 1, \ldots, 50 \right\rbrace\\ j \in \textrm{ red, green block}}}   \left(  X_{ij} - \bar{X}_i   \right)^2   \label{eq:qiterm}\\
+f(u_i) &= \frac{u_i - \displaystyle \min_{i \in \left\lbrace 1, \ldots, n \right \rbrace  } u_i}{-\displaystyle \min_{i \in \left\lbrace 1, \ldots, n \right \rbrace  } u_i} \label{eq:fterm}\\
+\bar{X}_i &= \frac{1}{100} \sum_{\substack{j\in \left\lbrace 1, \ldots, 250 \right\rbrace\\ j \in \textrm{ red, green block}}} X_{ij} \nonumber
+\end{align}
+
+
+The `s_generate_data_mars` works exactly the same way as the `s_generate_data` function. The only difference is that the  `s_generate_data_mars` calls the `s_response_mars` function to generate the response, whereas the `s_generate_data` function calls the `s_response` function to generate the response. 
+
+
+## Fitting Functions
+
+In our paper, we compare three general approaches as detailed in the table below:
+
+![](http://i.imgur.com/s9cGeuL.png)
+
+There are 4 fitting functions corresponding to the approaches outlined in the table above, specifically made to be used with the simulated data: 
+
+```{r, echo=FALSE}
+pander::pander(data.frame(`function name` = c("s_pen_separate", "s_pen_clust", "s_mars_separate", "s_mars_clust"),
+           `General Approach` = rep(c("SEPARATE","CLUST, ECLUST"), 2),
+           `model` = c(rep(c("lasso, elasticnet, mcp, scad"), 2), rep("MARS",2))))
+```
+
+In this example we fit a lasso to the clusters from the ECLUST method. The key argument here is the `gene_groups`. We provide `result[["clustersAddon"]]` to the `gene_groups` function because it is the clustering result using the environment information. If we wanted to run the CLUST method, then we would provide `result[["clustersAll"]]` to the `gene_groups` argument, because `result[["clustersAll"]]` is the clustering result from ignoring the environment information. We also specify `summary = "pc"` and `model = "lasso"` to specify that we want to use the 1st PC as the cluster representation and fit a lasso model to those clusters and their interaction with `E` (as specified by the `include_interaction = TRUE` argument) 
+
+```{r}
+# Provide ECLUST clustering results to the gene_groups argument
+pen_res <- s_pen_clust(x_train = result[["X_train"]],
+                       x_test = result[["X_test"]],
+                       y_train = result[["Y_train"]],
+                       y_test = result[["Y_test"]],
+                       s0 = result[["S0"]],
+                       gene_groups = result[["clustersAddon"]],
+                       summary = "pc",
+                       model = "lasso",
+                       exp_family = "gaussian",
+                       clust_type = "ECLUST",
+                       include_interaction = TRUE)
+unlist(pen_res)
+```
+
+
+The table below describes the measures of performance:
+
+![](http://i.imgur.com/o0m6p0z.png)
+
+
+# Plots
+ 
+## Plot Method for Object of class similarity
+ 
+ There is a plot method for similarity matrices included in this package, though it is very specific to the simulated data only since the resulting plot annotates the true cluster membership of the genes. The plot uses the `pheatmap` package for the heatmaps along with the `viridis` package for the color scheme so these packages need to be installed prior to using this function. 
+
+The plot method is for objects of class `similarity`. The following objects, which are outputs of the `s_generate_data` function, are objects of class `similarity`:
+
+```{r, echo=FALSE}
+pander::pander(data.frame(`object name` = c("tom_train_all","tom_train_diff","tom_train_e1","tom_train_e0","corr_train_all","corr_train_diff","corr_train_e1","corr_train_e0","fisherScore","corScor")))
+```
+
+
+
+To plot the heatmap of the similarity matrix, you need to provide it with the clustering tree, the cluster membership and the genes active in the response. In this example we plot the TOM matrix for the exposed subjects given by the `tom_train_e1` object. The resulting heatmap has annotations for the cluster membership and if the gene is active in the response:
+
+```{r}
+# check that the object is of class similarity
+class(result$tom_train_e1)
+
+# get clustering tree
+hc <- hclust(as.dist(1 - result$tom_train_e1), method = "average")
+
+plot(result$tom_train_e1, 
+     truemodule = truemodule1, 
+     cluster_rows = hc, 
+     cluster_cols = hc,
+     active = as.numeric(betaMainEffect!=0))
+```
+
+ 
+## Plot Method for Object of class eclust
+
+There is also a function that plots heatmaps of cluster summaries such as the 1st principal component or average by exposure status. This is a plot method for object of class eclust returned by the `r_cluster_data` function. Two heatmaps, side-by-side are returned, where the first heatmap corresponds to the unexposed subjects and the second heatmap corresponds to the exposed subjects.
+
+
+We check the class of the object returned from the clustering results on the `tcgaov` data:
+
+```{r}
+class(cluster_res)
+```
+
+We simply pass this object to the generic `plot` function:
+
+```{r}
+plot(cluster_res, show_column_names = FALSE)
+```
+
+
+
+
+
+
+
+
+
