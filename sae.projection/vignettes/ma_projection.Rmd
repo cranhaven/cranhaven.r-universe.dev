@@ -1,0 +1,129 @@
+---
+title: "sae.projection: A Model-Assisted Projection Estimator for Combining Independent Surveys"
+author: "Ridson Al Farizal P (ridsonap@bps.go.id)"
+date: "`r Sys.Date()`"
+output:
+  rmarkdown::html_vignette:
+    toc: true
+    toc_depth: 2
+vignette: >
+  %\VignetteIndexEntry{Model-Assisted Projection Estimator}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+## Introduction
+
+The `ma_projection()` function implements a model-assisted projection estimator for combining information from two independent surveys. This method is especially useful in survey sampling scenarios where:
+
+- **Survey 1** contains a large sample with only auxiliary variables.
+- **Survey 2** contains a smaller sample with both the outcome and auxiliary variables.
+
+This vignette illustrates how to use `ma_projection()` for domain-level estimation using various supervised learning models, including machine learning techniques via the `parsnip` interface.
+
+## Method Overview
+
+The approach follows the work of Kim & Rao (2012), where a working model is trained on Survey 2 to predict the outcome variable. Predictions are made for the auxiliary-only Survey 1 data. These predictions are then aggregated by domain to generate small area estimates.
+
+## Required Packages
+
+```r
+library(sae.projection)
+library(dplyr)
+library(tidymodels)
+library(bonsai)  # for modern tree-based models
+```
+
+## Example: Income Estimation Using Linear Regression
+
+```r
+# Filter non-missing values for income
+svy22_income <- df_svy22 %>% filter(!is.na(income))
+svy23_income <- df_svy23 %>% filter(!is.na(income))
+
+# Fit projection model
+lm_result <- ma_projection(
+  income ~ age + sex + edu + disability,
+  cluster_ids = "PSU",
+  weight = "WEIGHT",
+  strata = "STRATA",
+  domain = c("PROV", "REGENCY"),
+  working_model = linear_reg(),
+  data_model = svy22_income,
+  data_proj = svy23_income,
+  nest = TRUE
+)
+
+# View results
+head(lm_result$df_result)
+```
+
+## Example: Binary Outcome Using Logistic Regression
+
+```r
+# Filter youth population for NEET classification
+svy22_neet <- df_svy22 %>% filter(between(age, 15, 24))
+svy23_neet <- df_svy23 %>% filter(between(age, 15, 24))
+
+# Fit logistic regression model
+lr_result <- ma_projection(
+  formula = neet ~ sex + edu + disability,
+  cluster_ids = ~ PSU,
+  weight = ~ WEIGHT,
+  strata = ~ STRATA,
+  domain = ~ PROV + REGENCY,
+  working_model = logistic_reg(),
+  data_model = svy22_neet,
+  data_proj = svy23_neet,
+  nest = TRUE
+)
+
+# View results
+head(lr_result$df_result)
+```
+
+## Example: LightGBM with Hyperparameter Tuning
+
+```r
+# Define LightGBM model with tuning
+lgbm_model <- boost_tree(
+  mtry = tune(), trees = tune(), min_n = tune(),
+  tree_depth = tune(), learn_rate = tune(),
+  engine = "lightgbm"
+)
+
+# Fit with cross-validation
+lgbm_result <- ma_projection(
+  formula = neet ~ sex + edu + disability,
+  cluster_ids = "PSU",
+  weight = "WEIGHT",
+  strata = "STRATA",
+  domain = c("PROV", "REGENCY"),
+  working_model = lgbm_model,
+  data_model = svy22_neet,
+  data_proj = svy23_neet,
+  cv_folds = 3,
+  tuning_grid = 5,
+  nest = TRUE
+)
+
+# View results
+head(lgbm_result$df_result)
+```
+
+## Supported Models
+
+`ma_projection()` supports many working models using the `parsnip` interface, including:
+
+- `linear_reg()`, `logistic_reg()` (also with Stan engine)
+- `poisson_reg()`, `mlp()`, `naive_bayes()`, `nearest_neighbor()`
+- Tree-based: `decision_tree()`, `bag_tree()`, `boost_tree()` with LightGBM/XGBoost, `rand_forest()` (ranger, aorsf), `bart()`
+- SVM: `svm_linear()`, `svm_poly()`, `svm_rbf()`
+
+## References
+
+Kim, J. K., & Rao, J. N. (2012). Combining data from two independent surveys: a model-assisted approach. *Biometrika*, 99(1), 85–100. [doi:10.1093/biomet/asr063](https://doi.org/10.1093/biomet/asr063)
+
+## Conclusion
+
+`ma_projection()` provides a flexible and robust way to combine survey data using modern modeling tools. It supports a wide range of use cases including socioeconomic indicators, health estimates, and more.
