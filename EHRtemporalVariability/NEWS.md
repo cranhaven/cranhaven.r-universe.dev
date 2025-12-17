@@ -1,0 +1,61 @@
+# EHRtemporalVariability 1.2.1
+
+* Updated plotDataTemporalMap function to conform to new specifications of the order() function to avoid possible warning or error when plotting character or factor data in alphabetical order.
+
+# EHRtemporalVariability 1.2.0
+
+* Updated to R 4.3.0.
+* Fixed CRAN requirement to message when used Internet resources are not available or have changed.
+* Use of inherits() to replace conditions comparing class() to string.
+
+# EHRtemporalVariability 1.1.4
+
+* Added time series plot as an alternative to heat map. This can be selected in the `plotDataTemporalMap` function using the new `mode` parameter.
+
+# EHRtemporalVariability 1.1.3
+
+* Fixed issue when a numerical input column has all its values as missing.
+* Fixed issue when showing warning at kernel density estimation with less than 4 values.
+* Added help to `IGTProjection` class.
+
+# EHRtemporalVariability 1.1.2
+
+* Added `webshot` package to suggest list in DESCRIPTION to avoid Vignette compilation issues.
+
+# EHRtemporalVariability 1.1.1
+
+* Fixed issues when plotting IGT projections trajectories by filtering by date or at weekly period.
+
+# EHRtemporalVariability 1.1.0
+
+* Added function `estimateIGTTrajectory` to estimate a trajectory of the information temporal evolution in a IGT projection by fitting a cubic smoothing spline.
+* The `plotIGTProjection` function now allows plotting the information trajectory using the optional `trajectory` parameter.
+* Updated the `estimateIGTProjection` function to allow non-metric multidimensional scaling in addition to classical. To do so use the new `embeddingType` function parameter.
+* The dimensionality reduction loss for both non-metric (stress) and metric (1-GOF) multidimensional scaling is now returned by the `estimateIGTProjection` function.
+* The vignette has been extended to describe how to interpret temporal changes in IGT projections. This included how to use clustering methods in IGT projections to help delineate temporal subgroups. Other updates related to this version were included too.
+* Fixed warning in icd9toPheWAS when the input ICD-9 variable was a factor.
+* Fixed a typo and a warning in the vignette.
+
+# EHRtemporalVariability 1.0.4
+
+* Fixed bug in the estimateDataTemporalMap function where an expected Date was POSIXt instead when using newer versions of zoo and R package.
+
+# EHRtemporalVariability 1.0.3
+
+* Fixed bug when plotting IGT projections at a weekly period.
+* Removed no longer used plotly buttons to suppress warnings.
+
+# EHRtemporalVariability 1.0.2
+
+* Description texts, references and vignette have been fixed and updated.
+
+# EHRtemporalVariability 1.0.1
+
+## Bug fixes
+
+* Fixed help for the manual generation of a `DataTemporalMap` class using S4 `new()` constructor.
+* Removed unnecessary imports to reduce installation load.
+
+# EHRtemporalVariability 1.0.0
+
+* Initial release.
