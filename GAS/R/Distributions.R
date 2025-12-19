@@ -1,0 +1,274 @@
+DistLabels <- function() {
+    return(c("norm",
+             "snorm",
+             "std",
+             "sstd",
+             "ast",
+             "ast1",
+             "ald",
+             # "ghskt",
+             "poi",
+             "ber",
+             "gamma",
+             "exp",
+             "beta",
+             "negbin",
+             "skellam",
+             "mvnorm",
+             "mvt"))
+}
+
+DistName <- function(DistLabel) {
+    if (DistLabel == "norm")
+        return("Gaussian")
+    if (DistLabel == "snorm")
+        return("Skew-Gaussian")
+    if (DistLabel == "std")
+        return("Student-t")
+    if (DistLabel == "sstd")
+        return("Skew-Student-t")
+    if (DistLabel == "ast")
+        return("Asymmetric Student-t with two tail decay parameters")
+    if (DistLabel == "ast1")
+        return("Asymmetric Student-t with one tail decay parameter")
+    if (DistLabel == "ald")
+        return("Asymmetric Laplace Distribution")
+  if (DistLabel == "ghskt")
+    return("Generalized Hyperbolic Skew Student-t Distribution")
+    if (DistLabel == "poi")
+        return("Poisson")
+    if (DistLabel == "ber")
+        return("Bernoulli")
+    if (DistLabel == "gamma")
+        return("Gamma")
+    if (DistLabel == "exp")
+        return("Exponential")
+    if (DistLabel == "beta")
+        return("Beta")
+  if (DistLabel == "negbin")
+    return("Negative Binomial")
+  if (DistLabel == "skellam")
+    return("Skellam")
+    if (DistLabel == "mvnorm")
+        return("Multivariate Gaussian")
+    if (DistLabel == "mvt")
+        return("Multivariate Student-t")
+}
+
+DistNote <- function(DistLabel) {
+    if (DistLabel == "norm")
+        return("")
+    if (DistLabel == "snorm")
+        return("Skew Gaussian distribution of Fernandez and Steel (1998). It is reparameterized as in
+               fGARCH and rugarch such that the location is the mean and the scale is the standard deviation.")
+    if (DistLabel == "std")
+        return("The Student-t distribution (not reparameterized in terms of the variance parameter)")
+    if (DistLabel == "sstd")
+        return("This is the Skew-Student-t distribution of Fernandez and Steel (1998). It is reparameterized as in
+               fGARCH and rugarch such that the location is the mean and the scale is the standard deviation.")
+    if (DistLabel == "ast")
+        return("")
+    if (DistLabel == "ast1")
+        return("Constraint version of ast")
+    if (DistLabel == "ald")
+        return("The theta, sigma, kappa reparameterisation is used, see Kotz et al. (2001)")
+  if (DistLabel == "ghskt")
+    return("We use the same implementation of the rugarch package of Ghalanos (2016).")
+    if (DistLabel == "poi")
+        return("For the Poisson distribution 'location' means the usual intensity parameter")
+    if (DistLabel == "ber")
+        return("For the Bernoulli distribution 'location' means the probability of success parameter")
+    if (DistLabel == "gamma")
+        return("")
+    if (DistLabel == "beta")
+        return("For the Beta distribution 'shape' means the usual alpha parameter and 'scale' means the usual beta parameter")
+    if (DistLabel == "exp")
+        return("For the Exponential distribution 'location' means the usual rate parameter")
+    if (DistLabel == "skellam")
+        return("The Skellam distribution reparameterized in terms of mean and variance.")
+    if (DistLabel == "negbin")
+        return("The negative binomial distribution with size = nu and prob = pi. Both parameters can be time-varying,
+                however, only pi can be be used with a scaled score. For the Negative Binomial distribution 'location'
+                means the probability of success parameter, and 'scale' refers to the size parameter.")
+    if (DistLabel == "mvnorm")
+        return("")
+    if (DistLabel == "mvt")
+        return("")
+}
+
+DistReference <- function(DistLabel) {
+    if (DistLabel == "norm")
+        return("")
+    if (DistLabel == "snorm")
+        return("Fernandez, Carmen, and Mark FJ Steel. 'On Bayesian modeling of fat tails and skewness.' Journal of the American Statistical Association 93.441 (1998): 359-371.")
+    if (DistLabel == "std")
+        return("")
+    if (DistLabel == "sstd")
+        return("Fernandez, Carmen, and Mark FJ Steel. 'On Bayesian modeling of fat tails and skewness.' Journal of the American Statistical Association 93.441 (1998): 359-371.")
+    if (DistLabel == "ast")
+        return("Zhu, D., & Galbraith, J. W. (2010). A generalized asymmetric Student-t distribution with application to financial econometrics. Journal of Econometrics, 157(2), 297-305.")
+    if (DistLabel == "ast1")
+        return("Zhu, D., & Galbraith, J. W. (2010). A generalized asymmetric Student-t distribution with application to financial econometrics. Journal of Econometrics, 157(2), 297-305.")
+    if (DistLabel == "ald")
+        return("Kotz, S., Kozubowski, T., & Podgorski, K. (2001). The Laplace distribution and generalizations: a revisit with applications to communications, economics, engineering, and finance. Springer Science & Business Media.")
+  if (DistLabel == "ghskt")
+    return("Aas, K. and Haff, I. H. (2006). The Generalized Hyperbolic Skew Student's t-Distribution. Journal of Financial Econometrics, 4(2), 275-309.")
+    if (DistLabel == "poi")
+        return("")
+    if (DistLabel == "ber")
+        return("")
+    if (DistLabel == "exp")
+        return("")
+    if (DistLabel == "beta")
+        return("")
+    if (DistLabel == "gamma")
+        return("")
+  if (DistLabel == "negbin")
+    return("")
+  if (DistLabel == "skellam")
+    return("")
+    if (DistLabel == "mvnorm")
+        return("")
+    if (DistLabel == "mvt")
+        return("")
+}
+
+DistParameters <- function(DistLabel) {
+    if (DistLabel == "norm")
+        return(c("location", "scale"))
+    if (DistLabel == "snorm")
+        return(c("location", "scale", "skewness"))
+    if (DistLabel == "std")
+        return(c("location", "scale", "shape"))
+    if (DistLabel == "sstd")
+        return(c("location", "scale", "skewness", "shape"))
+    if (DistLabel == "ast")
+        return(c("location", "scale", "skewness", "shape", "shape2"))
+    if (DistLabel == "ast1")
+        return(c("location", "scale", "skewness", "shape"))
+    if (DistLabel == "ald")
+        return(c("location", "scale", "skewness"))
+    if (DistLabel == "ghskt")
+        return(c("location", "scale", "skewness", "shape"))
+    if (DistLabel == "poi")
+        return(c("location"))
+    if (DistLabel == "ber")
+        return(c("location"))
+    if (DistLabel == "gamma")
+        return(c("scale", "shape"))
+    if (DistLabel == "exp")
+        return(c("location"))
+    if (DistLabel == "beta")
+        return(c("scale", "shape"))
+    if (DistLabel == "skellam")
+        return(c("location", "scale"))
+    if (DistLabel == "negbin")
+        return(c("location", "scale"))
+    if (DistLabel == "mvnorm")
+        return(c("location", "scale", "correlation"))
+    if (DistLabel == "mvt")
+        return(c("location", "scale", "correlation", "shape"))
+}
+
+DistType <- function(DistLabel) {
+    if (DistLabel == "norm")
+        return("univariate")
+    if (DistLabel == "snorm")
+        return("univariate")
+    if (DistLabel == "std")
+        return("univariate")
+    if (DistLabel == "sstd")
+        return("univariate")
+    if (DistLabel == "ast")
+        return("univariate")
+    if (DistLabel == "ast1")
+        return("univariate")
+    if (DistLabel == "ald")
+        return("univariate")
+    if (DistLabel == "ghskt")
+        return("univariate")
+    if (DistLabel == "poi")
+        return("univariate")
+    if (DistLabel == "ber")
+        return("univariate")
+    if (DistLabel == "gamma")
+        return("univariate")
+    if (DistLabel == "exp")
+        return("univariate")
+    if (DistLabel == "beta")
+        return("univariate")
+    if (DistLabel == "negbin")
+        return("univariate")
+    if (DistLabel == "skellam")
+        return("univariate")
+    if (DistLabel == "mvnorm")
+        return("multivariate")
+    if (DistLabel == "mvt")
+        return("multivariate")
+}
+
+DistScalingType <- function(DistLabel) {
+    if (DistLabel == "norm")
+        return("Identity, Inv, InvSqrt")
+    if (DistLabel == "snorm")
+        return("Identity")
+    if (DistLabel == "std")
+        return("Identity, Inv, InvSqrt")
+    if (DistLabel == "sstd")
+        return("Identity")
+    if (DistLabel == "ast")
+        return("Identity, Inv, InvSqrt")
+    if (DistLabel == "ast1")
+        return("Identity, Inv, InvSqrt")
+    if (DistLabel == "ald")
+        return("Identity, Inv, InvSqrt")
+    if (DistLabel == "ghskt")
+        return("Identity")
+    if (DistLabel == "poi")
+        return("Identity, Inv, InvSqrt")
+    if (DistLabel == "ber")
+        return("Identity, Inv, InvSqrt")
+    if (DistLabel == "gamma")
+        return("Identity, Inv, InvSqrt")
+    if (DistLabel == "exp")
+        return("Identity, Inv, InvSqrt")
+    if (DistLabel == "beta")
+        return("Identity, Inv, InvSqrt")
+    if (DistLabel == "negbin")
+        return("Identity, Inv, InvSqrt")
+    if (DistLabel == "skellam")
+        return("Identity")
+    if (DistLabel == "mvnorm")
+        return("Identity")
+    if (DistLabel == "mvt")
+        return("Identity")
+}
+
+DistInfo <- function(DistLabel = NULL, N = 2L, FULL = TRUE) {
+    if (is.null(DistLabel))
+        DistLabel = DistLabels()
+    for (i in 1:length(DistLabel)) {
+        cat("\n-------------------------------------------------------")
+        cat(paste("\nName:\t", DistName(DistLabel[i]), sep = ""))
+        cat(paste("\nLabel:\t", DistLabel[i], sep = ""))
+        cat(paste("\nType:\t", DistType(DistLabel[i]), sep = ""))
+        cat(paste("\nParameters:\t", paste(DistParameters(DistLabel[i]), collapse = ", "), sep = ""))
+        if (DistType(DistLabel[i]) == "univariate")
+            cat(paste("\nNumber of Parameters:\t", NumberParameters(DistLabel[i]), sep = ""))
+        if (DistType(DistLabel[i]) == "multivariate")
+            cat(paste("\nNumber of Parameters:\t", NumberParameters(DistLabel[i], N), " with N = ",
+                N, sep = ""))
+        if (FULL) {
+          cat(paste("\nScaling Type:\t", DistScalingType(DistLabel[i])))
+          cat(paste("\nNote:\t", DistNote(DistLabel[i])))
+        }
+        cat(paste("\nReferences:\t", DistReference(DistLabel[i]), sep = ""))
+        cat("\n-------------------------------------------------------")
+    }
+}
+
+
+
+
+
+
