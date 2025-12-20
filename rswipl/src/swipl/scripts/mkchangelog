@@ -1,0 +1,214 @@
+#!/bin/bash
+
+# Generate old-style ChangeLog files from the GIT log. Ultimately we may
+# wish to insert this into ChangeLog
+
+footer=false
+printdate=true
+directory=.
+modules=true
+quiet=false
+moduleoptions=
+[ -z "$level" ] && level="="
+if [ $(uname) = Darwin ]; then
+   FMT="fmt"
+else
+   FMT="fmt -ut"
+fi
+
+export level
+
+help()
+{  echo "Usage: `basename $0` option ... [version][..version] [path ...]"
+   echo "Options:"
+   echo "    --footer"
+   echo "    --nodate"
+   echo "    --nomodules"
+   echo "    --dir=<dir>"
+}
+
+
+done=false
+while [ $done = false ]; do
+    case "$1" in
+        --help)
+		help
+		exit 0
+		;;
+	--footer)
+		footer=true
+		shift
+		;;
+	--nodate)
+		printdate=false
+		shift
+		moduleoptions+="--nodate"
+		;;
+	--quiet)
+		quiet=true
+		shift
+		;;
+	--wiki)
+		shift
+		;;
+	--nomodules)
+		modules=false
+		shift
+		;;
+	--dir=*)
+		directory="`echo $1 | sed 's/--dir=//'`"
+		shift
+		modules=false
+		;;
+	*)	done=true
+		;;
+    esac
+done
+
+tag="$1"
+
+if [ -z "$tag" ]; then
+   tag=$(cat VERSION)
+fi
+
+# Ensure case-sensitive matching
+LANG=C
+
+case "$tag" in
+   [0-9]*.[0-9]*.[0-9]*..[0-9]*.[0-9]*.[0-9]*)
+	vfrom="$(echo $tag | sed 's/\.\..*//')"
+	vto="$(echo $tag | sed 's/.*\.\.//')"
+	;;
+   V[0-9]*.[0-9]*.[0-9]*..V[0-9]*.[0-9]*.[0-9]*)
+	vfrom="$(echo $tag | sed -e s/V//g -e 's/\.\..*//')"
+	vto="$(echo $tag | sed -e s/V//g -e 's/.*\.\.//')"
+	;;
+   [0-9]*.[0-9]*.[0-9]*)
+        vfrom="$tag"
+	vto=
+	;;
+   V[0-9]*.[0-9]*.[0-9]*)
+        vfrom="$(echo $tag | sed s/V//)"
+	vto=
+	;;
+   *..*)
+	vfrom="$(echo $tag | sed 's/\.\..*//')"
+	vto="$(echo $tag | sed 's/.*\.\.//')"
+	;;
+   [0-9a-f]*)
+	vfrom=$tag
+	vto=
+	;;
+esac
+shift
+
+vvtag()
+{ case $1 in
+    [0-9]*.[0-9]*.[0-9]*)
+      echo V$1
+      ;;
+    *)
+      echo $1
+      ;;
+  esac
+}
+
+if [ -z "$vto" ]; then
+  opt=$(vvtag $vfrom)..
+else
+  opt="$(vvtag $vfrom)..$(vvtag $vto)"
+fi
+
+cd $directory
+
+if [ "$quiet" = true ]; then
+  git log "$opt" --pretty=format:"PATCH[%ad]%n%s%n%b" $* | \
+	grep -q '^[A-Z][A-Z]*:'
+  exit $?
+fi
+
+header ()
+{ hdr="$*"
+
+  hdr="$*"
+  eq=`echo $hdr | sed "s/./$level/g"`
+  echo $hdr
+  echo $eq
+
+  echo
+}
+
+(
+if [ "$directory" = "." ]; then
+  if [ -z "$vto" ]; then
+    header "SWI-Prolog Changelog since version $vfrom"
+  else
+    header "SWI-Prolog Changelog from version $vfrom to $vto"
+  fi
+else
+  header "Package `basename $directory`"
+fi
+
+git log "$opt" --pretty=format:"PATCH[%ad]%n%s%n%b" --date-order --simplify-merges $* | tr -d '\r'| awk '
+BEGIN		{ doprint="false";
+		  dateprinted="";
+		}
+/^PATCH[[]/	{ date="["  $2 " " $3 " " $5 "]";
+		  doprint="false";
+		  next;
+	        }
+/^[A-Z][A-Z]*:/	{ if ( dateprinted != date )
+		  { if ( "'$printdate'" == "true" )
+		    { printf("%s\n\n", date);
+		    }
+		    dateprinted = date;
+		  }
+		  printf(" * %s\n", $0);
+		  doprint="true";
+		  next;
+		}
+/.*/		{ if ( doprint == "true" )
+		  { if ( $0 != "<unknown>" )
+		    { printf("   %s\n", $0);
+		    } else
+		    { printf("\n");
+		    }
+		  }
+		  next;
+		}
+' ) | $FMT
+
+# Include submodules
+
+mtag()
+{ git ls-tree $1 $2 | awk '{print $3}'
+}
+
+if [ "$modules" = true ]; then
+  level="-"
+
+  echo
+
+  for d in `git submodule -q foreach pwd`; do
+    mfrom=$(mtag $(vvtag $vfrom) $d)
+    if [ ! -z "$vto" ]; then
+      mto=$(mtag $(vvtag $vto) $d)
+    else
+      mto=$(mtag HEAD $d)
+    fi
+    if [ ! -z "$mfrom" -a ! -z "$mto" ]; then
+      subopts=$mfrom..$mto
+
+      if $0 --dir="$d" --quiet "$subopts"; then
+	echo
+	$0 --dir="$d" $moduleoptions "$subopts"
+#     else
+#       echo "Package `basename $d`: no changes"
+      fi
+    fi
+  done
+fi
+
+if [ "$footer" = true ]; then
+   header VERSION $tag
+fi

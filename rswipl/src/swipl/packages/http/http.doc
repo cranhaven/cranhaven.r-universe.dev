@@ -1,0 +1,1805 @@
+\documentclass[11pt]{article}
+\usepackage{times}
+\usepackage{pl}
+\usepackage{plpage}
+\usepackage{html}
+\makeindex
+
+\onefile
+\htmloutput{.}				% Output directory
+\htmlmainfile{http}			% Main document file
+\bodycolor{white}			% Page colour
+\sloppy
+
+\renewcommand{\runningtitle}{SWI-Prolog HTTP support}
+
+\begin{document}
+
+\title{SWI-Prolog HTTP support}
+\author{Jan Wielemaker \\
+	VU University Amsterdam \\
+	University of Amsterdam \\
+	The Netherlands \\
+	E-mail: \email{J.Wielemaker@vu.nl}}
+
+\maketitle
+
+\begin{abstract}
+This article documents the package HTTP, a series of libraries for
+accessing data on HTTP servers as well as providing HTTP server
+capabilities from SWI-Prolog (up to HTTP 1.1). Both server and client are modular
+libraries.  Further reading material is available from the locations
+below.
+\begin{shortlist}
+    \item \href{http://www.swi-prolog.org/howto/http/}{HOWTO collection}
+    \item \href{https://github.com/Anniepoo/swiplwebtut/blob/master/web.adoc}{Tutorial by Anne Ogborn}
+    \item \href{https://en.wikipedia.org/wiki/Hypertext_Transfer_Protocol}{Wikipedia entry on HTTP}
+    \item \href{https://en.wikipedia.org/wiki/Representational_state_transfer}{Wikipedia entry on REST}
+\end{shortlist}
+\end{abstract}
+
+\vfill
+
+\pagebreak
+\tableofcontents
+
+\vfill
+\vfill
+
+\newpage
+
+
+\section{Introduction}
+\label{sec:http-intro}
+
+HTTP (Hypertext Transfer Protocol) is the W3C standard protocol for
+transferring information between a web-client (e.g., a browser) and a
+web-server. The protocol is a simple \emph{envelope} protocol where
+standard name/value pairs in the header are used to split the stream
+into messages and communicate about the connection-status. Many
+languages have client and server libraries to deal with the HTTP
+protocol, making this protocol an excellent candidate for building
+client-server applications. In particular, HTTP is a natural fit
+for networked systems built according to the principles of
+``Representational State Transfer'' (\jargon{REST}).
+
+In this document we describe a modular infrastructure to access
+web-servers from SWI-Prolog and turn Prolog into a web-server.
+
+
+\subsection*{Acknowledgements}
+\label{sec:http-acknowledgements}
+
+This work has been carried out under the following projects:
+\href{http://hcs.science.uva.nl/projects/GARP/}{GARP},
+\href{http://www.ins.cwi.nl/projects/MIA/}{MIA} (dead link),
+\href{http://hcs.science.uva.nl/projects/ibrow/home.html}{IBROW} (dead link),
+\href{http://kits.edte.utwente.nl/}{KITS} (dead link) and
+\href{http://e-culture.multimedian.nl/}{MultiMediaN} (dead link).
+
+The following people have pioneered parts of this library and
+contributed with bug reports and suggestions for improvements: Anjo
+Anjewierden, Bert Bredeweg, Wouter Jansweijer, Bob Wielinga, Jacco
+van Ossenbruggen, Michiel Hildebrandt, Matt Lilley and Keri Harris.
+
+\jargon{Path wildcards} (see http_handler/3) have been modelled after the
+``arouter'' add-on pack by Raivo Laanemets. \jargon{Request rewriting} has been
+added after discussion with Raivo Laanemets and Anne Ogborn on the
+SWI-Prolog mailinglist.
+
+
+\section{The HTTP client libraries}
+\label{sec:http-clients}
+
+This package provides two client libraries for accessing HTTP servers.
+
+\begin{description}
+    \definition{\pllib{http/http_open}}
+This library provides http_open/3 and friends. It
+is a library for opening an endpoint identified by an HTTP URL as a
+Prolog stream. The general skeleton for using this library
+is given below, where \nopredref{process}{1} processes the data from the
+HTTP server.\footnote{One may opt to use cleanup/2 instead of
+setup_call_cleanup/3 to allow for aborting while http_open/3 is waiting
+for the connection.}
+
+\begin{code}
+    setup_call_cleanup(
+	http_open(URL, In, []),
+	process(In),
+	close(In)).
+\end{code}
+
+    \definition{\pllib{http/http_client}}
+This library provides http_get/3 and http_post/4 and friends. These
+predicates process the reply using plugins to convert the data based on
+the \texttt{Content-Type} of the reply.
+This library supports a plugin infrastructure that can register hooks
+for converting additional document types.
+\end{description}
+
+\input{httpopen.tex}
+\input{httpclient.tex}
+
+\section{The HTTP server libraries}		\label{sec:httpserver}
+
+The HTTP server infra structure consists of a number of small modular
+libraries that are combined into \exam{library(http/http_server)}. These
+modules are:
+
+\begin{description}
+    \definition{\pllib{http/thread_httpd}}
+This library is responsible for accepting and managing
+connections.\footnote{In older versions there were two alternative
+libraries for managing connections based on XPCE and Unix inetd.}
+
+    \definition{\pllib{http/http_dyn_workers}}
+This library dynamically adds and removes workers based on the workload
+of the server.
+
+    \definition{\pllib{http/http_wrapper}}
+This library takes a connection, parses the HTTP request header and runs
+a goal that produces a CGI document based on the parsed request. It
+watches for exceptions and turns these into (error) status pages. The
+status page generation may be hooked to provide custom pages.
+
+    \definition{\pllib{http/http_dispatch}}
+This library associates the \jargon{path} of the HTTP request with a
+\jargon{handler} that services this particular path. It also manages
+timeouts and may pass the execution of a request to a dedicated thread
+with specified resource limits using http_spawn/2.  The module supports
+plugable request rewrite handlers that may be used to implement
+identification, authorization, input argument processing, etc.
+
+    \definition{\pllib{http/http_parameters}}
+This library parses HTTP request parameters, both dealing with GET
+and POST style parameter passing.
+
+    \definition{\pllib{http/html_write}}
+This library translates a Prolog term into an HTML document using Prolog
+\jargon{grammar rules} (DCG). It provides a modular infrastructure to
+build pages that are guaranteed to be valid HTML.  The HTTP server
+libraries provide several alternatives for generating HTML ranging
+from simple printing to \const{current_output} to XML-based templates
+(PWP).
+
+    \definition{\pllib{http/http_json}}
+This library parses a POSTed HTTP document into a Prolog dict and
+formulates an HTTP JSON reply from a Prolog dict and is typically
+used to implement REST services.
+\end{description}
+
+Most server implementation simply load the \pllib{http/http_server}
+library, which loads the above modules and reexports all predicates
+except for those used for internal communication and older deprecated
+predicates. Specific use cases may load a subset of the individual
+libraries and may decide to replace one or more of them.
+
+A typical skeleton for building a server is given below. If this file is
+loaded as main file (using e.g., \exam{swipl server.pl}) it creates a
+simple server that listens on port 8080. If the root is accessed it
+redirects to the home page and shows \textbf{Hello world!}.
+
+\begin{code}
+:- use_module(library(http/http_server)).
+
+:- initialization
+    http_server([port(8080)]).
+
+:- http_handler(root(.),
+		http_redirect(moved, location_by_id(home_page)),
+		[]).
+:- http_handler(root(home), home_page, []).
+
+home_page(_Request) :-
+    reply_html_page(
+	title('Demo server'),
+	[ h1('Hello world!')
+	]).
+\end{code}
+
+\subsection{Creating an HTTP reply}			\label{sec:html-body}
+
+The \jargon{handler} (e.g., \nopredref{home_page}{1} above) is called
+with the parsed request (see \secref{request}) as argument and
+\const{current_output} set to a temporary buffer. Its task is closely
+related to the task of a CGI script; it must write a header declaring at
+least the \const{Content-type} field and a body. Below is a simple body
+writing the request as an HTML table.\footnote{Note that writing an HTML
+reply this way is deprecated. In fact, the code is subject to
+\jargon{injection attacks} as the HTTP request field values are
+literally injected in the output while HTML reserved characters should
+be properly escaped.}
+
+\begin{code}
+reply(Request) :-
+	format('Content-type: text/html~n~n', []),
+	format('<html>~n', []),
+	format('<table border=1>~n'),
+	print_request(Request),
+	format('~n</table>~n'),
+	format('</html>~n', []).
+
+print_request([]).
+print_request([H|T]) :-
+	H =.. [Name, Value],
+	format('<tr><td>~w<td>~w~n', [Name, Value]),
+	print_request(T).
+\end{code}
+
+The infrastructure recognises the header fields described below. Other
+header lines are passed verbatim to the client. Typical examples are
+\texttt{Set-Cookie} and authentication headers (see \secref{httpauthenticate}).
+
+\begin{description}
+    \item[Content-type:~\arg{Type}]
+This field is passed to the client and used by the infrastructure to
+determine the \jargon{encoding} to use for the stream. If \arg{type}
+matches \const{text/*} or the type matches with \const{UTF-8} (case
+insensitive), the server uses UTF-8 encoding. The user may force UTF-8
+encoding for arbitrary content types by adding \texttt{; charset=UTF-8}
+to the end of the \const{Content-type} header.
+
+    \item[Transfer-encoding:~chunked]
+Causes the server to use \jargon{chunked} encoding
+if the client allows for it. See also \secref{transfer} and the
+\const{chunked} option in http_handler/3.
+
+    \item[Connection:~close]
+Causes the connection to be closed after the transfer.  The default is
+to keep it open `Keep-Alive' if possible.
+
+    \item[Location:~\arg{URL}]
+This header may be combined with the \const{Status} header to force a
+\jargon{redirect} response to the given \arg{URL}.  The message body
+must be empty. Handling this header is primarily intended for
+compatibility with the CGI conventions. Prolog code should use
+http_redirect/3.
+
+    \item[Status:~\arg{Status}]
+This header can be combined with \const{Location}, where \arg{Status}
+must be one of 301 (moved), 302 (moved temporary, default) or 303 (see
+other). Using the status field also allows for formulating replies such
+as 201 (created).
+\end{description}
+
+Note that the handler may send any type of document instead of HTML.
+After the header has been written, the \jargon{encoding} of the
+\const{current_output} stream encoding is established as follows:
+
+\begin{enumerate}
+    \item If the content type is \const{text/*} the stream is switched
+          to UTF-8 encoding.  If the content type does not provide
+	  attributes, \verb$; charset=UTF-8$ is added.
+    \item The content type contains \verb$UTF-8$ the stream is switched
+          to UTF-8 encoding.
+    \item http:mime_type_encoding/2 succeeds the returned encoding is
+          used.  The returned encoding must be valid for set_stream/2.
+    \item If the content type matches a list of known encodings, this
+          is used.  See mime_type_encoding/2 is \file{http_header}.
+	  The current list deals with JSON, Turtle and SPARQL.
+    \item Otherwise the stream uses octed (binary) encoding.
+\end{enumerate}
+
+
+\subsubsection{Returning special status codes}	\label{sec:httpspecials}
+
+Besides returning a page by writing it to the current output stream,
+the server goal can raise an exception using throw/1 to generate special
+pages such as \const{not_found}, \const{moved}, etc. The defined
+exceptions are:
+
+\begin{description}
+    \termitem{http_reply}{+Reply, +HdrExtra, +Context}
+Return a result page using http_reply/3.  See http_reply/3 for
+supported values for Reply and \secref{http-custom-error-page}
+for providing a custom error page.
+
+    \termitem{http_reply}{+Reply, +HdrExtra}
+Return a result page using http_reply/3. Equivalent to
+\term{http_reply}{Reply, HdrExtra, []}.
+
+    \termitem{http_reply}{+Reply}
+Equivalent to \term{http_reply}{Reply, [], []}.
+
+    \termitem{http}{not_modified}
+Equivalent to \term{http_reply}{not_modified, []}.  This exception is
+for backward compatibility and can be used by the server to indicate
+the referenced resource has not been modified since it was requested
+last time.
+\end{description}
+
+In addition, the normal \verb$"200 OK"$ reply status may be overruled by
+writing a CGI \const{Status} header prior to the remainder of the
+message. This is particularly useful for defining REST APIs. The
+following handler replies with a \verb$"201 Created"$ header:
+
+\begin{code}
+handle_request(Request) :-
+	process_data(Request, Id),	% application predicate
+	format('Status: 201~n'),
+	format('Content-type: text/plain~n~n'),
+	format('Created object as ~q~n', [Id]).
+\end{code}
+
+
+\InputIfFileExists{httpdispatch.tex}{}{}
+\InputIfFileExists{httpdirindex.tex}{}{}
+\InputIfFileExists{httpfiles.tex}{}{}
+\InputIfFileExists{httpsession.tex}{}{}
+\InputIfFileExists{httpcors.tex}{}{}
+\InputIfFileExists{httpauthenticate.tex}{}{}
+\InputIfFileExists{httpdigest.tex}{}{}
+\InputIfFileExists{httpdynworkers.tex}{}{}
+
+\subsubsection{Providing Server-Sent Events (sse)}
+\label{sec:http-sse}
+
+\href{https://developer.mozilla.org/en-US/docs/Web/API/Server-sent_events/Using_server-sent_events}{Server-Sent
+  Events} allows for setting up a simple event stream from the server
+to the client.  It can serve roles similar to \jargon{long polling}
+and \jargon{web sockets}, enabling the server to notify its clients on
+some event.  \jargon{Long polling} uses a normal HTTP (usually) GET
+request that blocks for a long time on the server.  The server
+finishes the request when it wants to notify the client or after some
+time (e.g., a minute) to avoid a timeout on the client or some proxy.
+After receiving an event or timeout, the client repeats the request.
+\jargon{Web sockets} \jargon{upgrade} a the socket used for a normal
+HTTP request to create a bi-directional open communication channel
+that exchanges encapsulated messages in both
+directions. \jargon{Server-Sent Events} open a normal HTTP channel
+over which the server can sent simple text messages using a format
+similar to the HTTP header: a sequence of \textit{Name: Value} lines
+followed by two newlines.   Unlike long polling, the request does
+not complete after a message.
+
+Following the MDN documentation above, and SSE request can be served
+using the simple example below that generates an event, counting
+every minute.  Note the handler declaration that processes the request
+on a new thread and disables timeout for this location.   Note that
+this implementation uses a thread per client.   This design limits
+the scalability.
+
+\begin{code}
+:- http_handler(root(events), events,
+                [ spawn([]),
+                  time_limit(infinite)
+                ]).
+
+events(_Request) :-
+    format('X-Accel-Buffering: no\r\n\c
+            Content-Type: text/event-stream\r\n\c
+            Cache-Control: no-cache\r\n\r\n'),
+
+    between(1, infinite, Min),
+        format('event: minute~n'),
+        format('data: {"minute": ~d}~n~n', [Min]),
+        flush_output,
+        sleep(60),
+        fail.
+\end{code}
+
+Of course, rather than sleep/1 to decide when to fire the next event
+this thread typically has to wait for events in the application.  This
+can be achieved using thread_wait/2 or message queues.
+
+
+\subsection{Custom Error Pages}
+\label{sec:http-custom-error-page}
+
+It is possible to create arbitrary error pages for responses generated
+when a http_reply term is thrown. Currently this is only supported for
+status 403 (\textit{authentication required}). To do this, instead of
+throwing \term{http_reply}{authorise(Term)} throw
+\term{http_reply}{authorise(Term), [], Key}, where \arg{Key} is an
+arbitrary term relating to the page you want to generate. You must then
+also define a clause of the multifile predicate http:status_page_hook/3:
+
+\begin{description}
+    \predicate{http:status_page_hook}{3}{+TermOrCode, +Context, -CustomHTML}
+TermOrCode is either the first argument of the \const{http_reply}
+exception or the HTTP status code, i.e., the hook is called twice. New
+code should using the \arg{Term}. Context is the third argument of the
+http_reply exception which was thrown, and CustomHTML is a list of HTML
+tokens. A page equivalent to the default page for 401 is generated
+by the example below.
+
+\begin{code}
+:- multifile http:status_page_hook/3.
+
+http:status_page_hook(authorise(Term), _Context, HTML) :-
+    phrase(page([ title('401 Authorization Required')
+                ],
+                [ h1('Authorization Required'),
+                  p(['This server could not verify that you ',
+                     'are authorized to access the document ',
+                     'requested.  Either you supplied the wrong ',
+                     'credentials (e.g., bad password), or your ',
+                     'browser doesn\'t understand how to supply ',
+                     'the credentials required.'
+                     ]),
+                  \address
+                ]),
+           HTML).
+\end{code}
+\end{description}
+
+
+\InputIfFileExists{httpopenid.tex}{}{}
+
+%================================================================
+\subsection{Get parameters from HTML forms}
+\label{sec:httpparam}
+
+The library \pllib{http/http_parameters} provides two predicates to
+fetch HTTP request parameters as a type-checked list easily.  The
+library transparently handles both GET and POST requests.  It builds
+on top of the low-level request representation described in
+\secref{request}.
+
+\begin{description}
+    \predicate{http_parameters}{2}{+Request, ?Parameters}
+The predicate is passes the \arg{Request} as provided to the handler
+goal by http_wrapper/5 as well as a partially instantiated lists
+describing the requested parameters and their types. Each parameter
+specification in \arg{Parameters} is a term of the format
+\mbox{\arg{Name}(\arg{-Value}, \arg{+Options})}. \arg{Options} is a list
+of option terms describing the type, default, etc. If no options are
+specified the parameter must be present and its value is returned in
+\arg{Value} as an atom.
+
+If a parameter is missing the exception
+\term{error}{\term{existence_error}{http_parameter, Name}, _} is thrown
+which. If the argument cannot be converted to the requested type, a
+\term{error}{\term{existence_error}{Type, Value}, _} is raised, where
+the error context indicates the HTTP parameter. If not caught, the
+server translates both errors into a \texttt{400 Bad request} HTTP
+message.
+
+Options fall into three categories: those that handle presence of
+the parameter, those that guide conversion and restrict types and
+those that support automatic generation of documentation.  First,
+the presence-options:
+
+\begin{description}
+    \termitem{default}{Default}
+If the named parameter is missing, \arg{Value} is unified to
+\arg{Default}.
+
+    \termitem{optional}{true}
+If the named parameter is missing, \arg{Value} is left unbound and
+no error is generated.
+
+    \termitem{list}{Type}
+The same parameter may not appear or appear multiple times. If this
+option is present, \const{default} and \const{optional} are ignored and
+the value is returned as a list. Type checking options are processed on
+each value.
+
+    \termitem{zero_or_more}{}
+Deprecated.  Use \term{list}{Type}.
+\end{description}
+
+The type and conversion options are given below. The type-language can
+be extended by providing clauses for the multifile hook
+http:convert_parameter/3.
+
+\begin{description}
+    \termitem{;}{Type1, Type2}
+Succeed if either \arg{Type1} or \arg{Type2} applies.  It allows
+for checks such as \exam{(nonneg;oneof([infinite]))} to specify
+an integer or a symbolic value.
+
+    \termitem{oneof}{List}
+Succeeds if the value is member of the given list.
+
+    \definition{length $> N$}
+Succeeds if value is an atom of more than $N$ characters.
+
+    \definition{length $>= N$}
+Succeeds if value is an atom of more than or equal to $N$ characters.
+
+    \definition{length $< N$}
+Succeeds if value is an atom of less than $N$ characters.
+
+    \definition{length $=< N$}
+Succeeds if value is an atom of length less than or equal to $N$ characters.
+
+    \termitem{atom}{}
+No-op.  Allowed for consistency.
+
+    \termitem{string}{}
+Convert value to a string.
+
+    \termitem{between}{+Low, +High}
+Convert value to a number and if either \arg{Low} or \arg{High} is a
+float, force value to be a float.  Then check that the value is in the
+given range, which includes the boundaries.
+
+    \termitem{boolean}{}
+Translate =true=, =yes=, =on= and '1' into =true=; =false=, =no=,
+=off= and '0' into =false= and raises an error otherwise.
+
+    \termitem{float}{}
+Convert value to a float. Integers are transformed into float.  Throws a
+type-error otherwise.
+
+    \termitem{integer}{}
+Convert value to an integer.  Throws a type-error otherwise.
+
+    \termitem{nonneg}{}
+Convert value to a non-negative integer. Throws a type-error
+of the value cannot be converted to an integer and a domain-error
+otherwise.
+
+    \termitem{number}{}
+Convert value to a number.  Throws a type-error otherwise.
+\end{description}
+
+The last set of options is to support automatic generation of HTTP
+API documentation from the sources.\footnote{This facility is under
+development in ClioPatria; see \file{http_help.pl}}.
+
+\begin{description}
+    \termitem{description}{+Atom}
+Description of the parameter in plain text.
+
+    \termitem{group}{+Parameters, +Options}
+Define a logical group of parameters.  \arg{Parameters} are processed
+as normal. \arg{Options} may include a description of the group. Groups
+can be nested.
+\end{description}
+
+Below is an example
+
+\begin{code}
+reply(Request) :-
+	http_parameters(Request,
+			[ title(Title, [ optional(true) ]),
+			  name(Name,   [ length >= 2 ]),
+			  age(Age,     [ between(0, 150) ])
+			]),
+	...
+\end{code}
+
+Same as \term{http_parameters}{Request, Parameters, []}
+
+    \predicate{http_parameters}{3}{+Request, ?Parameters, +Options}
+In addition to http_parameters/2, the following options are defined.
+
+\begin{description}
+    \termitem{form_data}{-Data}
+Return the entire set of provided \arg{Name}=\arg{Value} pairs from
+the GET or POST request.  All values are returned as atoms.
+
+    \termitem{attribute_declarations}{:Goal}
+If a parameter specification lacks the parameter options, call
+\term{call}{Goal, +ParamName, -Options} to find the options.  Intended
+to share declarations over many calls to http_parameters/3. Using
+this construct the above can be written as below.
+
+\begin{code}
+reply(Request) :-
+	http_parameters(Request,
+			[ title(Title),
+			  name(Name),
+			  age(Age)
+			],
+			[ attribute_declarations(param)
+			]),
+	...
+
+param(title, [optional(true)]).
+param(name,  [length >= 2 ]).
+param(age,   [integer]).
+\end{code}
+\end{description}
+\end{description}
+
+
+\subsection{Request format}			\label{sec:request}
+
+The body-code (see \secref{html-body}) is driven by a \arg{Request}.
+This request is generated from http_read_request/2 defined in
+\pllib{http/http_header}.
+
+
+\begin{description}
+    \predicate{http_read_request}{2}{+Stream, -Request}
+Reads an HTTP request from \arg{Stream} and unify \arg{Request} with
+the parsed request.  \arg{Request} is a list of \term{\arg{Name}}{Value}
+elements.  It provides a number of predefined elements for the result
+of parsing the first line of the request, followed by the additional
+request parameters.  The predefined fields are:
+
+\begin{description}
+    \termitem{host}{Host}
+If the request contains \verb$Host: $\arg{Host}, Host is unified
+with the host-name.  If \arg{Host} is of the format <host>:<port>
+\arg{Host} only describes <host> and a field \term{port}{Port} where
+\arg{Port} is an integer is added.
+
+    \termitem{input}{Stream}
+The \arg{Stream} is passed along, allowing to read more data or
+requests from the same stream.  This field is always present.
+
+    \termitem{method}{Method}
+\arg{Method} is the HTTP \jargon{method} represented as a lower-case
+atom (i.e., \const{delete}, \const{get}, \const{head},
+\const{options}, \const{patch}, \const{post}, \const{put},
+\const{trace}).  This field is present if the header has been parsed
+successfully.
+
+    \termitem{path}{Path}
+Path associated to the request.  This field is always present.
+
+    \termitem{peer}{Peer}
+\arg{Peer} is a term \term{ip}{A,B,C,D} containing the IP address of
+the contacting host.
+
+    \termitem{port}{Port}
+Port requested.  See \const{host} for details.
+
+    \termitem{request_uri}{RequestURI}
+This is the untranslated string that follows the method in the
+request header.  It is used to construct the path and search fields
+of the \arg{Request}.  It is provided because reconstructing this
+string from the path and search fields may yield a different value
+due to different usage of percent encoding.
+
+    \termitem{search}{ListOfNameValue}
+Search-specification of URI. This is the part after the \chr{?},
+normally used to transfer data from HTML forms that use the
+HTTP GET method.  In the URL it consists of a www-form-encoded
+list of \arg{Name}=\arg{Value} pairs.  This is mapped to a list of
+Prolog \arg{Name}=\arg{Value} terms with decoded names and values.
+This field is only present if the location contains a
+search-specification.
+
+The URL specification does not \emph{demand} the query part to be
+of the form \textit{name=value}.  If the field is syntactically
+incorrect, ListOfNameValue is bound the the empty list ([]).
+
+    \termitem{http_version}{Major-Minor}
+If the first line contains the \const{HTTP/}\arg{Major}.\arg{Minor}
+version indicator this element indicate the HTTP version of the
+peer.  Otherwise this field is not present.
+
+    \termitem{cookie}{ListOfNameValue}
+If the header contains a \const{Cookie} line, the value of the
+cookie is broken down in \arg{Name}=\arg{Value} pairs, where the
+\arg{Name} is the lowercase version of the cookie name as used
+for the HTTP fields.
+
+    \termitem{set_cookie}{set_cookie(Name, Value, Options)}
+If the header contains a \const{SetCookie} line, the cookie field
+is broken down into the \arg{Name} of the cookie, the \arg{Value}
+and a list of \arg{Name}=\arg{Value} pairs for additional options
+such as \const{expire}, \const{path}, \const{domain} or \const{secure}.
+\end{description}
+
+If the first line of the request is tagged with
+\const{HTTP/}\arg{Major}.\arg{Minor}, http_read_request/2 reads all
+input upto the first blank line. This header consists of
+\arg{Name}:\arg{Value} fields.  Each such field appears as a term
+\term{\arg{Name}}{Value} in the \arg{Request}, where \arg{Name} is
+canonicalised for use with Prolog.  Canonisation implies that the
+\arg{Name} is converted to lower case and all occurrences of the
+\chr{-} are replaced by \chr{_}. The value for the
+\const{Content-length} fields is translated into an integer.
+\end{description}
+
+Here is an example:
+
+\begin{code}
+?- http_read_request(user_input, X).
+|: GET /mydb?class=person HTTP/1.0
+|: Host: gollem
+|:
+X = [ input(user),
+      method(get),
+      search([ class = person
+	     ]),
+      path('/mydb'),
+      http_version(1-0),
+      host(gollem)
+    ].
+\end{code}
+
+
+\subsubsection{Handling POST requests}
+\label{sec:http-read-post}
+
+Where the HTTP \const{GET} operation is intended to get a document,
+using a \arg{path} and possibly some additional search information,
+the \const{POST} operation is intended to hand potentially large
+amounts of data to the server for processing.
+
+The \arg{Request} parameter above contains the term \term{method}{post}.
+The data posted is left on the input stream that is available through
+the term \term{input}{Stream} from the \arg{Request} header. This data
+can be read using http_read_data/3 from the HTTP client library. Here is
+a demo implementation simply returning the parsed posted data as plain
+text (assuming pp/1 pretty-prints the data).
+
+\begin{code}
+reply(Request) :-
+	member(method(post), Request), !,
+	http_read_data(Request, Data, []),
+	format('Content-type: text/plain~n~n', []),
+	pp(Data).
+\end{code}
+
+If the POST is initiated from a browser, content-type is generally
+either \const{application/x-www-form-urlencoded} or
+\const{multipart/form-data}.
+
+\subsection{Running the server}
+\label{sec:http-running-server}
+
+The functionality of the server should be defined in one Prolog file (of
+course this file is allowed to load other files). Depending on the
+wanted server setup this `body' is wrapped into a small Prolog file
+combining the body with the appropriate server interface. There are
+three supported server-setups. For most applications we advise the
+multi-threaded server. Examples of this server architecture are the
+\href{http://www.swi-prolog.org/packages/pldoc.html}{PlDoc} documentation
+system and the \href{http://www.swi-prolog.org/packages/SeRQL/}{SeRQL}
+Semantic Web server infrastructure.
+
+All the server setups may be wrapped in a \jargon{reverse proxy} to
+make them available from the public web-server as described in
+\secref{proxy}.
+
+
+\begin{itemlist}
+    \item [Using \pllib{thread_httpd} for a multi-threaded server]
+This server exploits the multi-threaded version of SWI-Prolog, running
+the users body code parallel from a pool of worker threads. As it avoids
+the state engine and copying required in the event-driven server it is
+generally faster and capable to handle multiple requests concurrently.
+
+This server is harder to debug due to the involved threading, although
+the GUI tracer provides reasonable support for multi-threaded
+applications using the tspy/1 command. It can provide fast communication
+to multiple clients and can be used for more demanding servers.
+
+    \item [Using \pllib{inetd_httpd} for server-per-client]
+In this setup the Unix \program{inetd} user-daemon is used to initialise
+a server for each connection.  This approach is especially suitable for
+servers that have a limited startup-time.  In this setup a crashing
+client does not influence other requests.
+
+This server is very hard to debug as the server is not connected to the
+user environment.  It provides a robust implementation for servers that
+can be started quickly.
+\end{itemlist}
+
+
+\subsubsection{Common server interface options}
+\label{sec:http-server-options}
+
+All the server interfaces provide \term{http_server}{:Goal, +Options}
+to create the server.  The list of options differ, but the servers share
+common options:
+
+\begin{description}
+    \termitem{port}{?Port}
+Specify the port to listen to for stand-alone servers.  \arg{Port} is
+either an integer or unbound.  If unbound, it is unified to the selected
+free port.
+\end{description}
+
+
+\subsubsection{Multi-threaded Prolog}		\label{sec:mthttpd}
+
+The \pllib{http/thread_httpd.pl} provides the infrastructure to manage
+multiple clients using a pool of \jargon{worker-threads}.  This realises
+a popular server design, also seen in Java Tomcat and Microsoft .NET.
+As a single persistent server process maintains communication to all
+clients startup time is not an important issue and the server can
+easily maintain state-information for all clients.
+
+In addition to the functionality provided by the inetd server, the
+threaded server can also be used to realise an HTTPS server exploiting
+the \pllib{ssl} library. See option \term{ssl}{+SSLOptions} below.
+
+
+\begin{description}
+    \predicate{http_server}{2}{:Goal, +Options}
+Create the server. \arg{Options} must provide the \term{port}{?Port}
+option to specify the port the server should listen to. If \arg{Port} is
+unbound an arbitrary free port is selected and \arg{Port} is unified to
+this port-number.  The server consists of a small Prolog thread
+accepting new connection on \arg{Port} and dispatching these to a pool
+of workers.  Defined \arg{Options} are:
+
+\begin{description}
+    \termitem{port}{?Address}
+Address to bind to. \arg{Address} is either a port (integer) or a term
+\arg{Host}:\arg{Port}. The port may be a variable, causing the system to
+select a free port and unify the variable with the selected port. See
+also tcp_bind/2.
+
+    \termitem{workers}{+N}
+Defines the number of worker threads in the pool. Default is to use
+\arg{five} workers. Choosing the optimal value for best performance is a
+difficult task depending on the number of CPUs in your system and how
+much resources are required for processing a request. Too high numbers
+makes your system switch too often between threads or even swap if there
+is not enough memory to keep all threads in memory, while a too low
+number causes clients to wait unnecessary for other clients to complete.
+See also http_workers/2.
+
+    \termitem{timeout}{+SecondsOrInfinite}
+Determines the maximum period of inactivity handling a request.  If no
+data arrives within the specified time since the last data arrived, the
+connection raises an exception, and the worker discards the client and
+returns to the pool-queue for a new client. If it is \const{infinite},
+a worker may wait forever on a client that doesn't complete its
+request. Default is 60~seconds.
+
+    \termitem{keep_alive_timeout}{+SecondsOrInfinite}
+Maximum time to wait for new activity on \jargon{Keep-Alive} connections.
+Choosing the correct value for this parameter is hard. Disabling
+Keep-Alive is bad for performance if the clients request multiple
+documents for a single page. This may ---for example-- be caused by HTML
+frames, HTML pages with images, associated CSS files, etc.  Keeping
+a connection open in the threaded model however prevents the thread
+servicing the client servicing other clients.  The default is 2 seconds.
+
+    \termitem{local}{+KBytes}
+Size of the local-stack for the workers. Default is taken from the
+commandline option.
+
+    \termitem{global}{+KBytes}
+Size of the global-stack for the workers. Default is taken from the
+commandline option.
+
+    \termitem{trail}{+KBytes}
+Size of the trail-stack for the workers. Default is taken from the
+commandline option.
+
+    \termitem{ssl}{+SSLOptions}
+Use SSL (Secure Socket Layer) rather than plain TCP/IP. A server created
+this way is accessed using the \const{https://} protocol. SSL allows for
+encrypted communication to avoid others from tapping the wire as well as
+improved authentication of client and server. The \arg{SSLOptions}
+option list is passed to ssl_context/3. The port option of the main option
+list is forwarded to the SSL~layer. See the \pllib{ssl} library for
+details.
+\end{description}
+
+    \predicate{http_server_property}{2}{?Port, ?Property}
+True if \arg{Property} is a property of the HTTP server running at
+\arg{Port}.  Defined properties are:
+
+\begin{description}
+    \termitem{goal}{:Goal}
+Goal used to start the server. This is often http_dispatch/1.
+    \termitem{scheme}{-Scheme}
+Scheme is one of \const{http} or \const{https}.
+    \termitem{start_time}{-Time}
+Time-stamp when the server was created.  See format_time/3 for
+creating a human-readable representation.
+\end{description}
+
+    \predicate{http_workers}{2}{+Port, ?Workers}
+Query or manipulate the number of workers of the server identified by
+\arg{Port}.  If \arg{Workers} is unbound it is unified with the number
+of running servers.  If it is an integer greater than the current size
+of the worker pool new workers are created with the same specification
+as the running workers.  If the number is less than the current size
+of the worker pool, this predicate inserts a number of `quit' requests
+in the queue, discarding the excess workers as they finish their jobs
+(i.e.\ no worker is abandoned while serving a client).
+
+This can be used to tune the number of workers for performance.  Another
+possible application is to reduce the pool to one worker to facilitate
+easier debugging.
+
+    \predicate{http_add_worker}{2}{+Port, +Options}
+Add a new worker to the HTTP server for port \arg{Port}. \arg{Options}
+overrule the default queue options. The following additional options are
+processed:
+
+\begin{description}
+    \termitem{max_idle_time}{+Seconds}
+The created worker will automatically terminate if there is no new work
+within Seconds.
+\end{description}
+
+    \predicate{http_stop_server}{2}{+Port, +Options}
+Stop the HTTP server at Port. Halting a server is done
+\textit{gracefully}, which means that requests being processed are not
+abandoned. The \arg{Options} list is for future refinements of this
+predicate such as a forced immediate abort of the server, but is
+currently ignored.
+
+    \predicate{http_current_worker}{2}{?Port, ?ThreadID}
+True if \arg{ThreadID} is the identifier of a Prolog thread serving
+\arg{Port}. This predicate is motivated to allow for the use of
+arbitrary interaction with the worker thread for development and
+statistics.
+
+    \predicate{http_spawn}{2}{:Goal, +Spec}
+Continue handling this request in a new thread running \arg{Goal}. After
+http_spawn/2, the worker returns to the pool to process new requests. In
+its simplest form, \arg{Spec} is the name of a thread pool as defined by
+thread_pool_create/3. Alternatively it is an option list, whose options
+are passed to thread_create_in_pool/4 if \arg{Spec} contains
+\term{pool}{Pool} or to thread_create/3 of the pool option is not
+present. If the dispatch module is used (see \secref{httpdispatch}),
+spawning is normally specified as an option to the http_handler/3
+registration.
+
+We recommend the use of thread pools. They allow registration of a set
+of threads using common characteristics, specify how many can be active
+and what to do if all threads are active. A typical application may
+define a small pool of threads with large stacks for computation
+intensive tasks, and a large pool of threads with small stacks to serve
+media. The declaration could be the one below, allowing for max 3
+concurrent solvers and a maximum backlog of 5 and 30 tasks creating
+image thumbnails.
+
+\begin{code}
+:- use_module(library(thread_pool)).
+
+:- thread_pool_create(compute, 3,
+		      [ local(20000), global(100000), trail(50000),
+			backlog(5)
+		      ]).
+:- thread_pool_create(media, 30,
+		      [ local(100), global(100), trail(100),
+			backlog(100)
+		      ]).
+
+:- http_handler('/solve',     solve,     [spawn(compute)]).
+:- http_handler('/thumbnail', thumbnail, [spawn(media)]).
+\end{code}
+\end{description}
+
+\InputIfFileExists{httpunixdaemon.tex}{}{}
+
+\subsubsection{From (Unix) inetd}
+\label{sec:http-inetd}
+
+All modern Unix systems handle a large number of the services they run
+through the super-server \jargon{inetd} or one of its descendants
+(\jargon{xinetd}, \jargon{systemd} etc.) Such a program reads a
+configuration file (for example \file{/etc/inetd.conf}) and opens
+server-sockets on all ports defined in
+this file. As a request comes in it accepts it and starts the associated
+server such that standard I/O is performed through the socket. This
+approach has several advantages:
+
+\begin{itemlist}
+    \item [Simplification of servers]
+Servers don't have to know about sockets and -operations.
+
+    \item [Centralised authorisation]
+Using \jargon{tcpwrappers} and similar tools, simple and effective
+firewalling of all services can be realised.
+
+    \item [Automatic start and monitor]
+The inetd automatically starts the server `just-in-time' and starts
+additional servers or restarts a crashed server according to its
+configuration.
+\end{itemlist}
+
+The very small generic script for handling inetd based connections
+is in \file{inetd_httpd}, defining http_server/1:
+
+\begin{description}
+    \predicate{http_server}{1}{:Goal}
+Initialises and runs http_wrapper/5 in a loop until failure or
+end-of-file.  This server does not support the \arg{Port} option
+as the port is specified with the \program{inetd} configuration.
+The only supported option is \arg{After}.
+\end{description}
+
+Here is the example from \file{demo_inetd}
+
+\begin{code}
+#!/usr/bin/pl -t main -q -f
+:- use_module(demo_body).
+:- use_module(inetd_httpd).
+
+main :-
+	http_server(reply).
+\end{code}
+
+With the above file installed in \file{/home/jan/plhttp/demo_inetd},
+the following line in \file{/etc/inetd} enables the server at port
+4001 guarded by \jargon{tcpwrappers}.  After modifying inetd, send the
+daemon the \const{HUP} signal to make it reload its configuration.
+For more information, please check \manref{inetd.conf}{5}.
+
+\begin{code}
+4001 stream tcp nowait nobody /usr/sbin/tcpd /home/jan/plhttp/demo_inetd
+\end{code}
+
+
+\subsubsection{MS-Windows}
+\label{sec:http-inetd-mswin}
+
+There are rumours that \jargon{inetd} has been ported to Windows.
+
+
+\subsubsection{As CGI script}
+\label{sec:http-server-as-cgi}
+
+To be done.
+
+
+\subsubsection{Using a reverse proxy}
+\label{sec:proxy}
+
+There are several options for public deployment of a web service. The
+main decision is whether to run it on a standard port (port 80 for HTTP,
+port 443 for HTTPS) or a non-standard port such as for example 8000 or
+8080. Using a standard port below 1000 requires root access to the
+machine, and prevents other web services from using the same port. On
+the other hand, using a non-standard port may cause problems with
+intermediate proxy- and/or firewall policies that may block the port
+when you try to access the service from some networks. In both cases,
+you can either use a physical or a virtual machine running ---for
+example--- under \href{http://www.vmware.com}{VMWARE} or
+\href{http://www.cl.cam.ac.uk/research/srg/netos/xen/}{XEN} to host the
+service. Using a dedicated (physical or virtual) machine to host a
+service isolates security threats. Isolation can also be achieved using
+a Unix \jargon{chroot} environment, which is however not a security
+feature.
+
+To make several different web services reachable on the same (either
+standard or non-standard) port, you can use a so-called \jargon{reverse
+proxy}. A reverse proxy uses rules to relay requests to other web
+services that use their own dedicated ports. This approach has several
+advantages:
+
+\begin{itemize}
+    \item We can run the service on a non-standard port, but still access
+	  it (via the proxy) on a standard port, just as for a dedicated
+	  machine. We do not need a separate machine though:
+	  We only need to configure the reverse proxy to relay requests
+	  to the intended target servers.
+    \item As the main web server is doing the front-line service, the
+	  Prolog server is normally protected from malformed HTTP requests
+	  that could result in denial of service or otherwise compromise the
+	  server. In addition, the main web server can transparently provide
+	  encodings such as compression to the outside world.
+\end{itemize}
+
+Proxy technology can be combined with isolation methods such as
+dedicated machines, virtual machines and chroot jails. The proxy can
+also provide load balancing.
+
+\paragraph{Setting up an Apache reverse proxy}
+
+The Apache reverse proxy setup is really simple. Ensure the modules
+\const{proxy} and \const{proxy_http} are loaded. Then add two simple
+rules to the server configuration. Below is an example that makes a
+PlDoc server on port 4000 available from the main Apache server at port
+80.
+
+\begin{code}
+ProxyPass	 /pldoc/ http://localhost:4000/pldoc/
+ProxyPassReverse /pldoc/ http://localhost:4000/pldoc/
+\end{code}
+
+Apache rewrites the HTTP headers passing by, but using the above rules
+it does not examine the content. This implies that URLs embedded in the
+(HTML) content must use relative addressing.  If the locations on the
+public and Prolog server are the same (as in the example above) it is
+allowed to use absolute locations.  I.e.\ \const{/pldoc/search} is ok,
+but \const{http://myhost.com:4000/pldoc/search} is \emph{not}.  If
+the locations on the server differ, locations must be relative (i.e.\
+not start with \chr{/}.
+
+This problem can also be solved using the contributed Apache module
+\const{proxy_html} that can be instructed to rewrite URLs embedded in
+HTML documents. In our experience, this is not trouble-free as URLs can
+appear in many places in generated documents.  JavaScript can create
+URLs on the fly, which makes rewriting virtually impossible.
+
+\subsection{The wrapper library}
+\label{sec:http-wrapper}
+
+The body is called by the module \pllib{http/http_wrapper.pl}. This
+module realises the communication between the I/O streams and the body
+described in \secref{html-body}. The interface is realised by
+http_wrapper/5:
+
+\begin{description}
+    \predicate{http_wrapper}{5}{:Goal, +In, +Out, -Connection, +Options}
+Handle an HTTP request where \arg{In} is an input stream from the
+client, \arg{Out} is an output stream to the client and \arg{Goal}
+defines the goal realising the body.  \arg{Connection} is unified to
+\const{'Keep-alive'} if both ends of the connection want to continue the
+connection or \const{close} if either side wishes to close the
+connection.
+
+This predicate reads an HTTP request-header from \arg{In}, redirects
+current output to a memory file and then runs \exam{call(Goal,
+Request)}, watching for exceptions and failure. If \arg{Goal} executes
+successfully it generates a complete reply from the created output.
+Otherwise it generates an HTTP server error with additional context
+information derived from the exception.
+
+http_wrapper/5 supports the following options:
+
+\begin{description}
+    \termitem{request}{-Request}
+Return the executed request to the caller.
+
+    \termitem{peer}{+Peer}
+Add peer(Peer) to the request header handed to \arg{Goal}.  The format
+of \arg{Peer} is defined by tcp_accept/3 from the clib package.
+\end{description}
+
+    \predicate{http:request_expansion}{2}{+RequestIn, -RequestOut}
+This \jargon{multifile} hook predicate is called just before the goal
+that produces the body, while the output is already redirected to
+collect the reply. If it succeeds it must return a valid modified
+request. It is allowed to throw exceptions as defined in
+\secref{httpspecials}. It is intended for operations such as mapping
+paths, deny access for certain requests or manage cookies. If it writes
+output, these must be HTTP header fields that are added \emph{before}
+header fields written by the body. The example below is from the
+session management library (see \secref{httpsession}) sets a cookie.
+
+\begin{code}
+	...,
+	format('Set-Cookie: ~w=~w; path=~w~n', [Cookie, SessionID, Path]),
+	...,
+\end{code}
+
+    \predicate{http_current_request}{1}{-Request}
+Get access to the currently executing request.  \arg{Request} is the
+same as handed to \arg{Goal} of http_wrapper/5 \emph{after} applying
+rewrite rules as defined by http:request_expansion/2. Raises an
+existence error if there is no request in progress.
+
+    \predicate{http_relative_path}{2}{+AbsPath, -RelPath}
+Convert an absolute path (without host, fragment or search) into a path
+relative to the current page, defined as the path component from the
+current request (see http_current_request/1). This call is intended to
+create reusable components returning relative paths for easier support
+of reverse proxies.
+
+If ---for whatever reason--- the conversion is not possible it simply
+unifies \arg{RelPath} to \arg{AbsPath}.
+\end{description}
+
+\InputIfFileExists{httphost}{}{}
+\InputIfFileExists{httplog}{}{}
+\InputIfFileExists{httpserverhealth}{}{}
+
+\subsection{Debugging HTTP servers}			\label{sec:http-debug}
+
+The library \pllib{http/http_error} defines a hook that decorates
+uncaught exceptions with a stack-trace. This will generate a \jargon{500
+internal server error} document with a stack-trace. To enable this
+feature, simply load this library.  Please do note that providing
+error information to the user simplifies the job of a hacker trying
+to compromise your server.  It is therefore not recommended to load
+this file by default.
+
+The example program \file{calc.pl} has the error handler loaded which
+can be triggered by forcing a divide-by-zero in the calculator.
+
+\input{httpheader}
+
+\subsection{The \pllib{http/html_write} library}	\label{sec:htmlwrite}
+
+\newcommand{\elem}[1]{\const{#1}}
+
+Producing output for the web in the form of an HTML document is a
+requirement for many Prolog programs. Just using format/2 is
+not satisfactory as it leads to poorly readable programs generating poor
+HTML. This library is based on using DCG rules.
+
+The \pllib{http/html_write} structures the generation of HTML from a
+program. It is an extensible library, providing a \jargon{DCG} framework
+for generating legal HTML under (Prolog) program control. It is
+especially useful for the generation of structured pages (e.g.\ tables)
+from Prolog data structures.
+
+The normal way to use this library is through the DCG html//1. This
+non-terminal provides the central translation from a structured term
+with embedded calls to additional translation rules to a list of atoms
+that can then be printed using print_html/[1,2].
+
+\begin{description}
+    \dcg{html}{1}{:Spec}
+The DCG non-terminal html//1 is the main predicate of this library. It translates
+the specification for an HTML page into a list of atoms that can be
+written to a stream using print_html/[1,2]. The expansion rules of this
+predicate may be extended by defining the multifile DCG
+html_write:expand//1. \arg{Spec} is either a single specification or a
+list of single specifications. Using nested lists is not allowed to
+avoid ambiguity caused by the atom \const{[]}
+
+\begin{itemlist}
+    \item [Atomic data]
+Atomic data is quoted using html_quoted//1.
+
+    \item [\arg{Fmt} - \arg{Args}]
+\arg{Fmt} and \arg{Args} are used as format-specification and argument
+list to format/3. The result is quoted and added to the output list.
+
+    \item [\bsl\arg{List}]
+Escape sequence to add atoms directly to the output list.  This can be
+used to embed external HTML code or emit script output.  \arg{List} is
+a list of the following terms:
+
+    \begin{itemlist}
+	\item [\arg{Fmt} - \arg{Args}]
+    \arg{Fmt} and \arg{Args} are used as format-specification and argument
+    list to format/3. The result is added to the output list.
+	\item [\arg{Atomic}]
+    Atomic values are added directly to the output list.
+    \end{itemlist}
+
+    \item [\bsl\arg{Term}]
+Invoke the non-terminal \arg{Term} in the calling module.  This is the
+common mechanism to realise abstraction and modularisation in generating
+HTML.
+
+    \item [\arg{Module}:\arg{Term}]
+Invoke the non-terminal <Module>:<Term>. This is similar to
+\bsl\arg{Term} but allows for invoking grammar rules in external
+packages.
+
+    \item [\&(Entity)]
+Emit {\tt\&<Entity>;} or {\tt\&\#<Entity>;} if \arg{Entity} is an
+integer. SWI-Prolog atoms and strings are represented as Unicode.
+Explicit use of this construct is rarely needed because code-points that
+are not supported by the output encoding are automatically converted
+into character-entities.
+
+    \item [\term{Tag}{Content}]
+Emit HTML element \arg{Tag} using \arg{Content} and no attributes.
+\arg{Content} is handed to html//1. See \secref{htmllayout} for details
+on the automatically generated layout.
+
+    \item [\term{Tag}{Attributes, Content}]
+Emit HTML element \arg{Tag} using \arg{Attributes} and \arg{Content}.
+\arg{Attributes} is either a single attribute of a list of attributes.
+Each attributes is of the format \term{Name}{Value} or
+\mbox{\arg{Name}=\arg{Value}}. \arg{Value} is the atomic attribute
+value but allows for a limited functional notation:
+
+    \begin{itemlist}
+	\item [$A$ + $B$]
+Concatenation of $A$ and $B$
+	\item [$Format$-$Arguments$]
+Use format/3 and emit the result as quoted value.
+	\item [\term{encode}{Atom}]
+Use uri_encoded/3 to create a valid URL query component.
+	\item [\term{location_by_id}{ID}]
+HTTP location of the HTTP handler with given ID.  See http_location_by_id/2.
+	\item [\term{#}{ID}]
+Abbreviated for for \term{location_by_id}{ID}.
+	\item [$A$ + \arg{List}]
+\arg{List} is handled as a URL `search' component. The list members are
+terms of the format \mbox{\arg{Name} = \arg{Value}} or
+\term{Name}{Value}.  Values are encoded as in the encode option
+described above.
+	\item [\arg{List}]
+Emit SGML multi-valued attributes (e.g., \const{NAMES}).  Each value in
+list is separated by a space.  This is particularly useful for setting
+multiple \const{class} attributes on an element.  For example:
+
+\begin{code}
+	...
+	span(class([c1,c2]), ...),
+\end{code}
+\end{itemlist}
+
+The example below generates a   URL  that references the predicate
+set_lang/1 in the application with given parameters.  The http_handler/3
+declaration binds \const{/setlang} to the predicate set_lang/1 for which
+we provide a very simple implementation.  The code between \const{...}
+is part of an HTML page showing the English flag which, when pressed,
+calls \term{set_lang}{Request} where \arg{Request} contains the search
+parameter \mbox{\const{lang} = \const{en}}.  Note that the HTTP location
+(path) \const{/setlang} can be moved without affecting this code.
+
+\begin{code}
+:- http_handler('/setlang', set_lang, []).
+
+set_lang(Request) :-
+	http_parameters(Request,
+			[ lang(Lang, [])
+			]),
+	http_session_retractall(lang(_)),
+	http_session_assert(lang(Lang)),
+	reply_html_page(title('Switched language'),
+			p(['Switch language to ', Lang])).
+
+
+	...
+	html(a(href(location_by_id(set_lang) + [lang(en)]),
+	       img(src('/www/images/flags/en.png')))),
+	...
+\end{code}
+
+
+
+\end{itemlist}
+
+    \dcg{page}{2}{:HeadContent, :BodyContent}
+The DCG non-terminal page//2 generated a complete page, including the SGML
+\const{DOCTYPE} declaration. \arg{HeadContent} are elements to be placed
+in the \elem{head} element and \arg{BodyContent} are elements to be
+placed in the \elem{body} element.
+
+To achieve common style (background, page header and footer), it is
+possible to define DCG non-terminals head//1 and/or body//1. Non-terminal page//1
+checks for the definition of these non-terminals in the module it is called
+from as well as in the \const{user} module. If no definition is found, it
+creates a head with only the \arg{HeadContent} (note that the
+\elem{title} is obligatory) and a \elem{body} with \const{bgcolor} set
+to \const{white} and the provided \arg{BodyContent}.
+
+Note that further customisation is easily achieved using html//1 directly
+as page//2 is (besides handling the hooks) defined as:
+
+\begin{code}
+page(Head, Body) -->
+	html([ \['<!DOCTYPE HTML PUBLIC "-//IETF//DTD HTML 4.0//EN">\n'],
+	       html([ head(Head),
+		      body(bgcolor(white), Body)
+		    ])
+	     ]).
+\end{code}
+
+    \dcg{page}{1}{:Contents}
+This version of the page/[1,2] only gives you the SGML \const{DOCTYPE}
+and the \elem{HTML} element. \arg{Contents} is used to generate both the
+head and body of the page.
+
+    \dcg{html_begin}{1}{+Begin}
+Just open the given element.  \arg{Begin} is either an atom or a
+compound term,  In the latter case the arguments are used as arguments
+to the begin-tag.  Some examples:
+
+\begin{code}
+	html_begin(table)
+	html_begin(table(border(2), align(center)))
+\end{code}
+
+This predicate provides an alternative to using the
+\bsl\arg{Command} syntax in the html//1 specification. The
+following two fragments are the same. The preferred solution depends on
+your preferences as well as whether the specification is generated or
+entered by the programmer.
+
+\begin{code}
+table(Rows) -->
+	html(table([border(1), align(center), width('80%')],
+		   [ \table_header,
+		     \table_rows(Rows)
+		   ])).
+
+% or
+
+table(Rows) -->
+	html_begin(table(border(1), align(center), width('80%'))),
+	table_header,
+	table_rows,
+	html_end(table).
+\end{code}
+
+    \dcg{html_end}{1}{+End}
+End an element.  See html_begin/1 for details.
+\end{description}
+
+
+\subsubsection{Emitting HTML documents}
+\label{sec:html-write}
+
+The non-terminal html//1 translates a specification into a list of
+atoms and layout instructions. Currently the layout instructions are
+terms of the format \term{nl}{N}, requesting at least \arg{N}
+newlines. Multiple consecutive \term{nl}{1} terms are combined to an
+atom containing the maximum of the requested number of newline
+characters.
+
+To simplify handing the data to a client or storing it into a file,
+the following predicates are available from this library:
+
+\begin{description}
+    \predicate{reply_html_page}{2}{:Head, :Body}
+Same as \term{reply_html_page}{default, Head, Body}.
+
+    \predicate{reply_html_page}{3}{+Style, :Head, :Body}
+Writes an HTML page preceded by an HTTP header as required
+by \pllib{http_wrapper} (CGI-style).  Here is a simple typical
+example:
+
+\begin{code}
+reply(Request) :-
+	reply_html_page(title('Welcome'),
+			[ h1('Welcome'),
+			  p('Welcome to our ...')
+			]).
+\end{code}
+
+The header and footer of the page can be hooked using the grammar-rules
+user:head//2 and user:body//2. The first argument passed to these hooks
+is the \arg{Style} argument of reply_html_page/3 and the second is the
+2nd (for head//2) or 3rd (for body//2) argument of reply_html_page/3.
+These hooks can be used to restyle the page, typically by embedding the
+real body content in a \elem{div}. E.g., the following code provides a
+menu on top of each page of that is identified using the style
+\textit{myapp}.
+
+\begin{code}
+:- multifile
+	user:body//2.
+
+user:body(myapp, Body) -->
+	html(body([ div(id(top), \application_menu),
+		    div(id(content), Body)
+		  ])).
+\end{code}
+
+Redefining the \elem{head} can be used to pull in scripts, but
+typically html_requires//1 provides a more modular approach for
+pulling scripts and CSS-files.
+
+    \predicate{reply_html_partial}{1}{+HTML}
+Reply with partial HTML document. The reply only contains the element
+from HTML, i.e., this predicate does not add a \const{DOCTYPE} header,
+\elem{html}, \elem{head} or \elem{body}. It is intended for JavaScript
+handlers that request a partial document and insert that somewhere into
+the existing page DOM. See reply_html_page/3 to reply with a complete
+(valid) HTML page.
+
+    \predicate{print_html}{1}{+List}
+Print the token list to the Prolog current output stream.
+
+    \predicate{print_html}{2}{+Stream, +List}
+Print the token list to the specified output stream
+
+    \predicate{html_print_length}{2}{+List, -Length}
+When calling html_print/[1,2] on \arg{List}, \arg{Length}
+characters will be produced.  Knowing the length is needed to
+provide the \const{Content-length} field of an HTTP reply-header.
+\end{description}
+
+
+\input{post.tex}
+
+\subsubsection{Adding rules for html//1}
+\label{sec:html-write-rules}
+
+In some cases it is practical to extend the translations imposed by
+html//1. We used this technique to define translation rules for the
+output of the SWI-Prolog \pllib{sgml} package.
+
+The html//1 non-terminal first calls the multifile ruleset html_write:expand//1.
+
+\begin{description}
+    \dcg{html_write:expand}{1}{+Spec} Hook to add additional
+translation rules for html//1.
+
+    \dcg{html_quoted}{1}{+Atom} Emit the text
+in \arg{Atom}, inserting entity-references for the SGML special
+characters \verb$<&>$.
+
+    \dcg{html_quoted_attribute}{1}{+Atom} Emit the
+text in \arg{Atom} suitable for use as an SGML attribute, inserting
+entity-references for the SGML special characters \verb$<&>"$.
+\end{description}
+
+
+\subsubsection{Generating layout}		\label{sec:htmllayout}
+
+Though not strictly necessary, the library attempts to generate
+reasonable layout in SGML output. It does this only by inserting
+newlines before and after tags. It does this on the basis of the
+multifile predicate html_write:layout/3
+
+\begin{description}
+    \predicate{html_write:layout}{3}{+Tag, -Open, -Close}
+Specify the layout conventions for the element \arg{Tag}, which is a
+lowercase atom. \arg{Open} is a term \arg{Pre}-\arg{Post}. It defines
+that the element should have at least \arg{Pre} newline characters
+before and \arg{Post} after the tag. The \arg{Close} specification is
+similar, but in addition allows for the atom \const{-}, requesting the
+output generator to omit the close-tag altogether or \const{empty},
+telling the library that the element has declared empty content. In this
+case the close-tag is not emitted either, but in addition html//1
+interprets \arg{Arg} in \term{Tag}{Arg} as a list of attributes rather
+than the content.
+
+A tag that does not appear in this table is emitted without additional
+layout. See also print_html/[1,2]. Please consult the
+library source for examples.
+\end{description}
+
+
+\subsubsection{Examples for using the HTML write library}
+\label{sec:html-write-examples}
+
+In the following example we will generate a table of Prolog predicates
+we find from the SWI-Prolog help system based on a keyword. The primary
+database is defined by the predicate predicate/5 We will make hyperlinks
+for the predicates pointing to their documentation.
+
+\begin{code}
+:- use_module(library(http/html_write)).
+:- use_module(library(pldoc/man_index)).
+:- use_module(library(uri)).
+
+html_apropos(Kwd) :-
+    findall(Pred, apropos_predicate(Kwd, Pred), Matches),
+    phrase(apropos_page(Kwd, Matches), Tokens),
+    print_html(Tokens).
+
+%       emit page with title, header and table of matches
+
+apropos_page(Kwd, Matches) -->
+    page([ title(['Predicates for ', Kwd])
+         ],
+         [ h2(align(center),
+              ['Predicates for ', Kwd]),
+           table([ align(center),
+                   border(1),
+                   width('80%')
+                 ],
+                 [ tr([ th('Predicate'),
+                        th('Summary')
+                      ])
+                 | \apropos_rows(Matches)
+                 ])
+         ]).
+
+%       emit the rows for the body of the table.
+
+apropos_rows([]) -->
+    [].
+apropos_rows([pred(Name, Arity, Summary)|T]) -->
+    html([ tr([ td(\predref(Name/Arity)),
+                td(em(Summary))
+              ])
+         ]),
+    apropos_rows(T).
+
+%!  predref(Name/Arity)//
+%
+%   Emit Name/Arity as a hyperlink to
+%
+%           /cgi-bin/plman?name=Name&arity=Arity
+
+predref(Name/Arity) -->
+    { uri_edit([search([name=Name,arity=Arity])],
+               '/cgi-bin/plman', Href)
+    },
+    html(a(href(Href), [Name, /, Arity])).
+
+%       Find predicates from a keyword.
+
+apropos_predicate(Pattern, pred(Name, Arity, Summary)) :-
+    man_object_property(Name/Arity, summary(Summary)),
+    (   sub_atom_icasechk(Name, _, Pattern)
+    ->  true
+    ;   sub_atom_icasechk(Summary, _, Pattern)
+    ).
+\end{code}
+
+
+\subsubsection{Remarks on the \pllib{http/html_write} library}
+\label{sec:html-write-remarks}
+
+This library is the result of various attempts to reach at a more
+satisfactory and Prolog-minded way to produce HTML text from a program.
+We have been using Prolog for the generation of web pages in a number of
+projects. Just using format/2 never was not a real option, generating
+error-prone HTML from clumsy syntax. We started with a layer on top of
+format/2, keeping track of the current nesting and thus always capable
+of properly closing the environment.
+
+DCG based translation however, naturally exploits Prolog's
+term-rewriting primitives. If generation fails for whatever reason it is
+easy to produce an alternative document (for example holding an error
+message).
+
+In a future version we will probably define a goal_expansion/2 to do
+compile-time optimisation of the library. Quotation of known text and
+invocation of sub-rules using the \bsl\arg{RuleSet} and
+<Module>:<RuleSet> operators are costly operations in the analysis
+that can be done at compile-time.
+
+\input{jswrite}
+\input{httppath}
+\input{htmlhead}
+\InputIfFileExists{httppwp}{}{}
+\InputIfFileExists{htmx}{}{}
+
+\section{HTTP and IPv6}
+\label{sec:http-ipv6}
+
+As of version 9.1.5, SWI-Prolog supports IPv6.  This has few implications
+for the HTTP package because most aspects are handled by \pllib{socket}
+and \pllib{uri}.  This sections highlights a few aspects.
+
+The \jargon{client libraries} use http_open/3, which in turn uses
+tcp_connect/3.  This causes the client to use addresses returned by
+host_address/3, which is based on the C API getaddrinfo(), in the
+order provided by getaddrinfo().  The URL is parsed using \pllib{uri},
+which allows enclosing IPv6 addresses in \verb$[]$.  The query below
+accesses an IPv6 server on localhost at port 8080
+
+\begin{code}
+?- http_open('http://[::1]:8080', Stream, []).
+\end{code}
+
+The predicate http_server/2 can be used to create an IPv6 server using
+one of the queries below.  The first binds to all interfaces.  The
+second only binds to the IPv6 equivalent of \const{localhost}.  Note
+that the IPv6 address needs to be quoted to create the desired
+\arg{Host}:\arg{Port} term.
+
+\begin{code}
+?- http_server(Goal,[port('::':8080)]).
+?- http_server(Goal,[port('::1':8080)]).
+\end{code}
+
+\section{Transfer encodings}
+\label{sec:transfer}
+
+\index{chunked,encoding}%
+\index{deflate,encoding}%
+The HTTP protocol provides for \jargon{transfer encodings}. These define
+filters applied to the data described by the \const{Content-type}. The
+two most popular transfer encodings are \const{chunked} and
+\const{deflate}. The \const{chunked} encoding avoids the need for
+a \const{Content-length} header, sending the data in chunks, each of
+which is preceded by a length.  The \const{deflate} encoding provides
+compression.
+
+Transfer-encodings are supported by filters defined as foreign libraries
+that realise an encoding/decoding stream on top of another stream.
+Currently there are two such libraries: \pllib{http/http_chunked.pl}
+and \pllib{zlib.pl}.
+
+There is an emerging hook interface dealing with transfer encodings. The
+\pllib{http/http_chunked.pl} provides a hook used by
+\pllib{http/http_open.pl} to support chunked encoding in http_open/3.
+Note that both \file{http_open.pl} \emph{and} \file{http_chunked.pl}
+must be loaded for http_open/3 to support chunked encoding.
+
+\subsection{The \pllib{http/http_chunked} library}
+\label{sec:http-chunked}
+
+\begin{description}
+    \predicate{http_chunked_open}{3}{+RawStream, -DataStream, +Options}
+Create a stream to realise HTTP chunked encoding or decoding. The
+technique is similar to library(zlib), using a Prolog stream as a filter
+on another stream.  See online documentation at
+\url{http://www.swi-prolog.org/} for details.
+\end{description}
+
+\InputIfFileExists{websocket.tex}{}{}
+\InputIfFileExists{hub.tex}{}{}
+
+\section{MIME support}
+\label{sec:http-mime}
+
+\input{mimepack.tex}
+
+\section{Security}
+\label{sec:http-security}
+
+Writing servers is an inherently dangerous job that should be carried out
+with some considerations. You have basically started a program on a
+public terminal and invited strangers to use it. When using the
+interactive server or inetd based server the server runs under your
+privileges. Using CGI scripted it runs with the privileges of your
+web-server. Though it should not be possible to fatally compromise a
+Unix machine using user privileges, getting unconstrained access to the
+system is highly undesirable.
+
+Symbolic languages have an additional handicap in their inherent
+possibilities to modify the running program and dynamically create goals
+(this also applies to the popular Perl and PHP scripting languages).
+Here are some guidelines.
+
+\begin{itemlist}
+    \item [Check your input]
+Hardly anything can go wrong if you check the validity of
+query-arguments before formulating an answer.
+
+    \item [Check filenames]
+If part of the query consists of filenames or directories, check them.
+This also applies to files you only read. Passing names as
+\file{/etc/passwd}, but also \file{../../../../../etc/passwd} are tried
+by hackers to learn about the system they want to attack. So, expand
+provided names using absolute_file_name/[2,3] and verify they are inside
+a folder reserved for the server. Avoid symbolic links from this subtree
+to the outside world. The example below checks validity of filenames.
+The first call ensures proper canonisation of the paths to avoid an
+mismatch due to symbolic links or other filesystem ambiguities.
+
+\begin{code}
+check_file(File) :-
+	absolute_file_name('/path/to/reserved/area', Reserved),
+	absolute_file_name(File, Tried),
+	sub_atom(Tried, 0, _, _, Reserved).
+\end{code}
+
+    \item [Check scripts]
+Should input in any way activate external scripts using shell/1 or
+\exam{open(pipe(Command), ...)}, verify the argument once more. Use
+process_create/3 in preference over shell/1 as this function avoids
+stringification of arguments (Unix) or ensures proper quoting of
+arguments (Windows).
+
+    \item [Check meta-calling]
+\emph{The} attractive situation for you and your attacker is below:
+
+\begin{code}
+reply(Query) :-
+	member(search(Args), Query),
+	member(action=Action, Query),
+	member(arg=Arg, Query),
+	call(Action, Arg).		% NEVER EVER DO THIS!
+\end{code}
+
+All your attacker has to do is specify \arg{Action} as \const{shell}
+and \arg{Arg} as \const{/bin/sh} and he has an uncontrolled shell!
+\end{itemlist}
+
+
+\section{Tips and tricks}
+\label{sec:http-tips-and-tricks}
+
+\begin{itemlist}
+    \item [URL Locations]
+With an application in mind, it is tempting to make all URL
+locations short and directly connected to the root (\const{/}). This is
+\emph{not} a good idea. It is advised to have all locations in a server
+below a directory with an informative name. Consider to make the root
+location something that can be changed using a global setting.
+
+    \begin{itemize}
+	\item Page generating code can easily be reused.  Using locations
+	      directly below the root however increases the likelihood
+	      of conflicts.
+	\item Multiple servers can be placed behind the same public
+	      server as explained in \secref{proxy}.  Using a common
+	      and fairly unique root, redirection is much easier and
+	      less likely to lead to conflicts.
+    \end{itemize}
+
+    \item [Debugging]
+Debugging multi-threaded applications is possible using the graphical
+debugger. This implies requires that the xpce extension package must be
+installed.  Spy-points may be placed using tspy/1.
+
+    \item [URL/URI manipulation]
+Sometimes an http_handler/3 needs to inspect or normalize the URL.
+There are various utility predicates in \pllib{uri}, such as uri_components/2,
+uri_data/4, uri_edit/3, uri_nomalized/2, etc.
+\end{itemlist}
+
+\section{Status}
+\label{sec:http-status}
+
+The SWI-Prolog HTTP library is in active use in a large number of
+projects. It is considered one of the SWI-Prolog core libraries that is
+actively maintained and regularly extended with new features. This is
+particularly true for the multi-threaded server. The inetd based server
+may be applicable for infrequent requests where the startup time is less
+relevant.  The XPCE based server is considered obsolete.
+
+This library is by no means complete and you are free to extend it.
+
+\printindex
+
+\end{document}
+

@@ -1,0 +1,1897 @@
+/*  Part of SWI-Prolog
+
+    Author:        Jan Wielemaker
+    E-mail:        J.Wielemaker@vu.nl
+    WWW:           http://www.swi-prolog.org
+    Copyright (c)  2011-2025, University of Amsterdam
+			      VU University Amsterdam
+			      SWI-Prolog Solutions b.v.
+    All rights reserved.
+
+    Redistribution and use in source and binary forms, with or without
+    modification, are permitted provided that the following conditions
+    are met:
+
+    1. Redistributions of source code must retain the above copyright
+       notice, this list of conditions and the following disclaimer.
+
+    2. Redistributions in binary form must reproduce the above copyright
+       notice, this list of conditions and the following disclaimer in
+       the documentation and/or other materials provided with the
+       distribution.
+
+    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+    "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+    LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS
+    FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE
+    COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+    INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+    BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+    LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+    CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+    LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
+    ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+    POSSIBILITY OF SUCH DAMAGE.
+*/
+
+/* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+Formatted output (Prolog predicates format/[1,2,3]).   One  day,  the  C
+source should also use format() to produce error messages, etc.
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+
+#include "pl-ctype.h"
+#include "pl-utf8.h"
+#include "../pl-arith.h"
+#include "../pl-proc.h"
+#include "../pl-fli.h"
+#include "../pl-prims.h"
+#include "../pl-write.h"
+#include "../pl-pro.h"
+#include <ctype.h>
+#include <stdio.h>
+#include <math.h>
+#include <fenv.h>
+#include "pl-fmt.h"
+#ifdef __WINDOWS__
+#include "../pl-nt.h"
+#endif
+
+typedef foreign_t (*Func1)(term_t a1);
+
+#define MAXRUBBER 100
+
+struct rubber
+{ size_t where;				/* where is rubber in output */
+  size_t size;				/* how big should it be */
+  pl_wchar_t pad;			/* padding character */
+};
+
+typedef struct
+{ IOSTREAM *out;			/* our output stream */
+  int column;				/* current column */
+  int tab_stop;				/* Last tab stop */
+  tmp_buffer buffer;			/* bin for characters with tabs */
+  size_t buffered;			/* characters in buffer */
+  int pending_rubber;			/* number of not-filled ~t's */
+  struct rubber rub[MAXRUBBER];
+} format_state;
+
+static char *	formatFloat(PL_locale *locale, int how, int arg,
+			    Number f, Buffer out);
+static void	distribute_rubber(struct rubber *, int, int);
+static WUNUSED int emit_rubber(format_state *state);
+
+#define BUFSIZE		1024
+#define DEFAULT		INT_MIN
+#define SHIFT		{ argc--; argv++; }
+#define NEED_ARG	{ if ( argc <= 0 ) \
+			  { FMT_ERROR("not enough arguments"); \
+			  } \
+			}
+#define FMT_ERROR(fmt)	return PL_error(NULL, 0, NULL, ERR_FORMAT, fmt)
+#define FMT_ARG(s, a)	return PL_error(NULL, 0, NULL, ERR_FORMAT_ARG, s, a)
+#define FMT_ARGC(c, a)  do { char f[2] = {(char)c}; FMT_ARG(f, a); } while(0)
+#define FMT_EXEPTION()	return false
+
+
+static PL_locale prolog_locale =
+{ 0,0,LOCALE_MAGIC,1,
+  L".", NULL
+};
+
+
+static inline void
+update_column(format_state *state, int c)
+{ if ( likely(c >= ' ') )
+  { state->column++;
+  } else
+  { switch(c)
+    { case '\n':
+	state->column = 0;
+	state->tab_stop = 0;
+	break;
+      case '\t':
+	state->column = (state->column+1)|0x7;
+      case '\b':
+	if ( likely(state->column>0) )
+	  state->column--;
+	break;
+      default:
+	state->column++;
+    }
+  }
+}
+
+
+/* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+Low-level output. If there is pending  rubber   the  output is stored in
+UTF-8 format in the state's `buffer'.   The  `buffered' field represents
+the number of UTF-8 characters in the buffer.
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+
+static WUNUSED bool
+outchr(format_state *state, int chr)
+{ if ( state->pending_rubber )
+  { if ( chr > 0x7f )
+    { char buf[8];
+      char *s, *e;
+
+      e = utf8_put_char(buf, chr);
+      for(s=buf; s<e; s++)
+	addBuffer((Buffer)&state->buffer, *s, char);
+    } else
+    { addBuffer((Buffer)&state->buffer, (char)chr, char);
+    }
+
+    state->buffered++;
+  } else
+  { if ( Sputcode(chr, state->out) < 0 )
+      return false;
+  }
+
+  update_column(state, chr);
+
+  return true;
+}
+
+
+/* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+Emit ASCII 0-terminated strings resulting from sprintf() on numeric
+arguments.  No fuzz with wide characters here.
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+
+static WUNUSED int
+outstring(format_state *state, const char *s, size_t len)
+{ const char *q;
+  const char *e = &s[len];
+
+  if ( state->pending_rubber )
+  { addMultipleBuffer(&state->buffer, s, len, char);
+    state->buffered += len;
+  } else
+  { for(q=s; q < e; q++)
+    { if ( Sputcode(*q&0xff, state->out) < 0 )
+	return false;
+    }
+  }
+
+  for(q=s; q < e; q++)
+    update_column(state, *q&0xff);
+
+  return true;
+}
+
+
+static WUNUSED bool
+oututf8(format_state *state, const char *s, size_t len)
+{ const char *e = &s[len];
+
+  if ( !state->pending_rubber )
+  { while(s<e)
+    { int chr = s[0]&0xff;
+
+      if ( likely(chr < 0x80) )
+	s++;
+      else
+	PL_utf8_code_point(&s, e, &chr);
+
+      if ( Sputcode(chr, state->out) < 0 )
+	return false;
+      update_column(state, chr);
+    }
+  } else
+  { while(s<e)
+    { int chr;
+
+      PL_utf8_code_point(&s, e, &chr);
+      if ( !outchr(state, chr) )
+	return false;
+    }
+  }
+
+  return true;
+}
+
+
+static WUNUSED bool
+oututf80(format_state *state, const char *s)
+{ return oututf8(state, s, strlen(s));
+}
+
+
+static WUNUSED bool
+outtext(format_state *state, PL_chars_t *txt)
+{ switch(txt->encoding)
+  { case ENC_ISO_LATIN_1:
+      return outstring(state, txt->text.t, txt->length);
+    case ENC_WCHAR:
+    { const pl_wchar_t *s = txt->text.w;
+      const pl_wchar_t *e = &s[txt->length];
+
+      while(s<e)
+      { int c;
+
+	s = get_wchar(s, &c);
+	if ( !outchr(state, c) )
+	  return false;
+      }
+
+      return true;
+    }
+    default:
+    { assert(0);
+      return false;
+    }
+  }
+}
+
+
+#define format_predicates (GD->format.predicates)
+
+		/********************************
+		*       PROLOG CONNECTION	*
+		********************************/
+
+static
+PRED_IMPL("format_predicate", 2, format_predicate, META)
+{ PRED_LD
+  int c;
+  predicate_t proc = NULL;
+  size_t arity;
+
+  if ( !PL_get_char_ex(A1, &c, false) )
+    return false;
+  if ( !get_procedure(A2, &proc, 0, GP_CREATE) )
+    return false;
+
+  PL_predicate_info(proc, NULL, &arity, NULL);
+  if ( arity == 0 )
+    return PL_error(NULL, 0, "arity must be > 0", ERR_DOMAIN,
+		    PL_new_atom("format_predicate"),
+		    A2);
+
+  if ( !format_predicates )
+    format_predicates = newHTableWP(8);
+
+  updateHTableWP(format_predicates, c, proc);
+
+  return true;
+}
+
+
+static
+PRED_IMPL("current_format_predicate", 2, current_format_predicate, NDET|META)
+{ PRED_LD
+  TableEnum e;
+  fid_t fid;
+
+  term_t chr = A1;
+  term_t descr = A2;
+
+  switch( CTX_CNTRL )
+  { case FRG_FIRST_CALL:
+      if ( !format_predicates )
+	fail;
+      e = newTableEnumWP(format_predicates);
+      break;
+    case FRG_REDO:
+      e = CTX_PTR;
+      break;
+    case FRG_CUTTED:
+      e = CTX_PTR;
+      freeTableEnum(e);
+    default:
+      return true;
+  }
+
+  if ( !(fid = PL_open_foreign_frame()) )
+  { freeTableEnum(e);
+    return false;
+  }
+
+  table_key_t tk;
+  table_value_t tv;
+  while( advanceTableEnum(e, &tk, &tv) )
+  { int c = (int)tv;
+    predicate_t pred = val2ptr(tv);
+
+    if ( PL_unify_integer(chr, c) &&
+	 PL_unify_predicate(descr, pred, 0) )
+    { PL_close_foreign_frame(fid);
+      ForeignRedoPtr(e);
+    }
+
+    PL_rewind_foreign_frame(fid);
+  }
+
+  PL_close_foreign_frame(fid);
+  freeTableEnum(e);
+  return false;
+}
+
+
+static foreign_t
+format_impl(IOSTREAM *out, term_t format, term_t Args, Module m)
+{ GET_LD
+  term_t argv;
+  int argc = 0;
+  term_t args = PL_copy_term_ref(Args);
+  int rval;
+  PL_chars_t fmt;
+
+  if ( !PL_get_text(format, &fmt, CVT_ATOM|CVT_STRING|CVT_LIST|BUF_STACK) )
+    return PL_error("format", 3, NULL, ERR_TYPE, ATOM_text, format);
+
+  intptr_t len = lengthList(args, false);
+  if ( len >= 0 )
+  { term_t head = PL_new_term_ref();
+    int n = 0;
+
+    argc = len;
+    argv = PL_new_term_refs(argc);
+    while( PL_get_list(args, head, args) )
+      PL_put_term(argv+n++, head);
+  } else
+  { Word p = valTermRef(args);
+    deRef(p);
+
+    if ( !isList(*p) )
+    { argc = 1;
+      argv = PL_new_term_refs(argc);
+
+      PL_put_term(argv, args);
+    } else
+      return PL_type_error("list", args);
+  }
+
+  switch(fmt.storage)			/* format can do call-back! */
+  { case PL_CHARS_STACK:
+    case PL_CHARS_PROLOG_STACK:
+      PL_save_text(&fmt, BUF_MALLOC);
+      break;
+    default:
+      break;
+  }
+
+  Slock(out);
+  rval = do_format(out, &fmt, argc, argv, m);
+  Sunlock(out);
+  PL_free_text(&fmt);
+
+  return rval;
+}
+
+#define format(out, fmt, args) LDFUNC(format, out, fmt, args)
+
+static foreign_t
+format(DECL_LD term_t out, term_t format, term_t args)
+{ redir_context ctx;
+  foreign_t rc;
+  Module m = NULL;
+  term_t list = PL_new_term_ref();
+
+  if ( !PL_strip_module(args, &m, list) )
+    return false;
+
+  if ( (rc=setupOutputRedirect(out, &ctx, false)) )
+  { if ( (rc = format_impl(ctx.stream, format, list, m)) )
+      rc = closeOutputRedirect(&ctx);
+    else
+      discardOutputRedirect(&ctx);
+  }
+
+  return rc;
+}
+
+static
+PRED_IMPL("format", 2, format, META)
+{ PRED_LD
+
+  return format(0, A1, A2);
+}
+
+static
+PRED_IMPL("format", 3, format, META)
+{ PRED_LD
+
+    return format(A1, A2, A3);
+}
+
+static inline int
+get_chr_from_text(const PL_chars_t *t, int index)
+{ switch(t->encoding)
+  { case ENC_ISO_LATIN_1:
+      return t->text.t[index]&0xff;
+    case ENC_WCHAR:
+      return t->text.w[index];
+    default:
+      assert(0);
+      return 0;				/* not reached */
+  }
+}
+
+
+typedef struct sub_state
+{ char          buf[BUFSIZE];
+  char         *str;
+  size_t        bufsize;
+  format_state *fstate;
+  IOSTREAM     *old_stream;
+} sub_state;
+
+static int
+prepare_sub_format(sub_state *state, format_state *fstate, IOSTREAM *fd)
+{ state->fstate = fstate;
+
+  if ( !fstate->pending_rubber &&
+       fd->position &&
+       fd->position->linepos == fstate->column )
+  { state->old_stream = Scurout;
+
+    Scurout = fd;
+  } else
+  { state->old_stream = NULL;
+    state->str        = state->buf;
+    state->bufsize    = sizeof(state->buf);
+
+    tellString(&state->str, &state->bufsize, ENC_UTF8);
+    if ( ison(fd, SIO_ISATTY) )
+      set(Scurout, SIO_ISATTY);
+  }
+
+  return true;
+}
+
+static int
+end_sub_format(sub_state *state, int rc)
+{ int lp = Scurout->position->linepos;
+
+  if ( state->old_stream )
+  { Scurout = state->old_stream;
+
+    if ( rc )
+      state->fstate->column = lp;
+  } else
+  { toldString();
+    if ( rc )
+    { int c0 = state->fstate->column;
+      rc = oututf8(state->fstate, state->str, state->bufsize);
+      state->fstate->column = c0 + lp;
+    }
+    if ( state->str != state->buf )
+      free(state->str);
+  }
+
+  return rc;
+}
+
+static bool
+get_int_expression(term_t t, Number i)
+{ if ( !PL_get_number(t, i) &&
+       !valueExpression(t, i) )
+    return false;
+
+  if ( !isIntegerNumber(i) &&
+       !toIntegerNumber(i, 0) )
+    return false;
+
+  if ( i->type == V_MPZ )
+  { int64_t v;
+    if ( mpz_to_int64(i->value.mpz, &v) )
+    { clearNumber(i);
+      i->type = V_INTEGER;
+      i->value.i = v;
+    }
+  }
+
+  return true;
+}
+
+		/********************************
+		*       ACTUAL FORMATTING	*
+		********************************/
+
+bool
+do_format(IOSTREAM *fd, PL_chars_t *fmt, int argc, term_t argv, Module m)
+{ GET_LD
+  format_state state;			/* complete state */
+  unsigned int here = 0;
+  int rc = true;
+
+  state.out = fd;
+  state.tab_stop = 0;
+  state.pending_rubber = 0;
+  initBuffer(&state.buffer);
+  state.buffered = 0;
+
+  if ( fd->position )
+    state.column = fd->position->linepos;
+  else
+    state.column = 0;
+
+  while(here < fmt->length)
+  { int c = get_chr_from_text(fmt, here);
+
+    switch(c)
+    { case '~':
+	{ int arg = DEFAULT;		/* Numeric argument */
+	  int mod_colon = false;	/* Used colon modifier */
+	  bool neg = false;
+	  predicate_t proc;
+					/* Get the numeric argument */
+	  c = get_chr_from_text(fmt, ++here);
+	  if ( c == '-' )
+	  { neg = true;
+	    c = get_chr_from_text(fmt, ++here);
+	    if ( !isDigitW(c) )
+	    { FMT_ERROR("invalid argument");
+	    }
+	  }
+
+	  if ( isDigitW(c) )
+	  { arg = c - '0';
+
+	    here++;
+	    while(here < fmt->length)
+	    { c = get_chr_from_text(fmt, here);
+
+	      if ( isDigitW(c) )
+	      { int dw = c - '0';
+		int arg2 = arg*10 + dw;
+
+		if ( (arg2 - dw)/10 != arg )	/* see mul64() in pl-arith.c */
+		{ FMT_ERROR("argument overflow");
+		}
+		arg = arg2;
+		here++;
+	      } else
+	      { if ( neg )
+		  arg = -arg;
+		break;
+	      }
+	    }
+	  } else if ( c == '*' )
+	  { number i;
+	    NEED_ARG;
+	    AR_CTX
+
+	    AR_BEGIN();
+	    if ( !get_int_expression(argv, &i) ||
+		 i.type != V_INTEGER ||
+		 i.value.i < 0 ||
+		 i.value.i > INT_MAX )
+	    { AR_CLEANUP();
+	      FMT_ARGC(c, argv);
+	    }
+	    SHIFT;
+	    arg = i.value.i;
+	    AR_END();
+	    c = get_chr_from_text(fmt, ++here);
+	  } else if ( c == '`' && here < fmt->length )
+	  { arg = get_chr_from_text(fmt, ++here);
+	    c = get_chr_from_text(fmt, ++here);
+	  }
+
+	  if ( c == ':' )
+	  { mod_colon = true;
+	    c = get_chr_from_text(fmt, ++here);
+	  }
+
+					/* Check for user defined format */
+	  if ( format_predicates &&
+	       (proc = lookupHTableWP(format_predicates, c)) )
+	  { size_t arity;
+	    term_t av;
+	    sub_state sstate;
+	    int i;
+
+	    PL_predicate_info(proc, NULL, &arity, NULL);
+	    av = PL_new_term_refs((int)arity);
+
+	    if ( arg == DEFAULT )
+	      PL_put_atom(av+0, ATOM_default);
+	    else
+	      PL_put_integer(av+0, arg);
+
+	    for(i=1; i < arity; i++)
+	    { NEED_ARG;
+	      PL_put_term(av+i, argv);
+	      SHIFT;
+	    }
+
+	    if ( !(rc=prepare_sub_format(&sstate, &state, fd)) )
+	      goto out;
+	    rc = PL_call_predicate(NULL, PL_Q_PASS_EXCEPTION, proc, av);
+	    rc = end_sub_format(&sstate, rc);
+
+	    if ( !rc )
+	      goto out;
+
+	    here++;
+	  } else
+	  { switch(c)			/* Build in formatting */
+	    { case 'a':			/* atomic */
+		{ PL_chars_t txt;
+
+		  NEED_ARG;
+		  if ( !PL_get_text(argv, &txt, CVT_ATOM|CVT_STRING) )
+		    FMT_ARG("a", argv);
+		  SHIFT;
+		  rc = outtext(&state, &txt);
+		  if ( !rc )
+		    goto out;
+		  here++;
+		  break;
+		}
+	      case 'c':			/* ~c: character code */
+		{ int chr;
+
+		  NEED_ARG;
+		  if ( PL_get_integer(argv, &chr) && chr >= 0 )
+		  { int times = (arg == DEFAULT ? 1 : arg);
+
+		    SHIFT;
+		    while(times-- > 0)
+		    { rc = outchr(&state, chr);
+		      if ( !rc )
+			goto out;
+		    }
+		  } else
+		    FMT_ARG("c", argv);
+		  here++;
+		  break;
+		}
+	      case 'e':			/* exponential float */
+	      case 'E':			/* Exponential float */
+	      case 'f':			/* float */
+	      case 'F':			/* float */
+	      case 'g':			/* shortest of 'f' and 'e' */
+	      case 'G':			/* shortest of 'f' and 'E' */
+	      case 'h':
+	      case 'H':			/* Precise */
+		{ number n;
+		  union
+		  { tmp_buffer b;
+		    buffer b1;
+		  } u;
+		  PL_locale *l;
+		  AR_CTX
+
+		  NEED_ARG;
+		  AR_BEGIN();
+		  if ( !PL_get_number(argv, &n) )
+		  { if ( !valueExpression(argv, &n) )
+		    { char f[2];
+
+		      f[0] = (char)c;
+		      f[1] = EOS;
+		      AR_CLEANUP();
+		      FMT_ARG(f, argv); /* returns error */
+		    }
+		  }
+		  SHIFT;
+
+		  if ( (c == 'f' || c == 'F') && mod_colon )
+		    l = fd->locale;
+		  else
+		    l = &prolog_locale;
+
+		  initBuffer(&u.b);
+		  rc = formatFloat(l, c, arg, &n, &u.b1) != NULL;
+		  clearNumber(&n);
+		  AR_END();
+		  if ( rc )
+		    rc = oututf80(&state, baseBuffer(&u.b, char));
+		  discardBuffer(&u.b);
+		  if ( !rc )
+		    goto out;
+		  here++;
+		  break;
+		}
+	      case 'd':			/* integer */
+	      case 'D':			/* grouped integer */
+	      case 'r':			/* radix number */
+	      case 'R':			/* Radix number */
+	      case 'I':			/* Prolog 1_000_000 */
+		{ number i;
+		  tmp_buffer b;
+		  char *si;
+		  AR_CTX
+
+		  NEED_ARG;
+		  AR_BEGIN();
+		  if ( !get_int_expression(argv, &i) )
+		  { AR_CLEANUP();
+		    FMT_ARGC(c, argv); /* return with error */
+		  }
+		  SHIFT;
+
+		  initBuffer(&b);
+		  if ( c == 'd' || c == 'D' )
+		  { PL_locale ltmp;
+		    PL_locale *l;
+		    static char grouping[] = {3,0};
+
+		    if ( c == 'D' )
+		    { if ( mod_colon )
+		      { ltmp.thousands_sep = L"_";
+			ltmp.decimal_point = L".";
+			ltmp.grouping = grouping;
+		      } else
+		      { ltmp.thousands_sep = L",";
+			ltmp.decimal_point = L".";
+			ltmp.grouping = grouping;
+		      }
+		      l = &ltmp;
+		    } else if ( mod_colon )
+		    { l = fd->locale;
+		    } else
+		    { l = NULL;
+		    }
+
+		    if ( arg == DEFAULT )
+		      arg = 0;
+		    si = formatInteger(l, arg, 10, true, &i, (Buffer)&b);
+		  } else if ( c == 'I' )
+		  { PL_locale ltmp;
+		    char grouping[2];
+
+		    grouping[0] = (char)(arg == DEFAULT ? 3 : arg);
+		    grouping[1] = '\0';
+		    ltmp.thousands_sep = L"_";
+		    ltmp.grouping = grouping;
+
+		    si = formatInteger(&ltmp, 0, 10, true, &i, (Buffer)&b);
+		  } else			/* r,R */
+		  { if ( arg == DEFAULT )
+		      arg = 8;
+		    if ( arg < 2 || arg > 36 )
+		    { term_t r = PL_new_term_ref();
+
+		      PL_put_integer(r, arg);
+		      PL_error(NULL, 0, NULL, ERR_DOMAIN, ATOM_radix, r);
+		      si = NULL;
+		    } else
+		      si = formatInteger(NULL, 0, arg, c == 'r', &i, (Buffer)&b);
+		  }
+		  clearNumber(&i);
+		  AR_END();
+		  if ( si )
+		    rc = oututf80(&state, si);
+		  else
+		    rc = false;
+		  discardBuffer(&b);
+		  if ( !rc )
+		    goto out;
+		  here++;
+		  break;
+		}
+	      case 's':			/* string */
+		{ PL_chars_t txt;
+
+		  NEED_ARG;
+		  if ( !PL_get_text(argv, &txt, CVT_ATOM|CVT_LIST|CVT_STRING) )
+		    FMT_ARG("s", argv);
+
+		  if ( arg == DEFAULT )
+		    arg = txt.length;
+		  else if ( arg < 0 )
+		    arg = 0;
+		  else if ( arg < txt.length )
+		    txt.length = arg;
+
+		  rc = outtext(&state, &txt);
+		  for(int i=arg-txt.length; rc && i>0; i--)
+		    rc = outchr(&state, ' ');
+		  PL_free_text(&txt);
+		  SHIFT;
+		  if ( !rc )
+		    goto out;
+		  here++;
+		  break;
+		}
+	      case 'i':			/* ignore */
+		{ NEED_ARG;
+		  SHIFT;
+		  here++;
+		  break;
+		}
+		{ Func1 f;
+		  sub_state sstate;
+
+	      case 'k':			/* write_canonical */
+		  f = pl_write_canonical;
+		  goto pl_common;
+	      case 'p':			/* print */
+		  f = pl_print;
+		  goto pl_common;
+	      case 'q':			/* writeq */
+		  f = pl_writeq;
+		  goto pl_common;
+	      case 'w':			/* write */
+		  f = pl_write;
+		  pl_common:
+
+		  NEED_ARG;
+
+		  if ( !(rc=prepare_sub_format(&sstate, &state, fd)) )
+		    goto out;
+		  rc = (int)(*f)(argv);
+		  rc = end_sub_format(&sstate, rc);
+
+		  if ( !rc )
+		   goto out;
+
+		  SHIFT;
+		  here++;
+		  break;
+		}
+	      case 'W':			/* write_term(Value, Options) */
+	       { sub_state sstate;
+
+		 if ( argc < 2 )
+		 { FMT_ERROR("not enough arguments");
+		 }
+
+		 if ( !(rc=prepare_sub_format(&sstate, &state, fd)) )
+		   goto out;
+		 rc = (int)pl_write_term(argv, argv+1);
+		 rc = end_sub_format(&sstate, rc);
+
+		 if ( !rc )
+		   goto out;
+
+		 SHIFT;
+		 SHIFT;
+		 here++;
+		 break;
+	       }
+	      case '@':
+		{ term_t ex = 0;
+		  sub_state sstate;
+		  fid_t fid;
+
+		  if ( argc < 1 )
+		  { FMT_ERROR("not enough arguments");
+		  }
+
+		  if ( !(rc=prepare_sub_format(&sstate, &state, fd)) )
+		    goto out;
+
+		  rc = ( (fid=PL_open_foreign_frame()) &&
+			 callProlog(m, argv, PL_Q_CATCH_EXCEPTION, &ex) );
+		  if ( rc )
+		    PL_rewind_foreign_frame(fid);
+		  rc = end_sub_format(&sstate, rc);
+
+		  if ( !rc )
+		  { if ( ex && !PL_exception(0) )
+		      rc = PL_raise_exception(ex);
+		    goto out;
+		  }
+
+		  SHIFT;
+		  here++;
+		  break;
+		}
+	      case '~':			/* ~ */
+		{ rc = outchr(&state, '~');
+		  if ( !rc )
+		    goto out;
+		  here++;
+		  break;
+		}
+	      case 'n':			/* \n */
+		{ if ( arg == DEFAULT )
+		    arg = 1;
+		  while( arg-- > 0 )
+		  { rc = outchr(&state, '\n');
+		    if ( !rc )
+		      goto out;
+		  }
+		  here++;
+		  break;
+		}
+	      case 'N':			/* \n if not on newline */
+		if ( state.column != 0 )
+		{ rc = outchr(&state, '\n');
+		  if ( !rc )
+		    goto out;
+		}
+		here++;
+		break;
+	      case 't':			/* insert tab */
+		{ if ( state.pending_rubber >= MAXRUBBER )
+		    FMT_ERROR("Too many tab stops");
+
+		  state.rub[state.pending_rubber].where = state.buffered;
+		  state.rub[state.pending_rubber].pad   =
+					(arg == DEFAULT ? (pl_wchar_t)' '
+							: (pl_wchar_t)arg);
+		  state.rub[state.pending_rubber].size = 0;
+		  state.pending_rubber++;
+		  here++;
+		  break;
+		}
+	      case '|':			/* set tab */
+		{ int stop;
+		  int nl_and_reindent;
+
+		  if ( arg == DEFAULT )
+		    arg = state.column;
+		  /*FALLTHROUGH*/
+	      case '+':			/* tab relative */
+		  if ( arg == DEFAULT )
+		    arg = 8;
+		  stop = (c == '+' ? state.tab_stop + arg : arg);
+
+		  if ( stop < state.column && mod_colon )
+		    nl_and_reindent = state.pending_rubber ?
+						state.rub[state.pending_rubber-1].pad : ' ';
+		  else
+		    nl_and_reindent = 0;
+
+		  if ( state.pending_rubber == 0 ) /* nothing to distribute */
+		  { state.rub[0].where = state.buffered;
+		    state.rub[0].pad = ' ';
+		    state.pending_rubber++;
+		  }
+		  distribute_rubber(state.rub,
+				    state.pending_rubber,
+				    stop - state.column);
+		  if ( !(rc=emit_rubber(&state)) )
+		    goto out;
+
+		  if ( nl_and_reindent )
+		  { if ( Sputcode('\n', state.out) < 0 )
+		    { rc = false;
+		      goto out;
+		    }
+		    update_column(&state, '\n');
+
+		    state.rub[0].where = state.buffered;
+		    state.rub[0].pad = nl_and_reindent;
+		    state.pending_rubber++;
+
+		    distribute_rubber(state.rub,
+				      state.pending_rubber,
+				      stop - state.column);
+		    if ( !(rc=emit_rubber(&state)) )
+		      goto out;
+		  }
+
+		  state.column = state.tab_stop = stop;
+		  here++;
+		  break;
+		}
+	      default:
+	      { term_t ex = PL_new_term_ref();
+
+		PL_put_atom(ex, codeToAtom(c));
+		return PL_error("format", 2, NULL, ERR_EXISTENCE,
+				PL_new_atom("format_character"),
+				ex);
+	      }
+	    }
+	  }
+	  break;			/* the '~' switch */
+	}
+      default:
+	{ rc = outchr(&state, c);
+	  if ( !rc )
+	    goto out;
+	  here++;
+	  break;
+	}
+    }
+  }
+
+  if ( state.pending_rubber )		/* not closed ~t: flush out */
+  { if ( !(rc=emit_rubber(&state)) )
+      goto out;
+  }
+  if ( argc != 0 )
+    FMT_ERROR("too many arguments");
+
+out:
+  return rc;
+}
+
+
+static void
+distribute_rubber(struct rubber *r, int rn, int space)
+{ if ( space > 0 )
+  { int s = space / rn;
+
+    for(int n=0; n < rn; n++)		/* give them equal size */
+      r[n].size = s;
+					/* distribute from the center */
+    space -= s*rn;
+    for(int n=rn-1; space; n--, space--)
+      r[n].size++;
+  } else
+  { int n;
+
+    for(n=0; n < rn; n++)		/* set all rubber to 0 */
+      r[n].size = 0;
+  }
+}
+
+
+static WUNUSED int
+emit_rubber(format_state *state)
+{ const char *s = baseBuffer(&state->buffer, char);
+  const char *e = &s[entriesBuffer(&state->buffer, char)];
+  struct rubber *r = state->rub;
+  int rn = state->pending_rubber;
+  size_t j;
+
+  for(j = 0; s <= e; j++)
+  { int chr;
+
+    while ( rn && r->where == j )
+    { size_t n;
+
+      for(n=0; n<r->size; n++)
+      { if ( Sputcode(r->pad, state->out) < 0 )
+	  return false;
+      }
+      r++;
+      rn--;
+    }
+
+    if ( s < e )
+    { PL_utf8_code_point(&s, e, &chr);
+      if ( Sputcode(chr, state->out) < 0 )
+	return false;
+    } else
+      break;
+  }
+
+  discardBuffer(&state->buffer);
+  initBuffer(&state->buffer);
+  state->buffered = 0;
+  state->pending_rubber = 0;
+
+  return true;
+}
+
+
+/*  format an integer according to  a  number  of  modifiers  at various
+    radius.   `split'  is a boolean asking to put ',' between each group
+    of three digits (e.g. 67,567,288).  `div' askes to divide the number
+    by radix^`div' before printing.   `radix'  is  the  radix  used  for
+    conversion.  `n' is the number to be converted.
+
+ ** Fri Aug 19 22:26:41 1988  jan@swivax.UUCP (Jan Wielemaker)  */
+
+static void
+lappend(const wchar_t *l, int def, Buffer out)
+{ if ( l )
+  { const wchar_t *e = l+wcslen(l);
+
+    while (--e >= l)
+    { int c = *e;
+
+      if ( c < 128 )
+      { addBuffer(out, (char)c, char);
+      } else
+      { char buf[6];
+	char *e8, *s;
+
+	e8=utf8_put_char(buf, c);
+	for(s=e8; --s>=buf; )		/* must be reversed as we reverse */
+	{ addBuffer(out, *s, char);	/* in the end */
+	}
+      }
+    }
+  } else
+  { addBuffer(out, (char)def, char);
+  }
+}
+
+static void
+revert_string(char *s, size_t len)
+{ char *e = &s[len-1];
+
+  for(; e>s; s++,e--)
+  { char c = *e;
+
+    *e = *s;
+    *s = c;
+  }
+}
+
+/* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+Format the integer  `i` to the buffer `out`.  `div`  is for supporting
+fixed point numbers.   `radix` is the base and  `smll` defines whether
+to use capitals (`false`) or  lowercase letters for digit values above
+9.
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+
+
+char *
+formatInteger(PL_locale *locale, int div, int radix, bool smll, Number i,
+	     Buffer out)
+{ const char *grouping = NULL;
+
+  if ( !locale )
+  { locale = &prolog_locale;
+  } else
+  { if ( locale->grouping && locale->grouping[0] &&
+	 locale->thousands_sep && locale->thousands_sep[0] )
+      grouping = locale->grouping;
+  }
+
+  switch(i->type)
+  { case V_INTEGER:
+    { int64_t n = i->value.i;
+
+      if ( n == 0 && div == 0 )
+      { addBuffer(out, '0', char);
+      } else
+      { int before = false;			/* before decimal point */
+	int negative = false;
+	int gsize = 0;
+	int dweight;
+
+	negative = (n < 0);
+
+	while( n != 0 || div >= 0 )
+	{ if ( div-- == 0 && !before )
+	  { if ( !isEmptyBuffer(out) )
+	      lappend(locale->decimal_point, '.', out);
+	    before = true;
+	    if ( grouping )
+	      gsize = grouping[0];
+	  }
+
+	  if ( !negative )
+	    dweight = (int)(n % radix);
+	  else
+	    dweight = -(int)(n % -radix);
+
+	  addBuffer(out, digitName(dweight, smll), char);
+	  n /= radix;
+
+	  if ( --gsize == 0 && n != 0 )
+	  { lappend(locale->thousands_sep, ',', out);
+	    if ( grouping[1] == 0 )
+	      gsize = grouping[0];
+	    else if ( grouping[1] == CHAR_MAX )
+	      gsize = 0;
+	    else
+	      gsize = *++grouping;
+	  }
+	}
+	if ( negative )
+	  addBuffer(out, '-', char);
+      }
+
+      revert_string(baseBuffer(out, char), entriesBuffer(out, char));
+      addBuffer(out, EOS, char);
+
+      return baseBuffer(out, char);
+    }
+#ifdef O_BIGNUM
+    case V_MPZ:
+    { GET_LD
+	size_t len = (size_t)((double)mpz_sizeinbase(i->value.mpz, 2) *
+			      log(radix)/log(2) * 1.2);
+      char tmp[256];
+      char *buf;
+      int rc;
+
+      if ( len+2 > sizeof(tmp) )
+	buf = tmp_malloc(len+2);
+      else
+	buf = tmp;
+
+      EXCEPTION_GUARDED({ mpz_get_str(buf, radix, i->value.mpz);
+			  rc = true;
+			},
+			{ rc = false;
+			});
+      if ( !rc )
+	return NULL;
+
+      if ( !smll && radix > 10 )
+      { char *s;
+
+	for(s=buf; *s; s++)
+	  *s = (char)toupper(*s);
+      }
+
+      if ( grouping || div > 0 )
+      { int before = false;			/* before decimal point */
+	int gsize = 0;
+	char *e = buf+strlen(buf)-1;
+
+	while(e >= buf || div >= 0)
+	{ if ( div-- == 0 && !before )
+	  { if ( !isEmptyBuffer(out) )
+	      lappend(locale->decimal_point, '.', out);
+	    before = true;
+	    if ( grouping )
+	      gsize = grouping[0];
+	  }
+
+	  addBuffer(out, *e, char);
+	  e--;
+
+	  if ( --gsize == 0 && e >= buf && *e != '-' )
+	  { lappend(locale->thousands_sep, ',', out);
+	    if ( grouping[1] == 0 )
+	      gsize = grouping[0];
+	    else if ( grouping[1] == CHAR_MAX )
+	      gsize = 0;
+	    else
+	      gsize = *++grouping;
+	  }
+	}
+	revert_string(baseBuffer(out, char), entriesBuffer(out, char));
+      } else
+      { addMultipleBuffer(out, buf, strlen(buf), char);
+      }
+
+      if ( buf != tmp )
+	tmp_free(buf);
+
+      addBuffer(out, EOS, char);
+      return baseBuffer(out, char);
+    }
+#endif /*O_BIGNUM*/
+    default:
+      assert(0);
+      return NULL;
+  }
+}
+
+
+static int
+countGroups(const char *grouping, int len)
+{ int groups = 0;
+  int gsize = grouping[0];
+
+  while(len>0)
+  { len -= gsize;
+
+    if ( len > 0 )
+      groups++;
+
+    if ( grouping[1] == 0 )
+    { if ( len > 1 )
+	groups += (len-1)/grouping[0];
+      return groups;
+    } else if ( grouping[1] == CHAR_MAX )
+    { return groups;
+    } else
+    { gsize = *++grouping;
+    }
+  }
+
+  return groups;
+}
+
+
+static int
+ths_to_utf8(char *u8, const wchar_t *s, size_t len)
+{ char *e = u8+len-7;
+
+  for( ; u8<e && *s; s++)
+    u8 = utf8_put_char(u8,*s);
+  *u8 = EOS;
+
+  return *s == 0;
+}
+
+
+static int
+same_decimal_point(PL_locale *l1, PL_locale *l2)
+{ if ( l1->decimal_point && l2->decimal_point &&
+       wcscmp(l1->decimal_point, l2->decimal_point) == 0 )
+    return true;
+  if ( !l1->decimal_point && !l2->decimal_point )
+    return true;
+
+  return false;
+}
+
+
+static int
+utf8_dp(PL_locale *l, char *s, int *len)
+{ if ( l->decimal_point )
+  { if ( !ths_to_utf8(s, l->decimal_point, 20) )
+      return false;
+    *len = (int)strlen(s);
+  } else
+  { *s++ = '.';
+    *s = EOS;
+    *len = 1;
+  }
+
+  return true;
+}
+
+
+/* localizeDecimalPoint() replaces the decimal point as entered by the
+   local sensitive print functions by the one in the specified locale.
+   This is overly complicated. Needs more testing, in particular for
+   locales with (in UTF-8) multibyte decimal points.
+*/
+
+static int
+localizeDecimalPoint(PL_locale *locale, Buffer b)
+{ if ( locale == GD->locale.default_locale ||
+       same_decimal_point(GD->locale.default_locale, locale) )
+    return true;
+
+  if ( locale->decimal_point && locale->decimal_point[0] )
+  { char *s = baseBuffer(b, char);
+    char *e;
+    char dp[20];  int dplen;
+    char ddp[20]; int ddplen;
+
+    if ( !utf8_dp(locale, dp, &dplen) ||
+	 !utf8_dp(GD->locale.default_locale, ddp, &ddplen) )
+      return false;
+
+    if ( *s == '-' )
+      s++;
+    for(e=s; *e && isDigit(*e); e++)
+      ;
+
+    if ( strncmp(e, ddp, ddplen) == 0 )
+    { if ( dplen == ddplen )
+      { memcpy(e, dp, dplen);
+      } else
+      { char *ob = baseBuffer(b, char);
+	if ( dplen > ddplen && !growBuffer(b, dplen-ddplen) )
+	  return PL_no_memory();
+	e += baseBuffer(b, char) - ob;
+
+	memmove(&e[dplen-ddplen], e, strlen(e)+1);
+	memcpy(e, dp, dplen);
+      }
+    }
+  }
+
+  return true;
+}
+
+
+static int
+groupDigits(PL_locale *locale, Buffer b)
+{ if ( locale->thousands_sep && locale->thousands_sep[0] &&
+       locale->grouping && locale->grouping[0] )
+  { char *s = baseBuffer(b, char);
+    char *e;
+    int groups;
+
+    if ( *s == '-' )
+      s++;
+    for(e=s; *e && isDigit(*e); e++)
+      ;
+
+    groups = countGroups(locale->grouping, (int)(e-s));
+
+    if ( groups > 0 )
+    { char *o;
+      char *grouping = locale->grouping;
+      int gsize = grouping[0];
+      char ths[20];
+      int thslen;
+
+      if ( !ths_to_utf8(ths, locale->thousands_sep, sizeof(ths)) )
+	return false;
+      thslen = (int)strlen(ths);
+
+      if ( !growBuffer(b, thslen*groups) )
+	return PL_no_memory();
+      memmove(&e[groups*thslen], e, strlen(e)+1);
+
+      e--;
+      for(o=e+groups*thslen; e>=s; )
+      { *o-- = *e--;
+	if ( --gsize == 0 && e>=s )
+	{ o -= thslen-1;
+	  memcpy(o, ths, thslen);
+	  o--;
+	  if ( grouping[1] == 0 )
+	    gsize = grouping[0];
+	  else if ( grouping[1] == CHAR_MAX )
+	    gsize = 0;
+	  else
+	    gsize = *++grouping;
+	}
+      }
+    }
+  }
+
+  return true;
+}
+
+
+/* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+formatFloat(PL_locale *locale, int how, int arg, Number f, Buffer out)
+
+formats a floating point  number  to  a   buffer.  `How'  is  the format
+specifier ([eEfgG]), `arg' the argument.
+
+MPZ/MPQ numbers printed using the format specifier `f' are written using
+the following algorithm, courtesy of Jan Burse:
+
+  Given: A rational n/m
+  Seeked: The ration rounded to d fractional digits.
+  Algorithm: Compute (n*10^d+m//2)//m, and place period at d.
+
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+
+static char *
+formatFloat(PL_locale *locale, int how, int arg, Number f, Buffer out)
+{ bool use_h = how == 'h' || how == 'H';
+
+  if ( arg == DEFAULT )
+  { arg = use_h ? 3 : 6;
+  } else if ( arg < 0 && !use_h )
+  { GET_LD
+    term_t a = PL_new_term_ref();
+    PL_put_integer(a, arg);
+    PL_error(NULL, 0, NULL, ERR_DOMAIN, ATOM_not_less_than_zero, a);
+    return NULL;
+  }
+
+  if ( use_h && !promoteToFloatNumber(f) )
+    return NULL;
+
+  switch(f->type)
+  {
+#ifdef O_GMP
+    mpf_t mpf;
+    mpz_t t1, t2;
+    int neg;
+    int exp;
+
+    case V_MPZ:
+    { switch(how)
+      { case 'f':
+	case 'F':
+	{ mpz_init(t1);
+	  mpz_init(t2);
+	  mpz_ui_pow_ui(t1, 10, arg);
+	  mpz_mul(t1, f->value.mpz, t1);
+	  neg = mpz_sgn(t1) < 0;
+	  mpz_abs(t1, t1);
+	  goto print_mpz_f;
+	}
+	case 'e':
+	case 'E':
+	{ mpz_init(t1);
+	  mpz_init(t2);
+
+	  mpz_set(t1, f->value.mpz);
+	  neg = mpz_sgn(t1) < 0;
+	  mpz_abs(t1, t1);
+
+	  if ( mpz_sgn(t1) == 0 )
+	  { exp = 0;
+	  } else
+	  { exp = mpz_sizeinbase(t1, 10)-1;  /* guess exponent */
+	    mpz_ui_pow_ui(t2, 10, exp);
+	    if (mpz_cmp(t2, t1) > 0) exp--;  /* correct exponent */
+
+	    if (exp > arg)
+	    { mpz_ui_pow_ui(t2, 10, (exp-arg-1));
+	      mpz_tdiv_q(t1, t1, t2);
+	      mpz_add_ui(t1, t1, 5);
+	      mpz_tdiv_q_ui(t1, t1, 10);
+	    } else
+	    { mpz_ui_pow_ui(t2, 10, arg-exp);
+	      mpz_mul(t1, t1, t2);
+	    }
+	  }
+	  mpz_set_ui(t2, exp);
+	  goto print_mpz_e;
+	}
+	case 'g':
+	case 'G':
+	{ mpf_init2(mpf, arg*4);
+	  mpf_set_z(mpf, f->value.mpz);
+	  goto print_mpf;
+	}
+      }
+    }
+    case V_MPQ:
+    { char tmp[12];
+      size_t size;
+      int written;
+      int fbits;
+      int digits;
+      int padding;
+
+      switch(how)
+      { case 'f':
+	case 'F':
+	{ mpz_init(t1);
+	  mpz_init(t2);
+	  mpz_ui_pow_ui(t1, 10, arg);
+	  mpz_mul(t1, mpq_numref(f->value.mpq), t1);
+	  mpz_tdiv_q_ui(t2, mpq_denref(f->value.mpq), 2);
+	  if (mpq_cmp_ui(f->value.mpq, 0, 1) < 0)
+	  { mpz_sub(t1, t1, t2);
+	    neg=1;
+	  } else
+	  { mpz_add(t1, t1, t2);
+	    neg=0;
+	  }
+	  mpz_tdiv_q(t1, t1, mpq_denref(f->value.mpq));
+	  mpz_abs(t1, t1);
+
+	print_mpz_f:
+
+	  if ( mpz_sgn(t1) != 0 )
+	  { size =(size_t)((double)mpz_sizeinbase(t1, 2) * log(10)/log(2) * 1.2 + 1);
+	    if ( !growBuffer(out, size) )
+	    { PL_no_memory();
+	      return NULL;
+	    }
+	    mpz_get_str(baseBuffer(out, char), 10, t1);
+	    digits = written = strlen(baseBuffer(out, char));
+	  } else
+	  { written = digits = 0;
+	  }
+	  if ( digits <= arg )
+	    padding = (arg-digits+1);
+	  else
+	    padding = 0;
+
+	  size = digits;
+	  if (neg) size++;               /* leading - */
+	  if (arg) size++;               /* decimal point */
+	  if (padding) size += padding;  /* leading '0's */
+	  size++;                        /* NULL terminator */
+
+	  if ( !growBuffer(out, size) )
+	  { PL_no_memory();
+	    return NULL;
+	  }
+
+	  if (!digits)
+	  { memset(out->base, '\0', 1);
+	  }
+
+	  if (padding)
+	  { memmove(out->base+padding, out->base, written+1);
+	    memset(out->base, '0', padding);
+	    written += padding;
+	  }
+
+	  if (arg)
+	  { memmove(out->base+written-(arg-1), out->base+written-arg, arg+1);
+	    if ( locale->decimal_point && locale->decimal_point[0] )
+	      *(out->base+written-arg) = (char)locale->decimal_point[0];
+	    else
+	      *(out->base+written-arg) = '.';
+	    written++;
+	  }
+
+	  if (neg)
+	  { memmove(out->base+1, out->base, written+1);
+	    memset(out->base, '-', 1);
+	    written++;
+	  }
+
+	  out->top = out->base + written;
+	  mpz_clear(t1);
+	  mpz_clear(t2);
+	  break;
+	}
+	case 'e':
+	case 'E':
+	{ mpz_init(t1);
+	  mpz_init(t2);
+
+	  if (mpz_cmpabs(mpq_numref(f->value.mpq), mpq_denref(f->value.mpq)) >= 0)
+	  { mpz_tdiv_q(t1, mpq_numref(f->value.mpq), mpq_denref(f->value.mpq));
+	    exp = mpz_sizeinbase(t1, 10)-1;     /* guess exponent */
+	    mpz_ui_pow_ui(t2, 10, exp);
+	    if (mpz_cmpabs(t2, t1) > 0) exp--;  /* correct exponent */
+	  } else
+	  { mpq_t tq1, tq2;
+	    mpq_init(tq1);
+	    mpq_init(tq2);
+	    mpz_set(t1, mpq_numref(f->value.mpq));
+	    mpz_abs(t1, t1);
+	    mpz_tdiv_q(t1, mpq_denref(f->value.mpq), t1);
+	    exp = 0-mpz_sizeinbase(t1, 10);     /* guess exponent */
+	    mpz_ui_pow_ui(t2, 10, abs(exp)-1);
+	    mpq_set_z(tq1, t1);
+	    mpq_inv(tq2, f->value.mpq);
+	    if (mpz_cmpabs(t2, t1) == 0 && mpq_cmp(tq1, tq2)==0) exp++;
+	    if (mpz_cmpabs(t2, t1) > 0) exp++;  /* correct exponent */
+	    mpq_clear(tq1);
+	    mpq_clear(tq2);
+	  }
+
+	  mpz_ui_pow_ui(t1, 10, abs(arg-exp));
+	  if (mpz_cmpabs(mpq_numref(f->value.mpq), mpq_denref(f->value.mpq)) >= 0 && exp > arg)
+	  { mpz_tdiv_q(t1, mpq_numref(f->value.mpq), t1);
+	  } else
+	  { mpz_mul(t1, mpq_numref(f->value.mpq), t1);
+	  }
+	  mpz_tdiv_q_ui(t2, mpq_denref(f->value.mpq), 2);
+	  if ( mpq_sgn(f->value.mpq) < 0)
+	  { mpz_sub(t1, t1, t2);
+	    neg=1;
+	  } else
+	  { mpz_add(t1, t1, t2);
+	    neg=0;
+	  }
+	  mpz_tdiv_q(t1, t1, mpq_denref(f->value.mpq));
+	  mpz_abs(t1, t1);
+
+	  mpz_ui_pow_ui(t2, 10, arg+1);
+	  if (mpz_cmpabs(t2, t1) == 0)
+	  { mpz_tdiv_q_ui(t1, t1, 10);
+	    exp++;
+	  }
+	  mpz_set_ui(t2, abs(exp));
+
+	print_mpz_e:
+
+	  if ( mpz_sgn(t1) == 0 )
+	    size = arg+7; /* reserve for 0.+e00<null> */
+	  else
+	    size = mpz_sizeinbase(t1, 10) + mpz_sizeinbase(t2, 10) + 6; /* reserve for -.e+0<null> */
+
+	  if ( !growBuffer(out, size) )
+	  { PL_no_memory();
+	    return NULL;
+	  }
+	  written = gmp_snprintf(baseBuffer(out, char), size, "%Zd%c%+03d", t1, how, exp);
+
+	  if ( mpz_sgn(t1) == 0 )
+	  { memmove(out->base+arg, out->base, written+1);
+	    memset(out->base, '0', arg);
+	    written += arg;
+	  }
+
+	  if (arg)
+	  { memmove(out->base+2, out->base+1, written+1);
+	    if ( locale->decimal_point && locale->decimal_point[0] )
+	      *(out->base+1) = (char)locale->decimal_point[0];
+	    else
+	      *(out->base+1) = '.';
+	    written++;
+	  }
+
+	  if (neg)
+	  { memmove(out->base+1, out->base, written+1);
+	    memset(out->base, '-', 1);
+	    written++;
+	  }
+
+	  out->top = out->base + written;
+	  mpz_clear(t1);
+	  mpz_clear(t2);
+	  return baseBuffer(out, char);
+	}
+	case 'g':
+	case 'G':
+	{ switch(how)
+	  { case 'g':
+	    case 'G':
+	    { mpz_t iv;
+	      mpz_init(iv);
+	      mpz_set_q(iv, f->value.mpq);
+	      fbits = (int)mpz_sizeinbase(iv, 2) + 4*arg;
+	      mpz_clear(iv);
+	      break;
+	    }
+	    default:
+	      fbits = 4*arg;
+	  }
+	  mpf_init2(mpf, fbits);
+	  mpf_set_q(mpf, f->value.mpq);
+
+	print_mpf:
+	  Ssprintf(tmp, "%%.%dF%c", arg, how);
+	  size = 0;
+	  written = arg+4;
+	  while(written >= size)
+	  { size = written+1;
+
+	    if ( !growBuffer(out, size) )	/* reserve for -.e<null> */
+	    { PL_no_memory();
+	      return NULL;
+	    }
+	    written = gmp_snprintf(baseBuffer(out, char), size, tmp, mpf);
+	  }
+	  mpf_clear(mpf);
+	  out->top = out->base + written;
+
+	  break;
+	}
+      }
+      break;
+    }
+#elif O_BF
+  { mpz_t n;
+
+    case V_MPZ:
+      mpz_init(n);
+      mpz_set(n, f->value.mpz);
+      goto bf_print;
+    case V_MPQ:
+    { bf_flags_t flags;
+      int upcase;
+      limb_t prec = ((double)(arg+2) * log(10)/log(2));
+
+      if ( how == 'f' || how == 'F' ) /* we must compensate for the integer */
+      { mpz_t i;
+	mpz_init(i);
+	mpz_set_q(i, f->value.mpq);
+	prec += mpz_sizeinbase(i, 2);
+	mpz_clear(i);
+      }
+      mpz_init(n);
+      bf_div(n, mpq_numref(f->value.mpq), mpq_denref(f->value.mpq), prec, BF_RNDN);
+    bf_print:
+      upcase = false;
+      switch(how)
+      { case 'f':
+	case 'F':
+	  flags = BF_FTOA_FORMAT_FRAC;
+	  break;
+	case 'E':
+	  upcase = true;
+	case 'e':
+	  arg++;		/* LibBF counts total, we after . */
+	  flags = BF_FTOA_FORCE_EXP|BF_FTOA_FORMAT_FIXED;
+	  break;
+	case 'G':
+	  upcase = true;
+	case 'g':
+	  flags = BF_FTOA_FORMAT_FREE;
+	  break;
+	default:
+	  flags = 0;
+	  assert(0);
+      }
+      size_t size;
+      char *s = bf_ftoa(&size, n, 10, arg, BF_RNDN|BF_FTOA_PL_QUIRKS|flags);
+      if ( !growBuffer(out, size+1) )
+      { PL_no_memory();
+	return NULL;
+      }
+      strcpy(baseBuffer(out, char), s);
+      bf_free(n->ctx, s);
+      if ( upcase )
+      { char *exp = strchr(baseBuffer(out, char), 'e');
+	if ( exp )
+	  *exp = 'E';
+      }
+      mpz_clear(n);
+      break;
+    }
+  }
+#endif /* O_GMP OR O_BF */
+    case V_INTEGER:
+      if ( !promoteToFloatNumber(f) )
+	return NULL;
+      /*FALLTHROUGH*/
+    case V_FLOAT:
+    { char tmp[12];
+      int written = arg+20;
+      int size = 0;
+
+      if ( how == 'h' || how == 'H' )
+      { size_t space = 32;
+
+	for(int n=0; n<2; n++)
+	{ size_t sz;
+
+	  if ( !growBuffer(out, space) )
+	  { PL_no_memory();
+	    return NULL;
+	  }
+	  sz = format_float(out->base, space, f->value.f,
+			    arg, how == 'H' ? 'E' : 'e');
+	  if ( sz < space )
+	  { written = sz;
+	    break;
+	  } else
+	  { space = sz+1;
+	  }
+	}
+      } else
+      { Ssprintf(tmp, "%%.%d%c", arg, how);
+	while(written >= size)
+	{ size = written+1;
+
+	  if ( !growBuffer(out, size) )
+	  { PL_no_memory();
+	    return NULL;
+	  }
+	  written = snprintf(baseBuffer(out, char), size, tmp, f->value.f);
+#ifdef __WINDOWS__
+	  if ( written < 0 )	/* pre-C99 Windows snprintf() returns -1 */
+	    written = size*2;
+#endif
+	}
+      }
+
+#ifdef __WINDOWS__
+      /*
+	 Write all ~e formatted floats in POSIX notation:
+	 * exponent must contain at least 2 digits
+	 * only as many digits as necessary to represent the exponent
+      */
+      switch(how)
+      { case 'e':
+	case 'E':
+	case 'g':
+	case 'G':
+	{ if (written >= 7 &&
+	      ( *(out->base + written - 5) == 'e' ||
+		*(out->base + written - 5) == 'E' ) &&
+	      ( *(out->base + written - 3) == '0' ))
+	  { memmove(out->base + written-3, out->base + written-2, 3);
+	    written--;
+	  }
+	}
+      }
+#endif
+
+      out->top = out->base + written;
+
+      break;
+    }
+    default:
+      assert(0);
+      return NULL;
+  }
+
+  if ( locale )
+  { if ( !localizeDecimalPoint(locale, out) ||
+	 !groupDigits(locale, out) )
+      return NULL;
+  }
+
+  return baseBuffer(out, char);
+}
+
+
+		 /*******************************
+		 *      PUBLISH PREDICATES	*
+		 *******************************/
+
+#define META PL_FA_TRANSPARENT
+#define NDET PL_FA_NONDETERMINISTIC
+
+BeginPredDefs(format)
+  PRED_DEF("format", 2, format, META)
+  PRED_DEF("format", 3, format, META)
+  PRED_DEF("format_predicate", 2, format_predicate, META)
+  PRED_DEF("current_format_predicate", 2, current_format_predicate, NDET|META)
+EndPredDefs

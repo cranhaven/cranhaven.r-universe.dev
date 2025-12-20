@@ -1,0 +1,11 @@
+#cmakedefine HAVE_MALLOC_H        @HAVE_MALLOC_H@
+#cmakedefine HAVE_UNISTD_H        @HAVE_UNISTD_H@
+#cmakedefine HAVE_SYS_TIME_H      @HAVE_SYS_TIME_H@
+#cmakedefine HAVE_FCNTL_H         @HAVE_FCNTL_H@
+#cmakedefine HAVE_FLOATINGPOINT_H @HAVE_FLOATINGPOINT_H@
+#cmakedefine HAVE_SNPRINTF        @HAVE_SNPRINTF@
+#cmakedefine HAVE_STRERROR        @HAVE_STRERROR@
+#cmakedefine HAVE_STRTOLL         @HAVE_STRTOLL@
+#cmakedefine _REENTRANT           @_REENTRANT@
+#cmakedefine SIZEOF_WCHAR_T       @SIZEOF_WCHAR_T@
+#cmakedefine SIZEOF_LONG          @SIZEOF_LONG@

@@ -1,0 +1,567 @@
+/*  Part of SWI-Prolog
+
+    Author:        Jan Wielemaker
+    E-mail:        J.Wielemaker@vu.nl
+    WWW:           http://www.swi-prolog.org
+    Copyright (c)  1995-2025, University of Amsterdam
+			      CWI, Amsterdam
+			      SWI-Prolog Solutions b.v.
+    Copyright (C): 2009-2017, SCIENTIFIC SOFTWARE AND SYSTEMS LIMITED
+    All rights reserved.
+
+    Redistribution and use in source and binary forms, with or without
+    modification, are permitted provided that the following conditions
+    are met:
+
+    1. Redistributions of source code must retain the above copyright
+       notice, this list of conditions and the following disclaimer.
+
+    2. Redistributions in binary form must reproduce the above copyright
+       notice, this list of conditions and the following disclaimer in
+       the documentation and/or other materials provided with the
+       distribution.
+
+    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+    "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+    LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS
+    FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE
+    COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+    INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+    BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+    LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+    CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+    LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
+    ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+    POSSIBILITY OF SUCH DAMAGE.
+*/
+
+#define SWIPL_WINDOWS_NATIVE_ACCESS 1
+#define WINDOWS_LEAN_AND_MEAN 1
+#include <winsock2.h>
+#include <windows.h>
+#include "pl-incl.h"
+#include "pl-nt.h"
+
+#define ANSI_MAGIC		(0x734ab9de)
+#define ANSI_BUFFER_SIZE	(256)
+#define ANSI_MAX_ARGC		(10)
+
+typedef enum
+{ CMD_INITIAL = 0,
+  CMD_ESC,
+  CMD_ANSI
+} astate;
+
+typedef enum
+{ HDL_CONSOLE = 0,
+  HDL_FILE
+} htype;
+
+typedef struct
+{ int magic;
+  HANDLE hConsole;
+  IOSTREAM *pStream;
+  void *saved_handle;
+
+  wchar_t buffer[ANSI_BUFFER_SIZE];
+  size_t buffered;
+  int argv[ANSI_MAX_ARGC];
+  int argc;
+  int argstat;
+  astate cmdstat;			/* State for sequence processing */
+  WORD def_attr;			/* Default attributes */
+  htype handletype;                     /* Type of stream handle */
+} ansi_stream;
+
+
+static IOFUNCTIONS con_functions;
+static IOFUNCTIONS *saved_functions;
+
+#ifdef USE_MESSAGE
+static void
+Message(const char *fm, ...)
+{ char buf[1024];
+  va_list(args);
+
+  va_start(args, fm);
+  vsprintf(buf, fm, args);
+  MessageBox(NULL, buf, "SWI-Prolog", MB_OK|MB_TASKMODAL);
+  va_end(args);
+}
+#endif
+
+static int
+flush_ansi(ansi_stream *as)
+{ size_t written = 0;
+
+  while ( written < as->buffered )
+  { BOOL rc;
+    DWORD done;
+
+    if (as->handletype == HDL_CONSOLE)
+    { rc = WriteConsoleW(as->hConsole,
+			 &as->buffer[written],
+			 (DWORD)(as->buffered-written),
+			 &done,
+			 NULL);
+    } else
+    { rc = WriteFile(as->hConsole,
+                     &as->buffer[written],
+                     (DWORD)(as->buffered-written),
+                     &done,
+                     NULL);
+    }
+
+    if ( rc )
+    { written += done;
+    } else
+    { as->buffered = 0;
+      return -1;
+    }
+  }
+
+  as->buffered = 0;
+  return 0;
+}
+
+
+/* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+We must flush surrogate pairs  as  a   single  unit  for  the console to
+interpret them. Thus, we will normally flush   while there is still room
+for one more code unit. If we  see   a  UTF-16  surrogate pair while the
+buffer is really full we need to flush anyway. This should never happen.
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+
+static int
+send_ansi(ansi_stream *as, int chr)
+{ int flush = false;
+
+  as->buffer[as->buffered++] = chr;
+
+  if ( IS_UTF16_LEAD(chr) )
+  { if ( as->buffered >= ANSI_BUFFER_SIZE )
+      flush = true;
+  } else
+  { if ( as->buffered >= ANSI_BUFFER_SIZE-1 ||
+	 (chr == '\n' && (as->pStream->flags & SIO_LBUF)) )
+      flush = true;
+  }
+
+  if ( flush )
+    return flush_ansi(as);
+
+  return 0;
+}
+
+
+#define FG_MASK (FOREGROUND_RED|FOREGROUND_BLUE|FOREGROUND_GREEN)
+#define BG_MASK (BACKGROUND_RED|BACKGROUND_BLUE|BACKGROUND_GREEN)
+
+static void
+set_ansi_attributes(ansi_stream *as)
+{ CONSOLE_SCREEN_BUFFER_INFO info;
+
+  if ( GetConsoleScreenBufferInfo(as->hConsole, &info) )
+  { int i;
+    WORD attr = info.wAttributes;
+
+    for(i=0; i < as->argc; i++)
+    { switch( as->argv[i] )
+      { case 0:
+	  attr = as->def_attr;
+	  break;
+	case 1:
+	  attr |= FOREGROUND_INTENSITY;
+	  break;
+	case 22:
+	  attr &= ~FOREGROUND_INTENSITY;
+	  break;
+	default:
+	  if ( as->argv[i] >= 30 && as->argv[i] <= 39 )
+	  { int fg = as->argv[i] - 30;
+
+	    attr &= ~FG_MASK;
+
+	    if ( fg == 9 )		/* default */
+	    { attr |= (as->def_attr & FG_MASK);
+	    } else
+	    { if ( fg % 2 == 1 )
+		attr |= FOREGROUND_RED;
+	      if ( fg >= 4 )
+		attr |= FOREGROUND_BLUE;
+	      if ( (fg == 2) || (fg == 3) || (fg == 6) || (fg == 7) )
+		attr |= FOREGROUND_GREEN;
+	    }
+	  } else if ( as->argv[i] >= 40 && as->argv[i] <= 49 )
+	  { int bg = as->argv[i] - 40;
+
+	    attr &= ~BG_MASK;
+	    if ( bg == 9 )		/* default */
+	    { attr |= (as->def_attr & BG_MASK);
+	    } else
+	    { if ( bg % 2 == 1 )
+		attr |= BACKGROUND_RED;
+	      if ( bg >= 4 )
+		attr |= BACKGROUND_BLUE;
+	      if ( (bg == 2) || (bg == 3) || (bg == 6) || (bg == 7) )
+		attr |= BACKGROUND_GREEN;
+	    }
+	  }
+      }
+    }
+
+    if ( attr != info.wAttributes )
+    { flush_ansi(as);
+      SetConsoleTextAttribute(as->hConsole, attr);
+    }
+  }
+}
+
+
+static void
+rlc_need_arg(ansi_stream *as, int arg, int def)
+{ if ( as->argc < arg )
+  { as->argv[arg-1] = def;
+    as->argc = arg;
+  }
+}
+
+
+static int
+put_ansi(ansi_stream *as, int chr)
+{ switch(as->cmdstat)
+  { case CMD_INITIAL:
+      switch(chr)
+      {
+#if 0
+	case '\b':
+	  CMD(rlc_caret_backward(b, 1));
+	  break;
+        case Control('G'):
+	  MessageBeep(MB_ICONEXCLAMATION);
+	  break;
+	case '\r':
+	  CMD(rlc_cariage_return(b));
+	  break;
+	case '\n':
+	  CMD(rlc_caret_down(b, 1));
+	  break;
+	case '\t':
+	  CMD(rlc_tab(b));
+	  break;
+#endif
+	case 27:			/* ESC */
+	  as->cmdstat = CMD_ESC;
+	  break;
+	default:
+	  return send_ansi(as, chr);
+      }
+      break;
+    case CMD_ESC:
+      switch(chr)
+      { case '[':
+	  as->cmdstat = CMD_ANSI;
+	  as->argc    = 0;
+	  as->argstat = 0;		/* no arg */
+	  break;
+	default:
+	  as->cmdstat = CMD_INITIAL;
+	  break;
+      }
+      break;
+    case CMD_ANSI:			/* ESC [ */
+      if ( chr >= '0' && chr <= '9' )
+      { if ( !as->argstat )
+	{ as->argv[as->argc] = (chr - '0');
+	  as->argstat = 1;		/* positive */
+	} else
+	{ as->argv[as->argc] = as->argv[as->argc] * 10 + (chr - '0');
+	}
+
+	break;
+      }
+      if ( !as->argstat && chr == '-' )
+      { as->argstat = -1;		/* negative */
+	break;
+      }
+      if ( as->argstat )
+      { as->argv[as->argc] *= as->argstat;
+	if ( as->argc < (ANSI_MAX_ARGC-1) )
+	  as->argc++;			/* silently discard more of them */
+	as->argstat = 0;
+      }
+      switch(chr)
+      { case ';':
+	  return 0;			/* wait for more args */
+#if 0
+	case 'H':
+	case 'f':
+	  rlc_need_arg(as, 1, 0);
+	  rlc_need_arg(as, 2, 0);
+	  CMD(rlc_set_caret(as, as->argv[0], as->argv[1]));
+	  break;
+	case 'A':
+	  rlc_need_arg(as, 1, 1);
+	  CMD(rlc_caret_up(as, as->argv[0]));
+	  break;
+	case 'B':
+	  rlc_need_arg(as, 1, 1);
+	  CMD(rlc_caret_down(as, as->argv[0]));
+	  break;
+	case 'C':
+	  rlc_need_arg(as, 1, 1);
+	  CMD(rlc_caret_forward(as, as->argv[0]));
+	  break;
+	case 'D':
+	  rlc_need_arg(as, 1, 1);
+	  CMD(rlc_caret_backward(as, as->argv[0]));
+	  break;
+	case 's':
+	  CMD(rlc_save_caret_position(as));
+	  break;
+	case 'u':
+	  CMD(rlc_restore_caret_position(as));
+	  break;
+	case 'J':
+	  if ( as->argv[0] == 2 )
+	    CMD(rlc_erase_display(as));
+	  break;
+	case 'K':
+	  CMD(rlc_erase_line(as));
+	  break;
+#endif
+	case 'm':
+	  rlc_need_arg(as, 1, 0);
+	  set_ansi_attributes(as);
+      }
+      as->cmdstat = CMD_INITIAL;
+  }
+
+  return 0;
+}
+
+static ssize_t
+write_ansi(void *handle, char *buffer, size_t size)
+{ ansi_stream *as = handle;
+  size_t  n = size/sizeof(wchar_t);
+  const wchar_t *s = (const wchar_t*)buffer;
+  const wchar_t *e = &s[n];
+
+  for( ; s<e; s++)
+  { if ( put_ansi(as, *s) != 0 )
+      return -1;			/* error */
+  }
+  if ( as->pStream->flags & SIO_NBUF )
+    flush_ansi(as);
+
+  return n * sizeof(wchar_t);
+}
+
+
+static int
+close_ansi(void *handle)
+{ ansi_stream *as = handle;
+
+  if ( as->magic == ANSI_MAGIC )
+  { as->pStream->functions = saved_functions;
+    as->pStream->handle    = as->saved_handle;
+
+    PL_free(as);
+    return 0;
+  }
+
+  return -1;
+}
+
+
+static int
+control_ansi(void *handle, int op, void *data)
+{ ansi_stream *as = handle;
+
+  switch( op )
+  { case SIO_FLUSHOUTPUT:
+      return flush_ansi(as);
+    case SIO_SETENCODING:
+      return -1;			/* We cannot change the encoding! */
+    case SIO_LASTERROR:
+    { const char *s;
+      if ( (s = WinError()) )
+      { const char **sp = data;
+	*sp = s;
+	return 0;
+      }
+      return -1;
+    }
+    case SIO_GETFILENO:
+    { int *fp = data;
+
+      *fp = (int)(intptr_t)as->saved_handle; /* is one of 0,1,2 */
+      return 0;
+    }
+    case SIO_GETWINHANDLE:
+    { HANDLE *dp = data;
+      *dp = as->hConsole;
+      return 0;
+    }
+    default:
+      return -1;
+  }
+}
+
+
+		 /*******************************
+		 *	USER WIN32 CONSOLE	*
+		 *******************************/
+
+/* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+Windows 10 seems to have a bug that MsgWaitForMultipleObjects() followed
+by ReadConsoleW() claims to have read  0   characters  (end of file). In
+fact it does leave characters in the output  buffer, so we hack around a
+little ...  See https://github.com/SWI-Prolog/swipl-devel/issues/245
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+
+
+static ssize_t
+Sread_win32_console(void *handle, char *buffer, size_t size)
+{ GET_LD
+  ansi_stream *as = handle;
+  BOOL rc;
+  DWORD done;
+  DWORD mode;
+  int isRaw = false;
+
+  if ( Suser_input &&
+       Suser_input->handle == handle &&
+       PL_ttymode(Suser_input) == PL_RAWTTY )
+  { if ( GetConsoleMode(as->hConsole, &mode) &&
+	 SetConsoleMode(as->hConsole,
+			mode & ~(ENABLE_LINE_INPUT|ENABLE_ECHO_INPUT)) )
+      isRaw = true;
+  }
+
+  if ( isRaw )
+    memset(buffer, 0, size);		/* see (*) */
+  rc = ReadConsoleW(as->hConsole,
+		    buffer,
+		    (DWORD)(size / sizeof(wchar_t)),
+		    &done,
+		    NULL);
+  if ( rc && done == 0 && isRaw )	/* see (*) */
+  { size_t i;
+    const wchar_t *wbuf = (const wchar_t*)buffer;
+
+    for(i=0; i<size/sizeof(wchar_t) && wbuf[i]; i++)
+      ;
+    done = i;
+  }
+
+  if ( rc )
+  { if ( isRaw )
+      SetConsoleMode(as->hConsole, mode);
+    return done * sizeof(wchar_t);
+  }
+
+  if ( isRaw )
+    SetConsoleMode(as->hConsole, mode);
+
+  return -1;
+}
+
+
+static int
+wrap_console(HANDLE h, IOSTREAM *s, IOFUNCTIONS *funcs)
+{ ansi_stream *as;
+  DWORD mode;
+
+  as = PL_malloc(sizeof(*as));
+  memset(as, 0, sizeof(*as));
+
+  if (GetConsoleMode(h, &mode))
+    as->handletype = HDL_CONSOLE;
+  else
+    as->handletype = HDL_FILE;
+
+  as->hConsole     = h;
+  as->pStream      = s;
+  as->saved_handle = s->handle;
+
+  s->handle    = as;
+  s->encoding  = ENC_WCHAR;
+  s->functions = funcs;
+  s->flags &= ~SIO_FILE;
+
+  return true;
+}
+
+
+static void
+init_output(void *handle, CONSOLE_SCREEN_BUFFER_INFO *info)
+{ ansi_stream *as = handle;
+
+  as->def_attr = info->wAttributes;
+}
+
+
+bool
+win_isconsole(HANDLE h)
+{ DWORD mode;
+  return GetConsoleMode(h, &mode);
+}
+
+bool
+PL_w32_wrap_ansi_console(void)
+{ HANDLE hIn    = GetStdHandle(STD_INPUT_HANDLE);
+  HANDLE hOut   = GetStdHandle(STD_OUTPUT_HANDLE);
+  HANDLE hError = GetStdHandle(STD_ERROR_HANDLE);
+  CONSOLE_SCREEN_BUFFER_INFO info;
+
+  if ( hIn    == INVALID_HANDLE_VALUE || !win_isconsole(hIn) ||
+       hOut   == INVALID_HANDLE_VALUE || !win_isconsole(hOut) ||
+       hError == INVALID_HANDLE_VALUE || !win_isconsole(hError) ||
+       !GetConsoleScreenBufferInfo(hOut, &info) )
+  { return false;
+  }
+
+  saved_functions       = Sinput->functions;
+  con_functions		= *Sinput->functions;
+  con_functions.read    = Sread_win32_console;
+  con_functions.write   = write_ansi;
+  con_functions.close   = close_ansi;
+  con_functions.control = control_ansi;
+  con_functions.seek    = NULL;
+
+  wrap_console(hIn,    Sinput,  &con_functions);
+  wrap_console(hOut,   Soutput, &con_functions);
+  wrap_console(hError, Serror,  &con_functions);
+
+  init_output(Soutput->handle, &info);
+  init_output(Serror->handle, &info);
+
+  PL_set_prolog_flag("tty_control", PL_BOOL, true);
+  return true;
+}
+
+
+/**
+ * Get the screen size of the console.
+ * @param s A Prolog stream that refers to the console output.  Normally
+ * `Suser_output`.
+ */
+
+bool
+win32_console_size(IOSTREAM *s, int *cols, int *rows)
+{ if ( s )
+  { HANDLE h = Swinhandle(s);
+
+    if ( h )
+    { CONSOLE_SCREEN_BUFFER_INFO csbi;
+      if ( GetConsoleScreenBufferInfo(h, &csbi) )
+      { *cols = csbi.dwSize.X;
+	*rows = csbi.dwSize.Y;
+	return true;
+      }
+    }
+  }
+
+  return false;
+}
