@@ -1,0 +1,308 @@
+---
+title: "Getting Started with spaero"
+author: "Eamon O'Dea"
+date: "`r Sys.Date()`"
+output: rmarkdown::pdf_document
+bibliography: ews.bib
+vignette: >
+  %\VignetteIndexEntry{Getting Started with spaero}
+  %\VignetteEngine{knitr::rmarkdown_notangle}
+  %\VignetteEncoding{UTF-8}
+---
+
+The spaero package (pronounced sparrow) currently supports the
+estimation of distributional properties along rolling windows of time
+series. Such estimates may in some cases provide signals that the
+system generating the data is approaching a critical
+transition. Examples of critical transitions include the
+eutrophication of lakes, changes in climate, and the emergence or
+eradication of infectious diseases. The spearo package will be
+developed to further support statistical methods to anticipate
+critical transitions in infectious disease systems. Because these
+methods will be based on generic properties of dynamical systems, they
+have the potential to apply to a broad range of models.  spearo also
+provides functions to support computational experiments designed to
+evaluate these methods for applications relevant to infectious disease
+systems. This document provides a rudimentary demonstration of the
+application of such methods to simulated data.
+
+Our simulated data is a time series produced by a stochastic SIR
+simulator included in the spaero package. See @keeling2008 for an
+introduction to the SIR model. The simulator is capable of including
+time dependent parameters. Gillespie's direct method is used to update
+the model variables during the simulation. Transitions between states
+occurs according to the rules given in Table~\ref{trules}, which makes
+use of the symbols defined in Table~\ref{tsymb}. Because some of the
+transition rates may change continuously with time and because the
+simulation algorithm updates the rates only at points of time when the
+model's state variables are updated, these simulations are not in
+general exact. However, for many realistic scenarios birth and death
+updates occur frequently enough that the simulation should be highly
+accurate. Also, in newer versions of pomp (versions >= 1.13.4), the
+``hmax'' parameter of pomp's \texttt{simulate} method can be used to
+set the maximum simulation time that can elapse before an update of
+the reaction rates.
+
+\begin{table}[h] \caption{Transition rules for our stochastic SIR model}
+\label{trules}
+\begin{tabular}{lll} \hline{Event}&{($\Delta S,\Delta I, \Delta R$)}&{Rate}\\
+\hline birth of a susceptible & $(1,0,0)$ & $ N_0 (\mu + \mu_t) [1 - (p + pt_t)] $\\
+death of a susceptible & $(-1,0,0)$& $S (d + d_t)$\\
+infection & $(-1,1,0)$ & $(\beta + \beta_t) I S + (\eta + \eta_t) S$\\
+death of an infective & $(0,-1,0)$ & $I (d + d_t)$\\
+recovery of an infective & $(0,-1,1)$ & $I (\gamma + \gamma_t)$\\
+death of a removed & $(0,0,-1)$ & $R (d + d_t)$\\
+birth of a vaccinated & $(0,0,1)$ & $ N_0 (\mu + \mu_t) (p + p_t)$\\
+\hline \end{tabular} \end{table}
+
+\begin{table}[h] \caption{Model symbol definitions. Time-dependent rates have a $t$ subscript.}
+\label{tsymb}
+\begin{tabular}{ll}
+\hline
+{Symbol}&{Definition}\\
+\hline
+$\eta, \eta_t$ & rate of infection from outside of population (i.e., sparking rate) \\
+$\beta, \beta_t$ & rates of transmission from within population contacts \\
+$\mu, \mu_t$ & birth rates \\
+$d, d_t$ & death rates \\
+$p, p_t$ & vaccination rates \\
+$S$ & number of susceptible individuals\\
+$I$ & number of infective individuals \\
+$R$ & number of removed individuals \\
+$N$ & total population size, $S + I + R$ \\
+$N_0$ & initial total population size \\
+\hline \end{tabular} \end{table}
+
+Before demonstrating the statistical analysis functions of spearo, we
+provide an overview of the simulation functions. These functions
+essentially provide a convenient interface to the general simulation
+capabilities of the pomp package. The user calls the
+\texttt{create\_simulator} function to create an object of class \texttt{pomp}. This
+object contains the model structure as well as default parameters for
+the simulation. Simulations of the model may then be run using the
+\texttt{simulate} method in the pomp package:
+```{r}
+library(spaero)
+sim <- create_simulator()
+simout <- pomp::simulate(sim)
+```
+
+This code creates a new pomp object and runs a simulation with the
+default parameters. The variable simout contains a second pomp object
+that contains the simulation results. These results may be extracted
+like so:
+```{r}
+as(simout, "data.frame")
+```
+Note that the covariates (i.e., the time-dependent components of the
+parameters) are included in addition to the state variables and
+observables. Also, $\beta_t$ in Table~\ref{tsymb} is named with the
+string "beta_par_t" and not "beta_t". Similarly, the parameter $\beta$
+is named "beta_par". This name was chosen because "beta" cannot be
+used in the C code defining the simulator due to conflicts with the
+name of the beta function.
+
+In addition to simulating the dynamics of disease spread, the pomp
+object also simulates imperfect observation of the dynamics. A cases
+variable is included in the output and it counts the total number of
+recoveries that occurred in the preceding interval between
+observations. A corresponding number of reports is simulated by
+sampling from a binomial probability mass function with a number of
+trials equal to the number of cases and a reporting probability equal
+to a user-supplied parameter, $\rho$.
+
+Observation times and parameters can be set at simulation run time:
+```{r}
+pars <- sim@params
+pars["rho"] <- 0.5
+as(pomp::simulate(sim, params=pars, times=seq(1, 4)), "data.frame")
+```
+However, the covariate table that determines the time dependence of
+rates cannot be set at simulation time.
+
+One can also set the number of replicates.
+```{r}
+if (utils::packageVersion("pomp") < "2.0.0") {
+  pomp::simulate(sim, nsim=2, times=seq(1, 2), as.data.frame = TRUE)
+} else {
+  pomp::simulate(sim, nsim=2, times=seq(1, 2), format = "data.frame")
+}
+```
+
+The random number seed allows simulations to be reproduced.
+```{r}
+as(pomp::simulate(sim, seed=342), "data.frame")
+as(pomp::simulate(sim, seed=342), "data.frame")
+```
+
+An SIS model is also available. This model is identical to the SIR
+model except that the recovery event in Table~\ref{trules} results in an
+infective individual becoming a susceptible.
+```{r}
+sim_sis <- create_simulator(process_model="SIS")
+as(pomp::simulate(sim_sis), "data.frame")
+```
+
+Now let's simulate data according to the SIR model where the
+transmission rate starts out well below the threshold value and
+gradually increases. Note that parameters corresponding to the initial
+conditions (i.e., $S_0$, $I_0$, and $R_0$) are
+normalized to sum to $N_0$. Thus we can specify that the
+simulation begins with a population of 100,000 susceptibles as
+follows.
+
+```{r}
+
+params <- c(gamma=24, mu=0.014, d=0.014, eta=1e-4, beta_par=0,
+            rho=0.9, S_0=1, I_0=0, R_0=0, N_0=1e5, p=0)
+covar <- data.frame(gamma_t=c(0, 0), mu_t=c(0, 0), d_t=c(0, 0), eta_t=c(0, 0),
+                    beta_par_t=c(0, 24e-5), p_t = c(0, 0), time=c(0, 300))
+times <- seq(0, 200, by=1/12)
+
+sim <- create_simulator(params=params, times=times, covar=covar)
+so <- as(pomp::simulate(sim, seed=272), "data.frame")
+plot(ts(so[, "reports"], freq=12), ylab="No. reports")
+
+```
+
+By eye, we can see the distribution of reports seems to change over
+time. We can summarize these changes by computing statistics over
+moving windows.
+
+```{r}
+
+st1 <- get_stats(so[, "reports"], center_kernel="uniform",
+                 center_trend="local_constant", center_bandwidth=360,
+                 stat_bandwidth=360)
+plot_st <- function(st) {
+  plot_vars <- ts(cbind(Residual=st$centered$x[, 1], Mean=st$stats$mean,
+                  Autocorrelation=st$stats$autocor, Variance=st$stats$variance,
+                  DeltaVariance=st$stats$variance_first_diff,
+                  Skewness=st$stats$skew), freq=12)
+  plot(plot_vars, main="")
+}
+plot_st(st1)
+
+```
+
+The increasing trends in the statistics are potential warning
+signals that the system is approaching the epidemic threshold. Readers
+interested in this type of analysis can find guidelines in
+@dakos_methods_2012 and may also want to consider performing it with
+the \texttt{generic\_ews} function in the earlywarnings package
+described in that paper. We'll next review the input parameters and
+implementation of \texttt{get\_stats}.
+
+Two key parameters that the user must provide to \texttt{get\_stats}
+are the shape and size of the rolling window. There is a rolling
+window for an estimate of the mean and for an estimate of moments
+within the window. Arguments controlling these windows are prefixed
+with "center_" and "stat_" respectively. An estimate of the mean is
+necessary because the calculations of the statistics involve
+deviations from the mean. \texttt{get\_stats} supports estimation of
+the mean via several methods and users may also estimate the mean
+using other methods, subtract it from the input time series, and then
+set the "center_trend" argument to "assume_zero". Regarding the shapes
+of windows, a rectangular window function and a Gaussian-shaped
+function are available by providing either "uniform" or "gaussian" to
+the kernel arguments. The rectangular function may be preferred for
+ease of interpretation while the Gaussian function may be preferred
+for obtaining a smoother series of estimates. The width of the window
+is controlled by the bandwidth arguments. For a window centered on a
+particular index, the absolute difference between that index and all
+other indices in the time series is divided by the bandwidth to
+determine a distance to all other observations. This distance is then
+plugged into a kernel function corresponding to the window type. For
+the gaussian window, the kernel function is a Gaussian probability
+density function with a standard deviation of one. For the rectangular
+window, the kernel function equals one if the distance is less than
+one and zero otherwise. The "backward_only" argument determines
+whether the rectangular window is backward-looking by controlling
+whether the kernel function is forced to zero for any indices greater
+than the window's index. In other words, "backward_only = TRUE" makes
+the rectangular window right-aligned instead of centered. The output
+of the kernel function is a weight for each observation. These weights
+are used in the estimators described next. Note that these bandwidth
+conventions are different from those of \texttt{generic\_ews}. Note
+also that only when "backward_only = TRUE" does the bandwidth
+correspond directly to the size of a moving window.
+
+By default, \texttt{get\_stats} computes statistics via weighted
+sample moments. To clarify, the estimate of the moment for the moving
+window centered on index $i$ of the time series $x$ is
+\begin{equation} m_i(f_j(x)) = \sum_j w_{ij} f_j(x) / N_i,
+\end{equation} where $w_{ij}$ is a kernel weight, $f_j(x)$ is the
+value of the moment at index $j$, and $N_i = \sum_j w_{ij}$ is a
+normalization constant. Table~\ref{tstats} provides the formulas for
+the statistics computed in terms of these moment estimates.  In some
+cases, users may obtain less biased estimates by setting the
+"stat_trend" argument to "local_linear". This replaces the weighted
+average estimate with a prediction from a local linear
+regression. This method can reduce bias near the ends of the time
+series if a trend exists such that $f_j(x)$ for $j$ near $i$ tend to
+be above or below the expected value of $f_i(x)$ across repeated
+realizations of a time series. If the prediction is less than zero for
+variance or kurtosis, it is replaced with zero.
+
+\begin{table}[h] \caption{Formulas for moving window statistics in terms of moment estimates.}  \label{tstats}
+\begin{tabular}{ll}
+\hline
+Statistic & Formula\\
+\hline
+$\textrm{mean}_i$ & $m_i(x_j)$ \\
+$\textrm{variance}_i$ & $m_i((x_j - \textrm{mean}_j)^2)$ \\
+$\textrm{variance\_first\_diff}_i$ & $\textrm{variance}_i - \textrm{variance}_{i - 1}$ \\
+$\textrm{autocovariance}_i$ & $m_i( (x_j - \textrm{mean}_j)
+                                  (x_{j - \textrm{lag}} - \textrm{mean}_{j -\textrm{lag}}))$ \\
+$\textrm{autocorrelation}_i$ & $\textrm{autocovariance}_i /
+                                (\textrm{variance}_i \times
+                                \textrm{variance}_{i - \textrm{lag}})^{0.5} $ \\
+$(\textrm{decay time})_i$ & $-\textrm{lag} / (\log \min(\max(\textrm{autocorrelation}_i, 0), 1)$) \\
+$(\textrm{index of dispersion})_i$ & $\textrm{variance}_i / \textrm{mean}_i$ \\
+$(\textrm{coefficient of variation})_i$ & $(\textrm{variance}_i)^{0.5} / \textrm{mean}_i$ \\
+$\textrm{skewness}_i$ & $m_i((x_j - \textrm{mean}_j)^3) / (\textrm{variance}_i)^{1.5}$ \\
+$\textrm{kurtosis}_i$ & $m_i((x_j - \textrm{mean}_j)^4) / (\textrm{variance}_i)^2$ \\
+\hline
+\end{tabular}
+\end{table}
+
+Let's look at the effect of changing some of these parameters on the
+computed statistics.  First we try a Gaussian window.
+
+```{r}
+
+st2 <- get_stats(so[, "reports"], center_kernel="gaussian",
+                 center_trend="local_constant", center_bandwidth=360,
+                 stat_bandwidth=360, stat_kernel="gaussian")
+plot_st(st2)
+
+
+```
+
+Next, we'll increase the bandwidths.
+```{r}
+
+st3 <- get_stats(so[, "reports"], center_kernel="gaussian",
+                 center_trend="local_constant", center_bandwidth=720,
+                 stat_bandwidth=720, stat_kernel="gaussian")
+plot_st(st3)
+
+```
+
+That concludes our initial overview of the package. The current
+version of spaero is just a starting point and the package will
+continue to be actively developed for the foreseeable future.
+
+## Funding
+
+The development of this package was supported by the National
+Institute of General Medical Sciences of the National Institutes of
+Health under Award Number U01GM110744.
+
+## Disclaimer
+
+The content is solely the responsibility of the authors and does not
+necessarily reflect the official views of the National Institutes of
+Health.
+
+## References
