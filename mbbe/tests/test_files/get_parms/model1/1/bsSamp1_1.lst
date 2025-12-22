@@ -1,0 +1,654 @@
+Wed 07/26/2023 
+03:18 PM
+$PROBLEM    tacrolimis for ML Model 1, 16 parameters
+$INPUT      C ID TOTIME DV_ORG DOSE TRT TREATMENT=DROP TIME MDV AMT OCC
+  EVID GROUP   DROP BLQ DV SEQ
+$DATA ../../data_samp1.csv  IGNORE=@ IGNORE(BLQ.GT.0) REWIND
+$OMEGA  
+  1  FIX  	;  ETA(1) CL
+  1  FIX  	;  ETA(2) V2 
+  1  FIX  	;  ETA(3) KA REFERENCE
+  1  FIX  	;  ETA(4) KA TEST
+  1  FIX  	;  ETA(5) ALAG1 REFERENCE
+  1  FIX 	;  ETA(6) ALAG1 TEST 
+  1  FIX  	;  ETA(7) D1 REFERENCE
+  1  FIX 	;  ETA(8) D1 TEST 
+$OMEGA  BLOCK(4)
+  1  FIX ; ETA(9) BOVV
+  0 1    ; ETA(10) BOVCL
+  0 0 1    ; ETA(11) BOVKA
+  0 0 0 1    ; ETA(12) BOVALAG1
+$OMEGA   BLOCK(4) SAME ; ETAs 13,14,15,16
+$OMEGA   BLOCK(4) SAME ; ETAs 17,18,19,20
+$OMEGA   BLOCK(4) SAME ; ETAs 21,22,23,24
+$SIGMA  
+  1  FIX  ; EPS(1) PROPORTIONAL
+  1  FIX  ; EPS(2) ADDITIVE
+  ;;;; Start subs
+$SUBROUTINE ADVAN4 ;; advan4
+$PK
+
+  IF(GROUP.EQ.1) BOVV = THETA(14)*ETA(9)
+  IF(GROUP.EQ.2) BOVV = THETA(14)*ETA(13)
+  IF(GROUP.EQ.3) BOVV = THETA(14)*ETA(17)
+  IF(GROUP.EQ.4) BOVV = THETA(14)*ETA(21)
+
+  IF(GROUP.EQ.1) BOVCL = THETA(15)*ETA(10)
+  IF(GROUP.EQ.2) BOVCL = THETA(15)*ETA(14)
+  IF(GROUP.EQ.3) BOVCL = THETA(15)*ETA(18)
+  IF(GROUP.EQ.4) BOVCL = THETA(15)*ETA(22)
+
+  IF(GROUP.EQ.1) BOVKA = THETA(16)*ETA(11)
+  IF(GROUP.EQ.2) BOVKA = THETA(16)*ETA(15)
+  IF(GROUP.EQ.3) BOVKA = THETA(16)*ETA(19)
+  IF(GROUP.EQ.4) BOVKA = THETA(16)*ETA(23)
+
+  BOVALAG1=0 
+
+  ;; EMAIL FROM MICHAEL/SHUHUA 27FEB2023
+  ;;CL  = EXP(THETA(1) + THETA(3) * ETA(1) + THETA(34) * ETA(2))
+  ;;V2  = EXP(THETA(2) + THETA(34) * ETA(1) + THETA(4) * ETA(2))
+
+  CL 	= EXP(THETA(1)+THETA(3)*ETA(1)    + BOVCL) ;; ETACLV IS CORRELATION OF ETA(V) AND ETA(CL)
+  V2 	= EXP(THETA(2)+THETA(4)*ETA(2)    + BOVV) 
+  IF(TRT.EQ.1) THEN ;; REFERENCE
+  KA 	= EXP(THETA(5) + BOVKA  )  
+  F1	= 1
+  ALAG1	= EXP(THETA(12))
+  ; NO D1
+  ELSE   ;; TEST
+  KA 	= EXP(THETA(6) + BOVKA )  
+  F1 	= EXP(THETA(7))
+  ALAG1	= EXP(THETA(13))
+  ; NO D1
+  END IF   
+
+  S2   	= V2/1000000 	; CONC IN PG/M (NG/L), DOSE IN MG, VOL IN L 
+  K=CL/V2  
+
+  K32 	= EXP(THETA(10))
+  K23	= EXP(THETA(11))
+
+$ERROR   
+  IPRED = F  
+  REALOBS = DV ;;; TO PRINT OUT FOR ORG.DAT
+  ADD = EXP(THETA(9))
+  PROP = EXP(THETA(8))
+  LLOQ = 50 
+  SD = SQRT(PROP**2*IPRED**2 + ADD**2) ; Residual weight ADD AND P PROP IN SD AND CV UNITS, NOT VARIANCE
+  IF (BLQ.EQ.0) THEN
+   F_FLAG=0 ; ELS
+   Y = IPRED + SD*EPS(1)                          ; Individual model prediction,
+  ENDIF
+
+  IF (BLQ.EQ.1) THEN
+   F_FLAG=1 ; LIKELIHOOD
+   Y=PHI((LLOQ-IPRED)/SD)
+  ENDIF;
+
+  ;;;; Start EST
+
+$ESTIMATION METHOD=0 INTER MAX=9999 SADDLE_RESET=1 NOABORT
+ 
+
+$THETA  
+  (-1,3.8,10) 		; THETA(1) LN(CL1)
+  (-1,5.2,12) 		; THETA(2) LN(V2)
+  (-4,-0.61) 		; THETA(3) LN(ETA(CL))
+  (-4,-0.38)		; THETA(4) LN(ETA(V))
+  (-5,-0.4,5)	 	; THETA(5) LN(KA) REFERENCE
+  (-5,0.6,5)	 	; THETA(6) LN(KA) TEST 
+  (0.15 FIX)	 	; THETA(7) LN(F) TEST  
+  (-0.8 FIX)		; THETA(8) LN(PROPERROR)
+  (1 FIX)		; THETA(9) LN(ADDERROR)
+  (-0.8 FIX) 		; THETA(10) LN(K32)
+  (-0.8 FIX) 		; THETA(11) LN(K23)
+  (-2 FIX)		; THETA(12) LN(ALAG) REFERENCE 
+  (-2 FIX) 		; THETA(13) LN(ALAG) test
+  ; NO D1
+  ;;no eta on ka
+  (-0.2 FIX)	; THETA(14) BOVV 
+  (-0.2 FIX)	; THETA(15) BOVCL 
+  (-0.2 FIX)	; THETA(16) BOVKA 
+  ;; NO BOVALAG1  
+  ;; NO COVARIANCE BETWEEN V AND CL  
+
+
+;; Phenotype 
+;; OrderedDict([('ADVAN', 2), ('KAETA', 0), ('ALAG1', 2), ('BOVALAG1', 0), ('DURATION1', 0), ('BOVV', 1), ('BOVCL', 1), ('BOVKA', 1), ('COVARVCL', 1)])
+;; Genotype 
+;; [1, 1, 0, 1, 0, 0, 0, 0, 1, 1, 1, 1]
+;; Num non-influential tokens = 0
+  
+NM-TRAN MESSAGES 
+  
+ WARNINGS AND ERRORS (IF ANY) FOR PROBLEM    1
+             
+ (WARNING  2) NM-TRAN INFERS THAT THE DATA ARE POPULATION.
+             
+ (WARNING  3) THERE MAY BE AN ERROR IN THE ABBREVIATED CODE. THE FOLLOWING
+ ONE OR MORE RANDOM VARIABLES ARE DEFINED WITH "IF" STATEMENTS THAT DO NOT
+ PROVIDE DEFINITIONS FOR BOTH THE "THEN" AND "ELSE" CASES. IF ALL
+ CONDITIONS FAIL, THE VALUES OF THESE VARIABLES WILL BE ZERO.
+  
+   BOVV BOVCL BOVKA Y
+
+  
+License Registered to: Certara
+Expiration Date:    14 MAR 2024
+Current Date:       26 JUL 2023
+Days until program expires : 233
+1NONLINEAR MIXED EFFECTS MODEL PROGRAM (NONMEM) VERSION 7.4.3
+ ORIGINALLY DEVELOPED BY STUART BEAL, LEWIS SHEINER, AND ALISON BOECKMANN
+ CURRENT DEVELOPERS ARE ROBERT BAUER, ICON DEVELOPMENT SOLUTIONS,
+ AND ALISON BOECKMANN. IMPLEMENTATION, EFFICIENCY, AND STANDARDIZATION
+ PERFORMED BY NOUS INFOSYSTEMS.
+
+ PROBLEM NO.:         1
+ tacrolimis for ML Model 1, 16 parameters
+0DATA CHECKOUT RUN:              NO
+ DATA SET LOCATED ON UNIT NO.:    2
+ THIS UNIT TO BE REWOUND:        NO
+ NO. OF DATA RECS IN DATA SET:     5652
+ NO. OF DATA ITEMS IN DATA SET:  15
+ ID DATA ITEM IS DATA ITEM NO.:   2
+ DEP VARIABLE IS DATA ITEM NO.:  14
+ MDV DATA ITEM IS DATA ITEM NO.:  8
+0INDICES PASSED TO SUBROUTINE PRED:
+  11   7   9   0   0   0   0   0   0   0   0
+0LABELS FOR DATA ITEMS:
+ C ID TOTIME DV_ORG DOSE TRT TIME MDV AMT OCC EVID GROUP BLQ DV SEQ
+0FORMAT FOR DATA:
+ (E2.0,E3.0,E12.0,E9.0,2E2.0,E12.0,6E2.0,E9.0,E2.0)
+
+ TOT. NO. OF OBS RECS:     5431
+ TOT. NO. OF INDIVIDUALS:       62
+0LENGTH OF THETA:  16
+0DEFAULT THETA BOUNDARY TEST OMITTED:    NO
+0OMEGA HAS BLOCK FORM:
+  1
+  0  2
+  0  0  3
+  0  0  0  4
+  0  0  0  0  5
+  0  0  0  0  0  6
+  0  0  0  0  0  0  7
+  0  0  0  0  0  0  0  8
+  0  0  0  0  0  0  0  0  9
+  0  0  0  0  0  0  0  0  9  9
+  0  0  0  0  0  0  0  0  9  9  9
+  0  0  0  0  0  0  0  0  9  9  9  9
+  0  0  0  0  0  0  0  0  0  0  0  0  9
+  0  0  0  0  0  0  0  0  0  0  0  0  9  9
+  0  0  0  0  0  0  0  0  0  0  0  0  9  9  9
+  0  0  0  0  0  0  0  0  0  0  0  0  9  9  9  9
+  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  9
+  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  9  9
+  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  9  9  9
+  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  9  9  9  9
+  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  9
+  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  9  9
+  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  9  9  9
+  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  9  9  9  9
+0DEFAULT OMEGA BOUNDARY TEST OMITTED:    NO
+0SIGMA HAS SIMPLE DIAGONAL FORM WITH DIMENSION:   2
+0DEFAULT SIGMA BOUNDARY TEST OMITTED:    NO
+0INITIAL ESTIMATE OF THETA:
+ LOWER BOUND    INITIAL EST    UPPER BOUND
+ -0.1000E+01     0.3800E+01     0.1000E+02
+ -0.1000E+01     0.5200E+01     0.1200E+02
+ -0.4000E+01    -0.6100E+00     0.1000E+07
+ -0.4000E+01    -0.3800E+00     0.1000E+07
+ -0.5000E+01    -0.4000E+00     0.5000E+01
+ -0.5000E+01     0.6000E+00     0.5000E+01
+  0.1500E+00     0.1500E+00     0.1500E+00
+ -0.8000E+00    -0.8000E+00    -0.8000E+00
+  0.1000E+01     0.1000E+01     0.1000E+01
+ -0.8000E+00    -0.8000E+00    -0.8000E+00
+ -0.8000E+00    -0.8000E+00    -0.8000E+00
+ -0.2000E+01    -0.2000E+01    -0.2000E+01
+ -0.2000E+01    -0.2000E+01    -0.2000E+01
+ -0.2000E+00    -0.2000E+00    -0.2000E+00
+ -0.2000E+00    -0.2000E+00    -0.2000E+00
+ -0.2000E+00    -0.2000E+00    -0.2000E+00
+0INITIAL ESTIMATE OF OMEGA:
+ BLOCK SET NO.   BLOCK                                                                    FIXED
+        1                                                                                  YES
+                  0.1000E+01
+        2                                                                                  YES
+                  0.1000E+01
+        3                                                                                  YES
+                  0.1000E+01
+        4                                                                                  YES
+                  0.1000E+01
+        5                                                                                  YES
+                  0.1000E+01
+        6                                                                                  YES
+                  0.1000E+01
+        7                                                                                  YES
+                  0.1000E+01
+        8                                                                                  YES
+                  0.1000E+01
+        9                                                                                  YES
+                  0.1000E+01
+                  0.0000E+00   0.1000E+01
+                  0.0000E+00   0.0000E+00   0.1000E+01
+                  0.0000E+00   0.0000E+00   0.0000E+00   0.1000E+01
+0INITIAL ESTIMATE OF SIGMA:
+ 0.1000E+01
+ 0.0000E+00   0.1000E+01
+0SIGMA CONSTRAINED TO BE THIS INITIAL ESTIMATE
+1DOUBLE PRECISION PREDPP VERSION 7.4.3
+
+ TWO COMPARTMENT MODEL WITH FIRST-ORDER ABSORPTION (ADVAN4)
+0MAXIMUM NO. OF BASIC PK PARAMETERS:   5
+0BASIC PK PARAMETERS (AFTER TRANSLATION):
+   BASIC PK PARAMETER NO.  1: ELIMINATION RATE (K)
+   BASIC PK PARAMETER NO.  2: CENTRAL-TO-PERIPH. RATE (K23)
+   BASIC PK PARAMETER NO.  3: PERIPH.-TO-CENTRAL RATE (K32)
+   BASIC PK PARAMETER NO.  5: ABSORPTION RATE (KA)
+0COMPARTMENT ATTRIBUTES
+ COMPT. NO.   FUNCTION   INITIAL    ON/OFF      DOSE      DEFAULT    DEFAULT
+                         STATUS     ALLOWED    ALLOWED    FOR DOSE   FOR OBS.
+    1         DEPOT        OFF        YES        YES        YES        NO
+    2         CENTRAL      ON         NO         YES        NO         YES
+    3         PERIPH.      ON         NO         YES        NO         NO
+    4         OUTPUT       OFF        YES        NO         NO         NO
+1
+ ADDITIONAL PK PARAMETERS - ASSIGNMENT OF ROWS IN GG
+ COMPT. NO.                             INDICES
+              SCALE      BIOAVAIL.   ZERO-ORDER  ZERO-ORDER  ABSORB
+                         FRACTION    RATE        DURATION    LAG
+    1            *           6           *           *           7
+    2            8           *           *           *           *
+    3            *           *           *           *           *
+    4            *           -           -           -           -
+             - PARAMETER IS NOT ALLOWED FOR THIS MODEL
+             * PARAMETER IS NOT SUPPLIED BY PK SUBROUTINE;
+               WILL DEFAULT TO ONE IF APPLICABLE
+0DATA ITEM INDICES USED BY PRED ARE:
+   EVENT ID DATA ITEM IS DATA ITEM NO.:     11
+   TIME DATA ITEM IS DATA ITEM NO.:          7
+   DOSE AMOUNT DATA ITEM IS DATA ITEM NO.:   9
+
+0PK SUBROUTINE CALLED WITH EVERY EVENT RECORD.
+ PK SUBROUTINE NOT CALLED AT NONEVENT (ADDITIONAL OR LAGGED) DOSE TIMES.
+0ERROR SUBROUTINE CALLED WITH EVERY EVENT RECORD.
+1
+
+
+ #TBLN:      1
+ #METH: First Order with Interaction
+
+ ESTIMATION STEP OMITTED:                 NO
+ ANALYSIS TYPE:                           POPULATION
+ NUMBER OF SADDLE POINT RESET ITERATIONS:      1
+ HESSIAN USED IN SADDLE POINT RESET: VARIABLE METRIC
+ GRADIENT METHOD USED:               NOSLOW
+ EPS-ETA INTERACTION:                     YES
+ NO. OF FUNCT. EVALS. ALLOWED:            9999
+ NO. OF SIG. FIGURES REQUIRED:            3
+ INTERMEDIATE PRINTOUT:                   YES
+ ESTIMATE OUTPUT TO MSF:                  NO
+ ABORT WITH PRED EXIT CODE 1:             NO
+ IND. OBJ. FUNC. VALUES SORTED:           NO
+ NUMERICAL DERIVATIVE
+       FILE REQUEST (NUMDER):               NONE
+ MAP (ETAHAT) ESTIMATION METHOD (OPTMAP):   0
+ ETA HESSIAN EVALUATION METHOD (ETADER):    0
+ INITIAL ETA FOR MAP ESTIMATION (MCETA):    0
+ SIGDIGITS FOR MAP ESTIMATION (SIGLO):      100
+ GRADIENT SIGDIGITS OF
+       FIXED EFFECTS PARAMETERS (SIGL):     100
+ NOPRIOR SETTING (NOPRIOR):                 OFF
+ NOCOV SETTING (NOCOV):                     OFF
+ DERCONT SETTING (DERCONT):                 OFF
+ FINAL ETA RE-EVALUATION (FNLETA):          ON
+ EXCLUDE NON-INFLUENTIAL (NON-INFL.) ETAS
+       IN SHRINKAGE (ETASTYPE):             NO
+ NON-INFL. ETA CORRECTION (NONINFETA):      OFF
+ RAW OUTPUT FILE (FILE): bsSamp1_1.ext
+ EXCLUDE TITLE (NOTITLE):                   NO
+ EXCLUDE COLUMN LABELS (NOLABEL):           NO
+ FORMAT FOR ADDITIONAL FILES (FORMAT):      S1PE12.5
+ PARAMETER ORDER FOR OUTPUTS (ORDER):       TSOL
+ WISHART PRIOR DF INTERPRETATION (WISHTYPE):0
+ KNUTHSUMOFF:                               0
+ INCLUDE LNTWOPI:                           NO
+ INCLUDE CONSTANT TERM TO PRIOR (PRIORC):   NO
+ INCLUDE CONSTANT TERM TO OMEGA (ETA) (OLNTWOPI):NO
+ ADDITIONAL CONVERGENCE TEST (CTYPE=4)?:    NO
+ EM OR BAYESIAN METHOD USED:                 NONE
+
+
+ THE FOLLOWING LABELS ARE EQUIVALENT
+ PRED=PREDI
+ RES=RESI
+ WRES=WRESI
+ IWRS=IWRESI
+ IPRD=IPREDI
+ IRS=IRESI
+
+ MONITORING OF SEARCH:
+
+
+0ITERATION NO.:    0    OBJECTIVE VALUE:   1248468.18557972        NO. OF FUNC. EVALS.:   7
+ CUMULATIVE NO. OF FUNC. EVALS.:        7
+ NPARAMETR:  3.8000E+00  5.2000E+00 -6.1000E-01 -3.8000E-01 -4.0000E-01  6.0000E-01
+ PARAMETER:  1.0000E-01  1.0000E-01  1.0000E-01  1.0000E-01  1.0000E-01  1.0000E-01
+ GRADIENT:   5.4430E+06 -5.5490E+06  4.5073E+03  1.9601E+04  7.4203E+04  2.1827E+04
+
+0ITERATION NO.:   30    OBJECTIVE VALUE:   79894.8622530695        NO. OF FUNC. EVALS.: 257
+ CUMULATIVE NO. OF FUNC. EVALS.:      264
+ NPARAMETR:  2.4780E+00  5.2143E+00 -5.0368E-01 -3.5616E-01  6.3765E-01  1.3849E+00
+ PARAMETER: -4.1543E-01  1.0439E-01  1.3088E-01  1.0657E-01  5.1680E-01  4.2767E-01
+ GRADIENT:   9.4808E-02 -4.9688E-02  7.3214E-02 -1.2911E-01 -5.1666E-02 -1.8205E-02
+  
+0SADDLE POINT RESET
+
+0ITERATION NO.:   43    OBJECTIVE VALUE:   79894.8632715982        NO. OF FUNC. EVALS.: 134
+ CUMULATIVE NO. OF FUNC. EVALS.:      398
+ NPARAMETR:  2.4783E+00  5.2145E+00 -5.0355E-01 -3.5601E-01  6.3795E-01  1.3855E+00
+ PARAMETER: -4.1531E-01  1.0448E-01  1.3092E-01  1.0661E-01  5.1692E-01  4.2791E-01
+ GRADIENT:   8.6175E+00  7.6530E+00  2.8997E-01  3.4168E-01  5.4670E-01  1.1623E+00
+
+ #TERM:
+0MINIMIZATION SUCCESSFUL
+ NO. OF FUNCTION EVALUATIONS USED:      398
+ NO. OF SIG. DIGITS IN FINAL EST.:  3.1
+  
+ TOTAL DATA POINTS NORMALLY DISTRIBUTED (N):         5431
+ N*LOG(2PI) CONSTANT TO OBJECTIVE FUNCTION:    9981.5103476691547     
+ OBJECTIVE FUNCTION VALUE WITHOUT CONSTANT:    79894.863271598238     
+ OBJECTIVE FUNCTION VALUE WITH CONSTANT:       89876.373619267397     
+ REPORTED OBJECTIVE FUNCTION DOES NOT CONTAIN CONSTANT
+  
+ TOTAL EFFECTIVE ETAS (NIND*NETA):                          1488
+  
+ #TERE:
+ Elapsed estimation  time in seconds:   346.89
+ Elapsed postprocess time in seconds:     0.00
+1
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ ************************************************************************************************************************
+ ********************                                                                                ********************
+ ********************                           FIRST ORDER WITH INTERACTION                         ********************
+ #OBJT:**************                       MINIMUM VALUE OF OBJECTIVE FUNCTION                      ********************
+ ********************                                                                                ********************
+ ************************************************************************************************************************
+ 
+
+
+
+
+
+ #OBJV:********************************************    79894.863       **************************************************
+1
+ ************************************************************************************************************************
+ ********************                                                                                ********************
+ ********************                           FIRST ORDER WITH INTERACTION                         ********************
+ ********************                             FINAL PARAMETER ESTIMATE                           ********************
+ ********************                                                                                ********************
+ ************************************************************************************************************************
+ 
+
+
+ THETA - VECTOR OF FIXED EFFECTS PARAMETERS   *********
+
+
+         TH 1      TH 2      TH 3      TH 4      TH 5      TH 6      TH 7      TH 8      TH 9      TH10      TH11      TH12     
+          TH13      TH14      TH15      TH16     
+ 
+         2.48E+00  5.21E+00 -5.04E-01 -3.56E-01  6.38E-01  1.39E+00  1.50E-01 -8.00E-01  1.00E+00 -8.00E-01 -8.00E-01 -2.00E+00
+         -2.00E+00 -2.00E-01 -2.00E-01 -2.00E-01
+ 
+
+
+ OMEGA - COV MATRIX FOR RANDOM EFFECTS - ETAS  ********
+
+
+         ETA1      ETA2      ETA3      ETA4      ETA5      ETA6      ETA7      ETA8      ETA9      ET10      ET11      ET12     
+          ET13      ET14      ET15      ET16      ET17      ET18      ET19      ET20      ET21      ET22      ET23      ET24     
+
+ 
+ ETA1
++        1.00E+00
+ 
+ ETA2
++        0.00E+00  1.00E+00
+ 
+ ETA3
++        0.00E+00  0.00E+00  1.00E+00
+ 
+ ETA4
++        0.00E+00  0.00E+00  0.00E+00  1.00E+00
+ 
+ ETA5
++        0.00E+00  0.00E+00  0.00E+00  0.00E+00  1.00E+00
+ 
+ ETA6
++        0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  1.00E+00
+ 
+ ETA7
++        0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  1.00E+00
+ 
+ ETA8
++        0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  1.00E+00
+ 
+ ETA9
++        0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  1.00E+00
+ 
+ ET10
++        0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  1.00E+00
+ 
+ ET11
++        0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  1.00E+00
+ 
+ ET12
++        0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  1.00E+00
+ 
+ ET13
++        0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00
+          1.00E+00
+ 
+ ET14
++        0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00
+          0.00E+00  1.00E+00
+ 
+1
+
+         ETA1      ETA2      ETA3      ETA4      ETA5      ETA6      ETA7      ETA8      ETA9      ET10      ET11      ET12     
+          ET13      ET14      ET15      ET16      ET17      ET18      ET19      ET20      ET21      ET22      ET23      ET24     
+
+ 
+ ET15
++        0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00
+          0.00E+00  0.00E+00  1.00E+00
+ 
+ ET16
++        0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00
+          0.00E+00  0.00E+00  0.00E+00  1.00E+00
+ 
+ ET17
++        0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00
+          0.00E+00  0.00E+00  0.00E+00  0.00E+00  1.00E+00
+ 
+ ET18
++        0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00
+          0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  1.00E+00
+ 
+ ET19
++        0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00
+          0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  1.00E+00
+ 
+ ET20
++        0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00
+          0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  1.00E+00
+ 
+ ET21
++        0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00
+          0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  1.00E+00
+ 
+ ET22
++        0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00
+          0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  1.00E+00
+ 
+ ET23
++        0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00
+          0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  1.00E+00
+ 
+ ET24
++        0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00
+          0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  1.00E+00
+ 
+
+
+ SIGMA - COV MATRIX FOR RANDOM EFFECTS - EPSILONS  ****
+
+
+         EPS1      EPS2     
+ 
+ EPS1
++        1.00E+00
+ 
+ EPS2
++        0.00E+00  1.00E+00
+ 
+1
+
+
+ OMEGA - CORR MATRIX FOR RANDOM EFFECTS - ETAS  *******
+
+
+         ETA1      ETA2      ETA3      ETA4      ETA5      ETA6      ETA7      ETA8      ETA9      ET10      ET11      ET12     
+          ET13      ET14      ET15      ET16      ET17      ET18      ET19      ET20      ET21      ET22      ET23      ET24     
+
+ 
+ ETA1
++        1.00E+00
+ 
+ ETA2
++        0.00E+00  1.00E+00
+ 
+ ETA3
++        0.00E+00  0.00E+00  1.00E+00
+ 
+ ETA4
++        0.00E+00  0.00E+00  0.00E+00  1.00E+00
+ 
+ ETA5
++        0.00E+00  0.00E+00  0.00E+00  0.00E+00  1.00E+00
+ 
+ ETA6
++        0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  1.00E+00
+ 
+ ETA7
++        0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  1.00E+00
+ 
+ ETA8
++        0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  1.00E+00
+ 
+ ETA9
++        0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  1.00E+00
+ 
+ ET10
++        0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  1.00E+00
+ 
+ ET11
++        0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  1.00E+00
+ 
+ ET12
++        0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  1.00E+00
+ 
+ ET13
++        0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00
+          1.00E+00
+ 
+ ET14
++        0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00
+          0.00E+00  1.00E+00
+ 
+ ET15
++        0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00
+          0.00E+00  0.00E+00  1.00E+00
+ 
+ ET16
++        0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00
+          0.00E+00  0.00E+00  0.00E+00  1.00E+00
+ 
+ ET17
++        0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00
+          0.00E+00  0.00E+00  0.00E+00  0.00E+00  1.00E+00
+ 
+ ET18
++        0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00
+          0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  1.00E+00
+ 
+ ET19
++        0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00
+          0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  1.00E+00
+ 
+ ET20
++        0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00
+          0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  1.00E+00
+ 
+1
+
+         ETA1      ETA2      ETA3      ETA4      ETA5      ETA6      ETA7      ETA8      ETA9      ET10      ET11      ET12     
+          ET13      ET14      ET15      ET16      ET17      ET18      ET19      ET20      ET21      ET22      ET23      ET24     
+
+ 
+ ET21
++        0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00
+          0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  1.00E+00
+ 
+ ET22
++        0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00
+          0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  1.00E+00
+ 
+ ET23
++        0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00
+          0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  1.00E+00
+ 
+ ET24
++        0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00
+          0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  0.00E+00  1.00E+00
+ 
+
+
+ SIGMA - CORR MATRIX FOR RANDOM EFFECTS - EPSILONS  ***
+
+
+         EPS1      EPS2     
+ 
+ EPS1
++        1.00E+00
+ 
+ EPS2
++        0.00E+00  1.00E+00
+ 
+ Elapsed finaloutput time in seconds:     0.03
+ #CPUT: Total CPU Time in Seconds,      347.094
+Stop Time: 
+Wed 07/26/2023 
+03:25 PM
+BIC = 80032.461, identifiable = TRUE, max_delta = 0.00047, max_delta_parm = 5BIC = 80032.461, identifiable = TRUE, max_delta = 0.00047, max_delta_parm = 5BIC = 80032.461, identifiable = TRUE, max_delta = 0.00047, max_delta_parm = 5BIC = 80032.461, identifiable = TRUE, max_delta = 0.00047, max_delta_parm = 5
