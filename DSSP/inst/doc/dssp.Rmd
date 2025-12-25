@@ -1,0 +1,290 @@
+---
+title: "DSSP: Direct Sampling Spatial Prior"
+date: "`r Sys.Date()`"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{dssp}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+  \usepackage[utf8]{inputenc}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+## Introduction
+The Direct Sampling Spatial Prior (DSSP) is based on the thin-plate splines solution to the smoothing problem of minimising the penalised sum of squares
+\[
+S_{\eta}(f) = \frac{1}{n}\sum^{n}_{i}W_i(y_i - f(\mathbf{x}_i))^2
++\eta J_m(f)
+\]
+which can be written as 
+\[
+\min_{\mathbf{\nu}}\:(\mathbf{y}-\mathbf{\nu})'\mathbf{W}(\mathbf{y}-\mathbf{\nu})+
+\eta\mathbf{\nu}'\mathbf{M}\mathbf{\nu}
+\]
+yielding the solution
+\[
+\hat{\mathbf{\nu}}=
+\left(\mathbf{W}+\eta\mathbf{M}\right)^{-1}\mathbf{y}.
+\]
+Note that the matrix $\mathbf{M}$ is based on thin-plate spline basis functions subject to boundary conditions. The details are omitted here for clarity and to focus on the results and implementation in package. 
+
+If we assume that the observed data are from a Gaussian distribution
+\[
+\mathbf{y}\sim N\left(\mathbf{\nu},\delta\mathbf{W}^{-1}\right)
+\]
+and specify the prior for $\mathbf{\nu}$ 
+\[
+\left[\mathbf{\nu}\mid\eta,\delta\right]\propto\ \frac{\eta}{\delta}^{-{r}/2}
+\exp\left(-\frac{\eta}{2\delta}\mathbf{\nu}'\mathbf{M}\mathbf{\nu}\right),
+\]
+the resulting conditional posterior of $\nu$ is  
+\[
+[\mathbf{\nu}|\eta,\delta,\mathbf{y}]\propto\exp\left\{
+-\frac{1}{2\delta}\left[ (\mathbf{y}-\mathbf{\nu})'\mathbf{W}({\mathbf{y}}-\mathbf{\nu})
+-\eta\mathbf{\nu}'\mathbf{M}\mathbf{\nu}\right]\right\}.
+\]
+This can be written as
+\[
+\pi(\mathbf{\nu}|\eta,\delta,\mathbf{y})\sim N(\mathbf{a},\mathbf{B})
+\]
+where
+$$
+\begin{aligned}
+\operatorname{E}(\mathbf{\nu}|\eta,\delta,\mathbf{y})&=\mathbf{a}\\
+&=\left(\mathbf{W}+\eta\mathbf{M}\right)^{-1}\mathbf{y}\\
+\operatorname{Cov}(\mathbf{\nu})&=\mathbf{B}\\
+&=\delta\left(\mathbf{W}+\eta\mathbf{M}\right)^{-1}.
+\end{aligned}
+$$
+Note that the posterior mean with the same solution as the penalised least squares. 
+
+The complete model is specified with a Gaussian likelihood, the improper prior for $\nu$, an inverse gamma prior for $\delta$, and a prior for $\eta$. With this specification the joint posterior is written
+\[
+\pi\left(\mathbf{\nu},\delta,\eta|\mathbf{y}\right)\propto
+f(\mathbf{y}|\mathbf{\nu},\delta)\pi\left(\mathbf{\nu}|\eta,\delta\right)\pi\left(\delta\right)
+\pi\left(\eta\right).
+\]
+It is possible to derive the set of conditional posterior distributions
+\[
+\pi\left(\mathbf{\nu}|\delta,\eta,\mathbf{y}\right)\\
+\pi\left(\delta|\eta,\mathbf{y}\right)\\
+\pi\left(\eta|\mathbf{y}\right)
+\]
+which can be sampled directly in sequence to create a draw from the joint posterior 
+\[
+\pi\left(\mathbf{\nu},\delta_0,\eta|\mathbf{y}\right).
+\]
+This is the heart of what the function `DSSP()` does^[G. White, D. Sun, P. Speckman (2019) <arXiv:1906.05575>].
+
+# Example with intercept-only model
+
+This short example demonstrates the use of the functions `DSSP()` and `predict()` to analyse spatial data.  
+
+The example here uses the Meuse River data set from the package `{sp}`. First start by loading the library and data set `meuse.all`. 
+
+
+```{r setup}
+library(sp)
+library(gstat)
+library(DSSP)
+library(ggplot2)
+
+data("meuse.all")
+data("meuse")
+```
+
+
+Next, set the coordinates for the data and extract the transform the dataset into a spatial dataframe by specifying the coordinates.
+
+```{r}
+meuse.train <- meuse.all[1:155, ]
+meuse.valid <- meuse.all[156:164, ]
+coordinates(meuse.train) <- ~ x + y
+coordinates(meuse.valid) <- ~ x + y
+```
+
+Next, we run `DSSP()`.
+
+The function `DSSP()` takes as its argument:
+
+* `formula`: the model formula. This first example fits an intercept only model for `log(zinc)`.
+* `data`: the `data.frame` that contains the data specified in the formula. This is either a spatial `data.frame` or a `data.frame` with columns for it's coordinates that are specified in the `coords` argument.
+* `N`: the number of samples desired
+* `pars`: the prior shape and rate parameters for the inverse-gamma prior distribution on $\delta$ (the variance parameter for the Gaussian likelihood).
+* `log_prior`: a function evaluating the log of the prior density of $\eta$.
+* `coords`: spatial coordinates. Only required if the `data` argument is not a spatial data.frame.
+
+```{r}
+meuse.fit <- DSSP(
+  formula = log(zinc) ~ 1, data = meuse.train, N = 10000,
+  pars = c(0.001, 0.001), log_prior = function(x) -2 * log(1 + x)
+)
+```
+
+Check the observed vs. fitted values.
+```{r, fig.align="center", fig.width=5.5, fig.height=4.25}
+meuse.train$Yhat <- rowMeans(exp(predict(meuse.fit)))
+
+ggplot(as.data.frame(meuse.train), aes(Yhat, zinc)) +
+  geom_point(size = 3) +
+  geom_abline() +
+  labs(
+    x = "Smoothed Values", y = "Observed Values",
+    title = "Smoothed vs. Observed Values"
+  )
+```
+
+Check the posterior for the model parameters: $\eta$ and $\delta$.
+```{r, fig.height=3, fig.width=3.475, fig.show='hold'}
+ggplot(data.frame(x = meuse.fit$eta)) +
+  geom_density(aes(x = x)) +
+  labs(
+    x = expression(eta), y = "posterior density",
+    title = expression("Posterior Density of " * eta)
+  )
+
+ggplot(data.frame(x = meuse.fit$delta)) +
+  geom_density(aes(x = x)) +
+  labs(
+    x = expression(delta), y = "posterior density",
+    title = expression("Posterior Density of " * delta)
+  )
+```
+
+Check the autocorrelation function (ACF) plots.
+```{r, fig.height=3, fig.width=3.475, fig.show='hold'}
+eta_acf <- acf(meuse.fit$eta, plot = FALSE)
+eta_acfdf <- with(eta_acf, data.frame(lag, acf))
+
+ggplot(data = eta_acfdf, mapping = aes(x = lag, y = acf)) +
+  geom_hline(aes(yintercept = 0)) +
+  geom_segment(mapping = aes(xend = lag, yend = 0)) +
+  labs(
+    x = "Lag", y = "ACF",
+    title = expression("ACF for Samples from Posterior of " * eta)
+  ) +
+  theme(plot.title = element_text(hjust = 0.5))
+
+delta_acf <- acf(meuse.fit$delta, plot = FALSE)
+delta_acfdf <- with(delta_acf, data.frame(lag, acf))
+
+ggplot(data = delta_acfdf, mapping = aes(x = lag, y = acf)) +
+  geom_hline(aes(yintercept = 0)) +
+  geom_segment(mapping = aes(xend = lag, yend = 0)) +
+  labs(
+    x = "Lag", y = "ACF",
+    title = expression("ACF for Samples from Posterior of " * delta)
+  ) +
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+
+```{r,fig.height=3, fig.width=3.475, fig.show='hold'}
+eta_cummean_df <- data.frame(
+  x = 1:length(meuse.fit$eta),
+  y = cumsum(meuse.fit$eta) / (1:length(meuse.fit$eta))
+)
+
+ggplot(eta_cummean_df, aes(x = x, y = y)) +
+  geom_line() +
+  labs(
+    x = "sample", y = expression(eta),
+    title = bquote(atop("Cumulative Mean of Samples", "from Posterior of" ~ eta))
+  ) +
+  theme(plot.title = element_text(hjust = 0.5))
+
+delta_cummean_df <- data.frame(
+  x = 1:length(meuse.fit$delta),
+  y = cumsum(meuse.fit$delta) / (1:length(meuse.fit$delta))
+)
+
+ggplot(delta_cummean_df, aes(x = x, y = y)) +
+  geom_line() +
+  labs(
+    x = "sample", y = expression(delta),
+    title = bquote(atop("Cumulative Mean of Samples", "from Posterior of" ~ delta))
+  ) +
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+Check predictions against true values in validation data.
+```{r, fig.height=3, fig.width=3.475, fig.show='hold'}
+Ypred_mat <- exp(predict(meuse.fit, meuse.valid))
+meuse.valid$Ypred <- rowMeans(Ypred_mat)
+min_value <- min(c(meuse.valid$Ypred, meuse.valid$zinc))
+max_value <- max(c(meuse.valid$Ypred, meuse.valid$zinc))
+
+ggplot(as.data.frame(meuse.valid), aes(x = Ypred, y = zinc)) +
+  geom_point(size = 3) +
+  geom_abline() +
+  labs(
+    x = "Predicted Values", y = "True Values",
+    title = "Predicted vs. True Values"
+  ) +
+  xlim(min_value, max_value) +
+  ylim(min_value, max_value) +
+  theme(plot.title = element_text(hjust = 0.5))
+
+ggplot(stack(as.data.frame(t(Ypred_mat)))) +
+  geom_boxplot(aes(x = ind, y = values)) +
+  geom_point(
+    data = data.frame(Y.true = meuse.valid$zinc),
+    aes(x = 1:9, y = Y.true),
+    shape = 4, size = 3
+  ) +
+  labs(
+    x = "", y = "Y",
+    title = bquote(atop("Boxplot of Predicted Values of", "Y and True Values (X)"))
+  ) +
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+## Example model with covariates
+
+You can specify a formula with covariates in `DSSP()`. `summary()` will return a summary of the covariates as well as the model parameters, $\eta$ and $\delta$.
+
+```{r}
+meuse.fit.covariates <- DSSP(
+  formula = log(zinc) ~ log(lead) + lime, data = meuse.train, N = 10000,
+  pars = c(0.001, 0.001), log_prior = function(x) -2 * log(1 + x)
+)
+
+summary(meuse.fit.covariates)
+```
+
+`plot()` can be used to get several plots from the model.
+```{r, fig.height=7, fig.width=7}
+plot(meuse.fit.covariates)
+```
+
+The posterior density of the covariates (`covariates_posterior`) can be accessed directly from the `dsspMod` object.
+
+```{r, fig.height=3, fig.width=3.475, fig.show='hold'}
+ggplot(
+  data.frame(log_lead = meuse.fit.covariates$covariates_posterior["log(lead)", ]),
+  aes(x = log_lead)
+) +
+  geom_density() +
+  labs(
+    title = "Posterior density of log(lead)",
+    y = "posterior density", x = "log(lead)"
+  )
+
+ggplot(
+  data.frame(lime = meuse.fit.covariates$covariates_posterior["lime", ]),
+  aes(x = lime)
+) +
+  geom_density() +
+  labs(
+    title = "Posterior density of lime",
+    y = "posterior density"
+  )
+```
+
+Note that in both examples diagnostic plots are not necessary as sample are drawn directly from the posterior. The plots are included here for clarity and illustration, which may be useful in some circumstances. 
