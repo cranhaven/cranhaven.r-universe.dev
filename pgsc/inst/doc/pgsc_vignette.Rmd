@@ -1,0 +1,209 @@
+---
+title: "Using `pgsc`"
+author: "Philip Barrett"
+date: "`r Sys.Date()`"
+output: rmarkdown::pdf_document
+bibliography: biblio.bib
+vignette: >
+  %\VignetteIndexEntry{Estimating and testing Generalized Synthetic Control models with `pgsc`.}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+# Introduction
+
+The `gsc` package computes the generalized synthetic control estimator described in [@powell2017synthetic].  The estimator controls for a rich specification of omitted variables in a panel, beyond those covered by time and unit fixed effects (e.g. spatially-correlated time fixed effects).  This vignette describes an extended example which illustrates how to generate point estimates, as well as how to test hypotheses using both a standard bootstrap and a constrained-estimator approach described in [@powell2017synthetic].
+
+# Data generating process
+
+We start by generating data using a process which cannot be recovered using a simple fixed effects model.  The data generating process is:
+
+$$ Y_{it} = \alpha_i + \eta_t +  \mu_i ' \lambda_t + b ' D_{it} + r'X_{it} + \epsilon_{it}$$
+
+So the $\alpha_i$ and $\eta_t$ are standard time and unit fixed effects, $\lambda_t$ is a $Q$-dimensional vector of time-varying factors with unit-specific weights $\mu_i$, the $D_{it}$ is an $M$-dimensional vector of continuous treatments, and the $X_{it}$ are vectors of observed confounding variables.  The primary objective of inquiry is to recover $b$, the impact of the treatment.  Because the $\lambda_t$ and $\mu_i$ are unobserved if they are correlated with the treatments, then a standard time and unit fixed effects regression will fail to recover the parameter of interest, $b$.
+
+We generate such a data set as follows:
+
+
+```{r}
+rm(list=ls()) ; set.seed(42)
+library(pgsc)
+
+### Parameters
+NN <- 15                    # Number of units
+TT <- 50                    # Number of periods
+MM <- 2                     # Number of treatments
+RR <- 3                     # Number of covariates
+SS <- 2                     # Number of unit FEs
+QQ <- 3                     # Number of time FEs
+b <- c(1,2)                 # Treatment coefficients
+sq <- matrix( c( 1, .2, .3, -.9, -.1, .2 ), nrow=SS, ncol=QQ )
+                            # Weighting matrix on time-varying factors
+p <- t( matrix(c( -1, 0, .2, .5, .2, 0), nrow=MM, ncol=RR ) )
+                            # The covariance of X and D
+r <- .1 * c( .5, 1, 2)      # Coefficient on observed covariates
+sig <- .2                   # Noise sd
+sig.y <- 5                  # Unit FEs
+sig.t <- 4                  # Time FE noise
+
+### Data
+set.seed(42)
+fes <- matrix( rnorm(NN * SS, 0, sig.y), NN, SS )    # Unit fixed effects
+tfes <- matrix( rnorm(TT * QQ, 0, sig.t ), TT, QQ )  # Time fixed effects
+X <- array( rnorm(NN*RR*TT), c( NN, RR, TT ))        # Covariates
+D <- array(NA, dim=c( NN, MM, TT ))
+D[] <- apply(X, 3, function(x) x%*%p)
+D <- D + array( rnorm(NN*MM*TT), c( NN, MM, TT ))               # Treatments, correl. w/ X
+Y <- sapply( 1:TT, function(i) D[,,i] %*% b + X[,,i] %*% r ) +  # Treatment & covariates
+  fes[,1] + rep(1,NN) %*% t(tfes[,1]) +                         # FEs and TFE
+  fes %*% sq %*% t(tfes) +                                      # Time-unit interaction
+  rnorm( NN*TT, 0, sig )                                        # Noise
+pgsc.dta <- data.frame( n=state.abb[1:NN], t=rep(1:TT,each=NN), y=c(Y),
+                   do.call(rbind,lapply(1:TT,function(i)D[,,i])),
+                   do.call(rbind,lapply(1:TT,function(i)X[,,i])) )
+names(pgsc.dta) <- c('n','t','y', paste0('D',1:MM), paste0('X',1:RR) )
+    # Bind into a data frame
+```
+
+This dataset is also stored in the package and can be loaded using `data("pgsc.dta")`.  Note that the parameter $b$ that we wish to recover has value $(1,2)'$.
+
+# Panel regression
+
+The panel regression fails to recover the correct value of $b$ due to the correlation of $X_{it}$ with $D_{it}$.
+
+```{r}
+
+### Panel regression
+library(plm)
+pan <- plm( y ~ D1 + D2 + X1 + X2 + X3, pgsc.dta, effect = 'twoways', index = c('n','t'))
+summary(pan)
+```
+
+The coefficients on the treatment variables are far from their true values, $(1,2)'$
+
+The source of the bias is that there is an omitted variable, which is time varying but spatially correlated.  This interation of the spatial and time components means that time and period fixed effects cannot recover the true data generating process.  If we have access to (something correlated with) this variable, then panel regression with fixed effects can, of course, recover the true data generating process:
+
+```{r}
+
+### Panel regression
+library(plm)
+pgsc.dta.copy <- pgsc.dta
+pgsc.dta.copy$ov <- c(fes %*% sq %*% t(tfes)) * 2 + rnorm(NN*TT) * 3
+pan.2 <- plm( y ~ D1 + D2 + X1 + X2 + X3 + ov, pgsc.dta.copy, effect = 'twoways', index = c('n','t'))
+summary(pan.2)
+```
+
+
+# The generalized synthetic control estimator: point estimates
+
+The GSC estimator provides a vector of coefficients $\hat b$ and an estimated weighing matrix $W$ solving:
+
+$$
+\begin{aligned}
+  (\hat b, \hat W) & = \arg\min_{b,W} \frac{1}{2NT} \sum_{i=1}^N \sum_{t=1}^T\left[ Y_{it} - b'D_{it} - \sum_{j\ne i} w_{ij} \left( Y_{jt} - b'D_{jt} \right)  \right]^2 \\
+  \text{s.t. } \ &\forall \ i:  \sum_{j \ne i} w_{ij} = 1
+\end{aligned}
+$$
+
+In other words, the GSC estimator minimizes the squared difference in outcomes unexplained by the treatment variable between each unit and a unit-specific counterfactual.  The counterfactual itself is a weighted average of the other units, (i.e. the impact of the omitted variables).
+
+The function `pgsc` computes a number of variants of the GSC estimator using an iterative approach.  It works by optimizing over the coefficients $b$ and the weights $W$ each in turn, iterating until the maximum difference in iterations is suitably close to zero.[^1]
+
+[^1]: This is slower than solving simultaneously for weights and parameters, but seems to be much more reliable. Presumably, this is because the simultaneous solution is a fourth order problem, whereas the individual weight/coefficient minimization problems are quadratic at each step.  This improves convergence in a numerical optimizer.
+
+```{r}
+
+### Compute the point estimate
+wt.init <- matrix( 1 / (NN-1), NN, NN-2 )
+b.init <- pan$coefficients[c('D1','D2')]
+sol.it <- pgsc(pgsc.dta, dep.var = 'y', indep.var = c('D1','D2'), b.init = b.init,
+                      method='onestep')
+summary(sol.it)
+```
+
+While the resulting estimates are superior to the fixed effects panel estimates, they still differ considerably from the true value.  The `pgsc` package therefore provides functionality to compute two-step estimators suggested in [@powell2017synthetic], which re-weight the objective function to minimize the impact of the units where the model fit is bad.  There are two two-step variants: an "average" one which uses the average unit-specific error from the one-step estimator, and an "individual" one which allows for unit-specific estimates of $b$ in the first stage.  These can be computed as follows:
+
+```{r}
+
+### Compute point estimates from the two-step estimators
+sol.2.step.aggte <- pgsc(pgsc.dta, dep.var = 'y', indep.var = c('D1','D2'),
+                                b.init = sol.it$b, method='twostep.aggte',
+                                print.level=-1)
+sol.2.step.indiv <- pgsc(pgsc.dta, dep.var = 'y', indep.var = c('D1','D2'),
+                                b.init = sol.2.step.aggte$b, method='twostep.indiv',
+                                print.level=-2)
+sol.compare <- rbind( pan$coefficients[c('D1','D2')], sol.it$b, sol.2.step.aggte$b,
+                      sol.2.step.indiv$b, b )
+rownames(sol.compare) <- c( 'Panel FEs', 'GSC onestep', 'Aggte two-step GSC',
+                            'Indiv two-step GSC', 'Truth')
+print(sol.compare)
+```
+
+Note that the GSC estimates are much closer than the panel regression estimates to the truth, particularly when weighted.
+
+# The generalized synthetic control estimator: hypothesis testing
+
+The package also includes functions for hypothesis testing, using the bootstrap method proposed in [@powell2017synthetic].  This approach requires re-estimating the model under the hypothesized restriction $g(\theta)=0$.  If the null hypothesis is true, then the restriction does not bind.  And so the slope of the objective function should be zero when the constraint is enforced.  After computing the appropriate derivative under the restriction, one can approximate its variance under the null by bootstrap using a symmetry assumption.  This provides a quick way to approximate the distribution of the gradient without having to re-solve the constrained problem, which may be time-consuming.
+
+We start by defining the restriction(s) to be tested.  We test the restriction:
+
+$$ \frac{b_1}{1-b_2} = A $$
+This is true when $A=-1$.  Both the function and gradient are required, which we define as follows:
+
+```{r}
+A <- - 1
+g <- function(b) b[1] / ( 1 - b[2] ) - A
+g.grad <- function(b) c( 1 / ( 1 - b[2] ), b[1] / ( 1 - b[2] )^2 )
+```
+
+Note that the current version of the package only allows for single equation restrictions to be tested.  Extending this is a point for further development.  In the meantime, multiple restrictions can be implemented as a sum of squares of individual restrictions.  
+
+To test the restriction, we first solve the restricted model, using the auxilary argument `g.i`, and then test that $g(b)=0$.
+
+```{r}
+sol.2.step.rest <- pgsc(pgsc.dta, dep.var = 'y', indep.var = c('D1','D2'), b.init = b.init,
+                      method='twostep.indiv', g.i=g, g.i.grad=g.grad )
+wald.test.g <- pgsc.wald.test( pgsc.dta, dep.var = 'y', indep.var = c('D1','D2'),
+                                 sol.rest = sol.2.step.rest, n.boot = 10000 )
+```
+
+The `wald.test.g` object has associated summary and plot methods
+
+```{r}
+summary(wald.test.g)
+plot(wald.test.g)
+```
+
+With a p-value of over 0.98, the hypothesis cannot be rejected at any reasonable significance level.  This is relief, as it is true; when evaluated at the true value of $b=(1,2)$, $g(b)=0$.  
+
+We can also check that a false hypothesis is rejected by re-solving the under a false restriction:
+
+```{r include=FALSE}
+A <- 2
+sol.2.step.rest.2 <- pgsc(pgsc.dta, dep.var = 'y', indep.var = c('D1','D2'), b.init = b.init,
+                      method='twostep.indiv', g.i=g, g.i.grad=g.grad )
+wald.test.g.2 <- pgsc.wald.test( pgsc.dta, dep.var = 'y', indep.var = c('D1','D2'),
+                                 sol.rest = sol.2.step.rest.2, n.boot = 10000 )
+```
+
+The resulting p-value is close to zero, so we can comfortably reject the hypothesis.
+
+```{r}
+summary(wald.test.g.2)
+plot(wald.test.g.2)
+```
+
+<!-- # Todos -->
+
+<!-- Documentation for wrapper and test function.  A plot function for a GSC object, esp weights. -->
+
+
+
+# References
