@@ -1,0 +1,22 @@
+#' Simulated multi-VAR data.
+#'
+#' This dataset contains multivariate time series data for k = 9 individuals with 
+#' $d = 10$ variables collected at $t = 100$ equidistant time points. The data was 
+#' generated such that each individual's VAR(1) transition matrix has 20 percent 
+#' nonzero entries. This means, for example, each individual has 20 nonzero directed 
+#' relationships in their data generating model. The position of non-zero elements 
+#' in each individual's transition matrix was selected randomly given the following 
+#' constraints: 2/3 of  each individual's paths are shared by all individuals, 
+#' and 1/3 are unique to each individual. For each individual, coefficient values 
+#' between U(0,1, 0.9) were randomly drawn until stability conditions for the 
+#' VAR model were satisfied. 
+#'
+#' @format A list containing
+#' \describe{
+#'   \item{mat_com}{a common effects transition matrix}
+#'   \item{mat_ind_unique}{a list of unique (individual-specific) effect matrices}
+#'   \item{mat_ind_final}{a list of total (common + individual-specific) effect matrices}
+#'   \item{data}{a list of multivariate time series for all subjects}  
+#'   ...
+#' }
+"dat_multivar_sim"
