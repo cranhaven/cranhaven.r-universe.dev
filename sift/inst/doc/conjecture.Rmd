@@ -1,0 +1,235 @@
+---
+title: "Introducing conjecture"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{conjecture}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  message = FALSE,
+  warning = FALSE
+)
+```
+
+`conjecture()` is the black swan of the `sift` family. If you encounter the type of eccentric datasets  conjecture is designed to tackle, you'll be glad you read this vignette. 
+
+At its heart, conjecture is a reshaping operation similar to `tidyr::pivot_wider()`. However, the intended application for conjecture is more idiosyncratic than that of pivot_wider. This vignette illustrates the basic aspects of such an application.
+
+## Example 1: Radio Transmissions
+
+The `comms` dataset contains a time-series of radio transmissions.
+
+```{r}
+library(sift)
+library(dplyr)
+library(tidyr)
+
+comms
+```
+
+A few notes:
+
+* We are **not interested** in the interaction between the stations. Each station (A, B, C, D) can be regarded as 4 independent time-series. 
+* The subject of each transmission is denoted by `msg_code`.
+* Each `msg_code` can be repeated multiple times (see below).
+* There is **no guarantee** that a *sent* transmission will be met with a  *response* sharing the same `msg_code`.
+
+```{r}
+comms %>% 
+  filter(station == "C",
+         msg_code == 3060)
+```
+
+Suppose we wish to restructure `comms` so that the "natural" pairing of `send` + `receive` transmissions is more apparent. Since there is no explicit information linking these rows together, we "conjecture" that, for a given `send` transmission (anterior), the corresponding `receive` transmission (posterior) is the closest observation measured by `timestamp`.
+
+`conjecture()` always takes **4** arguments.
+
+1. Dataset to reshape (`comms`).
+2. Column, as a symbol, used to measure distance between observations (`timestamp`).
+3. Column, as a symbol, that demarks observations as anterior or posterior (`type`).
+4. Scalar quantity signifying anterior observation (`"send"`).
+
+```{r}
+comms_conjecture <- conjecture(comms,     # dataset to reshape.
+                               timestamp, # <dttm> friendly. must be coercible to numeric.
+                               type,      # any type of atomic vector is fine.
+                               "send")    # we could flip our logic and supply "receive" instead.
+
+comms_conjecture
+```
+
+We can partially achieve the same result with pivot_wider.
+
+```{r}
+comms_pivot <- comms %>% 
+  pivot_wider(names_from = type,
+              values_from = timestamp,
+              values_fn = first) %>% 
+  filter(receive > send)
+
+comms_pivot
+```
+
+Notice that pivot_wider produces `r nrow(comms_pivot)` rows compared to `r nrow(comms_conjecture)` in `comms_conjecture`. What pairs are found in `comms_conjecture` that aren't captured in `comms_pivot`?
+
+**First**, there a quite a few transmissions that do not elicit a response. conjecture doesn't sweep these under the rug.
+
+```{r}
+comms_pivot %>% 
+  filter(is.na(receive))
+
+comms_conjecture %>% 
+  filter(is.na(receive))
+```
+
+**Second**, our call to pivot_wider only returned the "first viable pairs" within each combination of `station` + `msg_code`. On the other hand, `comms_conjecture` contains 3 (4 including missing value) viable pairs for the below combination.
+
+```{r}
+comms_pivot %>% 
+  filter(station == "A",
+         msg_code == 221)
+
+comms_conjecture %>% 
+  filter(station == "A",
+         msg_code == 221)
+```
+
+The inclusion of multiple pairs for a given `station` + `msg_code` combination is the touchstone of conjecture.
+
+### Underlying Logic
+
+We'll use a small fragment from `comms` to illustrate how conjecture works.
+
+```{r}
+comms_small <- comms %>% 
+  filter(station == "A",
+         msg_code == 221)
+
+comms_small
+```
+
+We can readily identify the send/receive pairs from the above observations. But how does conjecture accomplish this programmatically?
+
+1. timestamps (specified by `sort_by = timestamps`) are separated into two vectors (specified by `names_from = type`).
+
+```{r}
+send <- comms_small %>% filter(type == "send") %>% pull(timestamp) %>% sort()
+send
+
+receive <- comms_small %>% filter(type == "receive") %>% pull(timestamp) %>% sort()
+receive
+```
+2. Iterate through each element in `send`, with a nested loop for each element in `receive`. We can invert this hierarchy by setting `names_first = "receive"` instead.
+
+```{r}
+output <- integer(length = length(send))
+
+for (i in seq_along(send)) {
+  output[i] <- NA_integer_
+  
+  for (j in seq_along(receive)) {
+    if (is.na(receive[j])) {
+      next
+    } else if (receive[j] > send[i]) {
+      output[i] <- j
+      break
+    } else {
+      next
+    }
+  }
+}
+
+tibble(send, receive = receive[output])
+```
+Conceptually, the above process flow is an accurate depiction of conjecture - though the underlying structure is more robust:
+
+* conjecture reconciles the presence of additional columns, similar to conventional reshaping operations.
+* conjecture relies on C++ to execute the looping structure.
+
+### Duplicate Posterior Values
+
+There is an important consequence associated with the above logic. We'll demonstrate by removing all but **one** of the `receive` elements from `comms_small`.
+
+```{r}
+# from comms small
+receive <- receive[3]
+
+# rerun the algorithm
+for (i in seq_along(send)) {
+  output[i] <- NA_integer_
+  
+  for (j in seq_along(receive)) {
+    if (is.na(receive[j])) {
+      next
+    } else if (receive[j] > send[i]) {
+      output[i] <- j
+      break
+    } else {
+      next
+    }
+  }
+}
+
+tibble(send, receive = receive[output])
+```
+Why does `1999-02-21 12:29:59` appear 3 times? Recall:
+
+"for a given `send` transmission (anterior), the corresponding `receive` transmission (posterior) is the closest observation measured by `timestamp`."
+
+The above result is in accordance with this statement. However, at some point in the future, I may add the ability to drop repeat occurrences of posterior timestamps, which would produce the following result instead.
+
+```{r echo = FALSE}
+tibble(send, receive = receive[c(1, NA, NA, NA)])
+```
+
+## Example 2: Toll Lane Records
+
+The `express` dataset contains toll records for **northbound** and **southbound** vehicles over the course of one business day.
+
+```{r}
+library(readr)
+library(mopac)
+
+mopac::express
+```
+
+Suppose we are interested in vehicles using the express lane both `North` and `South` (i.e. commuting to work). It's up to us to designate an anterior `direction`. If we are only interested in vehicles commuting downtown, we set `names_first = "South"`.
+
+```{r}
+conjecture(express, time, direction, "South") %>% 
+  drop_na() # We can't assume incomplete pairs are commuting to downtown
+```
+
+```{r fig.keep='none'}
+library(ggplot2)
+
+conjecture(express, time, direction, "South") %>% 
+  drop_na() %>% 
+  mutate(trip_length = difftime(North, South, units = "hours")) %>% 
+  ggplot(aes(trip_length)) +
+  geom_histogram()
+```
+
+```{r, echo = FALSE, fig.width=4}
+library(ggplot2)
+
+conjecture(express, time, direction, "South") %>% 
+  drop_na() %>% 
+  mutate(trip_length = difftime(North, South, units = "hours")) %>% 
+  ggplot(aes(trip_length)) +
+  geom_histogram() +
+  scale_y_continuous(expand = c(0, 0)) +
+  theme_minimal() +
+  theme(panel.grid.minor = element_blank(),
+        plot.title.position = "plot") +
+  labs(title = "Trip length distribution",
+       subtitle = "Vehicles commuting downtown",
+       x = "Round trip length [hours]",
+       y = NULL)
+```
+
