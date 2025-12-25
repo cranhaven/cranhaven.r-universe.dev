@@ -1,0 +1,51 @@
+#' @title Print Function for objects of Class SMME
+#'
+#' @description This function will print some information about the SMME object.
+#'
+#' @param x a SMME object
+#' @param ... ignored
+#'
+#'
+#' @examples
+#'
+#' ##size of example
+#' n1 <- 65; n2 <- 26; n3 <- 13; p1 <- 13; p2 <- 5; p3 <- 4
+#'
+#' ##marginal design matrices (Kronecker components)
+#' X1 <- matrix(rnorm(n1 * p1, 0, 0.5), n1, p1)
+#' X2 <- matrix(rnorm(n2 * p2, 0, 0.5), n2, p2)
+#' X3 <- matrix(rnorm(n3 * p3, 0, 0.5), n3, p3)
+#' X <- list(X1, X2, X3)
+#'
+#' component <- rbinom(p1 * p2 * p3, 1, 0.1)
+#' Beta1 <- array(rnorm(p1 * p2 * p3, 0, .1) + component, c(p1 , p2, p3))
+#' Beta2 <- array(rnorm(p1 * p2 * p3, 0, .1) + component, c(p1 , p2, p3))
+#' mu1 <- RH(X3, RH(X2, RH(X1, Beta1)))
+#' mu2 <- RH(X3, RH(X2, RH(X1, Beta2)))
+#' Y1 <- array(rnorm(n1 * n2 * n3, mu1), dim = c(n1, n2, n3))
+#' Y2 <- array(rnorm(n1 * n2 * n3, mu2), dim = c(n1, n2, n3))
+#'
+#' Y <- array(NA, c(dim(Y1), 2))
+#' Y[,,, 1] <- Y1; Y[,,, 2] <- Y2;
+#'
+#' fit <- softmaximin(X, Y, zeta = 10, penalty = "lasso", alg = "npg")
+#' fit
+# @return The matrix above is silently returned
+#' @author Adam Lund
+#' @method print SMME
+#' @export
+
+print.SMME <- function(x, ...) {
+
+if(length(x$zeta) > 1){
+out <- vector(mode = "list", length = length(x$zeta))
+names(out) <- x$zeta
+for(i in 1:length(x$zeta)){
+out[[i]] <- data.frame(Df = x$df[[i]], lambda = x$lambda[[i]])
+}
+}else{
+out <- data.frame(Df = x$df, lambda = x$lambda)
+}
+
+print(out)
+}
