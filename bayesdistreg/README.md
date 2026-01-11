@@ -1,0 +1,2 @@
+# bayesdistreg
+An R package for Bayesian Distribution Regression. This package was first used for analyses in the paper "Bayesian Distribution Regression" by Weige Huang  and Emmanuel Selorm Tsyawo. The paper is the recommended citation and reference for the package bayesdistreg. The package implements routines in the paper including the three Bayesian Distribution Regression estimators namely, the Non-asymptotic, Semi-Asymptotic, and Asymptotic BDR. Link to the package webpage https://estsyawo.github.io/bayesdistreg/
