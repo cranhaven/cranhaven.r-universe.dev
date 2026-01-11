@@ -1,0 +1,138 @@
+---
+title: "Weibull edges"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Weibull-edges}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+In this vignette we show how to set up a model to perform inference for the generalised Stochastic Block Model (GSBM) using the reversible jump split-merge sampling method.
+
+
+To start, load the library
+```{r setup}
+library(SBMSplitMerge)
+```
+
+# Data set and model considerations
+In this toy example we consider a set of 50 interconnected electrical components.
+Each component is connected to the other and the connections are all turned on at once.
+We record the failure time of each connections.
+
+This can be modelled as a network, where the edge-weights are the failure times.
+A standard likelihood model for failure times is the _Weibull distribution_ [(on Wikipedia)](https://en.wikipedia.org/wiki/Weibull_distribution).
+The probability density function is:
+\[
+\frac{k}{\lambda}\left(\frac{x}{\lambda}\right)^{k-1} e^{-(x/\lambda)^{k}}
+\]
+
+We posit that the components exhibit some group behaviour via the failure times, such that connections between groups tend to fail more quickly than connections within a group; however we don't know the number of groups.
+The GSBM is a good model to consider for such data since it can provide a posterior distribution for the number of groups *and* the Weibull with both parameters unknown has no conjugate prior.
+
+There are three parts to the GSBM:
+- An edge model
+- A block model
+- A parameter model (for the parameters of the edge model)
+
+# Edge model
+The ``edgemod`` object in SBMSplitMerge encapsulates the likelihood of the edge weights.
+A basic ``edgemod`` is a thin wrapper to a density function. The package insists on the density function taking the form ``f(x, p)`` where ``x`` is an edge-weight and ``p`` is a parameter 3-array.
+An optional random method can be added. This has the signature ``f(p)`` where ``p`` is again a vector of parameters.
+For the Weibull example, we can rely on \code{R}'s built in Weibull functions
+```{r}
+edge_model <- edgemod(
+	function(e, p) dweibull(e, p[1,,], p[2,,], log=TRUE)
+	,
+	function(p) rweibull(1, p[1], p[2])
+)
+```
+
+# Block model
+In the GSBM, the prior specification for the number of blocks is explicit. To facilitate other models (such as a Chinese Restaurant Process), the \code{blockmod} object in the package
+encapsulates the join distribution for the number of blocks and assignment of nodes to blocks; we refer to these as the 'block structure'.
+To provide a \code{blockmod} the following are needed: some input parameters gamma, log density for the block structure, a random method for the block structure, the conditional distribution of a single node assignment given the others and a boolean indicating if the number of blocks (kappa) is fixed.
+The package provides three pre-specified \code{blockmod}s:
+- ``multinom`` - fixed number of blocks with a multinomial assignment of nodes to blocks
+- ``crp`` - the Chinese restaurant process
+- ``dma`` - Dirichlet-Multinomial allocation
+
+We will use ``dma``, the first parameter (gamma) is the concentration parameter for a symmetric Dirichlet distribution and the second (delta) is the rate parameter for a Poisson.
+The 'number of blocks'-1 is modelled as a Poisson(delta) and the block assignments as Dirichlet-Multinomial(gamma, K). [cf. the paper]
+```{r}
+block_model <- dma(1, 10)
+```
+
+# Parameter model
+Finally, the prior model on the parameters of the Weibull distribution is specified.
+This is the most involved component since it requires some functions to map the inputs to the real line.
+The components of a ``parammod`` are:
+- \code{logd} - a ``function(p)`` where ``p`` is a ``params`` object gets the probability density of a ``params`` object,
+- \code{r} - a ``function(kappa)`` simulates a ``params`` object for ``kappa`` blocks,
+- \code{t} - a function mapping the support of the parameter to the real line,
+- \code{invt} - a function mapping the real line to the support of the parameter,
+- \code{loggradt} - the jacobian of t.
+
+For the Weibull example, $k$ and $\lambda$ must be positive. A reasonable prior for each is is a Gamma distribution, which can be specified like so:
+```{r}
+param_model <- parammod(
+		function(params){
+				dgamma(params$theta0[1], 1, 1, log=TRUE) +
+						dgamma(params$theta0[2], 1, 1, log=TRUE) +
+						sum(dgamma(params$thetak[,1], 1, 1, log=TRUE)) +
+						sum(dgamma(params$thetak[,2], 1, 1, log=TRUE))
+		},
+		function(kappa){
+				params(
+						c(rgamma(1, 1, 1), rgamma(1, 1, 1))
+				,
+						cbind(rgamma(kappa, 1, 1), rgamma(kappa, 1, 1))
+				)
+		},
+		function(x){ cbind(log(x[1]), log(x[2]))},
+		function(x){ cbind(exp(x[1]), exp(x[2]))},
+		function(x){ -log(x[1])-log(x[2])}
+		)
+```
+this prior says each $k$ and $\lambda$ are Gamma(1,1) distributed.
+
+We wrap all the model components up into a ``sbmmod`` object:
+```{r}
+model <- sbmmod(block_model, param_model, edge_model)
+```
+
+# Some data
+The data should appear in a square matrix and wrapped in an ``edges`` object.
+For the purpose of this example we simulate the data with some true values:
+```{r}
+set.seed(1)
+true_blocks   <- blocks(rep(c(1, 2, 3), c(10, 20, 20)))
+true_params   <- params(c(1, 0.5), cbind(1, c(3,4,5)))
+true_sbm      <- sbm(true_blocks, true_params)
+weibull_edges <- redges(true_sbm, model$edge)
+```
+
+The `blocks` object describes the block assignments of nodes to blocks:
+```{r}
+print(true_blocks)
+plot(true_blocks)
+plot(weibull_edges)
+```
+
+We are now in a position to sample from the model:
+```{r}
+weibull_posterior <- sampler(weibull_edges, model, 300, "rj", sigma=0.1)
+```
+
+and see some diagnostic plots
+```{r}
+weibull_plots <- eval_plots(weibull_posterior)
+weibull_plots
+```
