@@ -1,0 +1,27 @@
+#'Calculate Real or Expected Average Heterozygosity at each locus
+#'@details This function calculate average heterozygosity at each locus.Output a vector of number of loci.
+#'@usage RxpHetero(h,p,HWE)
+#'@param h a dataset of heterozygosity, made up with 0 and 1. Output of function "Heterozygous". Each row denotes each individual. Each row denotes each locus.
+#'@param p a dataset of allele frequency, Output of function "AlleleFreq". Each row denotes each allele, and each column denotes each locus.
+#'@param HWE a logic variable. When TRUE, this function will calculate the expected heterozygosity under Hardy-Weinberg Equilibrium: H= 1-sum(q_i^2); q_i is the allele frequency; If FALSE, this function calculate the average heterozygosity from real heterozygosity table.
+#'@references Chakraborty, R., & Jin, L. (1992, ISSN:1432-1203) <doi:10.1007/BF00197257>
+#'@return a vector of average heterozygosity on each loci.
+#'@references
+#'@export
+#'@examples
+#'x <- data.frame(STR1=c(12,13,13,14,15,13,14,12,14,15),
+#'                STR1_1=c(12,14,13,15,13,14,13,12,14,15),
+#'                SNP1=c("A","T","A","A","T","A","A","T","T","A"),
+#'                SNP1_1=c("A","T","T","T","A","T","A","A","T","T"))
+#'require(mixIndependR)
+#'h <- Heterozygous(x)
+#'p <- AlleleFreq(x)
+#'RxpHetero(h,p,HWE=TRUE)
+
+RxpHetero <- function(h,p,HWE){
+  if (HWE){
+    return(1-colSums(p*p))
+  }else{
+    return(colSums(h)/nrow(h))
+  }
+}
