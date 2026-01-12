@@ -1,0 +1,191 @@
+---
+title: "`nlpred`: Small-sample optimized estimators of nonlinear risks"
+author: "David Benkeser"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  prettydoc::html_pretty:
+    theme: leonids
+    highlight: vignette
+bibliography: refs.bib
+vignette: >
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteIndexEntry{nlpred: Small-sample optimized estimators of nonlinear risks}
+  %\VignetteEncoding{UTF-8}
+---
+
+# Introduction
+
+When predicting an outcome is the scientific goal, one must decide on a metric by which to evaluate the quality of predictions. Often, the performance of a prediction algorithm must be estimated using the same data that are used to train the algorithm. To correct for overly optimistic assessments of performance, cross-validation is often used. However, standard $K$-fold cross-validated risk estimates may perform poorly in small samples when one considers *nonlinear* risks. This includes several popular risk criteria including the area under the ROC operating characteristics curve (AUC). The `nlpred` package implements several estimators that are tailored for improved cross-validated estimation of nonlinear risks. This vignette provides a brief overview of the motivation for these estimators, and demonstrations of how they are implemented in the `nlpred` package. 
+
+
+# Motivation
+
+Prediction is important in many areas of research. Modern technology has led to collection of vast amounts of data; for example in biomedical studies, we now routinely collect genetic sequences, gene expressions, proteomics, and metabolomics. Relative to the amount of information measured on each unit, the total number of units available may be quite modest. Many practical applications thus require methodology that enables researchers to simultaneously develop and evaluate performance of prediction algorithms in small samples. It is well known that estimating performance of an algorithm using the same data that were used to train the algorithm often leads to an overly optimistic estimate of performance. To correct for this, it is common to use $K$-fold cross-validation (CV). $K$-fold CV generalizes partitions the data into several distinct groups. The prediction algorithm is developed using all but one group, and the prediction metric is estimated in the remaining group. This is repeated until each partition has been used to estimate the risk once. The $K$-fold CV risk estimate is the average of these partition-specific estimates. 
+
+Theoretical frameworks have been developed for estimation of $K$-fold CV risks that apply to  arbitrary learning algorithms [@hubbard2016statistical]. Moreover, it is often possible to construct closed-form, computationally efficient confidence intervals and hypothesis tests based on $K$-fold CV estimates, e.g., [@ledell2015computationally]. However, these estimators can suffer from poor behavior for certain risks. In particular, risks that are *non-linear* in the data generating distribution may suffer from poor performance. Whereas *linear* metrics can be estimated using estimators that themselves are linear (i.e., behave like means), non-linear metrics typically require *asymptotically linear* estimators. Such estimators behave as a mean *plus a remainder term*. While the remainder is generally negligible in large samples, it may contribute substantially to the behavior of the estimator in small samples.
+
+In our recent work (references to be added when available), we have developed improved estimators of nonlinear risk functions. Our approach involves viewing the risk criteria as a statistical function of certain key parameters the data generating distribution. Standard CV estimators use the validation data to estimate these parameters, for example, using nonparametric maximum likelihood. However, as discussed above, this is problematic when validation samples are small. Thus, our proposal uses the training sample twice: once to train the prediction algorithm, and then again to estimate the relevant parameters of the data generating distribution that are needed to evaluate the risk criteria of interest. Because of the double-usage of the data, these estimates may exhibit bias. This motivates some form of bias correction. `nlpred` implements three asymptotically equivalent approaches: CV targeted minimum loss estimation (CVTMLE), one-step estimation, and estimating equations. We refer readers to our publication for further details on how the estimators are constructed. 
+
+# Area under the receiver operating characteristics (ROC) curve
+
+The area under the ROC curve (hence, AUC) is a popular risk criteria for evaluating prediction algorithms. Suppose we have a prediction algorithm $\psi$ that maps a feature vector $X$ into a predicted probability of a binary outcome $Y$. The AUC of $\psi$ can be defined as follows. Consider drawing $(X_1, Y_1)$ at random from the population of units with $Y = 1$ and $(X_2, Y_2)$ independently from the population of units with $Y = 0$. The AUC can be interpreted as $P(\psi(X_1) > \psi(X_2) | Y_1 = 1, Y_2 = 0)$. That is, the probability that the predicted risk of $X_1$ is higher than that of $X_2$. 
+
+Estimates of CV AUC can be implemented in `nlpred` as follows. 
+
+```{r}
+# load package
+library(nlpred)
+
+# turn off messages from np package
+options(np.messages=FALSE)
+
+# simulate data
+n <- 200
+p <- 10
+X <- data.frame(matrix(rnorm(n*p), nrow = n, ncol = p))
+Y <- rbinom(n, 1, plogis(X[,1] + X[,10]))
+
+# get cv auc estimates for logistic regression
+logistic_cv_auc_ests <- cv_auc(Y = Y, X = X, K = 5, 
+                               learner = "glm_wrapper",
+                               nested_cv = FALSE)
+logistic_cv_auc_ests
+```
+
+The main options to the `cv_auc` function are `Y`, the outcome, `X`, the features, and `K`, the number of cross-validation folds. The `learner` option specifies the learning algorithm of interest. See the __Writing wrappers__ section below for more details. For now, it suffices to say that `"glm_wrapper"` corresponds to a main effects logistic regression. The `nested_cv` option is an important option in the estimation procedure. It specifies whether to use nested CV to estimate the nuisance parameters in each training sample. Obviously, requiring nested cross-validation adds considerable computational expense, so it is natural to inquire as to when this is necessary. In general, we recommend nested CV for more aggressive learning algorithms. Because logistic regression is a fairly stable algorithm, it may not be necessary in this case. 
+
+The printed output shows four estimates of CV AUC based on the three different bias corrections (`cvtmle`, `onestep`, `esteq`) as well as the standard CV AUC estimate (`empirical`) [@ledell2015computationally]. Also shown is the influence function-based standard error estimate (`se`) and the limits of a, by default, 95\% confidence interval. The level of the confidence interval is controlled by the `ci_level` of the `print.cv_auc` method.
+
+```{r}
+# print a 90% CI
+print(logistic_cv_auc_ests, ci_level = 0.9)
+```
+
+We now consider a more aggressive algorithm: random forests (as implemented in the `ranger` package). 
+
+```{r}
+# load the ranger package
+library(ranger)
+
+# set a seed (reason to be made clear)
+set.seed(123)
+
+# get cv auc estimates for random forest
+# using nested cross-validation for nuisance parameter estimation
+rf_cv_auc_ests <- cv_auc(Y = Y, X = X, K = 5, 
+              			 learner = "ranger_wrapper", 
+              			 nested_cv = TRUE)
+rf_cv_auc_ests
+```
+
+By default, `cv_auc` will use `K-1` folds for the nested cross-validation. This choice is a sensible default since it allows for considerably less learner training relative to, e.g., two layers of $K$-fold CV, because certain learners can be re-used across different partitions of the data. However, if one wishes to control this, there is the `nested_K` option. 
+
+# Available wrappers
+
+The table below shows wrappers for learners that are available in `nlpred`. 
+
+| Wrapper            | Description         | Reference | 
+| -----------------  | ------------------- | --------- |
+| `glm_wrapper`      | logistic regression |           |
+| `stepglm_wrapper`  | stepwise logistic regression |  |
+| `xgboost_wrapper`  | eXtreme gradient boosting | @chen2016xgboost | 
+| `ranger_wrapper`   | random forests      | @ranger_pkg | 
+| `randomforest_wrapper` | random forests | @randomForest_pkg | 
+| `superlearner_wrapper` | super learner | @superlearner_pkg | 
+| `glmnet_wrapper`   | elastic net regression | @glmnet_pkg | 
+
+# Writing wrappers 
+
+It is not difficult to write your own function that is compatible with `cv_auc` and other functions in the `nlpred` package. Let's examine the `glm_wrapper` function. 
+
+```{r}
+glm_wrapper
+```
+
+We see that the function expect input in the form of two lists: `train` and `test`. In these lists, we expect to find entries `X` and `Y` corresponding to the features and outcomes, respectively, in the a giving training sample and validation/testing sample. The salient points of the workflow of this function are: fit a main terms logistic regression and store it in the `glm_fit` object; obtain predictions on both the training data and testing data; structure the output to have a particular format. In particular, the output should be a list with named entries `test_pred`, predictions in the test sample, `train_pred`, predictions in the training sample, `model`, the fitted model (optional; only needed if you wish to examine it in the `$prediction_list` entry of the output of `cv_auc`), `train_y`, the training sample outcomes (copied from `train$Y`), and `test_y`, the testing sample outcomes (copied from `test$Y`). 
+
+
+# Sensitivity constrained rate of negative prediction (SCRNP)
+
+The sensitivity constrained rate of negative prediction (SCRNP) can be described as follows. Suppose again that we have a prediction function $\psi$ that maps features $X$ into a predicted probability of a binary outcome $Y$. Suppose we choose a cutoff $c_0$, such that $P(\psi(X) > c_0 | Y = 1) \ge \rho$ for a user-defined $\rho$. That is, we enforce that the sensitivity of a classifier based on $\psi$ is at least $\rho$. The SCRNP is then $P(\psi(X) \le c_0)$; that is, the proportion of all data units that would be classified as a "control" (i.e., $Y = 0$). 
+
+To motivate SCRNP, consider developing a prediction algorithm for breast cancer incidence in women. We would like to identify a large proportion of women who will eventually develop breast cancer; that is, we would like to enforce that our procedure for classifying women at  high-risk has high sensitivity. However, women with high predicted risk of cancer may be recommended to undergo more invasive screening procedures. So beyond our sensitivity constraint, we would like to maximize the proportion of women who are not required to undergo additional screening. The SCRNP describes this exactly this proportion. @zheng2018constrained discuss SCRNP in the context of HIV prevention. 
+
+Estimating SCRNP using traditional $K$-fold CV approaches is particularly challenging because we need to estimate a quantile of the distribution of $\psi(X)$ amongst those with $Y = 1$. If there are few observations with $Y = 1$ in the validation fold, then this estimation will be highly unstable and will cause downstream instability in the estimate of CV SCRNP. This makes our approach particularly appealing for this problem.
+
+The syntax to estimate CV SCRNP is through the `cv_scrnp` function as shown below. 
+
+```{r}
+# get cv scrnp estimates for logistic regression
+logistic_cv_scrnp_ests <- cv_scrnp(Y = Y, X = X, K = 5, 
+                               learner = "glm_wrapper",
+                               nested_cv = FALSE)
+logistic_cv_scrnp_ests
+
+# get cv scrnp estimates for random forest
+# using nested cross-validation for nuisance parameter estimation
+rf_cv_scrnp_ests <- cv_scrnp(Y = Y, X = X, K = 5, 
+              			 learner = "ranger_wrapper", 
+              			 nested_cv = TRUE)
+rf_cv_scrnp_ests
+```
+
+# Other methods implemented in `nlpred`
+
+To compare the novel methods in `nlpred` to existing approaches, we have included several alternative approaches to estimating performance of these quantities. 
+
+### Bootstrap corrections
+
+The functions `boot_auc` and `boot_scrnp` can be used to estimate bootstrap based performance of prediction algorithms. There are several available approaches. In particular, each function implements a standard bootstrap correction [@harrell1996multivariable], as well as an 0.632 correction described in Chapter 7 of @friedman2001elements. 
+
+```{r}
+# get bootstrap estimated auc of logistic regression
+boot_auc_est <- boot_auc(Y = Y, X = X, learner = "glm_wrapper", 
+                         correct632 = FALSE)
+boot_auc_est
+
+# with 0.632 correction 
+boot632_auc_est <- boot_auc(Y = Y, X = X, learner = "glm_wrapper", 
+                         correct632 = TRUE)
+boot632_auc_est
+
+# get bootstrap estimated scrnp of logistic regression
+boot_scrnp_est <- boot_scrnp(Y = Y, X = X, learner = "glm_wrapper", 
+                             correct632 = FALSE)
+boot_scrnp_est
+
+# with 0.632 correction 
+boot632_scrnp_est <- boot_scrnp(Y = Y, X = X, learner = "glm_wrapper", 
+                         correct632 = TRUE)
+boot632_scrnp_est
+```
+
+### Leave-pairs-out CV AUC estimator
+
+Another proposal for estimating AUC is using leave-pairs-out CV [@airola2011experimental]. In this approach, a random observation with $Y = 0$ and $Y = 1$ are left out; the algorithm is trained on the remaining data and predictions are made on the two held out observations. The estimate is the proportion of these pairs for which the $Y = 1$ observation had higher predicted risk than the $Y = 0$ observation. Because it can be quite computationally expensive to retrain algorithms for every, we include an option `max_pairs` to specify the maximum number of pairs to leave out. If left equal to `NULL`, then every possible case/control pair is left out in turn. 
+
+```{r}
+# leave out at most 250 pairs
+lpo_cv_auc_est <- lpo_auc(Y = Y, X = X, learner = "glm_wrapper",
+                          max_pairs = 250)
+lpo_cv_auc_est
+```
+
+# Parallelization in `nlpred`
+
+Unfortunately parallelization is not yet available in `nlpred`, but will be added as a feature soon. 
+
+# Some rules of thumb based on simulation studies
+
+From extensive simulation studies, here are a few relevant observations. 
+
+* Any algorithm that is more complex than a standard logistic regression model would likely benefit from utilizing the nested cross-validation routine. Even for logistic regression, nested cross-validation does not tend to hurt performance too much. 
+* Setting `K = 10` or `K = 20` tended to yield the best performance across a variety of settings. 
+* Setting `inner_K = 5` tended to yield the best performance across a variety of settings. 
+* The CVTMLE of CV SCRNP vastly outperformed the others. 
+* The estimating equations estimator of CV AUC tended to outperform the others, though the difference was not drastic. 
+* Confidence intervals tended to be anti-conservative in small samples. Nominal coverage can be expected at around 500 observations, though this is obviously extremely context dependent. 
+* Bootstrap methods should only be used for simple learning algorithms such as logistic regression. 
+* The 0.632-correction improves performance of bootstrap estimators, but is generally less efficient than our newer approaches. 
+
+# References
