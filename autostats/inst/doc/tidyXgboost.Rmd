@@ -1,0 +1,193 @@
+---
+title: "tidy xgboost"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{tidy xgboost}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+
+options(rlang_trace_top_env = rlang::current_env())
+```
+
+```{r setup, message=FALSE, warning=FALSE, results='hide'}
+library(autostats)
+library(workflows)
+library(dplyr)
+library(tune)
+library(rsample)
+library(hardhat)
+library(broom.mixed)
+library(Ckmeans.1d.dp)
+library(igraph)
+```
+
+`autostats` provides convenient wrappers for modeling, visualizing, and predicting using a tidy workflow. The emphasis is on rapid iteration and quick results using an intuitive interface based off the `tibble` and `tidy_formula`. 
+
+# Prepare data 
+
+Set up the iris data set for modeling. Create dummies and any new columns before making the formula. This way the same formula can be use throughout the modeling and prediction process. 
+
+
+```{r}
+set.seed(34)
+
+ iris %>%
+  dplyr::as_tibble() %>% 
+  framecleaner::create_dummies(remove_first_dummy  = TRUE) -> iris1
+
+ iris1 %>%
+ tidy_formula(target = Petal.Length) -> petal_form
+ 
+ petal_form
+
+```
+Use the rsample package to split into train and validation sets.
+
+```{r}
+iris1 %>%
+  rsample::initial_split() -> iris_split
+
+iris_split %>%
+  rsample::analysis() -> iris_train
+
+iris_split %>%
+  rsample::assessment() -> iris_val
+
+iris_split
+```
+
+
+# Fit boosting models and visualize
+
+Fit models to the training set using the formula to predict `Petal.Length`. Variable importance using gain for each `xgboost` model can be visualized.
+
+
+## xgboost with grid search hyperparameter optimization
+
+`auto_tune_xgboost` returns a workflow object with tuned parameters and requires some postprocessing to get a trained `xgb.Booster` object like `tidy_xgboost`.
+
+`xgboost` also can be tuned using a grid that is created internally using `dials::grid_max_entropy`. The `n_iter` parameter is passed to `grid_size`. Parallelization is highly effective in this method, so the default argument `parallel = TRUE` is recommended. 
+
+```{r eval=T}
+iris_train %>%
+  auto_tune_xgboost(formula = petal_form, n_iter = 5L,trees = 20L, loss_reduction = 2, mtry = 3, tune_method = "grid", parallel = FALSE, counts = TRUE) -> xgb_tuned_grid
+
+xgb_tuned_grid %>%
+  parsnip::fit(iris_train) %>% 
+  parsnip::extract_fit_engine() -> xgb_tuned_fit_grid
+
+
+xgb_tuned_fit_grid %>% 
+  visualize_model()
+```
+
+
+## xgboost with default parameters
+
+```{r}
+iris_train %>%
+  tidy_xgboost(formula = petal_form) -> xgb_base
+
+```
+
+
+## xgboost with hand-picked parameters
+
+```{r}
+iris_train %>% 
+  tidy_xgboost(petal_form, 
+               trees = 250L, 
+               tree_depth = 3L, 
+               sample_size = .5,
+               mtry = .5,
+               min_n = 2) -> xgb_opt
+
+
+```
+
+
+# predict on validation set
+
+## make predictions 
+
+Predictions are iteratively added to the validation data frame. The name of the column is
+automatically created using the models name and the prediction target. 
+
+
+```{r}
+
+xgb_base %>%
+  tidy_predict(newdata = iris_val, form = petal_form) -> iris_val2
+
+xgb_opt %>% 
+  tidy_predict(newdata = iris_val2, petal_form) -> iris_val3
+
+
+iris_val3 %>% 
+  names()
+```
+
+## predictions with eval_preds
+
+Instead of evaluationg these prediction 1 by 1, This step is automated with `eval_preds`. This function is specifically designed to evaluate predicted columns with names given from `tidy_predict`.
+
+```{r}
+iris_val3 %>% 
+  eval_preds() 
+```
+
+# get shapley values
+
+`tidy_shap` has similar syntax to `tidy_predict` and can be used to get shapley values from `xgboost` models on a validation set. 
+
+
+```{r}
+xgb_base %>% 
+  tidy_shap(newdata = iris_val, form = petal_form) -> shap_list
+
+```
+
+```{r}
+shap_list$shap_tbl
+```
+
+```{r}
+shap_list$shap_summary
+```
+
+```{r}
+shap_list$swarmplot
+```
+
+```{r eval=FALSE, message=FALSE, warning=FALSE}
+shap_list$scatterplots
+```
+
+## understand xgboost with other functions from the original package
+
+Overfittingin the base config may be related to growing deep trees. 
+
+```{r}
+ xgb_base %>% 
+  xgboost::xgb.plot.deepness()
+```
+
+
+```{r}
+ xgb_base %>% 
+  xgboost::xgb.plot.deepness()
+```
+Plot the first tree in the model. The small \emph{cover} in terminal leaves suggests overfitting in the base model. 
+```{r eval=FALSE, message=FALSE, warning=FALSE}
+xgb_base %>% 
+  xgboost::xgb.plot.tree(model = ., trees = 1)
+```
+
+
