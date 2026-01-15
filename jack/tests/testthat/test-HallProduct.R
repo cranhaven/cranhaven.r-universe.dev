@@ -1,0 +1,26 @@
+test_that("Hall inner product", {
+  J1 <- JackSymPol(3, c(3), which = "P")
+  J2 <- JackSymPol(3, c(2, 1), which = "P")
+  J3 <- JackSymPol(3, c(1,1,1), which = "P")
+  h1 <- changeVariables(HallInnerProduct(J1, J1, alpha = NULL), list(qlone(1)))
+  h2 <- changeVariables(HallInnerProduct(J2, J2, alpha = NULL), list(qlone(1)))
+  h3 <- changeVariables(HallInnerProduct(J3, J3, alpha = NULL), list(qlone(1)))
+  h12 <- changeVariables(HallInnerProduct(J1, J2, alpha = NULL), list(qlone(1)))
+  h13 <- changeVariables(HallInnerProduct(J1, J3, alpha = NULL), list(qlone(1)))
+  h23 <- changeVariables(HallInnerProduct(J2, J3, alpha = NULL), list(qlone(1)))
+  t <- qlone(1)
+  expect_true(h1 == 3*t^3 / (t^2 + "3/2"*t + "1/2"))
+  expect_true(h2 == (2*t^3 + t^2) / (t + 2))
+  expect_true(h3 == t^3/6 + t^2/2 + t/3)
+  expect_true(h12 == 0)
+  expect_true(h13 == 0)
+  expect_true(h23 == 0)
+})
+
+test_that("Jack-P and Jack-Q are orthonormal", {
+  alpha <- "3"
+  J1 <- JackPol(3, c(2, 1), alpha, which = "P")
+  J2 <- JackPol(3, c(2, 1), alpha, which = "Q")
+  h <- HallInnerProduct(J1, J2, alpha = alpha)
+  expect_true(h == 1L)
+})
