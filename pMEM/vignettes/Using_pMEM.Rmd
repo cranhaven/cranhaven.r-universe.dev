@@ -1,0 +1,858 @@
+---
+title: "Using pMEM for Spatial Modelling with Predictive Moran's Eigenvector Maps"
+author:
+  - Guillaume Guénard
+  - Pierre Legendre
+date: "`r format(Sys.time(), '%Y-%m-%d')`"
+output:
+  rmarkdown::html_vignette:
+    toc: true
+    toc_depth: 3
+bibliography: Using_pMEM.bib
+vignette: >
+  %\VignetteIndexEntry{Using pMEM for Spatial Modelling with Predictive Moran's Eigenvector Maps}
+  %\VignetteEngine{knitr::rmarkdown}
+  \usepackage[utf8]{inputenc}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+hook_output <- knitr::knit_hooks$get("output")
+knitr::knit_hooks$set(output = function(x, options) {
+  if (!is.null(n <- options$out.lines)) {
+    x <- xfun::split_lines(x)
+    if (length(x) > n) {
+      # truncate the output
+      x <- c(head(x, n), "....\n")
+    }
+    x <- paste(x, collapse = "\n")
+  }
+  hook_output(x, options)
+})
+##
+### Load packages here:
+##
+### Figure counter:
+(
+  function() {
+    log <- list(
+      labels = character(),
+      captions = character()
+    )
+    list(
+      register = function(label, caption) {
+        log$labels <<- c(log$labels, label)
+        log$captions <<- c(log$captions, caption)
+        invisible(NULL)
+      },
+      getNumber = function(label) {
+        which(log$labels == label)
+      },
+      getCaption = function(label) {
+        a <- which(log$labels == label)
+        cap <- log$captions[a]
+        cat(sprintf("Fig. %d. %s\n\n---\n",a,cap))
+        invisible(NULL)
+      }
+    )
+  }
+)() -> fc
+fc$register(
+  "sef1",
+  paste(
+    "Examples of pMEM spatial eigenfunctions of order 1 with descriptor (back",
+    "markers) and prediction scores (red markers). The black continuous line",
+    "is calculated for 1-m intervals to show the continuity of the spatial",
+    "eigenfunctions."
+  )
+)
+fc$register(
+  "depth",
+  paste(
+    "Spatially-explicit predictions of channel depth (black solid line) with",
+    "observations used training (black markers) and testing (red markers) the",
+    "model."
+  )
+)
+fc$register(
+  "velocity",
+  paste(
+    "Spatially-explicit predictions of current velocity (black solid line)",
+    "with observations used training (black markers) and testing (red markers)",
+    "the model."
+  )
+)
+fc$register(
+  "substrate",
+  paste(
+    "Spatially-explicit predictions of mean substrate grain size (black solid",
+    "line) with observations used training (black markers) and testing (red",
+    "markers) the model."
+  )
+)
+```
+
+# Introduction
+
+In the present paper, we show how to model the values of variables in space
+using a representation of their spatial variation. These representations are
+provided by predictive Moran's eigenveector maps (pMEM), an extension of Moran's
+eigenvector maps [@Dray2006], which take their name from Moran's autocorrelation
+index [@Moran1948; @Moran1950]. For pMEM, we use a simplified version of MEM
+whereby the connectivity is decided only by the distance between the sampling
+locations. Also, package **pMEM** implements functionalities, such as
+supplementary distance weighting functions, that were not defined by @Dray2006
+in their original definition of the method.
+
+# Data: Atlantic salmon parr distribution
+
+The exemplary data set features observations (performed by snorkelling) of the
+presence and numbers of Atlantic salmon parr (juvenile) in $76$ $20\,\mathrm{m}$
+river segments forming a $1\,520\,\mathrm{m}$ transect of the St. Marguerite
+River, Québec, Canada. Sampled together with these observations were the channel
+depth ($D$) the water velocity ($V$), and mean substrate grain size ($D_{50}$),
+which were taken at the thalweg in the middle of each section (i.e.,
+$10\,\mathrm{m}$ after the beginning and $10\,\mathrm{m}$ before the end of each
+section). Observations were performed while moving in the upstream direction in
+a zigzag manner in order not to disturb the fish prior to their observation.
+This data package is loaded in the **R** environment as follows:
+
+```{r}
+data("salmon", package = "pMEM")
+```
+
+# Calculations
+
+Les us first load the necessary packages for this example:
+
+```{r}
+library("pMEM")         ## To calculate pMEM
+library("magrittr")     ## For its very handy pipe operateur (%>%)
+library("glmnet")       ## To calculate elastic net regression
+```
+
+Packages **magrittr** and **glmnet** are suggested package of **pMEM**, and are
+therefore not automatically installed along with the latter. You may have to
+install them manually in order to execute this example code. Also, we need to
+draw indices for the training and the testing sets, which we are obtain as
+follows:
+
+```{r}
+set.seed(1234567890)                     ## For the drawing to be repeatable.
+sort(sample(nrow(salmon),25)) -> test    ## Drawing the testing set (N = 25).
+(1:nrow(salmon))[-test] -> train         ## The training set is the remainder.
+```
+
+Here, we set a random seed to a specific value to make subsequent analyses
+repeatable. Feel free to skip this line, in which case your results will differ
+somewhat from the ones that follows.
+
+## Function genSEF
+
+A pMEM is generated using function `genSEF()` as follows:
+
+```{r}
+genSEF(
+  x = salmon$Position[train],   ## The set of locations.
+  m = genDistMetric(),          ## The distance metric function.
+  f = genDWF("linear", 500)     ## The distance weighting function.
+) -> sef0
+
+sef0                            ## Show the resulting object.
+```
+
+For this call, argument `x` is the set of locations coordinates; they are given
+to the distance metric function that is given to `genSEF` through its argument
+`m`. In this example, it is the returned value of function `genDistMetric`. In
+this simple case, `genDistMetric` is called without an argument and returns a
+two argument function that calculate the Euclidean distance between the
+elements (or rows) of the vectors or matrices given to these two arguments.
+Argument `f` is also given a one argument spatial weighting function; which
+take the distances and returning weights. The later is generated by a function
+called `genDWF` that itself has three arguments: `fun` which specify the type of
+weighting function, `dmax` which specify the threshold distance (or scale
+parameters when `fun` is one of "exponential", "Gaussian", or "hole_effet"),
+and `shape` for any additional shape parameters (currently used when `fun` is
+one of "power" or "hyperbolic"). The shape of the resulting spatial
+eigenfunctions can be shown as follows:
+
+```{r, fig.width=7.25, fig.height=10}
+## A regular transect of points 1 m apart:
+salmon$Position %>%
+  {seq(min(.) - 20, max(.) + 20, 1)} -> xx
+
+## Custom plotting function:
+plotSEF <- function(sef, xTrain, xTest, xx, wh, ...) {
+  plot(x = xx, y = predict(sef, xx, wh), type = "l", ...)
+  points(x = xTrain, y = as.matrix(sef, wh), pch=21, bg="black")
+  points(x = xTest, y = predict(sef, xTest)[,wh], pch=21, bg="red")
+  invisible(NULL)
+}
+
+## Storing the graphical parameters:
+p <- par(no.readonly = TRUE)
+
+## Changing the graphical parameters:
+par(mfrow=c(3,2), mar=c(4.6,4.6,3,1))
+
+## Generate a six-inset plot:
+for(fun in c("power","hyperbolic","spherical","exponential","Gaussian",
+             "hole_effect"))
+  genSEF(
+    x = salmon$Position[train],
+    m = genDistMetric(),
+    f = genDWF(fun, 250, 0.75)
+  ) %>%
+    plotSEF(salmon$Position[train], salmon$Position[test], xx, 1,
+            xlab="Location (m)", ylab="pMEM score", main=fun, lwd=2)
+```
+```{r, echo=FALSE, results='asis'}
+fc$getCaption("sef1")
+```
+```{r}
+## Restoring the graphical parameters:
+par(p)
+```
+
+## Function getMinMSE
+
+Another function that we need to introduce before proceeding any further is
+called `getMinMSE()` and is a utility function for fitting simple linear models 
+involving only SEFs and a single normally-distributed response variables. It
+needs a training and a testing set and search for set of SEF that, when fitted
+in the training set allows one to best predict the values of the testing set.
+Also, it is implemented in C++ through the **Rcpp** package and thus runs very
+fast. Function `getMinMSE()` is called as follows:
+
+```{r}
+getMinMSE(
+  U = as.matrix(sef0),
+  y = salmon$Depth[train],
+  Up = predict(sef0, salmon$Position[test]),
+  yy = salmon$Depth[test],
+  complete = FALSE
+)
+```
+
+From the documentation, arguments of that function are:
+
+`U`
+: A matrix of spatial eigenvectors to be used as training data.
+
+`y`
+: A numeric vector containing a single response variable to be used as training
+labels.
+
+`Up`
+: A numeric matrix of spatial eigenvector scores to be used as testing data.
+
+`yy`
+: A numeric vector containing a single response variable to be used as testing
+labels.
+
+`complete`
+: A boolean specifying whether to return the complete data of the selection
+procedure (`complete=TRUE`; the default) or only the resulting mean square error
+and beta threshold (`complete=FALSE`).
+
+Called with argument `complete=FALSE`, the function returns only the (out of
+the sample) mean square error (MSE) of the model and the minimum standardized
+regression coefficient of the model used to obtain it.
+
+## Objective function for parameter search
+
+Now that we have a mean to estimate simple models, we can muster a way to 
+estimate SEF parameter using an objective function such as the following:
+
+```{r}
+objf <- function(par, m, fun, x, xx, y, yy, lb, ub) {
+  
+  ## Bound the parameter values within the lb -> ub intervals:
+  par <- (ub - lb) * (1 + exp(-par))^(-1) + lb
+  ## This step is necessary to prevent pitfalls during optimization.
+  
+  ## Calculate the SEF under the conditions requested
+  if(fun %in% c("power","hyperbolic")) {
+    sef <- genSEF(x, m, genDWF(fun, range = par[1L], shape = par[2L]))
+  } else
+    sef <- genSEF(x, m, genDWF(fun, range = par[1L]))
+  
+  ## Calculate the minMSE model
+  res <- getMinMSE(as.matrix(sef), y, predict(sef, xx), yy, FALSE)
+  
+  ## The objective criterion is the out of the sample mean squared error:
+  res$mse
+}
+```
+
+Objective functions have a first argument called `par` which is used to pass the
+parameter whose values are be optimized for minimum returned value. The other
+arguments are the ones necessary for the function to operate, but for which no
+optimization is carried on. That function also applies boundaries to parameter
+values, which are given by arguments `lb` (lower bounds) and `ub` (upper
+bounds). This function can be used to perform global parameter search as is
+called as follows (here, using the mean channel depth as an example):
+
+```{r}
+objf(
+  par = c(0),
+  m = genDistMetric(),
+  fun = "linear",
+  x = salmon$Position[train],
+  xx = salmon$Position[test],
+  y = salmon[["Depth"]][train],
+  yy = salmon[["Depth"]][test],
+  lb = c(10),
+  ub = c(1000)
+) -> res
+
+res
+```
+
+which yields a channel depth model having a root mean square error of
+$`r round(sqrt(res),4)`\,\mathrm{m}$, or
+$`r 100*round(sqrt(res),4)`\,\mathrm{cm}$.
+
+## Building models for channel depth, current velocity, and substrate grain size
+
+In the following section, we build three models that are purely spatial,
+involving only pMEM spatial eigenfunctions. To simplify the scripts, we will
+begin by creating lists for storing the results as follows:
+
+```{r, eval=FALSE}
+sefTrain <- list()  ## For storing the "SEMap" objects.
+mseRes <- list()    ## For storing results from function getMinMSE().
+sel <- list()       ## For storing selected pMEM eigenfunctions.
+lm <- list()        ## For storing the linear models.
+prd <- list()       ## For storing the predictions.
+```
+```{r, echo=FALSE}
+load(file = "Using_pMEM.rda")
+mseRes <- list()
+sel <- list()
+lm <- list()
+prd <- list()
+```
+
+To make predictions in a spatially-explicit manner, we first need to figure out
+which distance weighting function (DWF) to use and what parameter values to use
+with it. That decision can be carried out in many ways, one of which consists in
+performing a global search using the previously-defined objective function
+(`objf`). For this example, the global search is itself carried out using the
+simulated annealing implemented in **R** package **stat**. Since we have to
+repeat the same analyses three times for the different parr habitat descriptors,
+we defined a function performing the required calculations as follows:
+
+```{r}
+estimateSEF <- function(x, xx, y, yy, lower, upper) {
+  
+  res <- list(optim = list())  ## A list to contain the results.
+  
+  ## This loop tries the seven DWF one by one, estimating 'dmax' (and, when
+  ## necessary, 'shape') using simulated annealing.
+  for(fun in c("linear","power","hyperbolic","spherical","exponential",
+               "Gaussian","hole_effect")) {
+    optim(
+      par = c(0,if(fun %in% c("power","hyperbolic")) 0), fn = objf,
+      method = "SANN", m = genDistMetric(), fun = fun,
+      x = x, xx = xx, y = y, yy = yy,
+      lb = c(lower[1],if(fun %in% c("power","hyperbolic")) lower[2]),
+      ub = c(upper[1],if(fun %in% c("power","hyperbolic")) upper[2])
+      
+    ) -> res$optim[[fun]]
+  }
+  
+  ## Extract the minimum values from the list of optimization:
+  unlist(
+    lapply(
+      res$optim,
+      function(x) x$value
+    )
+  ) -> res$bestval
+  
+  ## Find which DWF had the minimum objective criterion value:
+  names(
+    which.min(
+      res$bestval
+    )
+  ) -> res$fun
+  
+  ## Back-transform the parameter values:
+  res %>%
+    {.$optim[[.$fun]]$par} %>%
+    {(upper - lower) * (1 + exp(-.))^(-1) + lower} -> res$par
+  
+  ## Calculate the SEF using the optimized DWF parameters:
+  res %>%
+    {genSEF(
+      x = x,
+      m = genDistMetric(),
+      f = genDWF(.$fun, .$par[1L], if(length(.$par) > 1) .$par[1L])
+    )} -> res$sef
+  
+  ## Return the result list:
+  res
+}
+```
+
+
+### Channel depth
+
+The channel depth is an important descriptor of juvenile Atlantic salmon (parr)
+habitat. For instance, these fish use riffles to feed on drifting preys; it is
+while feeding that they are the most readily observable by snorkelers. They may
+also use pools as a refuge from predators or, perhaps, head for riffles with
+a close by pool in order to benefit from favourable hydrological conditions as
+well as readily available refuge. In salmon rivers, pools and riffles alternate
+successively, in a more or less regular manners; it might thus by possible to
+model part of the variation in channel depth using pMEM.
+
+Let us estimate the optimal SEF for modelling channel depth as follows:
+
+```{r, eval=FALSE}
+estimateSEF(
+  x = salmon$Position[train],
+  xx = salmon$Position[test],
+  y = salmon[["Depth"]][train],
+  yy = salmon[["Depth"]][test],
+  lower = c(20,0.25),
+  upper = c(1000,1.75)
+) -> sefTrain[["Depth"]]
+```
+
+The best DWF found has been _`r sefTrain$Depth$fun`_, with a $d_{max}$ of
+$`r round(sefTrain$Depth$par[1],0)`\,\mathrm{m}$. The `minMSE` model estimated
+for the channel depth using these parameters is obtained as follows:
+
+```{r}
+## Calculate the channel depth model:
+sefTrain[["Depth"]]$sef %>%
+  {getMinMSE(
+    U = as.matrix(.),
+    y = salmon[["Depth"]][train],
+    Up = predict(., salmon$Position[test]),
+    yy = salmon[["Depth"]][test]
+  )} -> mseRes[["Depth"]]
+
+## Extract the selected SEF:
+mseRes[["Depth"]] %>% {sort(.$ord[1:.$wh])} -> sel[["Depth"]]
+```
+
+which has a coefficient of prediction of
+`r round(mseRes$Depth %>% {1 - .$mse[.$wh]/.$nullmse},4)`. Now, we can
+calculate a linear (regression) model from the selected spatial eigenfunctions:
+
+```{r}
+## Calculate a linear model from the selected SEF:
+lm(
+  formula = y~.,
+  data = cbind(
+    y = salmon[["Depth"]][train],
+    as.data.frame(sefTrain[["Depth"]]$sef, wh=sel[["Depth"]])
+  )
+) -> lm[["Depth"]]
+
+## Calculate the predictions:
+predict(
+  lm[["Depth"]],
+  newdata = as.data.frame(
+    predict(
+      object = sefTrain[["Depth"]]$sef,
+      newdata = xx,
+      wh = sel[["Depth"]]
+    )
+  )
+) -> prd[["Depth"]]
+```
+
+The predictions of the channel depth can be displayed as follows:
+
+```{r, fig.width=6, fig.height=6}
+plot(x=xx, y=prd[["Depth"]], type="l",
+     ylim=range(salmon[["Depth"]], prd[["Depth"]]), las=1,
+     ylab="Channel depth (m)", xlab="Location along the transect (m)")
+points(x = salmon$Position[train], y = salmon[["Depth"]][train], pch=21,
+       bg="black")
+points(x = salmon$Position[test], y = salmon[["Depth"]][test], pch=21, bg="red")
+```
+
+```{r, echo=FALSE, results='asis'}
+fc$getCaption("depth")
+```
+
+
+### Current velocity
+
+The second parr habitat descriptor is current velocity. Parrs fed on drifting
+prey animals (mostly insects) and thus rely on water current to bring about
+these preys. Whereas a fast current will bring preys at a high rate, is also
+entails less time reach for them and having to work harder in order to do so.
+As for channel depth, sections of slow and fast current alternate in a more or
+less consistent manner which might, to some extent, be modelled in a
+spatially-explicit manner. Current velocity is modelled as for the channel depth
+as follows:
+
+```{r, eval=FALSE}
+## Estimate the most adequate predictive Moran's eigenvector map:
+estimateSEF(
+  x = salmon$Position[train],
+  xx = salmon$Position[test],
+  y = salmon[["Velocity"]][train],
+  yy = salmon[["Velocity"]][test],
+  lower = c(20,0.25),
+  upper = c(1000,1.75)
+) -> sefTrain[["Velocity"]]
+```
+```{r}
+## Calculate the current velocity model:
+sefTrain[["Velocity"]]$sef %>%
+  {getMinMSE(
+    U = as.matrix(.),
+    y = salmon[["Velocity"]][train],
+    Up = predict(., salmon$Position[test]),
+    yy = salmon[["Velocity"]][test]
+  )} -> mseRes[["Velocity"]]
+
+## Extract the selected SEF:
+mseRes[["Velocity"]] %>% {sort(.$ord[1:.$wh])} -> sel[["Velocity"]]
+
+## Calculate a linear model from the selected SEF:
+lm(
+  formula = y~.,
+  data = cbind(
+    y = salmon[["Velocity"]][train],
+    as.data.frame(sefTrain[["Velocity"]]$sef, wh=sel[["Velocity"]])
+  )
+) -> lm[["Velocity"]]
+
+## Calculate the predictions:
+predict(
+  lm[["Velocity"]],
+  newdata = as.data.frame(
+    predict(
+      object = sefTrain[["Velocity"]]$sef,
+      newdata = xx,
+      wh = sel[["Velocity"]]
+    )
+  )
+) -> prd[["Velocity"]]
+```
+
+This time, the best DWF found has been _`r sefTrain$Velocity$fun`_, with a
+$d_{max}$ of $`r round(sefTrain$Velocity$par[1],0)`\,\mathrm{m}$, a
+coefficient of predictions of
+`r round(mseRes$Velocity %>% {1 - .$mse[.$wh]/.$nullmse},4)`, and the
+predictions appear as follows:
+
+```{r, fig.width=6, fig.height=6}
+plot(x=xx, y=prd[["Velocity"]], type="l",
+     ylim=range(salmon[["Velocity"]], prd[["Velocity"]]), las=1,
+     ylab="Velocity (m/s)", xlab="Location along the transect (m)")
+points(x = salmon$Position[train], y = salmon[["Velocity"]][train], pch=21,
+       bg="black")
+points(x = salmon$Position[test], y = salmon[["Velocity"]][test], pch=21,
+       bg="red")
+```
+
+```{r, echo=FALSE, results='asis'}
+fc$getCaption("velocity")
+```
+
+
+### Substrate grain size
+
+Atlantic salmon parr is bottom dwelling fish that use the hydrodynamic 
+conditions in the vicinity of the substrate in various manner. While feeding,
+for instance, it typically choose a cobble against which it lays its pectoral
+fins to help in holding a steady position in the stream. Also, it uses zones of
+back-flow close to the rough bottom surface in order to swim back to its ambush
+position. Substrate composition may thus be a dependable descriptor of the parr
+habitat. Substrate mean grain size is modelled as for the two previous
+descriptors as follows:
+
+```{r, eval=FALSE}
+## Estimate the most adequate predictive Moran's eigenvector map:
+estimateSEF(
+  x = salmon$Position[train],
+  xx = salmon$Position[test],
+  y = salmon[["Substrate"]][train],
+  yy = salmon[["Substrate"]][test],
+  lower = c(20,0.25),
+  upper = c(1000,1.75)
+) -> sefTrain[["Substrate"]]
+```
+```{r}
+## Calculate the mean substrate grain size model:
+sefTrain[["Substrate"]]$sef %>%
+  {getMinMSE(
+    U = as.matrix(.),
+    y = salmon[["Substrate"]][train],
+    Up = predict(., salmon$Position[test]),
+    yy = salmon[["Substrate"]][test]
+  )} -> mseRes[["Substrate"]]
+
+## Extract the selected SEF:
+mseRes[["Substrate"]] %>% {sort(.$ord[1:.$wh])} -> sel[["Substrate"]]
+
+## Calculate a linear model from the selected SEF:
+lm(
+  formula = y~.,
+  data = cbind(
+    y = salmon[["Substrate"]][train],
+    as.data.frame(sefTrain[["Substrate"]]$sef, wh=sel[["Substrate"]])
+  )
+) -> lm[["Substrate"]]
+
+## Calculate the predictions:
+predict(
+  lm[["Substrate"]],
+  newdata = as.data.frame(
+    predict(
+      object = sefTrain[["Substrate"]]$sef,
+      newdata = xx,
+      wh = sel[["Substrate"]]
+    )
+  )
+) -> prd[["Substrate"]]
+```
+
+For mean substrate grain size, the best DWF found has been
+_`r sefTrain$Substrate$fun`_, with a $d_{max}$ of
+$`r round(sefTrain$Substrate$par[1],0)`\,\mathrm{m}$, a $\alpha$ of
+$`r round(sefTrain$Substrate$par[2],2)`$
+coefficient of predictions of
+`r round(mseRes$Substrate %>% {1 - .$mse[.$wh]/.$nullmse},4)`, and the
+predictions appear as follows:
+
+```{r, echo=FALSE, fig.width=6, fig.height=6}
+plot(x=xx, y=prd[["Substrate"]], type="l",
+     ylim=range(salmon[["Substrate"]], prd[["Substrate"]]), las=1,
+     ylab="Mean grain size (mm)",
+     xlab="Location along the transect (m)")
+points(x = salmon$Position[train], y = salmon[["Substrate"]][train], pch=21,
+       bg="black")
+points(x = salmon$Position[test], y = salmon[["Substrate"]][test], pch=21,
+       bg="red")
+```
+
+```{r, echo=FALSE, results='asis'}
+fc$getCaption("substrate")
+```
+
+
+## Atlantic salmon parr abundance
+
+The Atlantic parr abundances are count data, suggesting it is the result of a
+Poisson process. A Poisson GLM is a straightforward way to model a Poisson
+process. Here, we will take this situation as an opportunity to exemplify
+another way whereby pMEM could be used for modelling, this time using an
+"elasticnet"-regularized generalized linear model. For that purpose, we need
+another objective function using function `glmnet` for model estimation, and
+having arguments `w` and `ww` to to pass auxiliary descriptors (training and
+testing sets, respectively), to be used alongside the SEF in modelling parr,
+abundance as follows:
+
+```{r}
+objf2 <- function(par, m, fun, x, xx, y, yy, w, ww, lb, ub) {
+  par <- (ub - lb) * (1 + exp(-par))^(-1) + lb
+  if(fun %in% c("power","hyperbolic")) {
+    sef <- genSEF(x, m, genDWF(fun, range = par[3L], shape = par[4L]))
+  } else
+    sef <- genSEF(x, m, genDWF(fun, range = par[3L]))
+  glm1 <- glmnet(x = cbind(w, as.matrix(sef)), y = y, family = "poisson",
+                 alpha = par[1L], lambda = par[2L])
+  pp <- predict(glm1, newx = cbind(ww, predict(sef, xx)), type="response")
+  -2*sum(dpois(yy, pp, log = TRUE))
+}
+```
+
+That objective function has three or four parameters (depending on the presence
+of the shape parameter), rather than 1 or 2 for `objf`:
+
+1. the $\alpha$ parameter of the elastic net regression that define the amount
+of $L_1$ with respect to $L_2$ norm used for regularization,
+
+2. the $\lambda$ parameter, which is the overall amount of regularization,
+
+3. the $d_{max}$ parameter of the DWF, and
+
+4. the shape parameter of the DWF, when necessary.
+
+The value returned is the out of the sample deviance value rather than the
+out of the sample mean square error that was returned by the first objective
+function.
+
+The auxiliary descriptors are the channel depth, current velocity, and mean
+substrate grain size. There may be non-linear relationships between these
+descriptors and parr abndance, because parr may prefer sites with intermediate
+values of these descriptors over extremes. To allow the parr abundance model
+the opportunity to exploit that possibility, we calculated orthogonal
+polynomials from the training data using **R** function `poly` as follows:
+
+```{r}
+## Implement a list of orthogonal polynomial objects:
+plist <- list()
+plist[["Depth"]] <- poly(salmon[train,"Depth"],2)
+plist[["Velocity"]] <- poly(salmon[train,"Velocity"],2)
+plist[["Substrate"]] <- poly(salmon[train,"Substrate"],2)
+
+## The matrix of auxiliary descriptor for the training set:
+cbind(
+  as.matrix(plist[["Depth"]]),
+  as.matrix(plist[["Velocity"]]),
+  as.matrix(plist[["Substrate"]])
+) -> w
+
+## Generate suitable column names:
+c("Depth^1","Depth^2",
+  "Velocity^1","Velocity^2",
+  "Substrate^1","Substrate^2") -> colnames(w)
+
+## The matrix of auxiliary descriptor for the testing set:
+cbind(
+  predict(plist[["Depth"]], newdata=salmon[test,"Depth"]),
+  predict(plist[["Velocity"]], newdata=salmon[test,"Velocity"]),
+  predict(plist[["Substrate"]], newdata=salmon[test,"Substrate"])
+) -> ww
+
+## Copying the column names:
+colnames(ww) <- colnames(w)
+```
+
+The objective function is executed as follows:
+
+```{r}
+objf2(
+  par = c(0, 0, 0, 0),
+  m = genDistMetric(),
+  fun = "Gaussian",
+  x = salmon$Position[train],
+  xx = salmon$Position[test],
+  y = salmon[["Abundance"]][train],
+  yy = salmon[["Abundance"]][test],
+  w = w,
+  ww = ww,
+  lb = c(0,0,20,0.25),
+  ub=c(1,1,1000,1.75)
+) -> res2
+
+res2
+```
+
+yielding a parr abundance model with an out of the sample deviance of
+$`r round(res2,1)`$. 
+
+```{r}
+estimateSEF2 <- function(x, xx, y, yy, w, ww, lower, upper) {
+  
+  res <- list(optim = list())  ## A list to contain the results.
+  
+  ## This loop tries the seven DWF one by one, estimating 'dmax' (and, when
+  ## necessary, 'shape') using simulated annealing.
+  for(fun in c("linear","power","hyperbolic","spherical","exponential",
+               "Gaussian","hole_effect")) {
+    optim(
+      par = c(0,0,0,if(fun %in% c("power","hyperbolic")) 0), fn = objf2,
+      method = "SANN", m = genDistMetric(), fun = fun,
+      x = x, xx = xx, y = y, yy = yy, w = w, ww = ww,
+      lb = c(lower[1:3],if(fun %in% c("power","hyperbolic")) lower[4]),
+      ub = c(upper[1:3],if(fun %in% c("power","hyperbolic")) upper[4])
+    ) -> res$optim[[fun]]
+  }
+  
+  ## Extract the minimum values from the list of optimization:
+  unlist(
+    lapply(
+      res$optim,
+      function(x) x$value
+    )
+  ) -> res$bestval
+  
+  ## Find which DWF had the minimum objective criterion value:
+  names(
+    which.min(
+      res$bestval
+    )
+  ) -> res$fun
+  
+  ## Back-transform the parameter values:
+  res %>%
+    {.$optim[[.$fun]]$par} %>%
+    {(upper[1:length(.)] - lower[1:length(.)]) * (1 + exp(-.))^(-1) +
+        lower[1:length(.)]} -> res$par
+  
+  ## Calculate the SEF using the optimized DWF parameters:
+  res %>%
+    {genSEF(
+      x = x,
+      m = genDistMetric(),
+      f = genDWF(.$fun, .$par[3], if(length(.$par) > 3) .$par[4])
+    )} -> res$sef
+  
+  ## Return the result list:
+  res
+}
+```
+
+We can now estimate the optimal SEF for modelling parr abundance as follows:
+
+```{r, eval=FALSE}
+estimateSEF2(
+  x = salmon$Position[train],
+  xx = salmon$Position[test],
+  y = salmon[["Abundance"]][train],
+  yy = salmon[["Abundance"]][test],
+  w = w,
+  ww = ww,
+  lower = c(0,0,20,0.25),
+  upper = c(1,1,1000,1.75)
+) -> sefTrain[["Abundance"]]
+```
+
+The best DWF found has been _`r sefTrain$Abundance$fun`_, with an $\alpha$ of
+$`r round(sefTrain$Abundance$par[1L],4)`$, a $\lambda$ of
+$`r round(sefTrain$Abundance$par[2L],4)`$, and a $d_{max}$ of
+$`r round(sefTrain$Abundance$par[3L],0)`\,\mathrm{m}$.
+
+The elasticnet model is estimated as follows:
+
+```{r}
+cbind(w, as.matrix(sefTrain[["Abundance"]]$sef)) %>%
+  glmnet(
+    y = salmon$Abundance[train], family = "poisson",
+    alpha = sefTrain[["Abundance"]]$par[1L],
+    lambda = sefTrain[["Abundance"]]$par[2L]) -> lm[["Abundance"]]
+
+## Model coefficients:
+coef(lm[["Abundance"]])
+```
+
+the continuous predictions are obtained as follows:
+
+```{r}
+lm[["Abundance"]] %>%
+  predict(
+    cbind(
+      predict(plist[["Depth"]], prd[["Depth"]]),
+      predict(plist[["Velocity"]], prd[["Velocity"]]),
+      predict(plist[["Substrate"]], prd[["Substrate"]]),
+      predict(sefTrain[["Abundance"]]$sef, xx)
+    ),
+    type="response"
+  ) ->  prd[["Abundance"]]
+```
+
+and the results are displayed as follows:
+
+```{r, fig.width=6, fig.height=6}
+plot(x=xx, y=prd[["Abundance"]], type="l",
+     ylim=range(salmon[["Abundance"]], prd[["Abundance"]]), las=1,
+     ylab="Parr abundance (fish)",
+     xlab="Location along the transect (m)")
+points(x = salmon$Position[train], y = salmon[["Abundance"]][train], pch=21,
+       bg="black")
+points(x = salmon$Position[test], y = salmon[["Abundance"]][test], pch=21,
+       bg="red")
+```
+
+# References
