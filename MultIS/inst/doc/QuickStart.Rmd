@@ -1,0 +1,376 @@
+---
+title: "Quick Start - MultIS"
+author: "Christoph Baldow, Sebastian Wagner, Ingmar Glauche"
+date: "`r Sys.Date()`"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteEngine{knitr::knitr}
+  %\VignetteIndexEntry{MultIS QuickStart}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+
+set.seed(42)
+
+require(MultIS)
+```
+
+# Purpose
+
+With MultIS, we present a bioinformatical approach to detect the multiple
+integration of viral vectors within the same clone. These integrations result
+in multiple integration sites (IS) that can be detected using sequencing
+methods and traced in time series data. Our method is based on the idea that
+read outs of IS within the same clone appear in similar relative frequencies
+to each other over different measurements, while IS from different clones
+will change their relative mutual frequency according to the relative clone
+sizes to which they belong. We calculate the correlation of these frequencies
+for all pairs of IS to quantify their similarity and subsequently use
+clustering algorithms to identify sets of IS with high internal correlation,
+suggesting the same clonal origin.
+
+
+```{r eval=FALSE, include=FALSE}
+# Example was generated using the following code
+simData <- simulate(ro_compartments = 1,
+                    tps = seq(1, 2*365, 60),
+                    nr_clones = 7,
+                    target_vcn = 6,
+                    clonal_variability = 0.4,
+                    measurement_noise = 0.2,
+                    use_amplification = FALSE,
+                    simulate_clones_params = list(
+                      nr_clones = 7, tps = seq(0, 2 * 365, 60),
+                      prolif = list(type = "nDistributedFixed", n_distributed_mean = 0.3,
+                                    n_distributed_sigma = 0, with_lf = TRUE, cc = 10000),
+                      diff = list(type = "nDistributedFixed", n_distributed_mean = 0.2,
+                                  n_distributed_sigma = 0, with_lf = FALSE),
+                      initdist = list(type = "equal", equal_equc = (0.3/0.2) * 100))
+)
+save(simData, file = 'example.RData', version = 2)
+write.table(simData$is_readouts, file = 'example_readouts.csv', sep = ',')
+```
+
+# MultIS with biological data
+
+When using "MultIS" with biological data, the clonal data should be stored in
+a matrix data structure. To have easy access to the included plotting
+routines, simply assign this matrix the additional class "timeseries". The
+class is the used to dispatch to the correct function.
+
+For example, one can load a data set like this:
+
+```{r}
+dat <- read.table(file = "example_readouts.csv",
+                  sep = ",", header = TRUE, row.names = 1, check.names = FALSE)
+dat <- as.matrix(dat)
+class(dat) <- c(class(dat), "timeseries")
+```
+
+The rows in this matrix represent individual IS (or unique clonal
+identifiers, barcodes), while the columns represent the different
+measurements. Values in the matrix show the read count for the respective IS
+and measurement.
+
+Within our package, measurement refers not only to different time points,
+but can also refer to measurements of different cell types.
+
+Here, 13 consecutive measurements for ten IS of our example are shown:
+
+```{r, echo=FALSE}
+knitr::kable(dat[1:10,], row.names = TRUE, digits = 2)
+```
+
+## Visualize a time course
+
+Stacked area plots are implemented as a visual representation of the IS 
+abundance over different measurements. Here, we show the relative readouts of
+the integration sites originating from the time course data.
+
+```{r, fig.width=6, fig.height=4, fig.align="center"}
+plot(dat)
+```
+
+## Apply filtering strategies
+
+Optionally, the data can be filtered. This step is recommended to avoid the
+detection of spurious correlations. There are several filter functions:
+
+* ```filter_at_tp_biggest_n``` selects for a number of most abundant IS at a specified measurement.
+* ```filter_at_tp_min``` selects for IS that have at least a given number of
+  reads in a certain measurement. The measurement is specified as a string
+  and, if left empty, matches all IS that have that many reads in any
+  measurement.
+* ```filter_match``` selects for measurements that match a certain string.
+* ```filter_nr_tp_min``` selects for IS that show in at least a given number of
+  measurements.
+* ```filter_zero_columns``` removes columns that have a sum of 0. This would
+  eliminate measurements where no data is available. For example, after
+  filtering for certain IS, some measurements might not hold any reads for
+  these IS.
+```filter_zero_rows``` removes rows that have a sum of 0. This would eliminate
+  IS for which no data is available, e.g. after some measurements where
+  removed and the IS did only show up in the removed measurements.
+
+Here, we demonstrate how to apply a filter that selects for the 10 most
+abundant IS at the final timepoint.
+
+```{r QS-Filtering, fig.width=6, fig.height=4, fig.align="center"}
+filteredDat <- MultIS::filter_at_tp_biggest_n(dat, at = "720", n = 10L)
+plot(filteredDat)
+```
+
+## Calculate similarities between integration sites
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+similarityMatrix <- MultIS::get_similarity_matrix(dat, parallel = FALSE)
+
+is1 = which.max(unlist(
+  lapply(1:(ncol(similarityMatrix) - 2),
+         function(i) {
+           similarityMatrix[i, i + 1] +           # maximize
+             (1 - similarityMatrix[i + 1, i + 2]) # minimize
+         })
+  ))
+is2 = is1 + 1
+is3 = is1 + 2
+```
+
+Next, we can determine similarities between different IS. Here, we show the
+similarity based on $R^2$ illustrated by two integration sites (`r is1`, `r is2`)
+originating from the same clone. They present a high $R^2$ similarity score.
+Two integration sites originating from different clones (`r is2`, `r is3`) do
+not show this characteristic correlation:
+
+```{r QS-rSquareSim, warning=F, fig.width=12, fig.height=4, fig.align="center"}
+r2 = round(summary(stats::lm(y ~ 0 + x, data = data.frame(
+    x = dat[is1, ], y = dat[is2, ])))$r.squared, 3)
+
+p1 <- MultIS::plot_rsquare(dat, is1, is2) +
+  ggplot2::ggtitle(label = bquote(R^2 == .(r2))) +
+  ggplot2::theme(plot.title = ggplot2::element_text(hjust = 0.5))
+
+
+r2 = round(summary(stats::lm(y ~ 0 + x, data = data.frame(
+    x = dat[is2, ], y = dat[is3, ])))$r.squared, 3)
+
+p2 <- MultIS::plot_rsquare(dat, is2, is3) +
+  ggplot2::ggtitle(label = bquote(R^2 == .(r2))) +
+  ggplot2::theme(plot.title = ggplot2::element_text(hjust = 0.5))
+                    
+gridExtra::grid.arrange(p1, p2, ncol = 2)
+```
+
+Next, we calculate the similarity of all pairs of integration sites, which
+gives us the similarity matrix.
+
+```{r QS-similarityMatrix, warning=F}
+similarityMatrix <- MultIS::get_similarity_matrix(dat, parallel = FALSE)
+```
+
+The similarity matrix is conveniently visualized using a heatmap, where
+clusters of similar integration sites can already be seen:
+
+```{r QS-similarityMatrixHeatmap, warning=F, fig.width=7.2, fig.height=6, fig.align="center"}
+plot(similarityMatrix)
+```
+
+## Clustering of similar integration sites
+
+To represent the clusterings produced by the k-Medoids clustering algorithm, we
+visualize them for a defined number of clusters ($k = 2$ and $k = 4$):
+
+```{r QS-clusteringC3, warning=F, fig.width=12, fig.height=6, fig.align="center"}
+clusterObjC2 <- MultIS::reconstruct(readouts = dat,
+                                    target_communities = 2,
+                                    method = "kmedoids",
+                                    cluster_obj = TRUE,
+                                    sim = similarityMatrix)
+clusterObjC4 <- MultIS::reconstruct(readouts = dat,
+                                    target_communities = 4,
+                                    method = "kmedoids",
+                                    cluster_obj = TRUE,
+                                    sim = similarityMatrix)
+p1 <- plot(clusterObjC2)
+p2 <- plot(clusterObjC4)
+
+gridExtra::grid.arrange(p1, p2, ncol = 2)
+```
+
+## Automatically find the best number of clusters
+
+To find the global optimum for the number of clusters $k$, we can next
+create clusterings for all sensible number of clusters
+(from 2 to the number of IS - 1). For each $k$ we calculate a quality score,
+which is show in the following plot as a function of the number of target clusters. The best number of clusters is indicated in red:
+
+```{r}
+bestNrCluster <- MultIS::find_best_nr_cluster(
+  data = dat,
+  sim = similarityMatrix,
+  method_reconstruction = "kmedoids",
+  method_evaluation = "silhouette",
+  return_all = TRUE)
+plotDf <- data.frame(
+  k = as.numeric(names(bestNrCluster)),
+  score = as.numeric(bestNrCluster)
+)
+ggplot2::ggplot(plotDf, ggplot2::aes(x = k, y = score, group = 1)) +
+  ggplot2::geom_line() +
+  ggplot2::geom_point(ggplot2::aes(col = (score == max(score)))) +
+  ggplot2::scale_color_manual(values = c("TRUE" = "#FF0000", "FALSE" = "#000000")) +
+  ggplot2::theme_bw() +
+  ggplot2::theme(legend.position = "none")
+```
+
+The clustering for the optimal value of $k$ can either be obtained by
+selecting it from all evaluations of clusterings in the step beforehand, or we
+can just re-run the method and tell it to only give us the best number of
+clusters:
+
+```{r QS-Silhouette, warning=F, fig.width=7.2, fig.height=6, fig.align="center"}
+bestNrCluster <- MultIS::find_best_nr_cluster(
+  data = dat,
+  sim = similarityMatrix,
+  method_reconstruction = "kmedoids",
+  method_evaluation = "silhouette",
+  return_all = FALSE)
+```
+
+We then use this number $k$ to create a clustering and plot it. For the portrayed example, the data is best explained for $k = 7$ clusters:
+
+```{r}
+clusterObjBest <- MultIS::reconstruct(
+  readouts = dat,
+  target_communities = bestNrCluster,
+  method = "kmedoids",
+  cluster_obj = TRUE,
+  sim = similarityMatrix)
+plot(clusterObjBest)
+```
+
+
+# MultIS with known ground truth
+
+For certain settings, such as model simulations or validation experiments, the
+true association between IS and clones is known. "MultIS" provides methods to
+integrate this information for benchmarking purposes.
+
+Here, we use an illustrative example that was prepared with a simulation
+routine, which comprises the following steps:
+
+1. Run a clonal simulation.
+2. Add a multiplicative clonal variability to account for different cell
+  types. This variability is beneficial to the reconstruction process.
+3. Superimposed IS to the clones. The number of IS per clone is drawn from a
+  Poisson distribution around a specified mean, estimating the average vector
+  copy number (VCN).
+4. Add Measurement noise multiplicatively to the IS counts to account
+  for noise during the PCR and sequencing steps.
+
+Each step in this analysis produces a time course that is the basis for
+the following step. In a real-world scenario, only the time course from
+the last step would be available, but as we use a simulation, we can
+use the known ground truth for validation and estimation of the accuracy
+of our methods.
+
+First, the prepared example is loaded:
+
+```{r}
+load("example.RData")
+```
+
+The loaded named list contains the steps of the simulation and further information.
+Its structure is the following:
+
+```{r}
+str(simData, max.level = 1)
+```
+
+* ```params``` are the paramters, that were used to run the simulation,
+* ```ampRates``` are amplification rates that are applied to each IS,
+* ```mapping``` is a mapping from each clone to the contained ISs,
+* ```clone_counts``` is the raw result from the clonal simulation (step 1),
+* ```clone_readouts``` is the result after applying noise to the clonal
+  simulation (step 2),
+* ```is_counts``` gives the raw IS readouts, i.e. after mapping ISs
+  to the clones but before applying measurement noise (step 3),
+* ```is_readouts``` is the final result of our simulation routine
+  (step 4). This adds measurement noise to the ```is_counts``` and would
+  correspond to the data that is available in a real-world experiment.
+
+## Time course representations
+
+The general structure for the time courses is again a table with the serial
+measurements at different time points in the columns and the different
+integration sites in the rows. The following is a small selection of
+```simData$barcodeReadouts``` contained within the ```simData``` object:
+
+```{r, echo=FALSE}
+knitr::kable(simData$barcodeReadouts[1:10,], digits = 2, row.names = TRUE)
+```
+
+Due to this data stemming from a simulation, we can look at all steps in the
+simulation, from the simulated clones to the integration sites:
+
+```{r QS-Bushman-Clone-Readouts, fig.width=12, fig.height=8, fig.align="center"}
+p1 <- plot(simData$clone_counts) + ggplot2::ggtitle("Basic clonal simulation")
+p2 <- plot(simData$clone_readouts) + ggplot2:: ggtitle("Added clonal differences")
+p3 <- plot(simData$is_counts) + ggplot2::ggtitle("Superimposition of integration sites")
+p4 <- plot(simData$is_readouts) + ggplot2::ggtitle("Added measurement noise")
+gridExtra::grid.arrange(p1, p2, p3, p4, ncol = 2, nrow = 2)
+```
+
+## Mappings from integration sites to clones
+
+For the data from our simulation, the true association between IS and clones is known:
+
+```{r QS-Mappings, results="asis", echo=F}
+mapping <- data.frame(Clone = unique(simData$mapping[,"Clone"]))
+mapping$IS <- sapply(mapping$Clone, function(e) {
+                      paste(summary(simData$mapping[simData$mapping[, "Clone"] == e, "IS"])[c("Min.", "Max.")], collapse = " - ")
+                    })
+knitr::kable(mapping)
+```
+
+## Evaluation of different clusterings
+
+In case the ground truth is known, we can apply the adjusted rand index (ARI)
+to calculate the pipeline's accuracy. Here, we apply the ARI function from the
+package "mclust" to compare the found clusterings for different values of $k$
+to the ground truth. Additionally, we highlight the optimal match as a red
+point. An ARI value of $1$ for the optimum corresponds to a perfect match,
+i.e. except for labels, the found clustering is identical to the known ground
+truth.
+
+```{r QS-ARI, warning=F, fig.width=6, fig.height=4, fig.align="center"}
+similarityMatrix <- MultIS::get_similarity_matrix(simData$is_readouts,
+                                                  parallel = FALSE)
+aris <- sapply(3:12, function(k) {
+  clusterObj <- MultIS::reconstruct(simData$is_readouts,
+                                    target_communities = k,
+                                    cluster_obj = TRUE,
+                                    sim = similarityMatrix)
+  mclust::adjustedRandIndex(clusterObj$mapping[,"Clone"], 
+                            simData$mapping[,"Clone"])  
+})
+arisDF <- data.frame(
+  k = 3:12,
+  ARI = aris,
+  stringsAsFactors = F
+)
+ggplot2::ggplot(arisDF, ggplot2::aes(x = k, y = ARI, colour = col)) +
+  ggplot2::geom_line(colour = "black") +
+  ggplot2::geom_point(size = 4, ggplot2::aes(color = (ARI == max(ARI)))) +
+  ggplot2::scale_color_manual(values = c("TRUE" = "#FF0000", "FALSE" = "#000000")) +
+  ggplot2::scale_x_continuous(breaks = 3:12) +
+  ggplot2::theme_bw() +
+  ggplot2::theme(legend.position = "none",
+                 text = ggplot2::element_text(size = 16))
+```
+
