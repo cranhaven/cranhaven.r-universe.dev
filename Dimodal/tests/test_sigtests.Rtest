@@ -1,0 +1,1547 @@
+
+# test_sigtests.Rtest:
+# Test benches for the feature significance evaluators.
+#
+# c 2025 Greg Kreider, Primordial Machine Vision Systems, Inc.
+
+## To Do:
+# - 
+#
+
+# Note that all tests can take several seconds, the longest for permht.
+
+if (interactive()) {
+  source('../R/Dimodal.R')
+  source('../R/detectors.R')
+  source('../R/sigtests.R')
+
+  if (is.loaded('C_test_runlen', PACKAGE='Dimodal')) {
+    dyn.unload('../src/Dimodal.so')
+  }
+  dyn.load('../src/Dimodal.so')
+} else {
+  library(Dimodal)
+  # These functions aren't exported so must link explicitly.
+  permute.all <- Dimodal:::permute.all
+}
+
+source('../tests/test_common.Rtest')
+
+oldopt <- options(warn=-1)
+
+# Which tests to run (for debug).  'all' or a vector incl. 'peak', 'flat',
+# 'runs', 'excur', and/or 'perm'.
+testing <- 'all'
+
+
+##### Test Framework
+
+# Run a test -> critval round trip on height/lengths vals for draw size n
+# and FIR filter with window size flp.  If basedist is NULL vals is heights
+# and we test the peak model, otherwise it is lengths and we test the flat
+# model with the given base distribution.  Returns TRUE if the round trip
+# passes, and if not also sets the global allpass to FALSE.  testID is an
+# identifier added to any failure messages; if NULL then no message is
+# printed.
+verify.tc <- function(testID, vals, n, flp, filter, basedist) {
+
+  passed <- TRUE
+
+  if (is.null(basedist)) {
+    tst <- Dipeak.test(vals, n, flp, filter, lower.tail=FALSE)
+    pval <- tst$p.value
+    recovered <- Dipeak.critval(pval, n, flp, filter)
+    feat <- 'peak'
+
+    # Very small Dipeak.test values map back with increasing inaccuracy.
+    # To maintain a fairly tight match in the nearly check we drop them.
+    # The alternative is to relax the nearly epsilon, perhaps with pval,
+    # and to handle Inf recovered results.
+    bad <- !is.finite(pval) | (pval < 5.0e-14)
+    if (any(bad)) {
+      vals <- vals[!bad]
+      recovered <- recovered[!bad]
+      if (!is.null(testID)) {
+        cat('    test ', testID, ' ignored ', sum(bad), ' tiny signif levels\n')
+      }
+    }
+  } else {
+    tst <- Diflat.test(vals, n, flp, filter, basedist, lower.tail=FALSE)
+    recovered <- Diflat.critval(tst$p.value, n, flp, filter, basedist)
+    feat <- 'flat'
+  }
+
+  if ((0 < length(vals)) && !nearly(vals, recovered, 1e-4)) {
+    if (!is.null(testID)) {
+     fail <- which(!nearly(vals, recovered, 1e-4))
+      cat('    test ', testID, feat, 't->cv->t did not recover values\n')
+      cat('      orig  ', vals[fail], '  pval ', pval[fail], '  back ',
+          recovered[fail], '\n')
+    }
+    allpass <<- FALSE
+    passed <- FALSE
+  }
+
+  passed
+}
+
+# Run a critval -> test round trip on significance levels pvals for draw size
+# n and FIR filter with window size flp.  If basedist is NULL check the peak
+# model, otherwise use it as the null variate.  Returns TRUE if the round
+# trip passes, and if not also sets the global allpass to FALSE.  testID is
+# an identifier added to any failure messages; if NULL then no message is
+# printed.
+verify.ct <- function(testID, pvals, n, flp, filter, basedist) {
+
+  passed <- TRUE
+
+  if (is.null(basedist)) {
+    vals <- Dipeak.critval(pvals, n, flp, filter)
+    tst <- Dipeak.test(vals, n, flp, filter, lower.tail=FALSE)
+    recovered <- tst$pval
+    feat <- 'peak'
+  } else {
+    vals <- Diflat.critval(pvals, n, flp, filter, basedist)
+    tst <- Diflat.test(vals, n, flp, filter, basedist, lower.tail=FALSE)
+    recovered <- tst$p.value
+    feat <- 'flat'
+
+    # Ignore failed critval results, which can never map back to finite
+    # significance levels.
+    bad <- !is.finite(vals)
+    if (any(bad)) {
+      pvals <- pvals[!bad]
+      recovered <- recovered[!bad]
+      if (!is.null(testID)) {
+        cat('    test ', testID, ' ignored ', sum(bad), ' non-finite critval\n')
+      }
+    }
+  }
+
+  if ((0 < length(pvals)) && !nearly(pvals, recovered, 1e-4)) {
+    if (!is.null(testID)) {
+      fail <- which(!nearly(pvals, recovered, 1e-4))
+      cat('    test ', testID, feat, 'cv->t->cv did not recover quantile\ns')
+      cat('      orig ', pvals[fail], '  crit ', vals[fail], '  back ',
+          recovered[fail], '\n')
+    }
+    allpass <<- FALSE
+    passed <- FALSE
+  }
+
+  passed
+}
+
+# Compare the Diexcurht results ht1 and ht2.  testID is a label for failure
+# messages.  Returns TRUE if the results are the same, FALSE if not.  Also
+# on any failure the global allpass is set to FALSE.
+verify.excurht <- function(testID, ht1, ht2) {
+
+  passed <- TRUE
+
+  if (length(ht1$statistic) != length(ht2$statistic)) {
+    cat('    test ', testID, ' statistics lengths differ\n')
+    passed <- FALSE
+  } else if (!nearly(ht1$statistic, ht2$statistic, 0.001)) {
+    cat('    test ', testID, ' statistics differ\n')
+    if (length(ht1$statistic) <= 3) {
+      sep <- " vs "
+    } else {
+      sep <- "\n      "
+    }
+    cat('      ', ht1$statistic, sep, ht2$statistic, '\n')
+    passed <- FALSE
+  }
+
+  if (length(ht1$p.value) != length(ht2$p.value)) {
+    cat('    test ', testID, ' p.value lengths differ\n')
+    passed <- FALSE
+  } else if (!nearly(ht1$p.value, ht2$p.value, 0.005, 0.03)) {
+    cat('    test ', testID, ' p.values differ\n')
+    if (length(ht1$p.value) <= 3) {
+      sep <- " vs "
+    } else {
+      sep <- "\n      "
+    }
+    cat('      ', paste0(sprintf('%6.4f', ht1$p.value)),
+        sep, paste0(sprintf('%6.4f', ht2$p.value)), '\n')
+    passed <- FALSE
+  }
+
+  if (length(ht1$critval) != length(ht2$critval)) {
+    cat('    test ', testID, ' critval lengths differ\n')
+    cat('      ', ht1$critval, ' vs. ', ht2$critval, '\n')
+    passed <- FALSE
+  } else if (all(is.na(ht1$critval)) || all(is.na(ht2$critval))) {
+    if (!nearly(ht1$critval, ht2$critval, 0.001)) {
+      cat('    test ', testID, ' critical values differ\n')
+      cat('      ', ht1$critval, ' vs ', ht2$critval, '\n')
+      passed <- FALSE
+    }
+  } else {
+    keep.cv <- !is.na(ht1$critval) & !is.na(ht2$critval)
+    cv1 <- ht1$critval[keep.cv]
+    cv2 <- ht2$critval[keep.cv]
+    if (!nearly(cv1, cv2, 0.01, 0.05)) {
+      cat('    test ', testID, ' critical values differ\n')
+      cat('      ', paste0(sprintf('%8.5f', cv1)), '\n')
+      cat('      ', paste0(sprintf('%8.5f', cv2)), '\n')
+      passed <- FALSE
+    }
+    # Or, relative error ...
+    # cv1 <- ht1$critval[keep.cv]
+    # cv2 <- ht2$critval[keep.cv]
+    # relerr <- abs(cv1 - cv2) * 2 / (cv1 + cv2)
+  }
+
+  if (!passed) {
+    allpass <<- FALSE
+  }
+  passed
+}
+
+# Compare the Dipermht.test results ht1, ht2, with looser matching than
+# for verify.excurht.  testID is a label for failure messages.  Returns
+# whether the results are the same, a boolean, and sets the global allpass
+# to FALSE on any mis-match.
+verify.permht <- function(testID, ht1, ht2) {
+
+  passed <- TRUE
+
+  if (length(ht1$statistic) != length(ht2$statistic)) {
+    cat('    test ', testID, ' statistics lengths differ\n')
+    passed <- FALSE
+  } else if (!nearly(ht1$statistic, ht2$statistic, 0.001)) {
+    cat('    test ', testID, ' statistics differ\n')
+    if (length(ht1$statistic) <= 3) {
+      sep <- " vs "
+    } else {
+      sep <- "\n      "
+    }
+    cat('      ', ht1$statistic, sep, ht2$statistic, '\n')
+    passed <- FALSE
+  }
+
+  # The permutation generator changed between the development version and
+  # here, and the p and critical values no longer match exactly.  We
+  # allow half a point difference in p and one in the critical values
+  # (since they are integer heights).
+  # The choice of the random seed and nperm also affect the stability.
+
+  if (length(ht1$p.value) != length(ht2$p.value)) {
+    cat('    test ', testID, ' p.value lengths differ\n')
+    passed <- FALSE
+  } else if (!nearly(ht1$p.value, ht2$p.value, 0.005)) {
+    cat('    test ', testID, ' p.values differ\n')
+    if (length(ht1$p.value) <= 3) {
+      sep <- " vs "
+    } else {
+      sep <- "\n      "
+    }
+    cat('      ', paste0(sprintf('%6.4f', ht1$p.value)),
+        sep, paste0(sprintf('%6.4f', ht2$p.value)), '\n')
+    passed <- FALSE
+  }
+
+  if (length(ht1$critval) != length(ht2$critval)) {
+    cat('    test ', testID, ' critval lengths differ\n')
+    passed <- FALSE
+  } else if (all(is.na(ht1$critval)) || all(is.na(ht2$critval))) {
+    if (!nearly(ht1$critval, ht2$critval, 1)) {
+      cat('    test ', testID, ' critical values differ\n')
+      cat('      ', ht1$critval, ' vs. ', ht2$critval, '\n')
+      passed <- FALSE
+    }
+  } else {
+    keep.cv <- !is.na(ht1$critval) & !is.na(ht2$critval)
+    if (0 == sum(keep.cv)) {
+      cat('    test ', testID, ' no critical values\n')
+      passed <- FALSE
+    } else {
+      if (!nearly(ht1$critval[keep.cv], ht2$critval[keep.cv], 0)) {
+        cat('    test ', testID, ' critical values differ\n')
+        cat('      ', ht1$critval, ' vs. ', ht2$critval, '\n')
+        passed <- FALSE
+      }
+    }
+  }
+
+  if (!passed) {
+    allpass <<- FALSE
+  }
+  passed
+}
+
+# Generate a data frame with ntest test cases of random parameter combinations.
+# flowq is the fraction of tests that generate q values outside the model
+# range (ie. < 0.90).  seed sets the random number seed beforehand.  The
+# data frame has columns
+#   $n        draw size (50 t/m 600)
+#   $flp      kernel size (0.05 t/m 0.25)
+#   $ht       peak heights (0.1 t/m 10.0)
+#   $len      flat lengths (1 t/m n-1)
+#   $q        quantile, of which ntest*flowq are below 0.9, the others above
+#   $filter   FIR filter type
+#   $base     base distribution for flats, weighted towards logistic
+# These values are _not_ consistent within a row, especially the quantile is
+# independent of the length and height.  Use to test either round-trip.
+gen.stress <- function(ntest, seed=17, flowq=0.05) {
+
+  set.seed(seed)
+
+  nlowq <- round(ntest * flowq)
+  filters <- c('kaiser', 'hanning', 'hamming', 'bartlett', 'gaussian', 'normal',
+               'blackman')
+  basedists <- c('logistic', 'gumbel', 'normal', 'gaussian', 'weibull')
+
+  tsts <- data.frame(n=round(runif(ntest, 50, 500)),
+                     flp=runif(ntest, 0.05, 0.30),
+                     ht=runif(ntest, 0.1, 10.0),
+                     len=runif(ntest, 0.1, 0.4),
+                     q=c(10^runif(ntest-nlowq, log10(0.9), log10(0.999999)),
+                         runif(nlowq, 0, 0.9)),
+                     filter=sample(filters, ntest, replace=TRUE,
+                                   prob=c(0.5, 0.1, 0.1, 0.1, 0.05,0.05, 0.1)),
+                     base=sample(basedists, ntest, replace=TRUE,
+                                 prob=c(0.7, 0.1, 0.05,0.05, 0.1)))
+
+  # Guarantee that 1 <= len < n.
+  tsts$len <- pmax(1, pmin(round(tsts$len * tsts$n), tsts$n-1))
+  tsts$len[tsts$len==0] <- 1
+  tsts$len[tsts$len==tsts$n] <- tsts$n[tsts$len==tsts$n] - 1
+
+  tsts
+}
+
+# For each test setup in the gen.stress result tests, try all test/critval
+# cycles for peaks and flats.  Print the first ten failures, plus a count
+# if there's more.  Counts on the individual cycle functions to set the
+# global allpass FALSE on failures.
+run.stress <- function(tests) {
+
+  passed <- TRUE
+  nfail <- 0
+  maxfail <- 20
+
+  for (i in 1:nrow(tests)) {
+    r <- tests[i,]
+    # This quiets the individual tests.
+    testID <- NULL
+    if (nfail <= maxfail) {
+#      testID <- paste0('stress test row ', i)
+    }
+    peak.tc <- verify.tc(testID, r$ht, r$n, r$flp, r$filter, NULL)
+    peak.ct <- verify.ct(testID, r$q, r$n, r$flp, r$filter, NULL)
+    flat.tc <- verify.tc(testID, r$len, r$n, r$flp, r$filter, r$base)
+    flat.ct <- verify.ct(testID, r$q, r$n, r$flp, r$filter, r$base)
+
+    if (!all(peak.tc, peak.ct, flat.tc, flat.ct)) {
+      nfail <- nfail + 1
+      if (nfail <= maxfail) {
+        cat('    stress test row ', i, ' failed')
+        if (!peak.tc) { cat(' peak test->cv') }
+        if (!peak.ct) { cat(' peak cv->test') }
+        if (!flat.tc) { cat(' flat test->cv') }
+        if (!flat.ct) { cat(' flat cv->test') }
+        cat('\n')
+      }
+      passed <- FALSE
+    }
+  }
+
+  if (maxfail < nfail) {
+    cat('      plus ', nfail-maxfail, 'additional failures\n')
+  }
+
+  passed
+}
+
+# Determine the height of the feature in data x between indices stID and
+# endID (incl.).
+fht <- function(x, stID, endID) {
+
+  diff(range(x[stID:endID]))
+}
+
+# Duplicate the 'Diw' row of the Didata matrix for data x and interval
+# spacing width w (fractional or absolute).  This is the interval spacing
+# with w NA at the front and attributes 'wdiw' and 'diw.stID', but as a
+# vector not a matrix.
+mock.diw <- function(x, w) {
+
+  if (w < 1.0) {
+    wdiw <- round(w * length(x))
+  } else {
+    wdiw <- round(w)
+  }
+
+  diw <- c(rep(NA, wdiw), diff(sort(x), lag=wdiw))
+  attributes(diw) <- c(attributes(diw), list(wdiw=wdiw, diw.stID=wdiw+1))
+  diw
+}
+
+# Duplicate the 'signed' row of the Didata matrix for data x and interval
+# spacing width w (fractional or absolute).  Values are integers.
+mock.signed <- function(x, w) {
+
+  if (w < 1.0) {
+    wdiw <- round(w * length(x))
+  } else {
+    wdiw <- round(w)
+  }
+  
+  diw <- c(rep(NA, wdiw), diff(sort(x), lag=wdiw))
+  as.integer(c(NA, sign(diff(diw))))
+}
+
+
+
+##### Test Cases
+
+allpass <- TRUE
+
+
+### (P)eak or (F)lat Model,  (T)est or (C)ritval
+
+if (('all' == testing) || ('peak' %in% testing)) {
+
+## Back and forth conversion from examples in man page.
+
+verify.tc('PTC1', 0.25*(1:16), 200, 0.15, 'kaiser', NULL)
+verify.tc('FTC1', 10*(1:12), 200, 0.15, 'kaiser', 'logistic')
+
+qs <- 1 - (10^-((5:30)/5))
+verify.ct('PCT1', qs, 200, 0.15, 'kaiser', NULL)
+verify.ct('FCT1', qs, 200, 0.15, 'kaiser', 'logistic')
+
+## Compare these results against the development version (magic exp numbers).
+
+exp <- c(1:4, 
+         1.127781, 1.953396, 3.383418, 5.860316, 1.102559806, 4.661763519,
+         0.6105145036, 0.9270047884, 0.9966229640, 0.9999824073)
+tst <- Dipeak.test(1:4, 250, 0.15, 'kaiser')
+res <- with(tst, c(statistic, parameter$corrht, parameter$mu, parameter$lambda,
+                   p.value))
+verify.vectors('PT1', res, exp)
+
+exp <- c(0.2024423368, 0.3209023082, 0.4433338617, 0.5684779695, 0.6898542402)
+tst <- sapply(100*(1:5),
+              function(n) { Dipeak.test(0.5, n, 0.15, 'kaiser')$p.value })
+verify.vectors('PT2', tst, exp)
+
+exp <- c(0.5386030487, 0.4293031514, 0.3209023082, 0.2165410164, 0.1079319800)
+tst <- sapply(0.05*(1:5),
+              function(w) { Dipeak.test(0.5, 200, w, 'kaiser')$p.value })
+verify.vectors('PT3', tst, exp)
+
+exp <- c(1:4, 
+         1.014393, 1.580349, 2.462066, 3.835716, 1.102559806, 4.661763519,
+         0.5226022009, 0.8404282838, 0.9754402694, 0.9987198166)
+tst <- Dipeak.test(1:4, 250, 0.15, 'gaussian')
+res <- with(tst, c(statistic, parameter$corrht, parameter$mu, parameter$lambda,
+                   p.value))
+verify.vectors('PT4', res, exp)
+tst <- Dipeak.test(1:4, 250, 0.15, 'normal')
+res <- with(tst, c(statistic, parameter$corrht, parameter$mu, parameter$lambda,
+                   p.value))
+verify.vectors('PT5', res, exp)
+
+## Stress tests.
+
+verify.error('BTP PT1', Dipeak.test, list(n=100, flp=0.15, filter='kaiser'))
+
+exp <- c(NA, NaN, NA, NA, NA)
+# Use list b/c different types.
+vals <- list(NA_real_, NaN, 'a', 3i, list(3))
+tst <- Dipeak.test(vals, 100, 0.15, 'kaiser')$p.value
+verify.vectors('BTP PT2', tst, exp)
+
+tst <- Dipeak.test(NULL, 100, 0.15, 'kaiser')$p.value
+verify.vectors('BTP PT3', tst, numeric(0))
+
+exp <- c(0, 1)
+tst <- Dipeak.test(c(Inf, -Inf), 100, 0.15, 'kaiser', FALSE)$p.value
+verify.vectors('BTP PT4', tst, exp)
+
+exp <- c(0.04347424, 0.04248657, 0.04207040)
+tst <- sapply(list(100, 101.4, c(102, 103)),
+              function(n) { Dipeak.test(3, n, 0.15, 'kaiser', FALSE)$p.value })
+verify.vectors('BTP PT6', tst, exp)
+
+verify.error('BTP PT7a', Dipeak.test, list(3, 'a', 0.15, 'kaiser'))
+verify.error('BTP PT7b', Dipeak.test, list(3, 3i, 0.15, 'kaiser'))
+verify.error('BTP PT7c', Dipeak.test, list(3, list(200), 0.15, 'kaiser'))
+verify.error('BTP PT7d', Dipeak.test, list(3, NA, 0.15, 'kaiser'))
+verify.error('BTP PT7e', Dipeak.test, list(3, NaN, 0.15, 'kaiser'))
+verify.error('BTP PT7f', Dipeak.test, list(3, NULL, 0.15, 'kaiser'))
+verify.error('BTP PT7g', Dipeak.test, list(3, 0.9, 0.15, 'kaiser'))
+
+exp <- c(0.06172852, 0.05771098, 0.05580181, 0.03402853)
+tst <- sapply(list(0.10, 11, 11.5, c(0.18, 0.19)),
+              function(w) { Dipeak.test(3, 100, w, 'kaiser', FALSE)$p.value })
+verify.vectors('BTP PT8', tst, exp)
+
+verify.error('BTP PT9a', Dipeak.test, list(3, 100, 'a', 'kaiser'))
+verify.error('BTP PT9b', Dipeak.test, list(3, 100, 3i, 'kaiser'))
+verify.error('BTP PT9c', Dipeak.test, list(3, 100, list(0.1), 'kaiser'))
+verify.error('BTP PT9d', Dipeak.test, list(3, 100, NA, 'kaiser'))
+verify.error('BTP PT9e', Dipeak.test, list(3, 100, NaN, 'kaiser'))
+verify.error('BTP PT9f', Dipeak.test, list(3, 100, NULL, 'kaiser'))
+verify.error('BTP PT9g', Dipeak.test, list(3, 100, 0.0, 'kaiser'))
+verify.error('BTP PT9h', Dipeak.test, list(3, 100, 109, 'kaiser'))
+
+exp <- c(0.9281309, 0.9565258, 0.9016765, 0.9565258)
+tst <- sapply(list('bartlett', 'nutall', c('hanning', 'hamming'), NA),
+              function(f) { Dipeak.test(3, 100, 0.15, f, TRUE)$p.value })
+verify.vectors('BTP PT10', tst, exp)
+
+verify.error('BTP PT11', Dipeak.test, list(3, 100, 0.15, 'kaiser', 'a'))
+
+verify.warning('BTP PT12', Dipeak.test, list(3, 100, 0.02, 'kaiser'))
+verify.warning('BTP PT13', Dipeak.test, list(3, 100, 0.32, 'kaiser'))
+verify.warning('BTP PT14', Dipeak.test, list(3, 49, 0.10, 'kaiser'))
+verify.warning('BTP PT15', Dipeak.test, list(3, 501, 0.10, 'kaiser'))
+              
+
+qs <- (10^-(1:5)) / 2
+exp <- c(2.158323240, 2.899064604, 3.426247657, 3.838636360, 4.177926963)
+hts <- Dipeak.critval(qs, 250, 0.15, 'kaiser')
+verify.vectors('PC1', hts, exp)
+
+exp <- c(3.780993158, 3.141990793, 2.682854604, 2.301757908, 1.963605100)
+hts <- sapply(100*(1:5),
+              function(n) { Dipeak.critval(0.005, n, 0.15, 'kaiser') })
+verify.vectors('PC2', hts, exp)
+
+exp <- c(4.183172348, 3.438745592, 3.141990793, 2.944564493, 2.827653368)
+hts <- sapply(0.05*(1:5),
+              function(w) { Dipeak.critval(0.005, 200, w, 'kaiser') })
+verify.vectors('PC3', hts, exp)
+
+exp <- c(2.492863343, 3.348419617, 3.957316043, 4.433624996, 4.825505642)
+hts <- Dipeak.critval(qs, 250, 0.15, 'hanning')
+verify.vectors('PC4', hts, exp)
+
+verify.error('BTP PC1', Dipeak.critval, list(n=100,flp=0.15,filter='kaiser'))
+
+exp <- c(NA, NaN, NA, NA, NA)
+vals <- list(NA_real_, NaN, 'a', 0.2i, list(0.2))
+hts <- Dipeak.critval(vals, 100, 0.15, 'kaiser')
+verify.vectors('BTP PC2', hts, exp)
+
+hts <- Dipeak.critval(NULL, 100, 0.15, 'kaiser')
+verify.vectors('BTP PC3', hts, numeric(0))
+
+exp <- c(NaN, NaN)
+hts <- Dipeak.critval(c(Inf, -Inf), 100, 0.15, 'kaiser')
+verify.vectors('BTP PC4', hts, exp)
+
+exp <- c(3.158101, 3.147667, 3.143226)
+hts <- sapply(list(100, 101.4, c(102, 103)),
+              function(n) { Dipeak.critval(0.03, n, 0.15, 'kaiser') })
+verify.vectors('BTP PC6', hts, exp)
+
+verify.error('BTP PC7a', Dipeak.critval, list(0.03, 'a', 0.15, 'kaiser'))
+verify.error('BTP PC7b', Dipeak.critval, list(0.03, 200i, 0.15, 'kaiser'))
+verify.error('BTP PC7c', Dipeak.critval, list(0.03, list(200), 0.15,'kaiser'))
+verify.error('BTP PC7d', Dipeak.critval, list(0.03, NA, 0.15, 'kaiser'))
+verify.error('BTP PC7e', Dipeak.critval, list(0.03, NaN, 0.15, 'kaiser'))
+verify.error('BTP PC7f', Dipeak.critval, list(0.03, NULL, 0.15, 'kaiser'))
+verify.error('BTP PC7g', Dipeak.critval, list(0.03, -100, 0.15, 'kaiser'))
+
+exp <-c (2.669899, 2.791081, 2.771023, 2.487075)
+hts <- sapply(list(0.10, 11, 11.5, c(0.18, 0.19)),
+              function(w) { Dipeak.critval(0.06, 150, w, 'kaiser') })
+verify.vectors('BTP PC8', hts, exp)
+
+verify.error('BTP PC9a', Dipeak.critval, list(0.03, 150, 'a', 'kaiser'))
+verify.error('BTP PC9b', Dipeak.critval, list(0.03, 150, 0.10i, 'kaiser'))
+verify.error('BTP PC9c', Dipeak.critval, list(0.03, 150, list(0.1), 'kaiser'))
+verify.error('BTP PC9d', Dipeak.critval, list(0.03, 150, NA, 'kaiser'))
+verify.error('BTP PC9e', Dipeak.critval, list(0.03, 150, NaN, 'kaiser'))
+verify.error('BTP PC9f', Dipeak.critval, list(0.03, 150, NULL, 'kaiser'))
+verify.error('BTP PC9g', Dipeak.critval, list(0.03, 150, -0.10, 'kaiser'))
+verify.error('BTP PC9h', Dipeak.critval, list(0.03, 150, 151, 'kaiser'))
+
+exp <- c(3.169310, 2.918334, 3.274370, 2.918334, 2.918334)
+hts <- sapply(list('bartlett', 'nutall', c('hamming', 'hanning'), NA, NULL),
+              function(f) { Dipeak.critval(0.02, 200, 0.10, f) })
+verify.vectors('BTP PC10', hts, exp)
+
+verify.warning('BTP PC11', Dipeak.critval, list(0.03, 150, 0.04, 'kaiser'))
+verify.warning('BTP PC12', Dipeak.critval, list(0.03, 150, 0.31, 'kaiser'))
+verify.warning('BTP PC13', Dipeak.critval, list(0.03,  49, 0.10, 'kaiser'))
+verify.warning('BTP PC14', Dipeak.critval, list(0.03, 501, 0.10, 'kaiser'))
+
+# testing check for peaks.
+}
+
+if (('all' == testing) || ('flat' %in% testing)) {
+
+exp <- c(25*(1:5), 
+         0.3551661471, 0.7103322942, 0.9447534795, 0.9731750036, 0.9895193857)
+tst <- Diflat.test(25*(1:5), 300, 0.10, 'kaiser', 'logistic')
+res <- with(tst, c(statistic, p.value))
+verify.vectors('FT1', res, exp)
+
+exp <- c(0.9995187113, 0.9604266360, 0.7103322942, 0.4736132117, 0.3430605952)
+tsts <- lapply(100*(1:5),
+               function(n) {
+                 Diflat.test(50, n, 0.10, 'kaiser', 'logistic') })
+pval <- sapply(tsts, getElement, 'p.value')
+verify.vectors('FT2', pval, exp)
+
+exp <- c(0.5588921223, 0.5728727800, 0.5876250929, 0.6032360207, 0.6198180305)
+tsts <- lapply(0.05*(1:5),
+               function(w) {
+                 Diflat.test(50, 350, w, 'kaiser', 'logistic') })
+pval <- sapply(tsts, getElement, 'p.value')
+verify.vectors('FT3', pval, exp)
+
+exp <- c(0.5183763064, 0.9419548749, 0.9868521074, 0.9978063786, 0.9996898706)
+tst <- Diflat.test(25*(1:5), 300, 0.10, 'kaiser', 'normal')
+verify.vectors('FT4', tst$p.value, exp)
+
+exp <- c(0.5900496579, 0.9613922809, 0.9942538815, 0.9993332709, 0.9999268764)
+tst <- Diflat.test(25*(1:5), 300, 0.10, 'kaiser', 'weibull')
+verify.vectors('FT5', tst$p.value, exp)
+
+exp <- c(0.2539350921, 0.5078701842, 0.7618052763, 0.9329345054, 0.9618723623)
+tst <- Diflat.test(25*(1:5), 300, 0.10, 'kaiser', 'gumbel')
+verify.vectors('FT6', tst$p.value, exp)
+
+exp <- c(0.4099364110, 0.8198728220, 0.9605375946, 0.9832693219, 0.9951694219)
+tst <- Diflat.test(25*(1:5), 300, 0.10, 'bartlett', 'logistic')
+verify.vectors('FT7', tst$p.value, exp)
+
+exp <- c(0.5913310692, 0.9607683624, 0.9935941879, 0.9991134949, 0.9998823985)
+tst <- Diflat.test(25*(1:5), 300, 0.10, 'bartlett', 'gaussian')
+verify.vectors('FT8', tst$p.value, exp)
+
+exp <- c(0.6762643143, 0.9754069770, 0.9973029668, 0.9997248345, 0.9999721977)
+tst <- Diflat.test(25*(1:5), 300, 0.10, 'bartlett', 'weibull')
+verify.vectors('FT9', tst$p.value, exp)
+
+exp <- c(0.2949394100, 0.5898788200, 0.8848182301, 0.9529017256, 0.9736420691)
+tst <- Diflat.test(25*(1:5), 300, 0.10, 'bartlett', 'gumbel')
+verify.vectors('FT10', tst$p.value, exp)
+
+exp <- c(0.6099637794, 0.9641524396, 0.9926003171, 0.9986696681, 0.9997723373)
+tst <- Diflat.test(25*(1:5), 300, 0.10, 'blackman', 'logistic')
+verify.vectors('FT11', tst$p.value, exp)
+
+exp <- c(0.8828416607, 0.9923020519, 0.9994027285, 0.9999512288, 0.9999960010)
+tst <- Diflat.test(25*(1:5), 300, 0.10, 'blackman', 'normal')
+verify.vectors('FT12', tst$p.value, exp)
+
+exp <- c(0.9017510455, 0.9955488050, 0.9997540561, 0.9999860848, 0.9999992116)
+tst <- Diflat.test(25*(1:5), 300, 0.10, 'blackman', 'weibull')
+verify.vectors('FT13', tst$p.value, exp)
+
+exp <- c(0.4749927729, 0.9296686873, 0.9691804538, 0.9866913226, 0.9958431691)
+tst <- Diflat.test(25*(1:5), 300, 0.10, 'blackman', 'gumbel')
+verify.vectors('FT14', tst$p.value, exp)
+
+exp <- c(0.5971511084, 0.9615751817, 0.9911247168, 0.9982903574, 0.9996956285)
+tst <- Diflat.test(25*(1:5), 300, 0.10, 'gaussian', 'logistic')
+verify.vectors('FT15', tst$p.value, exp)
+
+exp <- c(0.8806465353, 0.9918687897, 0.9993264758, 0.9999409096, 0.9999947900)
+tst <- Diflat.test(25*(1:5), 300, 0.10, 'gaussian', 'normal')
+verify.vectors('FT16', tst$p.value, exp)
+
+exp <- c(0.8997307311, 0.9952929286, 0.9997210793, 0.9999829171, 0.9999989516)
+tst <- Diflat.test(25*(1:5), 300, 0.10, 'gaussian', 'weibull')
+verify.vectors('FT17', tst$p.value, exp)
+
+exp <- c(0.4986005545, 0.9378168050, 0.9743681074, 0.9905645287, 0.9975096705)
+tst <- Diflat.test(25*(1:5), 300, 0.10, 'gaussian', 'gumbel')
+verify.vectors('FT18', tst$p.value, exp)
+
+exp <- c(0.5971511084, 0.9615751817, 0.9911247168, 0.9982903574, 0.9996956285)
+tst <- Diflat.test(25*(1:5), 300, 0.10, 'normal', 'logistic')
+verify.vectors('FT19', tst$p.value, exp)
+
+exp <- c(0.8806465353, 0.9918687897, 0.9993264758, 0.9999409096, 0.9999947900)
+tst <- Diflat.test(25*(1:5), 300, 0.10, 'normal', 'normal')
+verify.vectors('FT20', tst$p.value, exp)
+
+exp <- c(0.8997307311, 0.9952929286, 0.9997210793, 0.9999829171, 0.9999989516)
+tst <- Diflat.test(25*(1:5), 300, 0.10, 'normal', 'weibull')
+verify.vectors('FT21', tst$p.value, exp)
+
+exp <- c(0.4986005545, 0.9378168050, 0.9743681074, 0.9905645287, 0.9975096705)
+tst <- Diflat.test(25*(1:5), 300, 0.10, 'normal', 'gumbel')
+verify.vectors('FT22', tst$p.value, exp)
+
+exp <- c(0.4433461479, 0.8866922957, 0.9700064215, 0.9901022483, 0.9978491329)
+tst <- Diflat.test(25*(1:5), 300, 0.10, 'hamming', 'logistic')
+verify.vectors('FT23', tst$p.value, exp)
+
+exp <- c(0.6370036405, 0.9698908921, 0.9961777134, 0.9995508891, 0.9999479203)
+tst <- Diflat.test(25*(1:5), 300, 0.10, 'hamming', 'gaussian')
+verify.vectors('FT24', tst$p.value, exp)
+
+exp <- c(0.7117960318, 0.9816432658, 0.9983325694, 0.9998542774, 0.9999873167)
+tst <- Diflat.test(25*(1:5), 300, 0.10, 'hamming', 'weibull')
+verify.vectors('FT25', tst$p.value, exp)
+
+exp <- c(0.3360652726, 0.6721305452, 0.9367522890, 0.9656156017, 0.9824990403)
+tst <- Diflat.test(25*(1:5), 300, 0.10, 'hamming', 'gumbel')
+verify.vectors('FT26', tst$p.value, exp)
+
+exp <- c(0.4896792657, 0.9345446052, 0.9784344032, 0.9942610078, 0.9989181891)
+tst <- Diflat.test(25*(1:5), 300, 0.10, 'hanning', 'logistic')
+verify.vectors('FT27', tst$p.value, exp)
+
+exp <- c(0.7668255751, 0.9784423809, 0.9975965278, 0.9997306257, 0.9999697954)
+tst <- Diflat.test(25*(1:5), 300, 0.10, 'hanning', 'normal')
+verify.vectors('FT28', tst$p.value, exp)
+
+exp <- c(0.8082783170, 0.9867646426, 0.9989164850, 0.9999117001, 0.9999928074)
+tst <- Diflat.test(25*(1:5), 300, 0.10, 'hanning', 'weibull')
+verify.vectors('FT29', tst$p.value, exp)
+
+exp <- c(0.3815437870, 0.7630875739, 0.9511453876, 0.9739591419, 0.9882096362)
+tst <- Diflat.test(25*(1:5), 300, 0.10, 'hanning', 'gumbel')
+verify.vectors('FT30', tst$p.value, exp)
+
+
+verify.error('BTP FT1', Diflat.test, list(n=200, flp=0.10, filter='kaiser', basedist='logistic'))
+
+exp <- c(NA, NaN, NA, NA, NA)
+vals <- list(NA_real_, NaN, 'a', 50i, list(5))
+tst <- Diflat.test(vals, 200, 0.10, 'kaiser', 'logistic')$p.value
+verify.vectors('BTP FT2', tst, exp)
+
+tst <- Diflat.test(NULL, 200, 0.10, 'kaiser', 'logistic')$p.value
+verify.vectors('BTP FT3', tst, numeric(0))
+
+exp <- c(0, 1)
+tst <- Diflat.test(c(Inf, -Inf), 200, 0.10, 'kaiser', 'logistic', FALSE)$p.value
+verify.vectors('BTP FT4', tst, exp)
+
+exp <- c(0.6366534, 0.6402580, 0.6411503)
+tst <- sapply(list(200, 201.6, c(202, 203)),
+              function(n) {
+                Diflat.test(15, n, 0.10, 'kaiser', 'logistic', FALSE)$p.value
+              })
+verify.vectors('BTP FT6', tst, exp)
+
+verify.error('BTP FT7a', Diflat.test, list(15, 'a', 0.10, 'kaiser', 'logis'))
+verify.error('BTP FT7b', Diflat.test, list(15, 20i, 0.10, 'kaiser', 'logis'))
+verify.error('BTP FT7c', Diflat.test, list(15,list(20),0.10,'kaiser','logis'))
+verify.error('BTP FT7d', Diflat.test, list(15, NA, 0.10, 'kaiser', 'logis'))
+verify.error('BTP FT7e', Diflat.test, list(15, NaN, 0.10, 'kaiser', 'logis'))
+verify.error('BTP FT7f', Diflat.test, list(15, NULL, 0.10, 'kaiser', 'logis'))
+verify.error('BTP FT7g', Diflat.test, list(15, -10, 0.10, 'kaiser', 'logis'))
+
+exp <- c(0.3944224, 0.3760219, 0.3770751, 0.4244244)
+tst <- sapply(list(0.10, 11, 11.5, c(0.18, 0.19)),
+              function(w) {
+                Diflat.test(25, 200, w, 'kaiser', 'logistic', FALSE)$p.value
+              })
+verify.vectors('BTP FT8', tst, exp)
+
+verify.error('BTP FT9a', Diflat.test, list(25, 200, 'a', 'kaiser', 'logis'))
+verify.error('BTP FT9b', Diflat.test, list(25, 200, 0.1i, 'kaiser', 'logis'))
+verify.error('BTP FT9c', Diflat.test, list(25,200,list(0.1),'kaiser','logis'))
+verify.error('BTP FT9d', Diflat.test, list(25, 200, NA, 'kaiser', 'logis'))
+verify.error('BTP FT9e', Diflat.test, list(25, 200, NaN, 'kaiser', 'logis'))
+verify.error('BTP FT9f', Diflat.test, list(25, 200, NULL, 'kaiser', 'logis'))
+verify.error('BTP FT9g', Diflat.test, list(25, 200, 0.0, 'kaiser', 'logis'))
+verify.error('BTP FT9h', Diflat.test, list(25, 200, 201, 'kaiser', 'logis'))
+
+exp <- c(0.3337037, 0.3944224, 0.2245562, 0.3944224, 0.3944224)
+tst <- sapply(list('bartlett', 'nutall', c('hanning', 'hamming'), NA, NULL),
+              function(f) {
+                Diflat.test(25, 200, 0.10, f, 'logistic', FALSE)$p.value
+              })
+verify.vectors('BTP FT10', tst, exp)
+
+exp <- c(0.05089109, 0.28268346, 0.07233322, 0.44934198, 0.28268346)
+tst <- sapply(list('weibull', 'beta', c('normal','gumbel'), 'gumbel', NA),
+              function(b) {
+                Diflat.test(30, 200, 0.12, 'kaiser', b, FALSE)$p.value
+              })
+verify.vectors('BTP FT11', tst, exp)
+
+verify.error('BTP FT12', Diflat.test,
+             list(30, 200, 0.12, 'kaiser', 'logistic', 'a'))
+
+verify.warning('BTP FT13', Diflat.test, list(25, 200, 0.045, 'kaiser', 'logis'))
+verify.warning('BTP FT14', Diflat.test, list(25, 200, 0.31, 'kaiser', 'logis'))
+verify.warning('BTP FT15', Diflat.test, list(25,  45, 0.10, 'kaiser', 'logis'))
+verify.warning('BTP FT16', Diflat.test, list(25, 510, 0.10, 'kaiser', 'logis'))
+
+
+exp <- c(60.90104702, 106.40054661, 129.92821968, 150.11647133, 169.95935813)
+lens <- Diflat.critval(qs, 250, 0.15, 'kaiser', 'logistic')
+verify.vectors('FC1', lens, exp)
+
+exp <- c(36.90697853, 81.84278138, 132.35155436, 188.43329747, 250.08801071)
+lens <- sapply(100*(1:5),
+               function(n) {
+                 Diflat.critval(0.005, n, 0.15, 'kaiser', 'logistic') })
+verify.vectors('FC2', lens, exp)
+
+exp <- c(60.58498381, 59.63162125, 58.67825869, 57.72489613, 56.77153357)
+lens <- sapply(0.05*(1:5),
+               function(w) {
+                 Diflat.critval(0.005, 150, w, 'kaiser', 'logistic') })
+verify.vectors('FC3', lens, exp)
+
+exp <- c(46.15224657, 81.44852698, 107.29244563, 131.61659888, 155.78302988)
+lens <- Diflat.critval(qs, 250, 0.15, 'hanning', 'logistic')
+verify.vectors('FC4', lens, exp)
+
+exp <- c(43.83631255, 72.71371974, 95.68917183, 117.75884001, 139.73477354)
+lens <- Diflat.critval(qs, 250, 0.15, 'kaiser', 'normal')
+verify.vectors('FC5', lens, exp)
+
+exp <- c(39.45955608, 64.63830711, 85.35280865, 105.38507098, 125.34675092)
+lens <- Diflat.critval(qs, 250, 0.15, 'kaiser', 'weibull')
+verify.vectors('FC6', lens, exp)
+
+exp <- c(84.83224913, 137.16676665, 156.71573987, 171.61411632, 186.03371242)
+lens <- Diflat.critval(qs, 250, 0.15, 'kaiser', 'gumbel')
+verify.vectors('FC7', lens, exp)
+
+verify.error('BTP FC1', Dipeak.critval,
+             list(n=100, flp=0.15, filter='kaiser', basedist='logistic'))
+
+exp <- c(NA, NaN, NA, NA, NA)
+vals <- list(NA_integer_, NaN, 'a', 0.2i, list(0.2))
+lens <- Diflat.critval(vals, 200, 0.10, 'kaiser', 'logistic')
+verify.vectors('BTP FC2', lens, exp)
+
+lens <- Diflat.critval(NULL, 200, 0.10, 'kaiser', 'logistic')
+verify.vectors('BTP FC3', lens, numeric(0))
+
+exp <- c(NaN, NaN)
+lens <- Diflat.critval(c(Inf, -Inf), 225, 0.15, 'kaiser', 'logistic')
+verify.vectors('BTP FC4', lens, exp)
+
+exp <- c(68.61726980, 69.11735165, 69.52734586)
+lens <- sapply(list(200, 201.1, c(202, 203)),
+               function(n) {
+                 Diflat.critval(0.04, n, 0.15, 'kaiser', 'gumbel') })
+verify.vectors('BTP FC6', lens, exp)
+
+verify.error('BTP PC7a', Diflat.critval,
+             list(0.03, 'a', 0.15, 'kaiser', 'logistic'))
+verify.error('BTP PC7b', Diflat.critval,
+             list(0.03, 250i, 0.15, 'kaiser', 'logistic'))
+verify.error('BTP PC7c', Diflat.critval,
+             list(0.03, list(225), 0.15, 'kaiser', 'logistic'))
+verify.error('BTP PC7d', Diflat.critval,
+             list(0.03, NA, 0.15, 'kaiser', 'logistic'))
+verify.error('BTP PC7e', Diflat.critval,
+             list(0.03, NaN, 0.15, 'kaiser', 'logistic'))
+verify.error('BTP PC7f', Diflat.critval,
+             list(0.03, NULL, 0.15, 'kaiser', 'logistic'))
+verify.error('BTP PC7g', Diflat.critval,
+             list(0.03, -1, 0.15, 'kaiser', 'logistic'))
+
+exp <- c(41.9495346, 41.5702802, 44.0733596, 46.5005881)
+lens <- sapply(list(0.10, 21, 30.9, c(0.18, 0.19)),
+               function(w) { Diflat.critval(0.02, 225, w, 'kaiser','weibull') })
+verify.vectors('BTP FC8', lens, exp)
+
+verify.error('BTP FC9a', Diflat.critval,
+             list(0.03, 210, 'a', 'kaiser', 'logistic'))
+verify.error('BTP FC9b', Diflat.critval, 
+             list(0.03, 210, 0.15i, 'kaiser', 'logistic'))
+verify.error('BTP FC9c', Diflat.critval, 
+             list(0.03, 210, list(0.15), 'kaiser', 'logistic'))
+verify.error('BTP FC9d', Diflat.critval, 
+             list(0.03, 210, NA, 'kaiser', 'logistic'))
+verify.error('BTP FC9e', Diflat.critval, 
+             list(0.03, 210, NaN, 'kaiser', 'logistic'))
+verify.error('BTP FC9f', Diflat.critval, 
+             list(0.03, 210, NULL, 'kaiser', 'logistic'))
+verify.error('BTP FC9g', Diflat.critval, 
+             list(0.03, 210, -0.12, 'kaiser', 'logistic'))
+verify.error('BTP FC9h', Diflat.critval, 
+             list(0.03, 210, 300, 'kaiser', 'logistic'))
+
+exp <- c(43.9510686, 49.0385735, 40.7688275, 49.0385735, 49.0385735)
+lens <- sapply(list('bartlett', 'nutall', c('hamming', 'hanning'), NA, NULL),
+               function(f) { Diflat.critval(0.02, 225, 0.13, f, 'normal') })
+verify.vectors('BTP FC10', lens, exp)
+
+exp <- c(33.2388032, 50.4892131, 36.6771610, 68.6172698, 50.4892131, 50.4892131)
+lens <- sapply(list('weibull', 'beta', c('normal','gumbel'), 'gumbel', NA,NULL),
+               function(b) { Diflat.critval(0.04, 200, 0.15, 'kaiser', b) })
+verify.vectors('BTP FC11', lens, exp)
+
+verify.warning('BTP FC12', Diflat.critval,
+               list(0.03, 210, 0.03, 'kaiser','weibull'))
+verify.warning('BTP FC13', Diflat.critval,
+               list(0.03, 210, 0.33, 'kaiser','weibull'))
+verify.warning('BTP FC14', Diflat.critval,
+               list(0.03,  40, 0.10, 'kaiser','weibull'))
+verify.warning('BTP FC15', Diflat.critval,
+               list(0.03, 520, 0.10, 'kaiser','weibull'))
+
+# Random setup test.  Note they do generate bad conversions (small p values
+# that don't map back, or non-finite critical values) that are ignored in
+# the back-conversion functions.
+stress <- gen.stress(500)
+run.stress(stress)
+
+# testing check for flats.
+}
+
+
+### Number Runs (KR) and Max Run Length (RL) Tests
+
+if (('all' == testing) || ('runs' %in% testing)) {
+
+## Constructed sequences.
+
+# Symmetric transition matrix, 2/32 off diagonal, 10/32 on diagonal.
+x <- c(rep(0L, 10), rep(1L,10), rep(2L,10), rep(3L,10),
+       0, 2, 1, 3, 1, 0, 3, 2, 0, 0, 1, 1, 2, 2, 3, 3,
+       0, 2, 1, 3, 1, 0, 3, 2, 0)
+# 17x 0, 16x 1, 16x 2, 16x3.   25 runs per rle.
+# a1 = 65, a2 = 3*(17*16) + 3(16*16), a3 = 3*(17*16*16) + (16*16*16).
+#   E = 47.74, V = 11.62, z = (25-E)/sqrt(v) = -6.670946.
+exp.nr <- c(25, 49.73846154, 11.61621302, 1.958598e-13)
+pruns <- Dinrun.test(x, 1, length(x), 0, TRUE)
+res <- with(pruns, c(statistic, parameter$Erun, parameter$Vrun, p.value))
+verify.vectors('KR9', res, exp.nr)
+exp.tmat <- matrix(c(rep(c(10, 2, 2, 2, 2), 3), 10), nrow=4, byrow=TRUE) / 16
+exp.smat <- rep(0.25, 4)
+exp.rl <- c(10, 65, 0.1017787)
+prl <- Dirunlen.test(x, 1, length(x), 0)
+res <- with(prl, c(statistic, parameter$featlen, p.value))
+verify.vectors('RL9', res, exp.rl)
+verify.vectors('RL9tmat', prl$tmat, exp.tmat)
+verify.vectors('RL9wt', prl$wt, exp.smat)
+
+# Symmetric transition matrix, 2/18 off diagonal, 6/18 on diagonal.
+x <- c(rep(0L,6), rep(1L,6), rep(2L,6), 1, 0, 2,
+       rep(0L,2), rep(1L,2), rep(2L,2), 1, 0, 2, 0)
+# 11x 0, 10x 1, 10x 2.  rle says 13 runs.
+# a1 = 31, a2 = 2*11*10 + 10*10, a3 = 11*10*10.
+#   E = 21.64516, V = 6.422477
+exp.nr <- c(13, 21.64516129, 6.422476587, 0.0003232517)
+pruns <- Dinrun.test(x, 1, length(x), 0, FALSE)
+res <- with(pruns, c(statistic, parameter$Erun, parameter$Vrun, 1-p.value))
+verify.vectors('KR10', res, exp.nr)
+exp.tmat <- matrix(c(rep(c(6,2,2,2), 2), 6), nrow=3, byrow=TRUE) / 10
+exp.smat <- rep(1/3, 3)
+exp.rl <- c(6, 31, 0.2174641)
+prl <- Dirunlen.test(x, 1, length(x), 0)
+res <- with(prl, c(statistic, parameter$featlen, p.value))
+verify.vectors('RL10', res, exp.rl)
+verify.vectors('RL10tmat', prl$tmat, exp.tmat)
+verify.vectors('RL10wt', prl$wt, exp.smat)
+
+## Expected values from development version.
+
+sdiw <- mock.signed(faithful$eruptions, 16)
+endpts <- c(36, 125, 160, 221, 257)
+exp.nr <- c(0.5215094, 0.5552983, 0.7708809, 0.4270489)
+pruns <- Dinrun.test(sdiw, endpts[-length(endpts)]+1, endpts[-1L], 0, TRUE)
+verify.vectors('KR1', pruns$p.value, exp.nr)
+exp.rl <- c(0.3124169, 0.3520344, 0.1874553, 0.3475706)
+prl <- Dirunlen.test(sdiw, endpts[-length(endpts)]+1, endpts[-1L], 0)
+verify.vectors('RL1', prl$p.value, exp.rl)
+
+sdiw <- mock.signed(quakes[,3], 100)
+endpts <- c(101, 117, 508, 923)
+exp.nr <- c(0.0983528, 0.8968052, 0.1648317)
+pruns <- Dinrun.test(sdiw, endpts[-length(endpts)]+1, endpts[-1L], 0, TRUE)
+verify.vectors('KR2', pruns$p.value, exp.nr)
+exp.rl <- c(0.004465273, 0.035539953, 0.192173503)
+prl <- Dirunlen.test(sdiw, endpts[-length(endpts)]+1, endpts[-1L], 0)
+verify.vectors('RL2', prl$p.value, exp.rl)
+
+sdiw <- mock.signed(iris$Petal.Length, 10)
+endpts <- c(36, 69, 90, 115, 131)
+exp.nr <- c(0.1600951, 0.9858567, 0.6952383, 0.9504158)
+pruns <- Dinrun.test(sdiw, endpts[-length(endpts)]+1, endpts[-1L], 0, FALSE)
+verify.vectors('KR3', 1-pruns$p.value, exp.nr)
+exp.rl <- c(0.1182965, 0.3226627, 0.2835493, 0.3481125)
+prl <- Dirunlen.test(sdiw, endpts[-length(endpts)]+1, endpts[-1L], 0)
+verify.vectors('RL3', prl$p.value, exp.rl)
+
+sdiw <- mock.signed(tstds1, 50)
+endpts <- c(51, 188, 311, 457, 572)
+exp.nr <- c(0.1805841, 0.002611459, 0.004019580, 1.252741e-5)
+pruns <- Dinrun.test(sdiw, endpts[-length(endpts)]+1, endpts[-1L], 0, TRUE)
+verify.vectors('KR4', pruns$p.value, exp.nr)
+exp.rl <- c(0.075221957, 0.027432750, 0.158786506, 0.003583357)
+prl <- Dirunlen.test(sdiw, endpts[-length(endpts)]+1, endpts[-1L], 0)
+verify.vectors('RL4', prl$p.value, exp.rl)
+
+sdiw <- mock.signed(tstds2, 23)
+endpts <- c(54, 181, 260)
+exp.nr <- c(2.335938e-11, 3.13392e-04)
+pruns <- Dinrun.test(sdiw, endpts[-length(endpts)]+1, endpts[-1L], 0, TRUE)
+verify.vectors('KR5', pruns$p.value, exp.nr)
+exp.rl <- c(0.002823984, 0.006634228)
+prl <- Dirunlen.test(sdiw, endpts[-length(endpts)]+1, endpts[-1L], 0)
+verify.vectors('RL5', prl$p.value, exp.rl)
+
+sdiw <- mock.signed(tstds3, 31)
+endpts <- c(42, 91, 150, 278, 300)
+exp.nr <- c(0.8400757, 0.1720573, 0.3310905, 0.2000497)
+pruns <- Dinrun.test(sdiw, endpts[-length(endpts)]+1, endpts[-1L], 0, FALSE)
+verify.vectors('KR6', 1-pruns$p.value, exp.nr)
+exp.rl <- c(0.0063611751, 0.2534586099, 0.0006469969, 0.1479612878)
+prl <- Dirunlen.test(sdiw, endpts[-length(endpts)]+1, endpts[-1L], 0)
+verify.vectors('RL6', prl$p.value, exp.rl)
+
+sdiw <- mock.signed(tstds4, 29)
+endpts <- c(136, 223)
+exp.nr <- c(0.3461947)
+pruns <- Dinrun.test(sdiw, endpts[-length(endpts)]+1, endpts[-1L], 0, TRUE)
+verify.vectors('KR7', pruns$p.value, exp.nr)
+exp.rl <- c(0.1590743)
+prl <- Dirunlen.test(sdiw, endpts[-length(endpts)]+1, endpts[-1L], 0)
+verify.vectors('RL7', prl$p.value, exp.rl)
+
+sdiw <- mock.signed(tstds5, 5)
+endpts <- c(13, 31, 40)
+exp.nr <- c(0.8507024, 0.6560143)
+pruns <- Dinrun.test(sdiw, endpts[-length(endpts)]+1, endpts[-1L], 0, TRUE)
+verify.vectors('KR8', pruns$p.value, exp.nr)
+exp.rl <- c(0.3530922, 0.3872551)
+prl <- Dirunlen.test(sdiw, endpts[-length(endpts)]+1, endpts[-1L], 0)
+verify.vectors('RL8', prl$p.value, exp.rl)
+
+## Bad data from interactive testing.
+
+exp <- rep(NA_real_, 3)
+prl <- Dirunlen.test(c(NA,NA,0,1,-1,0), c(NA,4,NA), c(NA,6,NA), 0)
+verify.vectors('RL9', prl$p.value, exp)
+
+## Stress tests.
+
+verify.error('BTP KR1', Dinrun.test, list(stID=1, endID=10, 0, TRUE))
+verify.error('BTP RL1', Dirunlen.test, list(stID=1, endID=10, 0))
+
+verify.error('BTP KR2', Dinrun.test, list(NULL, c(13,31), c(31,40), 0, FALSE))
+verify.error('BTP RL2', Dirunlen.test, list(NULL, c(13,31), c(31,40), 0))
+
+pruns <- Dinrun.test(NULL, NULL, NULL, 0, TRUE)$p.value
+verify.vectors('BTP KR3', pruns, numeric(0))
+prl <- Dirunlen.test(NULL, NULL, NULL, 0)$p.value
+verify.vectors('BTP RL3', prl, numeric(0))
+
+exp <- c(NA, NA, NA, NA)
+stID <- c(NA, 13, NaN, 13)
+endID <- c(31, NA, 31, NaN)
+pruns <- Dinrun.test(sdiw, stID+1, endID, 0, TRUE)$p.value
+verify.vectors('BTP KR4', pruns, exp)
+prl <- Dirunlen.test(sdiw, stID+1, endID, 0)$p.value
+verify.vectors('BTP RL4', prl, exp)
+
+pruns <- Dinrun.test(sdiw, NULL, NULL, 0, TRUE)$p.value
+verify.vectors('BTP KR5', pruns, numeric(0))
+prl <- Dirunlen.test(sdiw, NULL, NULL, 0)$p.value
+verify.vectors('BTP RL5', prl, numeric(0))
+
+verify.error('BTP KR6a', Dinrun.test, list(sdiw, 'a', 31, 0))
+verify.error('BTP KR6b', Dinrun.test, list(sdiw, 13i, 31, 0))
+verify.error('BTP KR6c', Dinrun.test, list(sdiw, list(13.1), 31, 0))
+verify.error('BTP KR6d', Dinrun.test, list(sdiw, c(13, 31), 31, 0))
+verify.error('BTP KR6e', Dinrun.test, list(sdiw, 0, 31, 0))
+verify.error('BTP KR6f', Dinrun.test, list(sdiw, length(sdiw)+1, 31, 0))
+
+verify.error('BTP KR7a', Dinrun.test, list(sdiw, 13, 'a', 0))
+verify.error('BTP KR7b', Dinrun.test, list(sdiw, 31, 31i, 0))
+verify.error('BTP KR7c', Dinrun.test, list(sdiw, 13, list(31.1), 0))
+verify.error('BTP KR7d', Dinrun.test, list(sdiw, 13, c(13, 31), 0))
+verify.error('BTP KR7e', Dinrun.test, list(sdiw, 13, 0, 0))
+verify.error('BTP KR7f', Dinrun.test, list(sdiw, 13, length(sdiw)+1, 0))
+verify.error('BTP KR7g', Dinrun.test, list(sdiw, 31, 13, 0))
+
+verify.error('BTP KR8a', Dinrun.test, list(sdiw, 13, 31, 'a'))
+verify.error('BTP KR8b', Dinrun.test, list(sdiw, 13, 31, 0.001i))
+verify.error('BTP KR8c', Dinrun.test, list(sdiw, 13, 31, list(0.001)))
+verify.error('BTP KR8d', Dinrun.test, list(sdiw, 13, 31, -0.001))
+verify.error('BTP KR8e', Dinrun.test, list(sdiw, 13, 31, 1.01))
+
+verify.error('BTP RL6a', Dirunlen.test, list(sdiw, 'a', 31, 0))
+verify.error('BTP RL6b', Dirunlen.test, list(sdiw, 13i, 31, 0))
+verify.error('BTP RL6c', Dirunlen.test, list(sdiw, list(13.1), 31, 0))
+verify.error('BTP RL6d', Dirunlen.test, list(sdiw, c(13, 31), 31, 0))
+verify.error('BTP RL6e', Dirunlen.test, list(sdiw, 0, 31, 0))
+verify.error('BTP RL6f', Dirunlen.test, list(sdiw, length(sdiw)+1, 31, 0))
+
+verify.error('BTP RL7a', Dirunlen.test, list(sdiw, 13, 'a', 0))
+verify.error('BTP RL7b', Dirunlen.test, list(sdiw, 31, 31i, 0))
+verify.error('BTP RL7c', Dirunlen.test, list(sdiw, 13, list(31.1), 0))
+verify.error('BTP RL7d', Dirunlen.test, list(sdiw, 13, c(13, 31), 0))
+verify.error('BTP RL7e', Dirunlen.test, list(sdiw, 13, 0, 0))
+verify.error('BTP RL7f', Dirunlen.test, list(sdiw, 13, length(sdiw)+1, 0))
+verify.error('BTP RL7g', Dirunlen.test, list(sdiw, 31, 13, 0))
+
+verify.error('BTP RL8a', Dirunlen.test, list(sdiw, 13, 31, 'a'))
+verify.error('BTP RL8b', Dirunlen.test, list(sdiw, 13, 31, 0.001i))
+verify.error('BTP RL8c', Dirunlen.test, list(sdiw, 13, 31, list(0.001)))
+verify.error('BTP RL8d', Dirunlen.test, list(sdiw, 13, 31, -0.001))
+verify.error('BTP RL8e', Dirunlen.test, list(sdiw, 13, 31, 1.01))
+
+sdiw.na <- c(sdiw[1:20], NA, NA, NA, sdiw[21:length(sdiw)])
+endpts <- c(13, 34, 43)
+pruns <- Dinrun.test(sdiw.na, endpts[-length(endpts)]+1, endpts[-1L], 0)
+verify.vectors('BTP KR9', pruns$p.value, exp.nr)
+prl <- Dirunlen.test(sdiw.na, endpts[-length(endpts)]+1, endpts[-1L], 0)
+verify.vectors('BTP RL9', prl$p.value, exp.rl)
+
+sdiw.na <- c(sdiw[1:20], NaN, NaN, sdiw[21:length(sdiw)])
+endpts <- c(13, 33, 42)
+pruns <- Dinrun.test(sdiw.na, endpts[-length(endpts)]+1, endpts[-1L], 0)
+verify.vectors('BTP KR10', pruns$p.value, exp.nr)
+prl <- Dirunlen.test(sdiw.na, endpts[-length(endpts)]+1, endpts[-1L], 0)
+verify.vectors('BTP RL10', prl$p.value, exp.rl)
+
+sdiw.c <- c('a', 'b', 'c', NA)[match(sdiw, c(-1, 0, 1, NA))]
+pruns <- Dinrun.test(sdiw.na, endpts[-length(endpts)]+1, endpts[-1L], 0)
+verify.vectors('BTP KR11', pruns$p.value, exp.nr)
+prl <- Dirunlen.test(sdiw.na, endpts[-length(endpts)]+1, endpts[-1L], 0)
+verify.vectors('BTP RL11', prl$p.value, exp.rl)
+
+exp <- c(1)
+pruns <- Dinrun.test(rep(1,100), 1, 100, 0.001)
+verify.vectors('BTP KR12', pruns$p.value, exp)
+prl <- Dirunlen.test(rep(1, 100), 1, 100, 0.001)
+verify.vectors('BTP RL12', prl$p.value, exp)
+
+# testing check for runs.
+}
+
+
+### Feature Height via Excursion (EH) Tests
+
+if (('all' == testing) || ('excur' %in% testing)) {
+
+## Expected values from development version.  The sampling in the C version
+## has changed, which is absorbed by the relative difference check added to
+## verify.excurht/nearly or by increasing sample sizes.
+
+diw <- mock.diw(faithful$eruptions, 24)
+xbase <- diff(diw[!is.na(diw)])
+# Peak at 90% support.  minmin 38-232, max at 115.
+stID <- 47
+endID <- 126
+# Expected values from development version.
+exp <- list(statistic=1.1830, p.value=0.0018,
+            critval=c(0.6030, 0.7020, 0.9140, NA))
+# Note ndraw is not endID-stID+1 because we lose 1 for the diff.
+tst <- Diexcurht.test(fht(diw, stID,endID), endID-stID, xbase, 5000, TRUE,FALSE, 21)
+verify.excurht('excurht 1', tst, exp)
+
+# Flat at 0.075 ripple.
+stID <- 155
+endID <- 231
+exp <- list(statistic=0.068, p.value=0.000, critval=c(NA, 0.150, 0.200, 0.233))
+tst <- Diexcurht.test(fht(diw, stID,endID), endID-stID, xbase, 7500, FALSE,TRUE, 17)
+verify.excurht('excurht 2', tst, exp)
+
+
+diw <- mock.diw(tstds2, 24)
+xbase <- diff(diw[!is.na(diw)])
+# Peak at 90% support.  minmin 55-182, max at 142.
+stID <- 80
+endID <- 140
+exp <- list(statistic=3.1432959, p.value=0.4004,
+            critval=c(5.72399, 6.74828, 9.30786, NA))
+tst <- Diexcurht.test(fht(diw, stID,endID), endID-stID, xbase, 5000, TRUE,FALSE, 5)
+verify.excurht('excurht 3', tst, exp)
+
+# Peak at 90% support.  minmin 182-250, max at 228.
+stID <- 181
+endID <- 221
+exp <- list(statistic=2.761856036, p.value=0.3274,
+            critval=c(4.66175, 5.56983, 7.53372, NA))
+tst <- Diexcurht.test(fht(diw, stID,endID), endID-stID, xbase, 5000, TRUE,FALSE, 7)
+verify.excurht('excurht 4', tst, exp)
+
+# Flat at 0.05 ripple.
+stID <- 53
+endID <- 111
+exp <- list(statistic=0.590625, p.value=0.0000,
+            critval=c(NA, 1.081850, 1.424357, 1.670282))
+tst <- Diexcurht.test(fht(diw, stID,endID), endID-stID, xbase, 5000, FALSE,TRUE, 11)
+verify.excurht('excurht 5', tst, exp)
+
+# Flat at 0.05 ripple.
+stID <- 165
+endID <- 205
+exp <- list(statistic=0.443405, p.value=0.0002,
+            critval=c(NA, 0.746235, 0.989531, 1.184439))
+tst <- Diexcurht.test(fht(diw, stID,endID), endID-stID, xbase, 10000, FALSE,TRUE, 13)
+verify.excurht('excurht 6', tst, exp)
+
+# Flat at 0.05 ripple.  Increased nexcur to get closer to p.value.
+stID <- 242
+endID <- 269
+exp <- list(statistic=0.722217, p.value=0.05720,
+            critval=c(NA, 0.501346, 0.698955, 0.821512))
+tst <- Diexcurht.test(fht(diw, stID,endID), endID-stID, xbase, 10000, FALSE,TRUE, 19)
+verify.excurht('excurht 7', tst, exp)
+
+
+diw <- mock.diw(tstds4, 36)
+xbase <- diff(diw[!is.na(diw)])
+# Peak between minima.
+stID <- 106
+endID <- 136
+exp <- list(statistic=0.361142, p.value=0.6444,
+            critval=c(1.22813, 1.42624, 2.01990, NA))
+tst <- Diexcurht.test(fht(diw, stID,endID), endID-stID, xbase, 5000, TRUE,FALSE, 5)
+verify.excurht('excurht 8', tst, exp)
+
+# Peak between minima.
+stID <- 136
+endID <- 226
+exp <- list(statistic=1.100365, p.value=0.5060,
+            critval=c(2.172173, 2.599419, 3.412572, NA))
+tst <- Diexcurht.test(fht(diw, stID,endID), endID-stID, xbase, 5000,
+                      TRUE,FALSE, 7)
+verify.excurht('excurht 9', tst, exp)
+
+# Flat at 0.05 ripple.
+stID <- 202
+endID <- 274
+exp <- list(statistic=0.2561035, p.value=0.00000,
+            critval=c(NA, 0.4121106, 0.5295361, 0.6176088))
+tst <- Diexcurht.test(fht(diw, stID,endID), endID-stID, xbase, 2500, FALSE,TRUE, 11)
+verify.excurht('excurht 10', tst, exp)
+
+# Flat at 0.05 ripple.
+stID <- 96
+endID <- 120
+exp <- list(statistic=0.2355224, p.value=0.08840,
+            critval=c(NA, 0.1516187, 0.2041827, 0.2435162))
+tst <- Diexcurht.test(fht(diw, stID,endID), endID-stID, xbase, 2500, FALSE,TRUE, 13)
+verify.excurht('excurht 11', tst, exp)
+
+## Stress Tests
+
+verify.error('BTP EH1', Diexcurht.test,
+             list(ndraw=endID-stID, xbase=diff(diw[!is.na(diw)]), nperm=2500))
+
+xbase.bad <- c(NA, xbase[1:25], NA, NA, xbase[26:length(xbase)], NA, NA)
+# Not +1 after endID-stID because diff shortens.
+verify.error('BTP EH2', Diexcurht.test,
+             list(fht(diw, stID,endID), endID-stID, xbase.bad, 2500, FALSE,TRUE, 13))
+
+xbase.bad <- c(NaN, NaN, xbase[1:30], NaN,NaN,NaN, xbase[31:length(xbase)], NaN)
+verify.error('BTP EH3', Diexcurht.test,
+             list(fht(diw, stID,endID), endID-stID, xbase.bad, 2500, FALSE,TRUE, 13))
+
+xbase.bad <- c(Inf, Inf, xbase[1:30], Inf,Inf,Inf, xbase[31:length(xbase)], Inf)
+verify.error('BTP EH4', Diexcurht.test,
+             list(fht(diw, stID,endID), endID-stID, xbase.bad, 2500, FALSE,TRUE, 13))
+
+xbase.bad <- c(-Inf, xbase[1:30], -Inf,-Inf,-Inf, xbase[31:length(xbase)], -Inf)
+verify.error('BTP EH5', Diexcurht.test,
+             list(fht(diw, stID,endID), endID-stID, xbase.bad, 2500, FALSE,TRUE, 13))
+
+xbase.bad <- unlist(list('a', 'b', xbase[1:40], 'c', xbase[41:length(xbase)]))
+verify.error('BTP EH6', Diexcurht.test,
+             list(fht(diw, stID,endID), endID-stID, xbase.bad, 2500, FALSE,TRUE, 13))
+
+verify.error('BTP EH7', Diexcurht.test,
+             list(fht(diw, stID,endID), endID-stID, NULL, 2500, FALSE,TRUE, 13))
+
+exp <- list(statistic=c(NA, NaN), p.value=c(NA, NA), critval=rep(NA,8))
+tst <- Diexcurht.test(c(NA, NaN), rep(endID-stID,2), xbase, 2500, FALSE,TRUE, 13)
+verify.excurht('BTP EH8', tst, exp)
+
+# Increased nexcur.rep to match cv99 with new sampling in C version.
+exp <- list(statistic=c(0.3611421, 1.1003654), p.value=c(0.6444, 0.5060),
+            critval=matrix(c(1.22813, 1.42624, 2.01990, NA,
+                             2.172173, 2.599419, 3.412572, NA),
+                           nrow=2, byrow=TRUE))
+tst <- Diexcurht.test(c(fht(diw, 106,136), fht(diw, 136,226)),
+                      c(136-106,226-136), xbase, 10000, TRUE,FALSE, 9)
+verify.excurht('BTP EH9', tst, exp)
+
+verify.error('BTP EH10a', Diexcurht.test,
+             list('a', endID-stID, xbase, 2500, FALSE,TRUE, 13))
+verify.error('BTP EH10b', Diexcurht.test,
+             list(13i, endID-stID, xbase, 2500, FALSE,TRUE, 13))
+verify.error('BTP EH10c', Diexcurht.test,
+             list(list(fht(diw, stID,endID)), endID-stID, xbase, 2500, FALSE,TRUE,13))
+verify.error('BTP EH10d', Diexcurht.test,
+             list(-1.1, endID-stID, xbase, 2500, FALSE,TRUE, 13))
+
+verify.error('BTP EH11a', Diexcurht.test,
+             list(fht(diw, stID,endID), endID-stID, xbase, 'a', FALSE,TRUE, 13))
+verify.error('BTP EH11b', Diexcurht.test,
+             list(fht(diw, stID,endID), endID-stID, xbase, NA, FALSE,TRUE, 13))
+verify.error('BTP EH11c', Diexcurht.test,
+             list(fht(diw, stID,endID), endID-stID, xbase, NaN, FALSE,TRUE, 13))
+verify.error('BTP EH11d', Diexcurht.test,
+             list(fht(diw, stID,endID), endID-stID, xbase, Inf, FALSE,TRUE, 13))
+verify.error('BTP EH11e', Diexcurht.test,
+             list(fht(diw, stID,endID), endID-stID, xbase, 0, FALSE,TRUE, 13))
+
+# Will round to same change in nexcur.rep as BTP EH9.
+tst <- Diexcurht.test(c(fht(diw, 106,136), fht(diw, 136,226)),
+                      c(136-106,226-136), xbase, c(9999.7, 6000), TRUE,FALSE, 9)
+verify.excurht('BTP EH12', tst, exp)
+
+verify.error('BTP EH13', Diexcurht.test,
+             list(fht(diw, stID,endID), endID-stID, xbase, 5000, 'a', 'b', 13))
+
+diw <- mock.diw(rep(0,100), 10)
+xbase <- diff(diw[!is.na(diw)])
+stID <- 1
+endID <- length(xbase)
+# Note mid-quantile approximation in middle of equal values.  OOB heights
+# checked in PH18 and PH19.
+exp <- list(statistic=0, p.value=0.5, critval=matrix(c(0,0,0,0), nrow=1))
+tst <- Diexcurht.test(fht(xbase, stID,endID), endID-stID, xbase, 5000, TRUE,FALSE, 2)
+verify.excurht('BTP EH14', tst, exp)
+
+# testing check for excursions.
+}
+
+
+### Feature Height via Runs Permutation (PH) Tests
+
+if (('all' == testing) || ('perm' %in% testing)) {
+
+## Expected values initially from development version, before shifting to
+## mid-distribution in C version (manually checking width from permutation).
+
+diw <- mock.diw(tstds4, 36)
+# Peak between minima.  dsign has -1, +1 so two state test.
+stID <- 106
+endID <- 136
+dsign <- sign(diff(diw[stID:endID]))
+runs <- rle(dsign) ; runs <- runs$lengths * runs$values
+exp <- list(statistic=9, p.value=0.0058, critval=c(8, 8, 9, 9))
+pht <- Dipermht.test(diff(range(cumsum(dsign))), runs, 5000, FALSE, 11)
+verify.permht('permht 1', pht, exp)
+
+stID <- 136
+endID <- 226
+# dsign has -1, +1 so two state test.
+dsign <- sign(diff(diw[stID:endID]))
+runs <- rle(dsign) ; runs <- runs$lengths * runs$values
+exp <- list(statistic=18, p.value=0.0206, critval=c(15, 16, 19, 19))
+pht <- Dipermht.test(diff(range(cumsum(dsign))), runs, 5000, FALSE, 11)
+verify.permht('permht 2', pht, exp)
+
+diw <- mock.diw(faithful$eruptions, 24)
+# Peak between minima.  dsign has -1, 0, +1, so three state test.
+stID <- 38
+endID <- 232
+dsign <- sign(diff(diw[stID:endID]))
+runs <- rle(dsign) ; runs <- runs$lengths * runs$values
+exp <- list(statistic=27, p.value=0.0029, critval=c(19, 21, 25, 26))
+pht <- Dipermht.test(diff(range(cumsum(dsign))), runs, 5000, FALSE, 3)
+verify.permht('permht 3', pht, exp)
+
+# This triggered a bad 3 symbol sequence in alt.permute.  Verify fix.
+diw <- mock.diw(faithful$waiting, 27)
+# Peak between minima, with three symbols (1x -1, 3x 0, 1x 1).
+stID <- 75
+endID <- 82
+dsign <- sign(diff(diw[stID:endID]))
+runs <- rle(dsign) ; runs <- runs$lengths * runs$values
+# Note mid-quantile approximation in middle of equal values.
+exp <- list(statistic=1, p.value=0.5, critval=c(1,1,1,1))
+pht <- Dipermht.test(diff(range(cumsum(dsign))), runs, 5000, FALSE, 2)
+verify.permht('permht 4', pht, exp)
+
+## Interior Tests
+
+# Full enumeration of permutations, without sign screening.
+# Expected values copied from e1071:permutations.
+
+exp <- matrix(c(1,2, 2,1), nrow=2, byrow=TRUE)
+perm <- permute.all(1:2)
+verify.matrices('permute.all n=2', perm, exp)
+
+exp <- matrix(c(1, 2, 3,   2, 1, 3,   2, 3, 1,
+                1, 3, 2,   3, 1, 2,   3, 2, 1),
+              nrow=6, byrow=TRUE)
+perm <- permute.all(1:3)
+verify.matrices('permute.all n=3', perm, exp)
+
+exp <- matrix(c( 1, 2, 3, 4,   2, 1, 3, 4,   2, 3, 1, 4,
+                 1, 3, 2, 4,   3, 1, 2, 4,   3, 2, 1, 4,
+                 2, 3, 4, 1,   1, 3, 4, 2,   3, 1, 4, 2,
+                 3, 2, 4, 1,   1, 2, 4, 3,   2, 1, 4, 3,
+                 3, 4, 1, 2,   3, 4, 2, 1,   1, 4, 2, 3,
+                 2, 4, 1, 3,   2, 4, 3, 1,   1, 4, 3, 2,
+                 4, 1, 2, 3,   4, 2, 1, 3,   4, 2, 3, 1,
+                 4, 1, 3, 2,   4, 3, 1, 2,   4, 3, 2, 1),
+              nrow=24, byrow=TRUE)
+perm <- permute.all(1:4)
+verify.matrices('permute.all n=4', perm, exp)
+
+exp <- matrix(c(1, 2, 3, 4, 5,   2, 1, 3, 4, 5,   2, 3, 1, 4, 5,
+                1, 3, 2, 4, 5,   3, 1, 2, 4, 5,   3, 2, 1, 4, 5,
+                2, 3, 4, 1, 5,   1, 3, 4, 2, 5,   3, 1, 4, 2, 5,
+                3, 2, 4, 1, 5,   1, 2, 4, 3, 5,   2, 1, 4, 3, 5,
+                3, 4, 1, 2, 5,   3, 4, 2, 1, 5,   1, 4, 2, 3, 5,
+                2, 4, 1, 3, 5,   2, 4, 3, 1, 5,   1, 4, 3, 2, 5,
+                4, 1, 2, 3, 5,   4, 2, 1, 3, 5,   4, 2, 3, 1, 5,
+                4, 1, 3, 2, 5,   4, 3, 1, 2, 5,   4, 3, 2, 1, 5,
+                2, 3, 4, 5, 1,   1, 3, 4, 5, 2,   3, 1, 4, 5, 2,
+                3, 2, 4, 5, 1,   1, 2, 4, 5, 3,   2, 1, 4, 5, 3,
+                3, 4, 1, 5, 2,   3, 4, 2, 5, 1,   1, 4, 2, 5, 3,
+                2, 4, 1, 5, 3,   2, 4, 3, 5, 1,   1, 4, 3, 5, 2,
+                4, 1, 2, 5, 3,   4, 2, 1, 5, 3,   4, 2, 3, 5, 1,
+                4, 1, 3, 5, 2,   4, 3, 1, 5, 2,   4, 3, 2, 5, 1,
+                1, 2, 3, 5, 4,   2, 1, 3, 5, 4,   2, 3, 1, 5, 4,
+                1, 3, 2, 5, 4,   3, 1, 2, 5, 4,   3, 2, 1, 5, 4,
+                3, 4, 5, 1, 2,   3, 4, 5, 2, 1,   1, 4, 5, 2, 3,
+                2, 4, 5, 1, 3,   2, 4, 5, 3, 1,   1, 4, 5, 3, 2,
+                4, 1, 5, 2, 3,   4, 2, 5, 1, 3,   4, 2, 5, 3, 1,
+                4, 1, 5, 3, 2,   4, 3, 5, 1, 2,   4, 3, 5, 2, 1,
+                1, 2, 5, 3, 4,   2, 1, 5, 3, 4,   2, 3, 5, 1, 4,
+                1, 3, 5, 2, 4,   3, 1, 5, 2, 4,   3, 2, 5, 1, 4,
+                2, 3, 5, 4, 1,   1, 3, 5, 4, 2,   3, 1, 5, 4, 2,
+                3, 2, 5, 4, 1,   1, 2, 5, 4, 3,   2, 1, 5, 4, 3,
+                4, 5, 1, 2, 3,   4, 5, 2, 1, 3,   4, 5, 2, 3, 1,
+                4, 5, 1, 3, 2,   4, 5, 3, 1, 2,   4, 5, 3, 2, 1,
+                1, 5, 2, 3, 4,   2, 5, 1, 3, 4,   2, 5, 3, 1, 4,
+                1, 5, 3, 2, 4,   3, 5, 1, 2, 4,   3, 5, 2, 1, 4,
+                2, 5, 3, 4, 1,   1, 5, 3, 4, 2,   3, 5, 1, 4, 2,
+                3, 5, 2, 4, 1,   1, 5, 2, 4, 3,   2, 5, 1, 4, 3,
+                3, 5, 4, 1, 2,   3, 5, 4, 2, 1,   1, 5, 4, 2, 3,
+                2, 5, 4, 1, 3,   2, 5, 4, 3, 1,   1, 5, 4, 3, 2,
+                5, 1, 2, 3, 4,   5, 2, 1, 3, 4,   5, 2, 3, 1, 4,
+                5, 1, 3, 2, 4,   5, 3, 1, 2, 4,   5, 3, 2, 1, 4,
+                5, 2, 3, 4, 1,   5, 1, 3, 4, 2,   5, 3, 1, 4, 2,
+                5, 3, 2, 4, 1,   5, 1, 2, 4, 3,   5, 2, 1, 4, 3,
+                5, 3, 4, 1, 2,   5, 3, 4, 2, 1,   5, 1, 4, 2, 3,
+                5, 2, 4, 1, 3,   5, 2, 4, 3, 1,   5, 1, 4, 3, 2,
+                5, 4, 1, 2, 3,   5, 4, 2, 1, 3,   5, 4, 2, 3, 1,
+                5, 4, 1, 3, 2,   5, 4, 3, 1, 2,   5, 4, 3, 2, 1),
+              nrow=120, byrow=TRUE)
+perm <- permute.all(1:5)
+verify.matrices('permute.all n=5', perm, exp)
+
+
+
+## Stress Tests
+
+# BTP tests based on permht 3.
+diw <- mock.diw(faithful$eruptions, 24)
+stID <- 38
+endID <- 232
+dsign <- sign(diff(diw[stID:endID]))
+runs <- rle(dsign) ; runs <- runs$lengths * runs$values
+
+verify.error('BTP PH1', Dipermht.test,
+             list(xbase=runs, nperm=4000, lower.tail=FALSE, seed=3))
+
+runs.bad <- rle(c(NA, NA, dsign[1:50], NA,NA,NA, dsign[51:length(dsign)], NA))
+runs.bad <- runs.bad$lengths * runs.bad$values
+verify.error('BTP PH2', Dipermht.test,
+             list(diff(range(cumsum(dsign))), runs.bad, 4000, FALSE, 3))
+
+runs.bad <- rle(c(NaN, dsign[1:50], NaN,NaN, dsign[51:length(dsign)], NaN,NaN))
+runs.bad <- runs.bad$lengths * runs.bad$values
+verify.error('BTP PH3', Dipermht.test,
+             list(diff(range(cumsum(dsign))), runs.bad, 4000, FALSE, 3))
+
+runs.bad <- rle(c(Inf,Inf, dsign[1:50], Inf,Inf, dsign[51:length(dsign)], Inf))
+runs.bad <- runs.bad$lengths * runs.bad$values
+verify.error('BTP PH4', Dipermht.test,
+             list(diff(range(cumsum(dsign))), runs.bad, 4000, FALSE, 3))
+
+runs.bad <- rle(c(-Inf, dsign[1:50], -Inf, dsign[51:length(dsign)]))
+runs.bad <- runs.bad$lengths * runs.bad$values
+verify.error('BTP PH5', Dipermht.test,
+             list(diff(range(cumsum(dsign))), runs.bad, 4000, FALSE, 3))
+
+runs.bad <- unlist(list('a', 'b', runs[1:25], 'c', runs[26:length(runs)]))
+verify.error('BTP PH6', Dipermht.test,
+             list(diff(range(cumsum(dsign))), runs.bad, 4000, FALSE, 3))
+
+exp <- list(statistic=c(NA), p.value=c(NA), critval=numeric(0))
+pht <- Dipermht.test(diff(range(cumsum(dsign))), NULL, 4000, FALSE, 3)
+verify.permht('BTP PH7', pht, exp)
+
+# See permht 3 for critval change.
+exp <- list(statistic=c(NA, NaN), p.value=c(NA, NA), critval=c(19, 21, 25, 26))
+pht <- Dipermht.test(c(NA, NaN), runs, 4000, FALSE, 3)
+verify.permht('BTP PH8', pht, exp)
+
+# See permht 3 for p.value and critval.
+exp <- list(statistic=c(26.5, 28), p.value=c(0.0036, 0.0015),
+            critval=c(19, 21, 25, 26))
+pht <- Dipermht.test(c(26.5, 28), runs, 4000, FALSE, 3)
+verify.permht('BTP PH9', pht, exp)
+
+verify.error('BTP PH10a', Dipermht.test, list('a', runs, 4000, FALSE, 3))
+verify.error('BTP PH10b', Dipermht.test, list(27i, runs, 4000, FALSE, 3))
+verify.error('BTP PH10c', Dipermht.test, list(list(27), runs, 4000, FALSE, 3))
+verify.error('BTP PH10d', Dipermht.test, list(-1, runs, 4000, FALSE, 3))
+
+verify.error('BTP PH11a', Dipermht.test, list(27, runs, 'a', FALSE, 3))
+verify.error('BTP PH11b', Dipermht.test, list(27, runs, NA, FALSE, 3))
+verify.error('BTP PH11c', Dipermht.test, list(27, runs, NaN, FALSE, 3))
+verify.error('BTP PH11d', Dipermht.test, list(27, runs, Inf, FALSE, 3))
+verify.error('BTP PH11e', Dipermht.test, list(27, runs, 0, FALSE, 3))
+
+exp <- list(statistic=27, p.value=0.0029, critval=c(19, 21, 25, 26))
+pht <- Dipermht.test(diff(range(cumsum(dsign))), runs, c(4000.1,5000), FALSE, 3)
+verify.permht('BTP PH12', pht, exp)
+
+verify.error('BTP PH13', Dipermht.test, list(27, runs, 0, 'a', 3))
+
+diw <- mock.diw(rep(0,100), 10)
+dsign <- sign(diff(diw[!is.na(diw)]))
+runs <- rle(dsign) ; runs <- runs$lengths
+exp <- list(statistic=NA, p.value=NA, critval=numeric())
+pht <- Dipermht.test(diff(range(cumsum(dsign))), runs, 2000, FALSE, 2)
+verify.permht('BTP PH14', pht, exp)
+
+# Permutations = (1, 2), upper tail is halfway through 1 plus 2.
+exp <- list(statistic=1, p.value=0.75, critval=matrix(c(2,2,2,2), nrow=1))
+pht <- Dipermht.test(1, c(1,2, -1), 5000, FALSE, 2)
+verify.permht('BTP PH15', pht, exp)
+
+# Permutations (10x1, 2,2), upper tail is 7 of 12.
+exp <- list(statistic=1, p.value=0.5833, critval=matrix(c(2,2,2,2), nrow=1))
+pht <- Dipermht.test(1, c(1,1,0,-1), 5000, FALSE, 2)
+verify.permht('BTP PH16a', pht, exp)
+
+# Same permutations as 16a but lower tail.
+exp <- list(statistic=1, p.value=0.4167, critval=matrix(c(1,1,1,1), nrow=1))
+pht <- Dipermht.test(1, c(1,0,-1,-1), 5000, TRUE, 2)
+verify.permht('BTP PH16b', pht, exp)
+
+# Permutations (40x1, 8x2), upper tail is 4 of 48.
+exp <- list(statistic=2, p.value=0.0833, critval=matrix(c(2,2,2,2), nrow=1))
+pht <- Dipermht.test(2, c(-1,-1,0,1,1), 5000, FALSE, 2)
+verify.permht('BTP PH16c', pht, exp)
+
+exp <- list(statistic=1, p.value=0.5, critval=matrix(c(1,1,1,1), nrow=1))
+pht <- Dipermht.test(1, c(1,0,-1, 0), 5000, TRUE, 2)
+verify.permht('BTP PH17', pht, exp)
+
+exp <- list(statistic=0, p.value=1.0, critval=matrix(c(1,1,1,1), nrow=1))
+pht <- Dipermht.test(0, c(1,0,-1, 0), 5000, FALSE, 2)
+verify.permht('BTP PH18', pht, exp)
+
+exp <- list(statistic=2, p.value=0.0, critval=matrix(c(1,1,1,1), nrow=1))
+pht <- Dipermht.test(2, c(1,0,-1, 0), 5000, FALSE, 2)
+verify.permht('BTP PH19', pht, exp)
+
+# testing check for permutations.
+}
+
+
+if (allpass) {
+  cat('  all sigtest tests PASSED\n')
+}
+
+options(oldopt)
+

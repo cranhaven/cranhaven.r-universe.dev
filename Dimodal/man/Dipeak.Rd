@@ -1,0 +1,157 @@
+
+\newcommand{\opt}{\ifelse{latex}{\code{"#1"}}{\verb{"#1"}}}
+\newcommand{\nl}{\ifelse{latex}{ }{\ifelse{html}{ }{ \cr}}}
+
+\name{Dipeak}
+\alias{Dipeak}
+\alias{print.Dipeak}
+\alias{summary.Dipeak}
+\alias{mark.Dipeak}
+\title{
+Class methods for Dipeak Objects
+}
+\description{
+Common functions to handle \code{"Dipeak"} class results, which store
+information about local extrema and their probability.
+}
+
+\usage{
+\method{print}{Dipeak}(x, \dots)
+\method{summary}{Dipeak}(object, \dots)
+\method{mark}{Dipeak}(x, hist=NULL, opt=Diopt(), \dots)
+}
+
+\arguments{
+\item{x}{ an object of class \code{"Dipeak"} }
+\item{object}{ an object of class \code{"Dipeak"} }
+\item{hist}{ the histogram being marked or NULL for a low-pass or interval
+  spacing graph }
+\item{opt}{ local version of options to guide plots }
+\item{\dots}{ extra arguments, ignored for all methods
+}
+}
+
+\details{
+A \opt{Dipeak} object is a data frame that describes local extrema, including
+their position in the low-pass or interval spacing and equivalent raw value,
+their height and width, and any tests that have run to judge the significance
+of the feature.  The basic information comes from the \code{find.peaks}
+detector, and the \code{Dimodal} analysis adds the feature analysis.  The
+class inherits from \opt{data.frame}.
+
+The print method shows the position (index) and raw value of each maximum,
+the minimum to either side, and if different the support.  It then has
+two tables with the statistic (test value) and probability for any tests
+that have been run, as well as the acceptance levels.  These come from the
+options \opt{alpha.ht} for the model test, \opt{alpha.pkexcur.lp} and
+\opt{alpha.pkexcur.diw} for the excursion test, and \opt{alpha.nrun} and
+\opt{alpha.runlen} and \opt{alpha.runht} for the runs tests.  If the
+option \opt{mark.alpha} is TRUE then probabilities at or below the
+acceptance level are underlined.  Set the option FALSE if your terminal
+does not support ANSI escape codes, or see the \pkg{crayon} package for the
+extensive tests needed to determine this automatically.  These options are
+set at the global level and cannot be overridden for a single call to print.
+The pass column after the overall peak probability will contain the number
+of accepted/passing tests, if any.  Raw values and statistics are printed
+with option \opt{digits} significant digits.  If the option is set to
+zero then the standard \code{options()$digits} is used.
+
+The summary method lists the position and raw value of each maximum, the
+overall probability or best result from all tests, and a list of the tests
+that pass per the \code{Diopt} acceptance levels.
+
+Peaks and minima are marked in a spacing graph by vertical lines.  Maxima
+are drawn with dashes and are made thick if the peak passes any test.
+Minima are drawn with dotted lines.  The marks are colored per the option
+\opt{colID.peak} of the current palette.  Histogram annotations include
+only lines for peaks, drawn thick if significant.  They run from the quantile
+axis on the right to the distribution function curve, then down to the data
+value.  Marking the histogram assumes that Dimodal has added the \code{x}
+column with the peak's original data value and has shifted positions.
+
+\code{select.peaks} is a utility function that extracts only those rows with
+valid peaks, which have a minima to each side.
+}
+
+\value{
+The basic data frame returned from \code{find.peaks} includes the columns
+ \item{\code{pos}}{ index in data of local extremum }
+ \item{\code{ismax}}{ TRUE if a local maximum, FALSE if a minimum }
+ \item{\code{valsd}}{ data at extremum, standardized by \code{sd(x)} }
+ \item{\code{lht}}{ difference in valsd between maximum and minimum to its
+   left, NA if no minimum or if a minimum}
+ \item{\code{rht}}{ difference in valsd between maximum and minimum to its
+   right, NA if no minimum or if a minimum }
+ \item{\code{lminID}}{ position/index of minimum to the left, NA if not a
+   valid maximum }
+ \item{\code{rminID}}{ position/index of minimum to the right, NA if not a
+   valid maximum }
+ \item{\code{lsuppID}}{ left index of support, NA if not a valid maximum }
+ \item{\code{rsuppID}}{ right index (incl.) of support, NA if not a valid
+   maximum \nl }
+The indices are located in the data passed to the detector.  Valid maxima
+have minima on both sides.  There will always be two extrema at the first
+and last point.
+
+\code{Dimodal} adds several columns.  It shifts all indices to the original
+data, compensating for the invalid points skipped during low-pass filtering
+or interval spacing.  Mapping indices back to the raw data and summarizing
+the tests, it adds
+ \item{\code{x}}{ the location of the peak in the original data }
+ \item{\code{ppeak}}{ the best probability of all tests run or NA if none
+   or if not a maximum with minima to both sides }
+ \item{\code{naccept}}{ number of tests passing their acceptance level,
+   0 if none or ppeak is NA
+   \nl }
+x can be generated by calling the utility function \code{shiftID.place} on
+the find.peaks result.  Dimodal also adds an attribute \opt{source} with
+value "LP" or "Diw" depending on the filter used.
+
+For low-pass testing the results may include
+ \item{\code{pht}}{ the probability of the feature per the height model,
+   using the larger of \code{lht} and \code{rht} }
+ \item{\code{hexcur}}{ the feature height used for the excursion test }
+ \item{\code{pexcur}}{ the probability of the peak using bootstrap sampling
+   of the difference of the low-pass spacing
+   \nl }
+
+For interval spacing tests the results may include those based on runs in its
+signed difference, between the bounding minima
+ \item{\code{nrun}}{ the number of runs }
+ \item{\code{pnrun}}{ the probability of nrun using the Kaplansky-Riordan
+   test }
+ \item{\code{runlen}}{ the length of the longest run }
+ \item{\code{prunlen}}{ the probability of runlen using a Markov
+   chain model of the entire data sample }
+ \item{\code{runht}}{ the feature height in the signed difference }
+ \item{\code{prunht}}{ the probability of the peak with height runht
+   using a permutation test of the runs }
+ \item{\code{hexcur}}{ the feature height in the interval spacing between
+   minima }
+ \item{\code{pexcur}}{ the probability of the peak with height hexcur
+   using bootstrap sampling from the interval spacing of the whole data
+   \nl }
+
+The methods return the object, invisibly.
+}
+
+\seealso{
+  \code{\link{find.peaks}},
+  \code{\link{Dimodal}},
+  \code{\link{Diopt}},
+  \code{\link{data.frame}},
+  \code{\link{select.peaks}}
+  \code{\link{shiftID.place}}
+}
+
+\examples{
+## We override the analysis option to avoid changepoints,
+## which may not be available.
+m <- Dimodal(faithful$eruptions, Diopt.local(analysis=c('diw','lp'), diw.window=16))
+summary(m$lp.peaks)
+m$diw.peaks
+}
+
+\keyword{Dipeak}
+\keyword{Dimodal}
+

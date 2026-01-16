@@ -1,0 +1,248 @@
+
+# eval_Dimodal.Rchar -
+# Evaluation of Dimodal functions.
+#
+# c 2025 Greg Kreider, Primordial Machine Vision Systems, Inc.
+
+## To Do:
+# - 
+
+
+if (interactive()) {
+  source('../R/Diopt.R')
+  source('../R/Dimodal.R')
+  source('../R/methods.R')
+  source('../R/detectors.R')
+  source('../R/sigtests.R')
+  source('../R/cpt.R')
+  source('../tests/test_common.Rtest')
+
+  if (is.loaded('C_find_peaks', PACKAGE='Dimodal')) {
+    dyn.unload('../src/Dimodal.so')
+  }
+  dyn.load('../src/Dimodal.so')
+} else {
+  # Not really meant to be run within the package ...
+  library(Dimodal)
+  # We aren't exporting the data generator, so must link internally.
+  gen.data <- Dimodal:::gen.data
+}
+
+
+# Measure how the heights reported for excursions vary with the size of
+# draw, by running a very long excursion for many random seeds and looking
+# at initial subsets of growing draws.  Apply Diw interval diw.window to
+# data x and study a feature from stID t/m endID.  See analyze.heights for
+# the returned value.
+# ex. char.excursion(tstds2, 24, 242, 269)     = TC excurht 7, a flat.
+#     char.excursion(tstds4, 36, 136, 226)     = TC excurht 9, a peak
+#     char.excursion(tstds1, 30, 540, 598)     = a flat, p marginal 0.056
+#     char.excursion(tstds1, 30, 476, 553)     = a peak b/t support, p 0.36
+#     char.excursion(cadmium, 16, 59, 134)     = a peak b/t support, p 0.06
+#     char.excursion(quakes[,3], 100, 282,354) = a flat, p 0.03
+#  The results:
+#  # excursions needed for value to settle to x% of its value at nexcur=100k
+#           tstsd2 flat                 tstds4 peak
+#         mean   var  cv99            mean   var  cv99
+#     1%   4.4  35.5  31.9        1%   2.2  30.6  16.3
+#   0.5%  16.2  68.4  64.0      0.5%   9.1  62.8  45.7
+#   0.2%  56.7  92.5  91.3      0.2%  37.5  90.7  83.5
+#   so, 9-16k excursions for signal to stabilize, then slow asymptote
+#  # excursions needed for the 90% CI width to be x% of the median value
+#     5%   1.8  19.6  15.9        5%   1.0  15.9   6.8
+#     2%  10.8  96.9  95.6        2%   5.4  98.6  44.4
+#     1%  44.1  96.9  95.4        1%  21.1  99.3  95.8
+#   so, if we want the signal to settle to +/- 1%, we need 5-11k excursions
+#       the variance and confidence intervals settle slowly, ie. remain high
+# More results:
+#           tstsd1 flat                 tstds1 peak
+#         mean   var  cv99            mean   var  cv99
+#     1%   3.5  50.1  29.2        1%   3.2  46.3  30.6
+#   0.5%  13.8  78.7  56.7      0.5%  12.2  76.2  63.0
+#   0.2%  48.9  95.4  89.0      0.2%  48.0  94.7  90.9
+#   consistent with above, 10-15k excursions needed to stabilize
+#     5%   1.4  14.4  11.3        5%   1.2  28.3  13.8
+#     2%   8.6  84.0  70.0        2%   7.2  99.9  87.6
+#     1%  37.5 100.0  97.2        1%  31.8  99.9  99.8
+#   again, consistent, reaching 2% width by 10k excursions
+# And still more:
+#          cadmium flat                 quakes peak
+#         mean   var  cv99            mean   var  cv99
+#     1%   2.2  25.0  11.2        1%   1.5  29.1  10.3
+#   0.5%   9.8  56.6  67.6      0.5%   6.1  63.0  10.3
+#   0.2%  39.1  88.6  67.6      0.2%  30.2  90.5  10.3
+#   again consistent, 5-10k excursions needed to stabilize
+#     5%   1.0  11.4   5.5        5%   1.0  15.6   3.0
+#     2%   5.6  68.7  36.7        2%   3.7  95.8  11.5
+#     1%  22.9  97.2  89.2        1%  14.4  95.8  41.7
+#   slightly better, reaching 2% width by 5k excursions
+char.excursion <- function(x, diw.window, stID, endID) {
+
+  d <- gen.data(x, 'diw', list(diw.window=diw.window))
+  xbase <- diff(d['Diw',!is.na(d['Diw',])])
+
+  rngseed <- 2:1002
+  nexcur <- 100*(10:1000)
+  qs <- c(0.005, 0.01, 0.05, 0.50, 0.95, 0.99, 0.995)
+
+  # The raw excursion heights.  Must be unsorted, ie. order of generation.
+  # A matrix of max(nexcur) x #seed.
+  eht <- sapply(rngseed,
+                function(s) {
+                  set.seed(s)
+                  .Call('C_excursion', xbase, nexcur[length(nexcur)], endID-stID, FALSE)
+                }, simplify='array')
+
+  analyze.heights(eht, rngseed, nexcur, qs)
+}
+
+# Measure how the heights reported for permutations vary with the size of
+# the draw, by running a very large number for many randomm seeds and looking
+# at initial subsets of drawing draws.  Apply Diw interval diw.window to
+# data x and study a feature from stID t/m endID.  See analyze.heights for
+# the returned value.
+# ex. char.permutation(tstds1, 30, 476, 553)     = a peak b/t support, p 0.06
+#     char.permutation(tstds1, 30,  32, 135)     = a peak b/t support, p 0.20
+#     char.permutation(tstds4, 36, 106, 136)     = TC permht 1, a peak.
+#     char.permutation(cadmium, 16, 112, 141)    = a peak b/t support, p 0.55
+#     char.permutation(quakes[,3], 100, 198,478) = a peak b/t support, p 0.11
+# Results:
+#        tstsd1 peak @ 515         tstds1 peak @ 32          tstds4 peak @ 
+#         mean   var  cv99          mean   var  cv99          mean   var  cv99
+#     1%   1.0  14.8   8.5      1%   1.0  59.9   1.0      1%   1.0  47.9   1.0
+#   0.5%   1.7  40.8   8.5    0.5%   1.0  85.3   1.0    0.5%   1.0  79.0   1.0
+#   0.2%  10.4  80.5   8.5    0.2%   2.6  99.0   1.0    0.2%   1.4  95.6   1.0
+# and for the CI width
+#     5%   1.0   6.1   1.0      5%   1.0  49.9   1.0      5%   1.0  32.5   1.0
+#     2%   1.0  39.2   1.0      2%   1.0  97.4   1.0      2%   1.0  99.7   1.0
+#     1%   4.2 100.0  56.9      1%   1.0  97.4   1.0      1%   1.0  99.7   1.0
+#   so, many fewer permutations needed, 5k is plenty
+# More results:
+#        cadmium peak              quakes peak
+#         mean   var  cv99          mean   var  cv99          mean   var  cv99
+#     1%   1.0  27.2   1.0      1%   1.0  30.9   5.2
+#   0.5%   2.2  58.5   1.0    0.5%   3.8  63.8   5.2
+#   0.2%  12.8  89.9   1.0    0.2%  13.9  91.0   5.2
+#   similar, need 5k to get to 0.5%, with much longer settling of variance
+#     5%   1.0  12.9   1.0      5%   1.0  15.3   1.0
+#     2%   1.4  83.6   1.0      2%   1.0  95.5   1.5
+#     1%   5.3  95.9   1.0      1%   1.5 100.0  33.8
+#   5k gets the confidence interval to 1% width
+char.permutation <- function(x, diw.window, stID, endID) {
+
+  d <- gen.data(x, 'diw', list(diw.window=diw.window))
+  b <- build.permutation(d, stID, endID)
+  
+  rngseed <- 2:1002
+  nperm <- 100*(10:1000)
+  qs <- c(0.005, 0.01, 0.05, 0.50, 0.95, 0.99, 0.995)
+
+  pspec <- setup.permute(sign(b$xbase[[1]]))
+  pht <- sapply(rngseed,
+                function(s) {
+                  set.seed(s)
+                  replicate(nperm[length(nperm)], 
+                            alt.permute(b$xbase[[1]], pspec))
+                })
+
+  analyze.heights(pht, rngseed, nperm, qs)
+}
+
+# Process the excursion/permutation heights ht generated at seeds rngseed,
+# gathering various statistics at excursions nexcur at among others quantiles
+# at levels qs.  Returns a list with elements
+#   $rngseed   random seeds
+#   $nexcur    excursion lengths, from 1k to 100k in steps of 100
+#   $qs        quantiles for critical values
+#   $ht        matrix max(nexcur) x #seeds of the heights per seed
+#   $sht       array 9 x #nexcur x #seeds statistics per excursion length, seed
+#                measure: mean, var, critvals at qs
+#   $qht       median and 90% CI, an array of 3 x #measure x #nexcur
+#                rows are 0.05, 0.50, 0.95 quantiles per measure over seeds
+#   $stblthr   fractions of max nexcur statistic to get stability
+#                rows are 0.05, 0.50, 0.95 quantiles over seeds
+#   $qstable   matrix 3 x #stblthr x #meas max nexcur to settle to stblthr
+#   $cirel     matrix #meas x #nexcur of the 90% CI as a fraction of median
+#   $minexcur  matrix 10 x #meas of number excursions for cirel to reach 10-1%
+analyze.heights <- function(ht, rngseed,  nexcur, qs) {
+
+  # Statistics (mean, var, quantiles) as the number of excursions increases.
+  # An array of 8 x #nexcur x #seed.
+  sht <- lapply(1:ncol(ht),
+                function(s) {
+                  sapply(nexcur,
+                         function(n) {
+                           sel <- ht[1:n,s]
+                           c(mean(sel), var(sel),
+                             quantile(sel, qs, names=FALSE, type=4))
+                         }, simplify='array') })
+  sht <- simplify2array(sht)
+  dimnames(sht)[[1]] <- c('mean', 'var', 'cv005', 'cv01', 'cv05', 'cv50',
+                          'cv95', 'cv99', 'cv995')
+  dimnames(sht)[[2]] <- sprintf('%d', nexcur)
+  dimnames(sht)[[3]] <- rngseed
+
+  # At how many excursions does the average statistic differ from the
+  # value at the maximum number of excursions?
+  hscl <- apply(sht, c(1,3), function(row) { row/row[length(row)] })
+  sthr <- 0.001 * (15:1)
+  nstable <- apply(hscl, c(2,3),
+                   function(row) {
+                     sapply(sthr,
+                            function(i) {
+                              eID <- which((row < (1-i)) | ((1+i) < row))
+                              ifelse(0 < length(eID), max(eID), 1) }) })
+  dimnames(nstable)[[1]] <- sprintf('%.1f', 100 * sthr)
+
+  qstable <- apply(nstable, c(1,2),
+                   function(row) {
+                     eID <- quantile(row, c(0.05,0.5,0.95), names=FALSE)
+                     nexcur[pmax(1, eID)] / 1000
+                   })
+  dimnames(qstable)[[1]] <- c('cv05','med','cv95')
+  cat('\nExcursions [k] for statistic to settle within x% of max nexcur\n')
+  print(qstable['med',,])
+  cat('\n90% CI for stability\n')
+  print(qstable['cv95',,] - qstable['cv05',,])
+
+  # The median of each statistic (row 2) and 90% CI (rows 1,3).
+  # An array of 3 x 8 x #nexcur.
+  qht <- apply(sht, c(1,2), quantile, c(0.05, 0.5, 0.95), names=FALSE)
+  dimnames(qht)[[1]] <- c('cv05', 'med', 'cv95')
+
+  # CI width as a fraction of the median.
+  cirel <- (qht[3,,] - qht[1,,]) / qht[2,,]
+
+  # How many excursions are needed for the CI width to fall within x%
+  # of the median?
+  minexcur <- sapply(1:nrow(cirel),
+                     function(i) {
+                       sapply(0.01*(10:1),
+                              function(j) {
+                                nexcur[which.min(abs(j-cirel[i,]))] / 1000 }) })
+  rownames(minexcur) <- 10:1
+  colnames(minexcur) <- rownames(cirel)
+  cat('\nExcursions [k] for 90% CI to be x% of median\n')
+  print(minexcur)
+
+  # Plot statistic i.  But note the median over all trials is very stable.
+  # Plotting sht[,i,seed] shows the variation for a single run, which goes
+  # into the qstable table.  The 0.5% bars about the 100k excursion value
+  # will intersect the 90% confidence interval a little beyond qstable.
+  # i <- 1 ; plot(nexcur, qht[2,i,], col='red',
+  #               xlim=c(0,25000), ylim=range(qht[,i,]),
+  #               xlab='nexcur', ylab=dimnames(sht)[[1]][i])
+  #          lines(nexcur, qht[1,i,], col='grey50')
+  #          lines(nexcur, qht[3,i,], col='grey50')
+  #          abline(h=c(0.995,1.005)*qht[2,i,dim(qht)[[3]]], col='orange')
+
+  # Can we use the average height to determine when to stop doing excursions?
+  # s <- 59
+  # hrel <- abs(sht['mean',-1L,s] - sht['mean',-length(nexcur),s]) * 2 /
+  #         (sht['mean',-1L,s] + sht['mean',-length(nexcur),s])
+  # plot(nexcur[-1L], hrel, col='red') ; abline(h=c(0.0001,0.0002),col='grey50')
+  # For example, stopping when the average hrel falls below 0.001 or 0.0005
+  # (for the quakes check, at 9k and 22k excursions; for the cadmium 9k, 24k.
+  list(rngseed=rngseed, nexcur=nexcur, qs=qs, ht=ht, sht=sht, qht=qht,
+       stblthr=sthr, qstable=qstable, cirel=cirel, minexcur=minexcur)
+}

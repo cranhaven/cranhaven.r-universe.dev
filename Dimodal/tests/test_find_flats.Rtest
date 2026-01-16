@@ -1,0 +1,719 @@
+
+# test_find_flats.Rtest:
+# Test benches for the find.flats detector.
+#
+# c 2025 Greg Kreider, Primordial Machine Vision Systems, Inc.
+
+## To Do:
+# - 
+#
+
+if (interactive()) {
+  source('../R/detectors.R')
+
+  if (is.loaded('C_find_flats', PACKAGE='Dimodal')) {
+    dyn.unload('../src/Dimodal.so')
+  }
+  dyn.load('../src/Dimodal.so')
+} else {
+  library(Dimodal)
+  # We aren't exporting the detectors, so must link internally.
+  find.flats <- Dimodal:::find.flats
+}
+
+source('../tests/test_common.Rtest')
+
+
+##### Test Framework
+
+# Variant of the actual find.flats that exposes the version argument, to
+# force the algorithm.  Prefer to pass the version as an integer.
+find.flats.ver <- function(x, fripple=eval(formals(find.flats)[['fripple']]),
+                           minlen=eval(formals(find.flats)[['minlen']]),
+                           fminlen=eval(formals(find.flats)[['fminlen']]),
+                           noutlier=eval(formals(find.flats)[['noutlier']]),
+                           ver=0L) {
+  as.data.frame(
+    .Call('C_find_flats', x, fripple, minlen, fminlen, noutlier, ver,
+          PACKAGE='Dimodal')
+  )
+}
+
+# Return a flat data frame based on the source/seed data point src, endpoints
+# stID and endID (incl.), standardized height htsd, and standard deviation of
+# the data stdev.  Calculates length and raw height.  If src or stID or endID
+# are NULL or 0 length vectors, the data frame will be empty (0 rows) but
+# have the correct number of columns.
+make.flats <- function(x, fripple, src, stID, endID) {
+
+  if ((0 == length(src)) || (0 == length(stID)) || (0 == length(endID))) {
+    v0 <- numeric(0)
+    return(data.frame(src=v0, stID=v0, endID=v0, len=v0, srcval=v0, ht=v0, htsd=v0))
+  }
+
+  src <- as.integer(src)
+  stID <- as.integer(stID)
+  endID <- as.integer(endID)
+
+  xfin <- x[is.finite(x)]
+  dx <- diff(range(xfin))
+  if ((dx / fripple) < mean(xfin)) {
+    sigma <- 1
+  } else {
+    sigma <- sd(xfin)
+  }
+
+  ripple <- fripple * dx / 2
+  ht <- sapply(seq_along(src),
+               function(i) {
+                 xlo <- x[src[i]] - ripple
+                 xhi <- x[src[i]] + ripple
+                 xflat <- x[stID[i]:endID[i]]
+                 xflat <- xflat[(xlo <= xflat) & (xflat <= xhi)]
+                 diff(range(xflat[is.finite(xflat)]))
+               })
+  data.frame(src=src, stID=stID, endID=endID, len=endID-stID+1,
+             srcval=x[src], ht=ht, htsd=ht/sigma)
+}
+
+# Check that the contents of two flat results are the same.  Print mismatches
+# with a test identifier testID.  Return a pass/fail flag and sets the global
+# allpass to FALSE on failure.
+compare.flats <- function(testID, flt1, flt2) {
+
+  if ((nrow(flt1) != nrow(flt2)) || (ncol(flt1) != ncol(flt2))) {
+    cat('    test ', testID, ' results incompatible: ',
+        dim(flt1), ' vs. ', dim(flt2), '\n')
+    cat('flat v1:\n')
+    print.data.frame(flt1)
+    cat('flat v2:\n')
+    print.data.frame(flt2)
+    allpass <<- FALSE
+    return(FALSE)
+  }
+
+  # Do this column by column to separate integers from reals.
+  cols <- c('src', 'stID', 'endID', 'len', 'srcval', 'ht', 'htsd')
+  pass <- sapply(cols, function(c) { nearly(flt1[,c], flt2[,c], 0.001) })
+  if (any(!pass)) {                 
+    cat('    test ', testID, ' results differ   by flat # (vals)\n')
+    for (i in which(!pass)) {
+      cat('      ', cols[i], ': ')
+      for (j in which(0.001 < abs(flt1[,cols[i]] - flt2[,cols[i]]))) {
+        cat(sprintf(' %2d (%7.4f, %7.4f)', j, flt1[j,cols[i]], flt2[j,cols[i]]))
+      }
+      cat('\n')
+    }
+    allpass <<- FALSE
+  }
+
+  all(pass)
+}
+
+# Comparison of the two flat versions for several datasets and smoothing
+# variations, allowing noutlier points outside the ripple spec to each
+# side of the flat's source.  Failure prints an error message.  Returns TRUE
+# if all tests pass, FALSE if any fail.
+compare.ver <- function(noutlier=1) {
+
+  data(meuse, package='sp')
+  data(acidity, package='multimode')
+  data(enzyme, package='multimode')
+  data(galaxy, package='multimode')
+
+  xall <- list(meuse$cadmium, meuse$copper, acidity, enzyme, galaxy)
+  dsnames <- c('cadmium', 'copper', 'acidity', 'enzyme', 'galaxy')
+
+  cat('\ntesting flat scan (v1) vs. tree walk (v2)\n')
+  for (i in seq_along(xall)) {
+    for (w in c(4, 8, 16, 24, 32)) {
+      testID <- sprintf('%s w=%d', dsnames[i], w)
+      diw <- diff(sort(xall[[i]]), lag=w)
+      fltv1 <- tryCatch({ find.flats.ver(diw, 0.05, 20, 0.05, noutlier, 1L) },
+                        error=function(e) {
+                                cat('    test ', testID, ' v1 error:\n')
+                                print(e)
+                                NULL
+                              })
+      fltv2 <- tryCatch({ find.flats.ver(diw, 0.05, 20, 0.05, noutlier, 2L) },
+                        error=function(e) {
+                                cat('    test ', testID, ' v2 error:\n')
+                                print(e)
+                                NULL
+                              })
+      if (is.null(fltv1) || is.null(fltv2) ||
+          !compare.flats(testID, fltv1, fltv2)) {
+        passed <- FALSE
+      }
+    }
+  }
+
+  passed
+}
+
+# Compare the flat algorithms on large amounts of data - the asteroid
+# distribution.  For many large sample sizes (multiplied by mult) of the
+# asteroids' axis, calculate the interval spacing with interval w and run
+# both the scan and tree flat detectors.  Allow noutlier points outside
+# the ripple spec per flat.  Compare the results for equality,
+# printing mismatches, and gather the timing of each.  Returns a matrix
+# with the sample size in thousands and the times in seconds for v1 (scan)
+# and v2.  This will take a long time to run - 30 minutes for the v1 and 11
+# for v2.
+compare.timing <- function(sizes=c(1, 5, 10, 25, 50, 100, 150, 200, 250,
+                                   300, 400, 500, 750),
+                           mult=1000, w=100, noutlier=1) {
+
+  if (any(w >= (sizes*mult))) {
+    stop('interval width larger than smallest sample size')
+  }
+
+  astorb <- readRDS('/devel/stats/modal/ex/kirkwood/astorb.rds')
+  a <- astorb$axis[astorb$axis < 5.0]
+
+  passed <- TRUE
+  tv <- sapply(sizes,
+               function(nx) {
+                 set.seed(nx)
+                 diw <- diff(sort(sample(a, mult*nx)), lag=w)
+                 t1 <- Sys.time()
+                 fltv1 <- find.flats.ver(diw, 0.05, 20, 0.05, noutlier, 1L)
+                 t2 <- Sys.time()
+                 fltv2 <- find.flats.ver(diw, 0.05, 20, 0.05, noutlier, 2L)
+                 t3 <- Sys.time()
+
+                 if (!compare.flats(sprintf('axis nx=%d', nx), fltv1, fltv2)) {
+                   passed <<- FALSE
+                 }
+
+                 c(nx=mult*nx,
+                   v1=as.numeric(difftime(t2, t1, units='s')),
+                   v2=as.numeric(difftime(t3, t2, units='s')))
+              })
+
+  if (!passed) {
+    cat('\ntiming/verification of flat searches in asteroid distribution\n')
+    cat('  some subsets DIFFER\n')
+  }
+
+  t(tv)
+}
+
+
+##### Manual Test Cases
+
+# Manually verified on Diw w=16 of meuse$cadmium, meuse$copper, acidity,
+# enzyme, galaxy against the model.R result (meuse from package sp, the others
+# from multimode).  htsd and aspect ratio changed (devel version is WRONG,
+# using raw data height for aspect ratio).
+#   params: (modal) ripple_rel=0.05  len_rel=0.05  len_abs=20
+#            src  ends    ht     htsd (last digit not rounded)
+#  cadmium:  17/  16-98   0.5    0.3121
+#  copper:   9/   4-53    2      0.2348     66/  59-89   2      0.2348
+#  acidity:  32/  23-57   0.0519 0.2542
+#  enzyme:   102/ 3-130   0.056  0.3085
+#  galaxy:   39/  38-58   554    0.1845
+
+
+##### Test Cases
+
+allpass <- TRUE
+
+allpass <- allpass & .Call('bist_flats')
+
+
+## Base tests also used in test_find_peaks|lvlsec.  From development.
+
+diw <- diff(sort(tstds1), lag=20)
+exp <- make.flats(diw, 0.02,
+                  src=c(  153, 280, 420, 552) - 20,
+                  stID=c( 150, 275, 418, 545) - 20,
+                  endID=c(200, 318, 475, 581) - 20)
+# The first call checks the official interface, the second the tree walk
+# version.
+compare.flats('1 (auto)', exp, find.flats(diw, 0.02, 20, 0.05, 1))
+compare.flats('1 (walk)', exp, find.flats.ver(diw, 0.02, 20, 0.05, 1, ver=2L))
+              
+
+diw <- diff(sort(tstds2), lag=20)
+exp <- make.flats(diw, 0.02,
+                  src=c(   82, 162) - 20,
+                  stID=c(  49, 162) - 20,
+                  endID=c(102, 204) - 20)
+compare.flats('2 (auto)', exp, find.flats(diw, 0.02, 20, 0.05, 1))
+compare.flats('2 (walk)', exp, find.flats.ver(diw, 0.02, 20, 0.05, 1, ver=2L))
+
+diw <- diff(sort(tstds3), lag=20)
+exp <- make.flats(diw, 0.10,
+                  src=c(   80, 161) - 20,
+                  stID=c(  78, 117) - 20,
+                  endID=c(119, 205) - 20)
+compare.flats('3 (auto)', exp, find.flats(diw, 0.10, 20, 0.05, 1))
+compare.flats('3 (walk)', exp, find.flats.ver(diw, 0.10, 20, 0.05, 1, ver=2L))
+
+diw <- diff(sort(tstds4), lag=25)
+exp <- make.flats(diw, 0.10,
+                  src=c(   30,  62, 171),
+                  stID=c(  23,  54, 152),
+                  endID=c( 52, 129, 259))
+compare.flats('4 (auto)', exp, find.flats(diw, 0.10, 20, 0.05, 1))
+compare.flats('4 (walk)', exp, find.flats.ver(diw, 0.10, 20, 0.05, 1, ver=2L))
+
+
+if ('faithful' %in% data()$results[,3]) {
+  diw <- diff(sort(faithful$waiting), lag=50)
+  # Note bug in development version gives incorrect stID for first flat (51).
+  # This also affects ht, should be 2 not 3.
+  exp <- make.flats(diw, 0.175,
+                    src=c(   52, 102, 164) - 50,
+                    stID=c(  52, 101, 163) - 50,
+                    endID=c( 90, 137, 257) - 50)
+  compare.flats('5 (auto)', exp, find.flats(diw, 0.175, 20, 0.05, 1))
+  compare.flats('5 (walk)', exp,
+                find.flats.ver(diw, 0.175, 20, 0.05, 1, ver=2L))
+}
+
+if ('iris' %in% data()$results[,3]) {
+  diw <- diff(sort(iris$Petal.Length), lag=30)
+  exp <- make.flats(diw, 0.10,
+                    src=c(   89) - 30,
+                    stID=c(  87) - 30,
+                    endID=c(139) - 30)
+  compare.flats('6 (auto)', exp, find.flats(diw, 0.10, 20, 0.05, 1))
+  compare.flats('6 (walk)', exp,
+                find.flats.ver(diw, 0.10, 20, 0.05, 1, ver=2L))
+}
+
+if ('quakes' %in% data()$results[,3]) {
+  diw <- diff(sort(quakes[,3]), lag=60)
+  exp <- make.flats(diw, 0.10,
+                    src=c(  128, 282, 387, 450, 833) - 60,
+                    stID=c(  61, 270, 377, 438, 758) - 60,
+                    endID=c(224, 376, 441, 507, 953) - 60)
+  compare.flats('7 (auto)', exp, find.flats(diw, 0.10, 20, 0.05, 1))
+  compare.flats('7 (walk)', exp,
+                find.flats.ver(diw, 0.10, 20, 0.05, 1, ver=2L))
+}
+
+## Constructed data.
+
+# f## is a sequence ## long with max range 0.045, ie. flat with ripple 0.05.
+# r## has max range 0.60 and is outside the ripple spec.
+# s## is a spacer of 0 and 1 setting the range.  f and r may be shifted by
+# +/- 0.4 without running outside the spacer.
+set.seed(3)
+pm <- 0.0225
+# Putting 0.5 as the first value means it will source the whole flat.
+f25 <- 0.5 + c(0, runif(24, -pm, +pm))
+f29 <- 0.5 + c(0, runif(28, -pm, +pm))
+f30 <- 0.5 + c(0, runif(29, -pm, +pm))
+f31 <- 0.5 + c(0, runif(30, -pm, +pm))
+f35 <- 0.5 + c(0, runif(34, -pm, +pm))
+f45 <- 0.5 + c(0, runif(44, -pm, +pm))
+r25 <- f25 * 0.6 / diff(range(f25))
+r29 <- f29 * 0.6 / diff(range(f29))
+r30 <- f30 * 0.6 / diff(range(f30))
+r31 <- f31 * 0.6 / diff(range(f31))
+r35 <- f35 * 0.6 / diff(range(f35))
+s10 <- rep(c(0,1), 5)
+
+x <- c(s10, f29, s10, f30, s10, f31, s10)
+exp <- make.flats(x, 0.05,
+                  src=c(   50, 90),
+                  stID=c(  50, 90),
+                  endID=c( 79, 120))
+compare.flats('8 (scan)', exp, find.flats.ver(x, 0.05, 30, 0.05, 1, ver=1L))
+compare.flats('8 (walk)', exp, find.flats.ver(x, 0.05, 30, 0.05, 1, ver=2L))
+
+# Rougher segments do not pass.
+x <- c(s10, r29, s10, f30, s10, r30, s10, r31, s10)
+exp <- make.flats(x, 0.05,
+                  src=c(   50),
+                  stID=c(  50),
+                  endID=c( 79))
+compare.flats('9 (scan)', exp, find.flats.ver(x, 0.05, 30, 0.05, 1, ver=1L))
+compare.flats('9 (walk)', exp, find.flats.ver(x, 0.05, 30, 0.05, 1, ver=2L))
+
+x <- c(s10, f30, s10, f31, s10, f35, s10)
+# Outliers to each side; the point after to 0.5 sources the flat.
+x[c(12,39, 52,80, 93,125)] <- 1
+x[c(13, 53, 94)] <- 0.5
+exp <- make.flats(x, 0.05,
+                  src=c(   13, 53, 94),
+                  stID=c(  11, 51, 92),
+                  endID=c( 40, 81, 126))
+compare.flats('10 (scan)', exp, find.flats.ver(x, 0.05, 30, 0.05, 1, ver=1L))
+compare.flats('10 (walk)', exp, find.flats.ver(x, 0.05, 30, 0.05, 1, ver=2L))
+
+x <- c(s10, f35, s10, f35, s10, f35, s10)
+# Double outliers at start, keep first two but shorten third below minlen.
+x[c(14, 18, 60, 65, 106, 110)] <- 1
+x[c(19, 66, 111)] <- 0.5
+exp <- make.flats(x, 0.05,
+                  src=c(   19, 66),
+                  stID=c(  15, 61),
+                  endID=c( 45, 90))
+compare.flats('11 (scan)', exp, find.flats.ver(x, 0.05, 30, 0.05, 1, ver=1L))
+compare.flats('11 (walk)', exp, find.flats.ver(x, 0.05, 30, 0.05, 1, ver=2L))
+
+x <- c(s10, f45, s10, f45, s10, f45, s10)
+# Airlocks at both ends to control open flat in middle and block flats at
+# edges.  Flats have lengths of 31, 30, and 29, with the last rejected.
+x[c( 13,  16,  17,  49,  50,  53)] <- 1
+x[c( 69,  72,  73, 104, 105, 107)] <- 1
+x[c(124, 127, 128, 158, 159, 162)] <- 1
+x[c(18, 74, 129)] <- 0.5
+exp <- make.flats(x, 0.05,
+                  src=c(   18,  74),
+                  stID=c(  18,  74),
+                  endID=c( 48, 103))
+compare.flats('12 (scan)', exp, find.flats.ver(x, 0.05, 30, 0.05, 1, ver=1L))
+compare.flats('12 (walk)', exp, find.flats.ver(x, 0.05, 30, 0.05, 1, ver=2L))
+
+# Two flats exist, one sourced at ID 5 with length 31 and at 7 with len 32.
+x <- c(s10, f45, s10)
+x[c(13, 15, 17, 45, 48, 50)] <- 1
+x[c(14, 16, 18)] <- 0.5
+exp <- make.flats(x, 0.05,
+                  src=c(  18),
+                  stID=c( 16),
+                  endID=c(47))
+compare.flats('13 (scan)', exp, find.flats.ver(x, 0.05, 30, 0.05, 1, ver=1L))
+compare.flats('13 (walk)', exp, find.flats.ver(x, 0.05, 30, 0.05, 1, ver=2L))
+
+# Two overlapping flats, the one at source 45 is shorter than at 60 but
+# the overhang is enough (31) to survive minlen.
+x <- c(s10, f30, f30, f30, s10)
+x[c(14, 44, 46, 59, 61, 98, 100)] <- 1
+x[c(45, 60)] <- 0.5
+exp <- make.flats(x, 0.05,
+                  src=c(  45,  60),
+                  stID=c( 15,  47),
+                  endID=c(58,  97))
+compare.flats('14 (scan)', exp, find.flats.ver(x, 0.05, 30, 0.05, 1, ver=1L))
+compare.flats('14 (walk)', exp, find.flats.ver(x, 0.05, 30, 0.05, 1, ver=2L))
+
+# Test 10 data from level sections.
+set.seed(3)
+pm <- 0.0225
+f30b <- c(0, runif(29, -pm, +pm))
+f50b <- c(0, runif(50, -pm, +pm))
+ramp <- (0:50) * 0.02
+x <- diff(sort(c(1-ramp, ramp, f50b, f50b+1.0)), 10)
+exp <- make.flats(x, 0.075,
+                  src=c(   11,  64, 160) - 10,
+                  stID=c(  11,  64, 160) - 10,
+                  endID=c( 36, 151, 187) - 10)
+compare.flats('15 (scan)', exp, find.flats.ver(x, 0.075, 20, 0.05, 1, ver=1L))
+compare.flats('15 (walk)', exp, find.flats.ver(x, 0.075, 20, 0.05, 1, ver=2L))
+
+# Check as vary number of outliers 0, 1, 2.
+x <- c(f45, s10)
+x[c(3,4,5,8,10, 31,34,36,37,38)] <- 0.1 * (90:99)
+exp <- make.flats(x, 0.05, src=11, stID=11, endID=30)
+compare.flats('16 (scan)', exp, find.flats.ver(x, 0.05, 20, 0.05, 0, ver=1L))
+compare.flats('16 (walk)', exp, find.flats.ver(x, 0.05, 20, 0.05, 0, ver=2L))
+
+# src=11 9-33 has same length, so src 9 comes first.
+exp <- make.flats(x, 0.05, src=9, stID=6, endID=30)
+compare.flats('17 (scan)', exp, find.flats.ver(x, 0.05, 20, 0.05, 1, ver=1L))
+compare.flats('17 (walk)', exp, find.flats.ver(x, 0.05, 20, 0.05, 1, ver=2L))
+
+exp <- make.flats(x, 0.05, src=11, stID=6, endID=35)
+compare.flats('18 (scan)', exp, find.flats.ver(x, 0.05, 20, 0.05, 2, ver=1L))
+compare.flats('18 (walk)', exp, find.flats.ver(x, 0.05, 20, 0.05, 2, ver=2L))
+
+exp <- make.flats(x, 0.05, src=35, stID=9, endID=45)
+compare.flats('19 (scan)', exp, find.flats.ver(x, 0.05, 20, 0.05, 3, ver=1L))
+compare.flats('19 (walk)', exp, find.flats.ver(x, 0.05, 20, 0.05, 3, ver=2L))
+
+## Bugs From Use
+
+# Start from case 19.  C_find_flats used fminlen not minlen which raised error.
+compare.flats('20 (scan)', exp, find.flats.ver(x, 0.05, 20L, 0.05, 3, ver=1L))
+
+
+## Stress tests.
+
+x <- rep(1L, 50)
+exp <- make.flats(x, 0.02, src=1, stID=1, endID=50)
+fs <- find.flats.ver(x, 0.02, 20, 0.05, 1, ver=1L)
+compare.flats('20 (scan)', exp, fs)
+fw <- find.flats.ver(x, 0.02, 20, 0.05, 1, ver=2L)
+compare.flats('20 (walk)', exp, fw)
+
+# This has broken Ditrack during debug.  It is a constant, but with reals
+# so small precision differences.
+x <- diff(0.01 * (0:100), lag=16)
+exp <- make.flats(x, 0.02, src=1, stID=1, endID=85)
+fs <- find.flats.ver(x, 0.02, 20, 0.05, 1, ver=1L)
+compare.flats('21 (scan)', exp, fs)
+fw <- find.flats.ver(x, 0.02, 20, 0.05, 1, ver=2L)
+compare.flats('21 (walk)', exp, fw)
+
+x <- 0.01 * (0:100)
+exp <- make.flats(x, 0.02, NULL, NULL, NULL)
+fs <- find.flats.ver(x, 0.02, 20, 0.05, 1, ver=1L)
+compare.flats('22 (scan)', exp, fs)
+fw <- find.flats.ver(x, 0.02, 20, 0.05, 1, ver=2L)
+compare.flats('22 (walk)', exp, fw)
+
+x <- rep(c(0,1), 50)
+exp <- make.flats(x, 0.02, NULL, NULL, NULL)
+fs <- find.flats.ver(x, 0.02, 20, 0.05, 1, ver=1L)
+compare.flats('23 (scan)', exp, fs)
+fw <- find.flats.ver(x, 0.02, 20, 0.05, 1, ver=2L)
+compare.flats('23 (walk)', exp, fw)
+
+x <- rep(NA_real_, 50)
+exp <- make.flats(x, 0.02, NULL, NULL, NULL)
+fs <- find.flats.ver(x, 0.02, 20, 0.05, 1, ver=1L)
+compare.flats('24 (scan)', exp, fs)
+fw <- find.flats.ver(x, 0.02, 20, 0.05, 1, ver=2L)
+compare.flats('24 (walk)', exp, fw)
+
+x <- c(1.01, 1.01)
+exp <- make.flats(x, 0.02, 1, 1, 2)
+fs <- find.flats.ver(x, 0.02, 2, 0.05, 1, ver=1L)
+compare.flats('25 (scan)', exp, fs)
+fw <- find.flats.ver(x, 0.02, 2, 0.05, 1, ver=2L)
+compare.flats('25 (walk)', exp, fw)
+
+x <- c(1.01, 2.01)
+exp <- make.flats(x, 0.02, NULL, NULL, NULL)
+fs <- find.flats.ver(x, 0.02, 2, 0.05, 1, ver=1L)
+compare.flats('26 (scan)', exp, fs)
+fw <- find.flats.ver(x, 0.02, 2, 0.05, 1, ver=2L)
+compare.flats('26 (walk)', exp, fw)
+
+# TC 10 converted to a matrix, for the function to un-convert.
+x <- c(s10, f30, s10, f31, s10, f35, s10)
+x[c(12,39, 52,80, 93,125)] <- 1
+x[c(13, 53, 94)] <- 0.5
+x <- matrix(x, nrow=8, byrow=FALSE)
+
+exp <- make.flats(x, 0.05,
+                  src=c(   13, 53, 94),
+                  stID=c(  11, 51, 92),
+                  endID=c( 40, 81, 126))
+fs <- find.flats.ver(x, 0.05, 30, 0.05, 1, ver=1L)
+compare.flats('27 (scan)', exp, fs)
+fw <- find.flats.ver(x, 0.05, 30, 0.05, 1, ver=2L)
+compare.flats('27 (walk)', exp, fw)
+
+x <- as.vector(x)
+xi <- round(x * 10)
+
+xna <- c(rep(NA_real_, 6), x)
+exp <- make.flats(xna, 0.05,
+                  src=c(   13, 53, 94) + 6,
+                  stID=c(  11, 51, 92) + 6,
+                  endID=c( 40, 81, 126) + 6)
+fs <- find.flats.ver(xna, 0.05, 30, 0.05, 1, ver=1L)
+compare.flats('28 (scan)', exp, fs)
+fw <- find.flats.ver(xna, 0.05, 30, 0.05, 1, ver=2L)
+compare.flats('28 (walk)', exp, fw)
+
+xna <- c(rep(NA_integer_, 7), xi)
+exp <- make.flats(xna, 0.05,
+                  src=c(   13, 53, 94) + 7,
+                  stID=c(  11, 51, 92) + 7,
+                  endID=c( 40, 81, 126) + 7)
+fs <- find.flats.ver(xna, 0.05, 30, 0.05, 1, ver=1L)
+compare.flats('29 (scan)', exp, fs)
+fw <- find.flats.ver(xna, 0.05, 30, 0.05, 1, ver=2L)
+compare.flats('29 (walk)', exp, fw)
+
+xna <- c(x, rep(NA_real_, 4))
+exp <- make.flats(xna, 0.05,
+                  src=c(   13, 53, 94),
+                  stID=c(  11, 51, 92),
+                  endID=c( 40, 81, 126))
+fs <- find.flats.ver(xna, 0.05, 30, 0.05, 1, ver=1L)
+compare.flats('30 (scan)', exp, fs)
+fw <- find.flats.ver(xna, 0.05, 30, 0.05, 1, ver=2L)
+compare.flats('30 (walk)', exp, fw)
+
+xna <- c(xi, rep(NA_integer_, 3))
+exp <- make.flats(xna, 0.05,
+                  src=c(   13, 53, 94),
+                  stID=c(  11, 51, 92),
+                  endID=c( 40, 81, 126))
+fs <- find.flats.ver(xna, 0.05, 30, 0.05, 1, ver=1L)
+compare.flats('31 (scan)', exp, fs)
+fw <- find.flats.ver(xna, 0.05, 30, 0.05, 1, ver=2L)
+compare.flats('31 (walk)', exp, fw)
+
+xna <- c(x[1:19], NA_real_, NA_real_,
+         x[20:60], NA_real_, NA_real_,
+         x[61:100], NA_real_, x[101:length(x)])
+exp <- make.flats(xna, 0.05,
+                  src=c(   13, 55, 98),
+                  stID=c(  11, 53, 96),
+                  endID=c( 42, 85, 131))
+fs <- find.flats.ver(xna, 0.05, 30, 0.05, 1, ver=1L)
+compare.flats('32 (scan)', exp, fs)
+fw <- find.flats.ver(xna, 0.05, 30, 0.05, 1, ver=2L)
+compare.flats('32 (walk)', exp, fw)
+
+xna <- c(xi[1:19], NA_integer_, NA_integer_,
+         xi[20:60], NA_integer_, NA_integer_,
+         xi[61:100], NA_integer_, xi[101:length(x)])
+exp <- make.flats(xna, 0.05,
+                  src=c(   13, 55, 98),
+                  stID=c(  11, 53, 96),
+                  endID=c( 42, 85, 131))
+fs <- find.flats.ver(xna, 0.05, 30, 0.05, 1, ver=1L)
+compare.flats('33 (scan)', exp, fs)
+fw <- find.flats.ver(xna, 0.05, 30, 0.05, 1, ver=2L)
+compare.flats('33 (walk)', exp, fw)
+
+xna <- c(NA_real_, NA_real_, NA_real_, x[1:19], NA_real_, NA_real_,
+         x[20:60], NA_real_, NA_real_,
+         x[61:100], NA_real_, x[101:length(x)], NA_real_)
+exp <- make.flats(xna, 0.05,
+                  src=c(   13, 55, 98) + 3,
+                  stID=c(  11, 53, 96) + 3,
+                  endID=c( 42, 85, 131) + 3)
+fs <- find.flats.ver(xna, 0.05, 30, 0.05, 1, ver=1L)
+compare.flats('34 (scan)', exp, fs)
+fw <- find.flats.ver(xna, 0.05, 30, 0.05, 1, ver=2L)
+compare.flats('34 (walk)', exp, fw)
+
+xna <- c(NA_integer_, NA_integer_, xi[1:19], NA_integer_, NA_integer_,
+         xi[20:60], NA_integer_, NA_integer_,
+         xi[61:100], NA_integer_, xi[101:length(x)], NA_integer_)
+exp <- make.flats(xna, 0.05,
+                  src=c(   13, 55, 98) + 2,
+                  stID=c(  11, 53, 96) + 2,
+                  endID=c( 42, 85, 131) + 2)
+fs <- find.flats.ver(xna, 0.05, 30, 0.05, 1, ver=1L)
+compare.flats('35 (scan)', exp, fs)
+fw <- find.flats.ver(xna, 0.05, 30, 0.05, 1, ver=2L)
+compare.flats('35 (walk)', exp, fw)
+
+# TC24 with NaN i.p.v. NA.
+xnan <- c(rep(NaN, 6), x)
+exp <- make.flats(xnan, 0.05,
+                  src=c(   13, 53, 94) + 6,
+                  stID=c(  11, 51, 92) + 6,
+                  endID=c( 40, 81, 126) + 6)
+fs <- find.flats.ver(xnan, 0.05, 30, 0.05, 1, ver=1L)
+compare.flats('36 (scan)', exp, fs)
+fw <- find.flats.ver(xnan, 0.05, 30, 0.05, 1, ver=2L)
+compare.flats('36 (walk)', exp, fw)
+
+# TC26 with NaN i.p.v. NA.
+xnan <- c(x, rep(NaN, 4))
+exp <- make.flats(xnan, 0.05,
+                  src=c(   13, 53, 94),
+                  stID=c(  11, 51, 92),
+                  endID=c( 40, 81, 126))
+fs <- find.flats.ver(xnan, 0.05, 30, 0.05, 1, ver=1L)
+compare.flats('37 (scan)', exp, fs)
+fw <- find.flats.ver(xnan, 0.05, 30, 0.05, 1, ver=2L)
+compare.flats('37 (walk)', exp, fw)
+
+# TC28 with NaN i.p.v. NA.
+xnan <- c(x[1:19], NaN, NaN, x[20:60], NaN, NaN,
+          x[61:100], NaN, x[101:length(x)])
+exp <- make.flats(xnan, 0.05,
+                  src=c(   13, 55, 98),
+                  stID=c(  11, 53, 96),
+                  endID=c( 42, 85, 131))
+fs <- find.flats.ver(xnan, 0.05, 30, 0.05, 1, ver=1L)
+compare.flats('38 (scan)', exp, fs)
+fw <- find.flats.ver(xnan, 0.05, 30, 0.05, 1, ver=2L)
+compare.flats('38 (walk)', exp, fw)
+
+# TC30 with NaN i.p.v. NA.
+xnan <- c(NaN, NaN, NaN, x[1:19], NaN, NaN, x[20:60], NaN, NaN,
+         x[61:100], NaN, x[101:length(x)], NaN)
+exp <- make.flats(xnan, 0.05,
+                  src=c(   13, 55, 98) + 3,
+                  stID=c(  11, 53, 96) + 3,
+                  endID=c( 42, 85, 131) + 3)
+fs <- find.flats.ver(xnan, 0.05, 30, 0.05, 1, ver=1L)
+compare.flats('39 (scan)', exp, fs)
+fw <- find.flats.ver(xnan, 0.05, 30, 0.05, 1, ver=2L)
+compare.flats('39 (walk)', exp, fw)
+
+x <- rep(1, 29)
+exp <- make.flats(x, 0.02, NULL, NULL, NULL)
+fs <- find.flats.ver(x, 0.05, 30, 0.05, 1, ver=1L)
+compare.flats('40 (scan)', exp, fs)
+fw <- find.flats.ver(x, 0.05, 30, 0.05, 1, ver=2L)
+compare.flats('40 (walk)', exp, fs)
+
+
+
+## BTP and edge case tests.
+
+# Flat at start.  Flat gets shorter with successive sources, first longest.
+set.seed(2)
+x <- sort(c(runif(50, 0.49,0.51), rep(c(1,2), 25)))
+exp <- make.flats(x, 0.05, src=1, stID=1, endID=50)
+compare.flats('BTP1', exp, find.flats(x, 0.05, 30, 0.05, 1))
+
+# Flat after single outlier.
+x <- c(1, x)
+exp <- make.flats(x, 0.05, src=2, stID=2, endID=51)
+compare.flats('BTP2', exp, find.flats(x, 0.05, 30, 0.05, 1))
+
+# Flat after double outlier.
+x <- c(1, x)
+exp <- make.flats(x, 0.05, src=3, stID=3, endID=52)
+compare.flats('BTP3', exp, find.flats(x, 0.05, 30, 0.05, 1))
+
+# Flat at end.
+set.seed(2)
+x <- sort(c(rep(c(-1,0), 25), runif(50, 0.49,0.51)))
+exp <- make.flats(x, 0.05, src=51, stID=51, endID=100)
+compare.flats('BTP4', exp, find.flats(x, 0.05, 30, 0.05, 1))
+
+# Flat with single outlier at end.
+x <- c(x, -1)
+exp <- make.flats(x, 0.05, src=51, stID=51, endID=100)
+compare.flats('BTP5', exp, find.flats(x, 0.05, 30, 0.05, 1))
+
+# Flat with double outlier at end.
+x <- c(x, -1)
+exp <- make.flats(x, 0.05, src=51, stID=51, endID=100)
+compare.flats('BTP6', exp, find.flats(x, 0.05, 30, 0.05, 1))
+
+# No flats.
+exp <- make.flats(x, 0.05, src=1, stID=1,endID=2)[-1L,]
+compare.flats('BTP7', exp, find.flats(rep(c(0,1),50), 0.05, 30, 0.05, 1))
+
+# Start setup but no flat, short by one.
+set.seed(2)
+x <- sort(c(runif(29, 0.49,0.51), rep(c(1,2), 25)))
+compare.flats('BTP8', exp, find.flats(x, 0.05, 30, 0.05, 1))
+
+# End setup but no flat, short by one.
+set.seed(2)
+x <- sort(c(rep(c(-1,0), 25), runif(29, 0.49,0.51)))
+compare.flats('BTP9', exp, find.flats(x, 0.05, 30, 0.05, 1))
+
+# Bad parameters.
+verify.error('BTP10a', find.flats, list(x, -0.1, 20, 0.05, 1))
+verify.error('BTP10b', find.flats, list(x,  1.1, 20, 0.05, 1))
+verify.error('BTP11a', find.flats, list(x, 0.05, 0.49, 0.05, 1)) # Rounds to 0
+verify.error('BTP11b', find.flats, list(x, 0.05, -20, 0.05, 1))
+verify.error('BTP12a', find.flats, list(x, 0.05, 20, -0.1, 1))
+verify.error('BTP12b', find.flats, list(x, 0.05, 20,  1.1, 1))
+verify.error('BTP13',  find.flats, list(x, 0.05, 20, 0.05, -1))
+verify.empty('BTP14',  find.flats, list(NULL, 0.05, 20, 0.02, 1))
+verify.empty('BTP15',  find.flats, list(vector('numeric',0), 0.05, 20, 0.02, 1))
+verify.empty('BTP16',  find.flats, list(c(1.01), 0.05, 20, 0.02, 1))
+
+# Unsupported value type.
+verify.error('BTP17a',find.flats, list(rep(NA_logical_, 30), 0.05, 20, 0.05, 1))
+verify.error('BTP17b',find.flats, list(rep(NA_complex_, 30), 0.05, 20, 0.05, 1))
+
+
+if (allpass) {
+  cat('  all find.flat tests PASSED\n')
+}
+
+

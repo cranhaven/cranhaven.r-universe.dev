@@ -1,0 +1,304 @@
+
+# test_common.Rtest:
+# Test bench framework functions for b.v. comparing results.  Creates a global
+# allpass to hold the overall pass/fail state of a test bench.
+#
+# c 2024-2025 Greg Kreider, Primordial Machine Vision Systems, Inc.
+
+
+allpass <- TRUE
+
+
+# Return TRUE if the two values are integers and match exactly, or are
+# numeric and differ by eps.abs in absolute terms or eps.rel in relative
+# (either if NA or NULL are skipped).  Handles vectors per arithmetic
+# recycling, and all must match.
+nearly <- function(val1, val2, eps.abs=1e-6, eps.rel=NA) {
+
+  if (is.integer(val1) && is.integer(val2)) {
+    all(val1 == val2)
+  } else if (any(xor(is.finite(val1), is.finite(val2)))) {
+    FALSE
+  } else {
+    val1 <- val1[is.finite(val1)]
+    val2 <- val2[is.finite(val2)]
+    if (is.finite(eps.abs)) {
+      pabs <- all(abs(val1 - val2) <= eps.abs)
+    } else {
+      pabs <- FALSE
+    }
+    if (is.finite(eps.rel)) {
+      prel <- all((abs(val1 - val2)*2/(val1+val2)) <= eps.rel)
+    } else {
+      prel <- FALSE
+    }
+    pabs || prel
+  }
+}
+
+# Return TRUE if all non-NA values in the two values match per nearly, and
+# the NA values are the same.
+eq.withNA <- function(val1, val2, eps=1e-6) {
+
+  val1[is.na(val1)] <- 0.0
+  val2[is.na(val2)] <- 0.0
+  nearly(val1, val2, eps)
+}
+
+# Check that two vectors v1 and v2 are the same.  Add testID identifier to
+# pass/fail messages.  Sets the global allpass to FALSE on failure.  Returns
+# TRUE if the two vectors match.
+verify.vectors <- function(testID, v1, v2) {
+
+  v1 <- unlist(v1)
+  v2 <- unlist(v2)
+
+  passed <- TRUE
+  if (length(v1) != length(v2)) {
+    cat('    test ', testID, ' length mismatch ',
+        length(v1), ' ', length(v2), '\n')
+    passed <- FALSE
+  } else if (!eq.withNA(v1, v2)) {
+    cat('    test ', testID, ' values differ\n')
+    passed <- FALSE
+  }
+  if (!passed) {
+    cat('      v1: ', v1, '\n')
+    cat('      v2: ', v2, '\n')
+  }
+
+  if (!passed) {
+    allpass <<- FALSE
+  }
+  passed
+}
+
+# Check that the rows of two matrices are the same, printing as failure
+# message with identifier testID those that are not found in the other.
+# Sets the global allpass to FALSE on failure.  Returns TRUE if the matrices
+# match.
+verify.matrices <- function(testID, m1, m2) {
+
+  passed <- TRUE
+  if (ncol(m1) != ncol(m2)) {
+    cat('    test ', testID, ' matrix column counts differ\n')
+    passed <- FALSE
+  } else {
+    fnd1 <- rep(FALSE, nrow(m1))
+    fnd2 <- rep(FALSE, nrow(m2))
+    for (i in which(!fnd1)) {
+      for (j in 1:nrow(m2)) {
+        if (eq.withNA(m1[i,], m2[j,])) {
+          fnd1[i] <- TRUE
+          fnd2[j] <- TRUE
+          break
+        }
+      }
+    }
+    for (j in which(!fnd2)) {
+      for (i in 1:nrow(m1)) {
+        if (eq.withNA(m1[i,], m2[j,])) {
+          fnd1[i] <- TRUE
+          fnd2[j] <- TRUE
+          break
+        }
+      }
+    }
+    if (!all(fnd1)) {
+      cat('    test ', testID, ' matrix #1 has rows not found in #2:\n')
+      cat('         ', rep(' ', nchar(testID)), ' ', which(!fnd1), '\n')
+      passed <- FALSE
+    }
+    if (!all(fnd2)) {
+      cat('    test ', testID, ' matrix #2 has rows not found in #1:\n')
+      cat('         ', rep(' ', nchar(testID)), ' ', which(!fnd2), '\n')
+      passed <- FALSE
+    }
+  }
+
+  if (!passed) {
+    allpass <<- FALSE
+  }
+  passed
+}
+
+# Test that two generic lists match element by element.  Names are ignored.
+# Comparison is done with == for exact match.  If l2 is NULL then test that
+# all elements of l1 are NULL (note does not check how many l1 there are).
+# If not print a failure message include the identifier testID.  Sets the
+# global allpass to FALSE on failure.  Returns TRUE if the two lists match.
+verify.lists <- function(testID, l1, l2) {
+
+  passed <- FALSE
+  if (is.null(l2)) {
+    pass <- sapply(l1, is.null)
+    if (!all(pass)) {
+      cat('    test ', testID, ' does not have NULL values at ID ',
+          which(!pass), '\n')
+    } else {
+      passed <- TRUE
+    }
+  } else if (length(l1) != length(l2)) {
+    cat('    test ', testID, ' failed - length mismatch ',
+        length(l1), ' ', length(l2), '\n')
+  } else {
+    pass <- sapply(seq_along(l1),
+                   function(i) {
+                     if (is.list(l1[[i]]) || is.list(l2[[i]])) {
+                       verify.lists(testID, l1[[i]], l2[[i]])
+                     } else {
+                       all(l1[[i]] == l2[[i]])
+                     }
+                   })
+    if (!all(pass)) {
+      for (i in which(!pass)) {
+        cat('    test ', testID, ' failed - elt ', names(l1)[i], ' ', l1[[i]],
+            ' != ', l2[[i]], '\n')
+      }
+    } else {
+      passed <- TRUE
+    }
+  }
+  
+  if (!passed) {
+    allpass <<- FALSE
+  }
+  passed
+}
+
+# Test that we get an error when calling function or function name cmd with
+# its arguments args wrapped in a list.  If not, add testID to the failure
+# message and set the global allpass to FALSE.  Returns whether test passes.
+verify.error <- function(testID, cmd, args) {
+
+  passed <- TRUE
+
+  err <- tryCatch({ do.call(cmd, args) ; FALSE }, error=function(e) { TRUE })
+  if (!err) {
+    cat('    test ', testID, ' did not generate error\n')
+    passed <- FALSE
+  }
+  
+  if (!passed) {
+    allpass <<- FALSE
+  }
+  passed
+}
+
+# Test that we do not get an error when calling function or function name cmd
+# with its arguments args wrapped in a list.  If not, add testID to the failure
+# message and set the global allpass to FALSE.  Returns success flag.
+verify.noerror <- function(testID, cmd, args) {
+
+  passed <- TRUE
+
+  err <- tryCatch({ do.call(cmd, args) ; FALSE }, error=function(e) { TRUE })
+  if (err) {
+    cat('    test ', testID, ' generated unexpected error\n')
+    passed <- FALSE
+  }
+
+  if (!passed) {
+    allpass <<- FALSE
+  }
+  passed
+}
+
+# Test that we get a warning when calling function or function name cmd with
+# its arguments args wrapped in a list.  If not, add testID to the failure
+# message and set the global allpass to FALSE.  Returns whether test passes.
+verify.warning <- function(testID, cmd, args) {
+
+  passed <- TRUE
+
+  err <- tryCatch({ do.call(cmd, args) ; FALSE }, warning=function(e) { TRUE })
+  if (!err) {
+    cat('    test ', testID, ' did not generate warning\n')
+    passed <- FALSE
+  }
+
+  if (!passed) {
+    allpass <<- FALSE
+  }
+  passed
+}
+
+# Generate piecewise linear data hitting positions knots, incrementing by
+# step from point to point.  knots will be rounded to be multiples of step.
+# Returns a list with elements
+#   $knotID    indices of the knots    
+#   $x         the data
+#   $minmax    TRUE if knot is a local maximum, FALSE minimum, NA other
+gen.pwl <- function(knots, step) {
+
+  knots <- round(knots / step)
+  nknot <- length(knots)
+  
+  x <- step * c(knots[1],
+                unlist(sapply(2:nknot,
+                              function(i) { (knots[i-1]:knots[i])[-1L] })))
+
+  knotID <- c(1, 1 + cumsum(abs(diff(knots))))
+  
+  if (2 == nknot) {
+    if (knots[1] < knots[2]) {
+      minmax <- c(FALSE, TRUE)
+    } else if (knots[1] > knots[2]) {
+      minmax <- c(TRUE, FALSE)
+    } else {
+      minmax <- c(NA, NA)
+    }
+  } else {
+    minmax <- sapply(2:(nknot-1),
+                     function(i) {
+                       if ((knots[i] < knots[i-1]) &&
+                           (knots[i] < knots[i+1])) {
+                         FALSE
+                       } else if ((knots[i] > knots[i]-1) &&
+                                  (knots[i] > knots[i]-1)) {
+                         TRUE
+                       } else {
+                         NA
+                       }
+                     })
+    if (knots[1] < knots[2]) {
+      minmax <- c(FALSE, minmax)
+    } else if (knots[1] > knots[2]) {
+      minmax <- c(TRUE, minmax)
+    } else {
+      minmax <- NA
+    }
+    if (knots[nknot] < knots[nknot-1]) {
+      minmax <- c(minmax, FALSE)
+    } else if (knots[nknot] > knots[nknot-1]) {
+      minmax <- c(minmax, TRUE)
+    } else {
+      minmax <- NA
+    }
+  }
+
+  list(x=x, knotID=knotID, minmax=minmax)
+}
+
+
+#### Common Data
+
+# demo3 in development version.
+set.seed(8)
+tstds1 <- c(rnorm(500,0,3), rnorm(50,-2,0.1), rnorm(50,-0.75,0.1),
+            rnorm(50,0.75,0.1), rnorm(50,2,0.1))
+
+# demo4 in development version.
+set.seed(7)
+tstds2 <- c(rnorm(60, 5.5, 0.1), rnorm(150,7,9), rgamma(90, 0.3))
+
+# demo8 in development version.
+set.seed(27)
+tstds3 <- c(runif(200,0,10), runif(100,3,5))
+
+# demo1 in development version.
+set.seed(37)
+tstds4 <- c(rnorm(200, 0,3), rnorm(100, 4,0.75))
+
+set.seed(17)
+tstds5 <- rnorm(50)

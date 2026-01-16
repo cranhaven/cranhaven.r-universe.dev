@@ -1,0 +1,630 @@
+
+# test_find_peaks.Rtest:
+# Test benches for the find.peaks detector.
+#
+# c 2025 Greg Kreider, Primordial Machine Vision Systems, Inc.
+
+## To Do:
+# -
+#
+
+
+if (interactive()) {
+  source('../R/detectors.R')
+
+  if (is.loaded('C_find_peaks', PACKAGE='Dimodal')) {
+    dyn.unload('../src/Dimodal.so')
+  }
+  dyn.load('../src/Dimodal.so')
+} else {
+  library(Dimodal)
+  # We aren't exporting the detectors, so must link internally.
+  find.peaks <- Dimodal:::find.peaks
+}
+
+source('../tests/test_common.Rtest')
+
+
+##### Test Framework
+
+# Compare the expected position pos, maximum flag ismax, and data values vals
+# against the values in the peaks result mm.  If any don't match, use testID
+# as an identifier in the failure message.  fhsupp sets the height of the
+# support range, and fhtie is used to detect runs when checking the support.
+# Sets the global allpass to FALSE on mis-match, and returns an overall
+# pass/fail flag.
+verify.minmax <- function(testID, mm, pos, ismax, vals, fhsupp, fhtie=0.001) {
+
+  passed <- TRUE
+
+  if (length(pos) != length(ismax)) {
+    cat('    test ', testID, ' internal error - mismatched pos/ismax\n')
+    allpass <<- FALSE
+    return(FALSE)
+  }
+
+  if (nrow(mm) != length(pos)) {
+    cat('    test ', testID, ' num peaks ', nrow(mm), ' not expected ',
+        length(pos), '\n')
+    print(mm)
+    cat('          positions ', pos, '\n')
+    passed <- FALSE
+  } else {
+    # Allow shifts in position if the values match.  The Dimodal implementation
+    # will pick the first of equal peaks, the development version the last.
+    # This is OK as the height does not change.
+    if (any((mm$pos != pos) & !is.tied(vals[mm$pos], vals[pos]))) {
+      cat('    test ', testID, ' peaks positions differ\n')
+      cat('      expect ', pos, '\n')
+      cat('      got    ', mm$pos, '\n')
+      passed <- FALSE
+    }
+    if (!all(mm$ismax == ismax)) {
+      cat('    test ', testID, ' peaks ismax flags differ\n')
+      cat('      expect ', ismax, '\n')
+      cat('      got    ', mm$ismax, '\n')
+      passed <- FALSE
+    }
+    if (any(!is.tied(mm$valsd, vals[pos], fhtie))) {
+      cat('    test ', testID, ' peaks values differ\n')
+      cat('      expect ', vals[pos], '\n')
+      cat('      got    ', mm$valsd, '\n')
+      passed <- FALSE      
+    }
+
+    lht <- (mm$valsd - c(NA, mm$valsd[-nrow(mm)]))[mm$ismax]
+    if (!eq.withNA(mm$lht[mm$ismax], lht)) {
+      cat('    test ', testID, ' peak heights to left differ\n')
+      cat('      expect ', lht, '\n')
+      cat('      got    ', mm$lht[mm$ismax], '\n')
+      passed <- FALSE
+    }
+    
+    rht <- (mm$valsd - c(mm$valsd[-1L], NA))[mm$ismax]
+    if (!eq.withNA(mm$rht[mm$ismax], rht)) {
+      cat('    test ', testID, ' peak heights to right differ\n')
+      cat('      expect ', rht, '\n')
+      cat('      got    ', mm$rht[mm$ismax], '\n')
+      passed <- FALSE
+    }
+
+    lmin <- mm$pos
+    lmin[mm$ismax] <- NA
+    if (!eq.withNA(mm$lminID, c(NA, lmin[-length(lmin)]))) {
+      cat('    test ', testID, ' minima position to left differ\n')
+      cat('      expect ', c(NA, lmin[-length(lmin)]), '\n')
+      cat('      got    ', mm$lminID, '\n')
+      passed <- FALSE
+    }
+
+    rmin <- mm$pos
+    rmin[mm$ismax] <- NA
+    if (!eq.withNA(mm$rminID, c(rmin[-1L], NA))) {
+      cat('    test ', testID, ' minima position to right differ\n')
+      cat('      expect ', c(rmin[-1L], NA), '\n')
+      cat('      got    ', mm$rminID, '\n')
+      passed <- FALSE
+    }
+
+    if (1.0 == fhsupp) {
+      if (!eq.withNA(mm$lsuppID, mm$lminID)) {
+        cat('    test ', testID, ' full left support not to minima\n')
+        cat('      expect ', mm$lminID, '\n')
+        cat('      got    ', mm$lsuppID, '\n')
+        passed <- FALSE
+      }
+      if (!eq.withNA(mm$rsuppID, mm$rminID)) {
+        cat('    test ', testID, ' full right support not to minima\n')
+        cat('      expect ', mm$rminID, '\n')
+        cat('      got    ', mm$rsuppID, '\n')
+        passed <- FALSE
+      }
+    } else if (0.0 == fhsupp) {
+      supp <- mm$pos
+      supp[!mm$ismax] <- NA
+      lsupp <- supp
+      lsupp[1L] <- NA
+      if (!eq.withNA(mm$lsuppID, lsupp)) {
+        cat('    test ', testID, ' empty left support not at maxima\n')
+        cat('      expect ', lsupp, '\n')
+        cat('      got    ', mm$lsuppID, '\n')
+        passed <- FALSE
+      }
+      rsupp <- supp
+      rsupp[length(rsupp)] <- NA
+      if (!eq.withNA(mm$rsuppID, rsupp)) {
+        cat('    test ', testID, ' empty right support not at maxima\n')
+        cat('      expect ', rsupp, '\n')
+        cat('      got    ', mm$rsuppID, '\n')
+        passed <- FALSE
+      }
+    } else {
+      lsupp <- mm$valsd - (fhsupp * mm$lht)
+      rsupp <- mm$valsd - (fhsupp * mm$rht)
+      for (i in which(mm$ismax)) {
+        if ((1 < i) && (mm$lsuppID[i] != mm$pos[i-1])) {
+          xl <- vals[mm$lsuppID[i]]
+          if ((xl < lsupp[i]) &&
+              ((2 * .Machine$double.eps) < abs(xl - lsupp[i]))) {
+            cat('    test ', testID,
+                sprintf(' L support peak %3d above data, %.3f > %.3f\n',
+                        mm$pos[mm$ismax][i], lsupp[i], xl))
+            passed <- FALSE
+          }
+          # Ignore check of first point outside support if in run fhtie.
+          xll <- vals[mm$lsuppID[i]-1]
+          # We allow 2*fhtie here because the two points may be in the middle
+          # of a flat and on either side of the source.  This happens in
+          # TC 8, peak 3 at 12, with lsupp at 10 part of a run 8:11.
+          if ((lsupp[i] < xll) && !is.tied(xl, xll, 2*fhtie)) {
+            cat('    test ', testID,
+                sprintf(' L support peak %3d below next data, %.3f < %.3f\n',
+                        mm$pos[mm$ismax][i], lsupp[i], xll))
+            passed <- FALSE
+          }
+        }
+        if ((i < length(mm$ismax)) && (mm$rsuppID[i] != mm$pos[i+1])) {
+          xr <- vals[mm$rsuppID[i]]
+          if ((xr < rsupp[i]) &&
+              ((2 * .Machine$double.eps) < abs(xr - rsupp[i]))) {
+            cat('    test ', testID,
+                sprintf(' R support peak %3d above data, %.3f > %.3f\n',
+                        mm$pos[mm$ismax][i], rsupp[i], xr))
+            passed <- FALSE
+          }
+          xrr <- vals[mm$rsuppID[i]+1]
+          if ((rsupp[i] < xrr) && !is.tied(xr, xrr, 2*fhtie)) {
+            cat('    test ', testID,
+                sprintf(' R support peak %3d below next data, %3.f < %.3f\n',
+                        mm$pos[mm$ismax][i], rsupp[i], xrr))
+            passed <- FALSE
+          }
+        }
+      }
+    }
+  }
+
+  if (!passed) {
+    allpass <<- FALSE
+  }
+  passed
+}
+
+# Implement the runs tied test, returning TRUE per paired values x1 and x2 if
+# difference relative their average is more than fhtie.  If x1 and x2 elements
+# are both NA, 0, or non-finite they are ignored, but if only one of the two
+# is then return FALSE for the element.
+is.tied <- function(x1, x2, fhtie=0.001) {
+
+  (is.na(x1) & is.na(x2)) | (!is.finite(x1) & !is.finite(x2)) |
+  ((0 == x1) & (0 == x2)) |
+  ((2 * abs(x1-x2)/(x1+x2)) <= fhtie)
+}
+
+# Test that the value returned from evaluating cmd with its arguments args
+# wrapped in a list has 0 rows.  Treat errors as failures.  Add testID to
+# any failure message and set the global allpass to FALSE.  Returns TRUE if
+# the test passes.
+verify.empty <- function(testID, cmd, args) {
+
+  passed <- TRUE
+
+  res <- tryCatch( do.call(cmd, args),
+                   error=function(e) { matrix(1, nrow=1, ncol=1) })
+  if (0 != nrow(res)) {
+    cat('    test ', testID, ' result did not have 0 rows\n')
+    passed <- FALSE
+  }
+
+  if (!passed) {
+    allpass <<- FALSE
+  }
+  passed
+}
+
+
+##### Test Cases
+
+# Manually verified on meuse$cadmium, meuse$copper, acidity, enzyme data
+# as interval spacing with w=16, ie. diff(sort(meuse$cadmium), lag=16),
+# compared against modal.R.  Some peaks differ but they have the same
+# interval spacing, so find.peaks is picking a different local minimum
+# but with the same heights.  The acidity data also has an extra peak and
+# minima at the end, which seems to be legit, ie. modal.R should not have
+# deleted this peak.
+
+allpass <- TRUE
+
+## First tests match those in test_find_flats|lvlsec, except that the interval
+## width for TC 7 is 25 i.p.v. 20 for fewer maxima.
+
+diw <- diff(sort(tstds1), lag=20)
+mm <- find.peaks(diw, 0.05, 0.15, 0.001,1.0)
+pos <- c(21, 92, 106, 184, 224, 311, 371, 456, 507, 558, 659, 678, 700) - 20
+ismax <- c(rep(c(TRUE, FALSE), 6), TRUE)
+verify.minmax(1, mm, pos, ismax, diw/sd(diw), 1.0)
+
+diw <- diff(sort(tstds2), lag=20)
+mm <- find.peaks(diw, 0.05, 0.15, 0.001, 0.0)
+pos <- c(21, 51, 142, 178, 224, 246, 278, 291, 300) - 20
+ismax <- c(rep(c(TRUE, FALSE), 4), TRUE)
+verify.minmax(2, mm, pos, ismax, diw/sd(diw), 0.0)
+
+diw <- diff(sort(tstds3), lag=25)
+mm <- find.peaks(diw, 0.05, 0.15, 0.001, 0.9)
+pos <- c(26, 33, 58, 87, 101, 142, 233, 244, 247, 261, 269, 272, 285, 300) - 25
+ismax <- rep(c(TRUE, FALSE), 7)
+verify.minmax(3, mm, pos, ismax, diw/sd(diw), 0.9)
+
+diw <- diff(sort(tstds4), lag=25)
+mm <- find.peaks(diw, 0.05, 0.15, 0.001, 0.75)
+pos <- c(26, 116, 164, 238, 300) - 25
+ismax <- c(TRUE, FALSE, TRUE, FALSE, TRUE)
+verify.minmax(4, mm, pos, ismax, diw/sd(diw), 0.75)
+
+if ('faithful' %in% data()$results[,3]) {
+  diw <- diff(sort(faithful$waiting), lag=50)
+  # Hmm, fhsupp = 0.5 here fails on left side with FP precision difference.
+  mm <- find.peaks(diw, 0.10, 0.15, 0.001, 0.6)
+  pos <- c(51, 83, 127, 241, 272) - 50
+  ismax <- c(TRUE, FALSE, TRUE, FALSE, TRUE)
+  verify.minmax(5, mm, pos, ismax, diw/sd(diw), 0.6)
+}
+
+if ('iris' %in% data()$results[,3]) {
+  diw <- diff(sort(iris$Petal.Length), lag=30)
+  mm <- find.peaks(diw, 0.05, 0.15, 0.001, 0.5)
+  pos <- c(31, 36, 77, 113, 150) - 30
+  ismax <- c(TRUE, FALSE, TRUE, FALSE, TRUE)
+  verify.minmax(6, mm, pos, ismax, diw/sd(diw), 0.5)
+}
+
+if ('quakes' %in% data()$results[,3]) {
+  diw <- diff(sort(quakes[,3]), lag=60)
+  mm <- find.peaks(diw, 0.05, 0.15, 0.001, 0.1)
+  # The development detector lists two initial points at indices 61 and 77,
+  # both with an interval spacing of 8, after deleting a local maximum at 70
+  # with a height below fdelta.  The index at 17 should also be dropped.
+  pos <- c(61, 325, 352, 419, 470, 635, 878, 1000) - 60
+  ismax <- rep(c(FALSE, TRUE), 4)
+  verify.minmax(7, mm, pos, ismax, diw/sd(diw), 0.1)
+}
+
+
+## Constructed 
+
+# Range 0-5.59  fht -> 0.2975.
+# Fuzzy runs for fhtie 0.01 at 0.7, 5.95.
+# The goal is to eliminate peaks both to the left and right failing either
+# the absolute or relative thresholds.
+#   max  1  1.5  end                                                       P
+#   min  4  0.05                                                           x
+#   max  5  0.05 - 0.06 - 0.03   L  fail abs 0.01, fail rel 0.18           F
+#        7  0.0                                                           keep
+#       12  0.0 - 1.3 - 0.9      R  pass abs 0.4, pass rel 0.4/1.1 = 0.36  P
+#       13  0.9                                                           keep
+#       17  0.9 - 2.4 - 2.0      R  pass abs 0.4, pass rel 0.4/2.2 = 0.18  P
+#       18  2.0                                                           keep
+#       19  2.0 - 4.5 - 4.1      R  pass abs 0.4, fail rel 0.4/4.3 = 0.12  F
+#       20  4.1                                                            x
+#       21  4.1 - 4.4 - 4.2      R  fail abs 0.2, fail rel 0.2/4.3 = 0.05  F
+#       22  4.2                                                            x
+#       24  4.2 - 5.95 - 3.9     L  pass abs 1.75, pass rel = 0.34         P
+#       25  3.9                                                            x
+#       30  3.9 - 4.5 - 2.0      L  pass abs 0.6, fail rel 0.6/4.2 = 0.14  F
+#       32  2.0                                                           keep
+#   max 33  2.5  end                                                       P
+# The run 24:28 centers at 26.
+x <- c(1.5, 1.0, 0.3, 0.05, 0.06, 0.03, 0.0, 0.7,  0.695, 0.705,
+       0.7, 1.3, 0.9, 1.5,  1.7,  1.9,  2.4, 2.0,  4.5,   4.1,
+       4.4, 4.2, 5.0, 5.95, 6.0,  5.9,  5.9, 5.97, 3.9,   4.5,
+       3.0, 2.0, 2.5
+       )
+r <- find.runs(x, 0.01)
+mm <- find.peaks(x, 0.05, 0.15, 0.01, 0.8)
+pos <- c(1, 7, 12, 13, 17, 18, 26, 32, 33)
+ismax <- c(TRUE, FALSE, TRUE, FALSE, TRUE, FALSE, TRUE, FALSE, TRUE)
+verify.minmax(8, mm, pos, ismax, x/sd(x), 0.8, 0.01)
+
+# c( 0.423, 0.418, 0.533, 0.514, 0.540, 0.549, 0.578, 0.586, 0.605, 0.576,
+#    0.478, 0.479, 0.532, 0.533, 0.640, 0.618, 0.610, 0.609, 0.505, 0.513,
+#    0.462, 0.435, 0.392, 0.374, 0.370, 0.381, 0.404, 0.402, 0.367)
+# sd = 0.08651, absthr = 0.01365
+#  max   1  0.423  end                                                    P
+#  min   2  0.418                                                        keep
+#  max   3  0.418 - 0.533 - 0.514  R  pass abs 0.019, fail rel 0.04       F
+#  min   4  0.514                                                         x
+#        9 (0.514)- 0.605 - 0.576  R  pass abs 0.209, pass rel 0.16       P
+#       11  0.478                                                        keep
+#       15  0.478 - 0.640 -(0.367) L  pass abs 0.162, pass rel 0.29       P
+#       19  0.505                                                         x
+#       20  0.505 - 0.513 - 0.370  L  fail abs 0.008, fail rel 0.02       F
+#       25  0.370                                                         x
+#       27  0.370 - 0.404 - 0.367  L  pass abs 0.034, fail rel 0.09       F
+#  min  29  0.367  end                                                   keep
+# Note that the runs and support values create numeric mis-match problems
+# for this test case, which are handled exceptionally in the test.  This
+# weakens all other test cases.
+set.seed(7)
+xnorm <- c(rnorm(15, 9.5, 0.1), rnorm(15, 10, 0.2), rnorm(15, 10.5, 0.1))
+x <- round(1000 * diff(sort(xnorm), lag=16)) / 1000
+mm <- find.peaks(x, 0.05, 0.15, 0.001, 0.75)
+pos <- c(1, 2, 9, 11, 15, 29)
+ismax <- c(TRUE, FALSE, TRUE, FALSE, TRUE, FALSE)
+verify.minmax(9, mm, pos, ismax, x/sd(x), 0.75)
+
+# The worst case, a sawtooth.  Every point is an extremum.
+x <- rep(c(1,2), 5)
+mm <- find.peaks(x, 0.05, 0.15, 0.001, 0.95)
+pos <- 1:10
+ismax <- rep(c(FALSE, TRUE), 5)
+verify.minmax(10, mm, pos, ismax, x/sd(x), 0.95)
+
+# This does not have a maximum as the last extremum, and that last maximum
+# gets merged into the larger next-to-last (ie.... - max1 - min1 - max2 - min2
+# where max2 merges into max1, deleting min2 in the process).
+diw <- diff(sort(tstds5), lag=16)
+mm <- find.peaks(diw, 0.05, 0.15, 0.01, 1.0)
+pos <- c(17, 33, 47, 50) - 16
+ismax <- c(TRUE, FALSE, TRUE, FALSE)
+verify.minmax(11, mm, pos, ismax, diw/sd(diw), 1.0)
+
+# 1.1 fails fht, 1.8 passes.  Both OK at relht.
+pwl <- gen.pwl(c(1, 0, 1.1, 1.02, 1.8, 1.68, 2.0, 0.96, 1.0), 0.02)
+keep <- c(TRUE, TRUE, FALSE, FALSE, TRUE, TRUE, TRUE, TRUE, TRUE)
+ismax <- pwl$minmax[keep]
+pos <- pwl$knotID[keep]
+mm <- find.peaks(pwl$x, 0.05, 0.05, 0.001, 0.0)
+verify.minmax(12, mm, pos, ismax, pwl$x/sd(pwl$x), 0.0)
+
+# 1.8 passes fht but now fails frelht.
+pwl$x <- pwl$x + 4
+keep <- c(TRUE, TRUE, FALSE, FALSE, FALSE, FALSE, TRUE, TRUE, TRUE)
+ismax <- pwl$minmax[keep]
+pos <- pwl$knotID[keep]
+mm <- find.peaks(pwl$x, 0.05, 0.05, 0.001, 0.9)
+verify.minmax(13, mm, pos, ismax, pwl$x/sd(pwl$x), 0.9)
+
+pwl <- gen.pwl(c(0, 2, 0), 0.02)
+keep <- c(TRUE, TRUE, TRUE)
+ismax <- pwl$minmax[keep]
+pos <- pwl$knotID[keep]
+mm <- find.peaks(pwl$x, 0.05, 0.05, 0.001, 0.1)
+verify.minmax(14, mm, pos, ismax, pwl$x/sd(pwl$x), 0.1)
+
+# Both small maxima below fht, leaving the one main peak.
+pwl <- gen.pwl(c(0, 1.04, 0.96, 2.0, 0.96, 1.04, 0), 0.02)
+keep <- c(TRUE, FALSE, FALSE, TRUE, FALSE, FALSE, TRUE)
+ismax <- pwl$minmax[keep]
+pos <- pwl$knotID[keep]
+mm <- find.peaks(pwl$x, 0.05, 0.05, 0.001, 0.75)
+verify.minmax(15, mm, pos, ismax, pwl$x/sd(pwl$x), 0.75)
+
+# All small peaks eliminated for absolute height.
+pwl <- gen.pwl(c(1, 0, 0.8, 0.74, 0.9, 0.82, 2, 1.28, 1.32, 0.56, 0.62, 0),
+               0.02)
+keep <- c(TRUE, TRUE, FALSE, FALSE, FALSE, FALSE, TRUE, 
+          FALSE, FALSE, FALSE, FALSE, TRUE)
+ismax <- pwl$minmax[keep]
+pos <- pwl$knotID[keep]
+mm <- find.peaks(pwl$x, 0.05, 0.05, 0.001, 0.9)
+verify.minmax(16, mm, pos, ismax, pwl$x/sd(pwl$x), 0.9)
+
+# Central small peaks merge to outer which are large enough to remain.
+pwl <- gen.pwl(c(1, 0, 0.90, 0.82, 0.84, 0.78, 2, 0.36, 0.42, 0.40, 0.50, 0),
+               0.02)
+keep <- c(TRUE, TRUE, TRUE, FALSE, FALSE, TRUE, TRUE,
+          TRUE, FALSE, FALSE, TRUE, TRUE)
+ismax <- pwl$minmax[keep]
+pos <- pwl$knotID[keep]
+mm <- find.peaks(pwl$x, 0.05, 0.05, 0.001, 0.25)
+verify.minmax(17, mm, pos, ismax, pwl$x/sd(pwl$x), 0.25)
+
+# All small peaks eliminated for relative height.
+pwl <- gen.pwl(c(8, 7, 8.20, 8.00, 8.40, 8.16, 9, 7.80, 7.94, 7.60, 7.76, 7),
+               0.02)
+keep <- c(TRUE, TRUE, FALSE, FALSE, FALSE, FALSE, TRUE, 
+          FALSE, FALSE, FALSE, FALSE, TRUE)
+ismax <- pwl$minmax[keep]
+pos <- pwl$knotID[keep]
+mm <- find.peaks(pwl$x, 0.05, 0.05, 0.001, 0.33)
+verify.minmax(18, mm, pos, ismax, pwl$x/sd(pwl$x), 0.33)
+
+# Peaks individually fail rel height, but central merges outward and passes.
+pwl <- gen.pwl(c(7, 6, 7.40, 7.16, 7.30, 7.02, 8, 6.46, 6.70, 6.58, 6.80, 6),
+               0.02)
+keep <- c(TRUE, TRUE, TRUE, FALSE, FALSE, TRUE, TRUE,
+          TRUE, FALSE, FALSE, TRUE, TRUE)
+ismax <- pwl$minmax[keep]
+pos <- pwl$knotID[keep]
+mm <- find.peaks(pwl$x, 0.05, 0.05, 0.001, 0.95)
+verify.minmax(19, mm, pos, ismax, pwl$x/sd(pwl$x), 0.95)
+
+# Constant line.
+pwl <- 0.01 * (0:100)
+mm <- find.peaks(pwl, 0.05, 0.15, 0.001, 0.92)
+pos <- c(1, 101)
+ismax <- c(FALSE, TRUE)
+# Using 0.92 for fhtie matches a pwl value except for round-off.
+verify.minmax(20, mm, pos, ismax, pwl/sd(pwl), 0.915)
+
+# Two point input, not constant.
+pwl <- c(0, 1)
+mm <- find.peaks(pwl, 0.05, 0.15, 0.001, 0.9)
+pos <- c(1,2)
+ismax <- c(FALSE, TRUE)
+verify.minmax(21, mm, pos,  ismax, pwl/sd(pwl), 0.9)
+
+# From an error while debugging Ditrack.
+diw <- diff(sort(faithful$waiting), lag=round(0.36*length(faithful$waiting)))
+mm <- find.peaks(diw, 0.05, 0.15, 0.001, 0.9)
+# The development version does not include the minimum at 2, which is real
+# and was a bug, and places the second minimum at 144, which has the same
+# value as at 128.
+pos <- c(1, 2, 16, 128, 174)
+ismax <- c(TRUE, FALSE, TRUE, FALSE, TRUE)
+verify.minmax(22, mm, pos, ismax, diw/sd(diw), 0.9)
+
+# Another error while debugging Ditrack. The development version picks
+# different points with the same spacing (66 i.p.v. 61, 88 i.p.v. 90,
+# 45 i.p.v. 46) and has an extra minimum at 36 that was wrong.
+diw <- diff(sort(iris$Petal.Width), lag=60)
+mm <- find.peaks(diw, 0.05, 0.15, 0.001, 0.9)
+pos <- c(61, 106, 126, 150) - 60
+ismax <- c(FALSE, TRUE, FALSE, TRUE)
+verify.minmax(23, mm, pos, ismax, diw/sd(diw), 0.9)
+
+diw.na <- c(rep(NA, 5), diw)
+mm <- find.peaks(diw.na, 0.05, 0.15, 0.001, 0.9)
+verify.minmax(24, mm, pos+5, ismax, diw.na/sd(diw), 0.9)
+
+diw.na <- c(diw, rep(NA, 5))
+mm <- find.peaks(diw.na, 0.05, 0.15, 0.001, 0.9)
+verify.minmax(25, mm, pos, ismax, diw.na/sd(diw), 0.9)
+
+diw.na <- c(diw[1:50], NA, diw[51:length(diw)])
+mm <- find.peaks(diw.na, 0.05, 0.15, 0.001, 0.9)
+pos.na <- c(61, 106, 127, 150) - 60
+verify.minmax(26, mm, pos.na, ismax, diw.na/sd(diw), 0.9)
+
+diw.na <- c(NA, NA, diw[1:50], NA, NA, diw[51:length(diw)], NA, NA)
+mm <- find.peaks(diw.na, 0.05, 0.15, 0.001, 0.9)
+pos.na <- c(63, 108, 130, 154) - 60
+verify.minmax(27, mm, pos.na, ismax, diw.na/sd(diw), 0.9)
+
+diw.nan <- c(rep(NaN, 5), diw)
+mm <- find.peaks(diw.nan, 0.05, 0.15, 0.001, 0.9)
+verify.minmax(28, mm, pos+5, ismax, diw.nan/sd(diw), 0.9)
+
+diw.nan <- c(diw, rep(NaN, 5))
+mm <- find.peaks(diw.nan, 0.05, 0.15, 0.001, 0.9)
+verify.minmax(29, mm, pos, ismax, diw.nan/sd(diw), 0.9)
+
+diw.nan <- c(diw[1:50], NaN, diw[51:length(diw)])
+mm <- find.peaks(diw.nan, 0.05, 0.15, 0.001, 0.9)
+pos.nan <- c(61, 106, 127, 150) - 60
+verify.minmax(30, mm, pos.nan, ismax, diw.nan/sd(diw), 0.9)
+
+diw.nan <- c(NaN, NaN, diw[1:50], NaN, NaN, diw[51:length(diw)], NaN, NaN)
+mm <- find.peaks(diw.nan, 0.05, 0.15, 0.001, 0.9)
+pos.nan <- c(63, 108, 130, 154) - 60
+verify.minmax(31, mm, pos.nan, ismax, diw.nan/sd(diw), 0.9)
+
+# Version of TC23 with data packed into a matrix.
+m <- matrix(diff(sort(iris$Petal.Width), lag=60), nrow=6, byrow=FALSE)
+mm <- find.peaks(m, 0.05, 0.15, 0.001, 0.9)
+pos <- c(61, 106, 126, 150) - 60
+ismax <- c(FALSE, TRUE, FALSE, TRUE)
+verify.minmax(32, mm, pos, ismax, as.vector(m)/sd(m), 0.9)
+
+# TC 22 and working with the acidity dataset (Diw, w=0.21) raised errors
+# caused by the first and last data points not being true maxima (failing
+# the height requirement).  These next tests create four small maxima at
+# each end, varying their height to the right, all too small, to check if
+# merging of the ends is done correctly.  With the maxima in a fixed pattern
+# and a large central peak, the ismax and pos expected values do not change
+# except for the first minimum, which depends on the first height drop.
+step <- 0.05
+hA <- 0.1 ; nA <- round(hA / step)
+hB <- 0.2 ; nB <- round(hB / step)
+hC <- 0.3 ; nC <- round(hC / step)
+hD <- 0.4 ; nD <- round(hD / step)
+
+ismax <- c(TRUE, FALSE, TRUE, FALSE, TRUE, FALSE, TRUE, FALSE, TRUE)
+
+pwl <- gen.pwl(c(6, 6-hA, 7, 7-hB, 8, 8-hC, 9, 9-hD, 10, 0, 8, 0,
+                 10, 9-hD, 9, 8-hC, 8, 7-hB, 7, 6-hA, 6), 0.05)
+pos <- c(1, 1+nA, 121, 321, 481, 641, 841, length(pwl$x)-nA, 961)
+mm <- find.peaks(pwl$x, 0.05, 0.15, 0.001, 1.0)
+verify.minmax(33, mm, pos, ismax, pwl$x/sd(pwl$x), 1.0)
+
+pwl <- gen.pwl(c(6, 6-hA, 7, 7-hB, 8, 8-hD, 9, 9-hC, 10, 0, 8, 0,
+                 10, 9-hC, 9, 8-hD, 8, 7-hB, 7, 6-hA, 6), 0.05)
+pos <- c(1, 1+nA, 121, 321, 481, 641, 841, length(pwl$x)-nA, 961)
+mm <- find.peaks(pwl$x, 0.05, 0.15, 0.001, 0.0)
+verify.minmax(34, mm, pos, ismax, pwl$x/sd(pwl$x), 0.0)
+
+pwl <- gen.pwl(c(6, 6-hA, 7, 7-hC, 8, 8-hD, 9, 9-hB, 10, 0, 8, 0,
+                 10, 9-hB, 9, 8-hD, 8, 7-hC, 7, 6-hA, 6), 0.05)
+pos <- c(1, 1+nA, 121, 321, 481, 641, 841, length(pwl$x)-nA, 961)
+mm <- find.peaks(pwl$x, 0.05, 0.15, 0.001, 0.8)
+verify.minmax(35, mm, pos, ismax, pwl$x/sd(pwl$x), 0.8)
+
+# Originally had 0.8 because 0.9 or 0.95 would generate ties which failed.
+# Fixed test.
+pwl <- gen.pwl(c(6, 6-hA, 7, 7-hC, 8, 8-hB, 9, 9-hD, 10, 0, 8, 0,
+                 10, 9-hD, 9, 8-hB, 8, 7-hC, 7, 6-hA, 6), 0.05)
+pos <- c(1, 1+nA, 121, 321, 481, 641, 841, length(pwl$x)-nA, 961)
+mm <- find.peaks(pwl$x, 0.05, 0.15, 0.001, 0.9)
+verify.minmax(36, mm, pos, ismax, pwl$x/sd(pwl$x), 0.9)
+
+pwl <- gen.pwl(c(6, 6-hD, 7, 7-hC, 8, 8-hB, 9, 9-hA, 10, 0, 8, 0,
+                 10, 9-hA, 9, 8-hB, 8, 7-hC, 7, 6-hD, 6), 0.05)
+pos <- c(1, 1+nD, 121, 321, 481, 641, 841, length(pwl$x)-nD, 961)
+mm <- find.peaks(pwl$x, 0.05, 0.15, 0.001, 0.8)
+verify.minmax(37, mm, pos, ismax, pwl$x/sd(pwl$x), 0.8)
+
+pwl <- gen.pwl(c(6, 6-hC, 7, 7-hB, 8, 8-hD, 9, 9-hA, 10, 0, 8, 0,
+                 10, 9-hA, 9, 8-hD, 8, 7-hB, 7, 6-hC, 6), 0.05)
+pos <- c(1, 1+nC, 121, 321, 481, 641, 841, length(pwl$x)-nC, 961)
+mm <- find.peaks(pwl$x, 0.05, 0.15, 0.001, 0.8)
+verify.minmax(38, mm, pos, ismax, pwl$x/sd(pwl$x), 0.8)
+
+pwl <- gen.pwl(c(6, 6-hB, 7, 7-hC, 8, 8-hD, 9, 9-hA, 10, 0, 8, 0,
+                 10, 9-hA, 9, 8-hD, 8, 7-hC, 7, 6-hB, 6), 0.05)
+pos <- c(1, 1+nB, 121, 321, 481, 641, 841, length(pwl$x)-nB, 961)
+mm <- find.peaks(pwl$x, 0.05, 0.15, 0.001, 0.8)
+verify.minmax(39, mm, pos, ismax, pwl$x/sd(pwl$x), 0.8)
+
+pwl <- gen.pwl(c(6, 6-hB, 7, 7-hD, 8, 8-hA, 9, 9-hC, 10, 0, 8, 0,
+                 10, 9-hC, 9, 8-hA, 8, 7-hD, 7, 6-hB, 6), 0.05)
+pos <- c(1, 1+nB, 121, 321, 481, 641, 841, length(pwl$x)-nB, 961)
+mm <- find.peaks(pwl$x, 0.05, 0.15, 0.001, 0.8)
+verify.minmax(40, mm, pos, ismax, pwl$x/sd(pwl$x), 0.8)
+
+pwl <- gen.pwl(c(6, 6-hC, 7, 7-hD, 8, 8-hA, 9, 9-hB, 10, 0, 8, 0,
+                 10, 9-hB, 9, 8-hA, 8, 7-hD, 7, 6-hC, 6), 0.05)
+pos <- c(1, 1+nC, 121, 321, 481, 641, 841, length(pwl$x)-nC, 961)
+mm <- find.peaks(pwl$x, 0.05, 0.15, 0.001, 0.8)
+verify.minmax(41, mm, pos, ismax, pwl$x/sd(pwl$x), 0.8)
+
+pwl <- gen.pwl(c(6, 6-hC, 7, 7-hA, 8, 8-hB, 9, 9-hD, 10, 0, 8, 0,
+                 10, 9-hD, 9, 8-hB, 8, 7-hA, 7, 6-hC, 6), 0.05)
+pos <- c(1, 1+nC, 121, 321, 481, 641, 841, length(pwl$x)-nC, 961)
+mm <- find.peaks(pwl$x, 0.05, 0.15, 0.001, 0.8)
+verify.minmax(42, mm, pos, ismax, pwl$x/sd(pwl$x), 0.8)
+
+
+
+## BTP test cases.
+
+verify.error('BTP1', find.peaks, list(x, -0.01,  0.15,  0.001, 0.9))
+verify.error('BTP2', find.peaks, list(x,  1.01,  0.15,  0.001, 0.9))
+verify.error('BTP3', find.peaks, list(x,  1L,  0.15,  0.001, 0.9))
+verify.error('BTP4', find.peaks, list(x,  0.05, -0.01,  0.001, 0.9))
+verify.error('BTP5', find.peaks, list(x,  0.05,  1.01,  0.001, 0.9))
+verify.error('BTP6', find.peaks, list(x,  0.05,  1L,  0.001, 0.9))
+verify.error('BTP7', find.peaks, list(x,  0.05,  0.15, -0.01, 0.9))
+verify.error('BTP8', find.peaks, list(x,  0.05,  0.15,  1.01, 0.9))
+verify.error('BTP9', find.peaks, list(x,  0.05,  0.15,  1L, 0.9))
+verify.error('BTP10', find.peaks, list(rep(TRUE, 5), 0.05, 0.15, 0.001, 0.9))
+verify.error('BTP11', find.peaks, list(x, 0.05,  0.15,  0.001, -0.01))
+verify.error('BTP12', find.peaks, list(x, 0.05,  0.15,  0.001,  1.01))
+
+verify.empty('BTP13', find.peaks, list(rep(1,50), 0.05, 0.05, 0.001, 0.9))
+verify.empty('BTP14', find.peaks, list(c(1), 0.05, 0.05, 0.001, 0.9))
+verify.empty('BTP15', find.peaks, list(c(1, 1), 0.05, 0.05, 0.001, 0.9))
+verify.empty('BTP16', find.peaks,
+             list((1:50)[-(1:50)], 0.05, 0.05, 0.001, 0.9))
+verify.empty('BTP17', find.peaks,
+             list(rep(NA_real_,50), 0.05, 0.05, 0.001, 0.9))
+verify.empty('BTP18', find.peaks, list(NULL, 0.05, 0.05, 0.001, 0.9))
+# Differs from BTP13 b/c small floating point differences.
+diw <- diff(0.01*(0:100), lag=16)
+verify.empty('BTP19', find.peaks, list(diw, 0.05, 0.05, 0.001, 0.9))
+
+
+if (allpass) {
+  cat('  all find.peaks tests PASSED\n')
+}
+

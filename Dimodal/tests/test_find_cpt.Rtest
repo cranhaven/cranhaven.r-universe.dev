@@ -1,0 +1,460 @@
+
+# test_find_cpt.Rtest:
+# Test benches for the find.cpt function.  Only checks processing of library
+# results, does not require any changepoint detectors.
+#
+# c 2025 Greg Kreider, Primordial Machine Vision Systems, Inc.
+
+## To Do:
+# -
+#
+
+if (interactive()) {
+  source('../R/Diopt.R')
+  source('../R/cpt.R')
+} else {
+  library(Dimodal)
+  # We aren't exporting the detector, so must link internally.
+  merge.cpt <- Dimodal:::merge.cpt
+  find.cpt <- Dimodal:::find.cpt
+}
+
+source('../tests/test_common.Rtest')
+
+
+##### Test Framework - find.cpt specific
+
+# Check that the merged library points, the libraries used in voting, and
+# the checkpoint locations match between the two Dicpt objects cpt1, cpt2.
+# Returns whether all checks pass, and sets the global allpass to FALSE if
+# any fail.  testID is a test case identifier used in failure messages.
+verify.cpt <- function(testID, cpt1, cpt2) {
+
+  passed <- TRUE
+
+  if (!is.null(cpt1$voting) && !is.null(cpt2$voting) &&
+      (0 < length(setdiff(cpt1$voting, cpt2$voting)))) {
+    cat('    test ', testID, ' voting libraries differ\n')
+    cat('      cpt1: ', cpt1$voting, '\n')
+    cat('      cpt2: ', cpt2$voting, '\n')
+    passed <- FALSE
+  }
+
+  if (!is.null(cpt1$libpts) && !is.null(cpt2$libpts)) {
+    if (0 < length(setdiff(names(cpt1$libpts), names(cpt2$libpts)))) {
+      cat('    test ', testID, ' library point names differ\n')
+      passed <- FALSE
+    } else {
+      for (i in names(cpt1$libpts)) {
+        txt <- paste0(testID, ' ', i)
+        if (!verify.vectors(txt, cpt1$libpts[i], cpt2$libpts[i])) {
+          passed <- FALSE
+        }
+      }
+    }
+  }
+
+  if (!is.null(cpt1$cpt) && !is.null(cpt2$cpt)) {
+    for (i in c('pos', 'val', 'nvote')) {
+      if ((i %in% colnames(cpt1$cpt)) && (i %in% colnames(cpt2$cpt))) {
+        txt <- paste0(testID, ' cpt ', i)
+        passed <- passed & verify.vectors(txt, cpt1$cpt[,i], cpt2$cpt[,i])
+      }
+    }
+  }
+
+  if (!is.null(cpt1$cptparam) && !is.null(cpt2$cptparam)) {
+    if (0 != length(setdiff(names(cpt1$cptparam), names(cpt2$cptparam)))) {
+      cat('    test ', testID, ' cpt parameter lists differ\n')
+      cat('      cpt1: ', names(cpt1$cptparam), '\n')
+      cat('      cpt2: ', names(cpt2$cptparam), '\n')
+      passed <- FALSE
+    } else {
+      for (i in names(cpt1$cptparam)) {
+        if (!nearly(cpt1$cptparam[[i]], cpt2$cptparam[[i]])) {
+          cat('    test ', testID, ' cpt parameter ', i, ' values differ')
+          if (length(cpt1$cptparam[[i]]) <= 2) {
+            cat('  ', cpt1$cptparam[[i]], ' v. ', cpt2$cptparam[[i]], '\n')
+          } else {
+            cat('\n      cpt1: ', cpt1$cptparam[[i]], '\n')
+            cat('      cpt2: ', cpt2$cptparam[[i]], '\n')
+          }
+          passed <- FALSE
+        }
+      }
+    }
+  }
+
+  if (!passed) {
+    allpass <<- FALSE
+  }
+  passed
+}
+
+# Mock up the Dicpt element cptparam.  libsep, sep, fsep, qvote are the
+# merge.cpt arguments/options, rawres the mocked result of identify.cpt,
+# and npt the number of points per library.
+set.cptparam <- function(libsep, sep, fsep, qvote, rawres, npt) {
+
+  ncpt <- rawres$test$ncpt
+  near <- min(sep, round(fsep * rawres$rawparam$nx))
+  qpts <- round(quantile(npt, qvote, names=FALSE, type=4))
+  minvote <- max(1, sum((qpts[1] <= npt) & (npt <= qpts[2])) / 2)
+  
+  list(libsep=libsep, sep=sep, fsep=fsep, qvote=qvote,
+       near=near, qpts=qpts, minvote=minvote)
+}
+
+
+##### Test Bench
+
+allpass <- TRUE
+
+
+## Constructed library variant results.
+
+# Check combination of library variants (libsep).
+#                10      35      50          80      90      105
+# lib1 sep=2 2   10   16   37   49 52   65  79 83   88 91    106           
+#      sep=3 2   10   16   37    50     65  79 83    90      106           
+#      sep=4     10        37    50     65   81      90      106           
+#   lib1v1   3 7 9 12 16  35 37 49 52   65  79 83   88 91  104 105 106 107
+#   lib1v2   2 7 10 12 17   38                             103          108
+# lib2 sep=2 4   16  20  25 33 37 48 52  67 70  83    90 93 100 104 108    
+#      sep=3 4   18      25    36   50    68    83      92  100 107        
+#      sep=4 4       21        36   50    68    86          105            
+#   lib2v1     15 17 20 24 26    48 51 52  70  81 82 83  86 90 93
+#   lib2v2   4    17 20    26  33 36 38   67        85   100 104 107 109
+# lib3 sep=2     10     32 35 38 46 50 54        80      91    106      120
+#      sep=3     10        35    46 50 54        80      91    106      120
+#      sep=4     10        35       50           80      91    106      120
+#   lib3v1     8 10 12  32 35 38 46 50 54  78 79 80 81 90 92 105 106    120
+# lib4 sep=2 3  8  12 16   36   49 52   65  79 83   88 91       106        
+#      sep=3 3  9     16   36    50     65  79 83    90         106        
+#      sep=4    9          36    50     65   81      90         106        
+#   lib4v1     7 9    16  35    49 52   65  79         91  104         107
+#   lib4v2   3     12        37                83   88         105 106
+# lib5       4          34       50         79      90                     
+#   lib5v1   4 5        34       50         79      90
+# lib6          10   23  35  43  50           80  85  90  98  105       120
+#   lib6v1           23          50               85          105
+#   lib6v2      10       35                           90  98
+#   lib6v3                   43               80                        120
+# lib7                   35      50          80
+# lib8       7*(1:15)
+#   lib7, lib8 to guarantee lib1-6 used for voting
+
+# Mock up identify.cpt values.
+
+x <- c(rep(1,10), rep(2,25), rep(3,15), rep(4,30), rep(5,10),
+       rep(6,15), rep(7,20))
+       
+rawpts <- list(c(3, 7, 9, 12, 16, 35, 37, 49, 52, 65, 79, 83, 88, 91, 104:107),
+               c(2, 7, 10, 12, 17, 38, 103, 108),
+               c(15, 17, 20, 24, 26, 48, 51, 52, 70, 81, 82, 83, 86, 90, 93),
+               c(4, 17, 20, 26, 33, 36, 38, 67, 85, 100, 104, 107, 109),
+               c(8, 10, 12, 32, 35, 38, 46, 50, 54, 78:81, 90, 92, 105,106, 120),
+               c(7, 9, 16, 35, 49, 52, 65, 79, 91, 104, 107),
+               c(3, 12, 37, 83, 88, 105, 106),
+               c(4, 5, 34, 50, 79, 90),
+               c(23, 50, 85, 105),
+               c(10, 35, 90, 98),
+               c(43, 80, 120),
+               c(35, 50, 80),
+               7*(1:15))
+
+test <- data.frame(library=c('lib1', 'lib1', 'lib2', 'lib2', 'lib3', 'lib4',
+                             'lib4', 'lib5', 'lib6', 'lib6', 'lib6',
+                             'lib7', 'lib8'),
+                   detector=c('lib1 var1', 'lib1 var2', 'lib2 var1',
+                              'lib2 var2', 'lib3 var0', 'lib4 var1',
+                              'lib4 var2', 'lib5 var0', 'lib6 var1',
+                              'lib6 var2', 'lib6 var3',
+                              'lib7 var0', 'lib8 var0'),
+                   abbrev=c('lib1v1', 'lib1v2', 'lib2v1', 'lib2v2', 'lib3v0',
+                            'lib4v1', 'lib4v2', 'lib5v0', 'lib6v1', 'lib6v2',
+                            'lib6v3', 'lib7v0', 'lib8v0'),
+                   ncpt=sapply(rawpts, length))
+
+rawparam <- list(cptlibs='dummy', maxfncpt=0.15, ncpt=16, timeout=2,
+                 nx=length(x))
+
+res <- list(test=test, rawpts=rawpts, rawparam=rawparam)
+
+lpt <- list(lib1=c(2, 10, 16, 37, 49, 52, 65, 79, 83, 88, 91, 106),
+            lib2=c(4, 16, 20, 25, 33, 37, 48, 52, 67, 70, 83, 90, 93, 100, 104, 108),
+            lib3=c(10, 32, 35, 38, 46, 50, 54, 80, 91, 106, 120),
+            lib4=c(3, 8, 12, 16, 36, 49, 52, 65, 79, 83, 88, 91, 106),
+            lib5=c(4, 34, 50, 79, 90),
+            lib6=c(10, 23, 35, 43, 50, 80, 85, 90, 98, 105, 120),
+            lib7=c(35, 50, 80),
+            lib8=7*(1:15))
+npt <- sapply(lpt, length)
+prm <- set.cptparam(libsep=2, sep=5, fsep=0.05, qvote=c(0.1,0.9), res, npt)
+exp <- list(libpts=lpt, voting=NULL, cpt=NULL, cptparam=prm)
+
+res2 <- merge.cpt(res, x, prm$qvote, prm$sep, prm$fsep, prm$libsep)
+verify.cpt(paste0('libsep ', prm$libsep), res2, exp)
+
+lpt <- list(lib1=c(2, 10, 16, 37, 50, 65, 79, 83, 90, 106),
+            lib2=c(4, 18, 25, 36, 50, 68, 83, 92, 100, 107),
+            lib3=c(10, 35, 46, 50, 54, 80, 91, 106, 120),
+            lib4=c(3, 9, 16, 36, 50, 65, 79, 83, 90, 106),
+            lib5=c(4, 34, 50, 79, 90),
+            lib6=c(10, 23, 35, 43, 50, 80, 85, 90, 98, 105, 120),
+            lib7=c(35, 50, 80),
+            lib8=7*(1:15))
+npt <- sapply(lpt, length)
+prm <- set.cptparam(libsep=3, sep=5, fsep=0.05, qvote=c(0.1,0.9), res, npt)
+exp <- list(libpts=lpt, voting=NULL, cpt=NULL, cptparam=prm)
+
+res2 <- merge.cpt(res, x, prm$qvote, prm$sep, prm$fsep, prm$libsep)
+verify.cpt(paste0('libsep ', prm$libsep), res2, exp)
+
+lpt <- list(lib1=c(10, 37, 50, 65, 81, 90, 106),
+            lib2=c(4, 21, 36, 50, 68, 86, 105),
+            lib3=c(10, 35, 50, 80, 91, 106, 120),
+            lib4=c(9, 36, 50, 65, 81, 90, 106),
+            lib5=c(4, 34, 50, 79, 90),
+            lib6=c(10, 23, 35, 43, 50, 80, 85, 90, 98, 105, 120),
+            lib7=c(35, 50, 80),
+            lib8=7*(1:15))
+npt <- sapply(lpt, length)
+prm <- set.cptparam(libsep=4, sep=5, fsep=0.05, qvote=c(0.1,0.9), res, npt)
+exp <- list(libpts=lpt, voting=NULL, cpt=NULL, cptparam=prm)
+
+res2 <- merge.cpt(res, x, prm$qvote, prm$sep, prm$fsep, prm$libsep)
+verify.cpt(paste0('libsep ', prm$libsep), res2, exp)
+
+# len: 24, 25, 18, 18, 6, 6, 6, 3, 12, 14
+lpt <- list(lib1=c( 2,  3,  7,  9, 10, 12, 16, 17, 35, 37, 38, 49, 52, 65,
+                   79, 83, 88, 91, 103, 104, 105, 106, 107, 108),
+            lib2=c( 4, 15, 17, 20, 24, 26, 33, 36, 38, 48, 51, 52, 67, 70,
+                   81, 82, 83, 85, 86, 90, 93, 100, 104, 107, 109),
+            lib3=c( 8, 10, 12, 32, 35, 38, 46, 50, 54, 78, 79, 80, 81, 90,
+                   92, 105, 106, 120),
+            lib4=c( 3,  7,  9, 12, 16, 35, 37, 49, 52, 65, 79, 83, 88, 91,
+                   104, 105, 106, 107),
+            lib5=c( 4,  5, 34, 50, 79, 90),
+            lib6=c(10, 23, 35, 43, 50, 80, 85, 90, 98, 105, 120),
+            lib7=c(35, 50, 80),
+            lib8=7*(1:15))
+npt <- sapply(lpt, length)
+prm <- set.cptparam(libsep=0, sep=5, fsep=0.05, qvote=c(0.1,0.9), res, npt)
+exp <- list(libpts=lpt, voting=NULL, cpt=NULL, cptparam=prm)
+
+res2 <- merge.cpt(res, x, prm$qvote, prm$sep, prm$fsep, prm$libsep)
+verify.cpt(paste0('libsep ', prm$libsep), res2, exp)
+
+
+# Check combination of libraries, without voting.
+
+# pts      1 20 24 29 35 42 50 70
+# near=4   20-28=24   31-33=32   38-39=38   46-46=46
+# near=5   24-25=24   37-40=38   45-47=46
+# near=6   23-29=27   44-48=46
+# near=7   22-27=26   35-36=36
+x <- c(1,rep(2,19), rep(3,4), rep(4, 5), rep(5, 6), rep(6, 7), rep(7, 8),
+       rep(8,19), 9)
+rawpts <- list(which(diff(x) != 0))
+#rawpts <- list(c(1, 20, 24, 29, 35, 42, 50, 70))
+test <- data.frame(library=c('lib1'), detector='detect1', abbrev='det1', ncpt=8)
+rawparam <- list(cptlibs='dummy', maxfncpt=0.1,ncpt=7, timeout=2, nx=length(x))
+res <- list(test=test, rawpts=rawpts, rawparam=rawparam)
+
+lpt <- list(lib1=which(diff(x)!=0))
+npt <- sapply(lpt, length)
+prm <- set.cptparam(libsep=0, sep=4, fsep=0.2, qvote=c(0.1,0.9), res, npt)
+cpt <- matrix(c(24, 32, 38, 46), ncol=1, dimnames=list(NULL, 'pos'))
+exp <- list(libpts=lpt, voting=NULL, cpt=cpt, cptparam=prm)
+res2 <- merge.cpt(res, x, prm$qvote, prm$sep, prm$fsep, prm$libsep)
+verify.cpt(paste0('near ', prm$near), res2, exp)
+
+prm <- set.cptparam(libsep=0, sep=5, fsep=0.2, qvote=c(0.1,0.9), res, npt)
+cpt <- matrix(c(24, 38, 46), ncol=1, dimnames=list(NULL, 'pos'))
+exp <- list(libpts=lpt, voting=NULL, cpt=cpt, cptparam=prm)
+res2 <- merge.cpt(res, x, prm$qvote, prm$sep, prm$fsep, prm$libsep)
+verify.cpt(paste0('near ', prm$near), res2, exp)
+
+prm <- set.cptparam(libsep=0, sep=6, fsep=0.2, qvote=c(0.1,0.9), res, npt)
+cpt <- matrix(c(27, 46), ncol=1, dimnames=list(NULL, 'pos'))
+exp <- list(libpts=lpt, voting=NULL, cpt=cpt, cptparam=prm)
+res2 <- merge.cpt(res, x, prm$qvote, prm$sep, prm$fsep, prm$libsep)
+verify.cpt(paste0('near ', prm$near), res2, exp)
+
+prm <- set.cptparam(libsep=0, sep=7, fsep=0.2, qvote=c(0.1,0.9), res, npt)
+cpt <- matrix(c(26, 36), ncol=1, dimnames=list(NULL, 'pos'))
+exp <- list(libpts=lpt, voting=NULL, cpt=cpt, cptparam=prm)
+res2 <- merge.cpt(res, x, prm$qvote, prm$sep, prm$fsep, prm$libsep)
+verify.cpt(paste0('near ', prm$near), res2, exp)
+
+prm <- set.cptparam(libsep=0, sep=7, fsep=0.08, qvote=c(0.1,0.9), res, npt)
+cpt <- matrix(c(27, 46), ncol=1, dimnames=list(NULL, 'pos'))
+exp <- list(libpts=lpt, voting=NULL, cpt=cpt, cptparam=prm)
+res2 <- merge.cpt(res, x, prm$qvote, prm$sep, prm$fsep, prm$libsep)
+verify.cpt(paste0('near ', prm$near), res2, exp)
+
+
+# Check voting.
+
+#          20    40    60    80    100    120    140    160    180   200
+# lib0      x     x     x     x    100     x      x      x      x     x
+# lib1     20     x     x     x     x      x      x      x      x     201
+# lib2    19      x     x     x     x      x      x    157      x   199
+# lib3     21     x     x     x     x    119      x      163    x     203
+# lib4     23     x     x   79      x      123    x    159      x     204
+# lib5    17     39     x     81    x    117      x      161    x     201
+# lib6    16      42    x   76      x    116     141     162    x   197
+# lib7      24  38      x     84    x      124  139    158    179   196
+# lib8     20    40    60    80     x     120    140    160    180  199
+# lib9     20    40    60    80    100    120    140    160    180   200
+
+# Note if even number of libraries voting, half is majority.
+# 0.2,0.9  T8    T4    no    T5     no     T6     no     T7     no    T8
+# 0.3,0.8  T6    T3    no    T4     no     T5     no     T6     no    T6
+# 0.2,0.8  T7    no    no    T4     no     T5     no     T6     no    T7
+# 0.3,0.9  T7    T4    no    T5     no     T6     no     T7     no    T7
+# 0,1      T9    T5    no    T6     no     T7     no     T8     no    T9
+# 0.5,0.7  T5    T3    no    T4     no     T5     no     T5     no    T5
+# -> 5,7 -> 4,8 = 0.4,0.8
+# 0.6,0.8  T5    T4    no    T5     no     T5     T3     T5     no    T5
+# -> 0.5,0.9
+
+x <- unlist( lapply(1:11, rep, 20) )
+rawpts <- list(which(diff(x) != 0))
+rawpts <- list(c(100),
+               c(20, 201),
+               c(19, 157, 199),
+               c(21, 119, 163, 203),
+               c(23, 79, 123, 159, 204),
+               c(17, 39, 81, 117, 161, 201),
+               c(16, 42, 76, 116, 141, 162, 197),
+               c(24, 38, 84, 124, 139, 158, 179, 196),
+               c(20, 40, 60, 80, 120, 140, 160, 180, 199),
+               c(20, 40, 60, 80, 100, 120, 140, 160, 180, 200))
+test <- data.frame(library=sprintf('lib%d', (1:length(rawpts))-1),
+                   detector=sprintf('detect%d', (1:length(rawpts))-1),
+                   abbrev=sprintf('det%d', (1:length(rawpts))-1),
+                   ncpt=sapply(rawpts, length))
+rawparam <- list(cptlibs='dummy', maxfncpt=0.1,ncpt=7, timeout=2, nx=length(x))
+res <- list(test=test, rawpts=rawpts, rawparam=rawparam)
+
+lpt <- rawpts
+names(lpt) <- sprintf('lib%d', (1:length(rawpts))-1)
+npt <- sapply(lpt, length)
+prm <- set.cptparam(libsep=2, sep=4, fsep=0.5, qvote=c(0.2,0.9), res, npt)
+vote <- sprintf('lib%d', 1:8)
+cpt <- c(20, 40, 80, 120, 160, 200)
+nvote <- c(8, 4, 5, 6, 7, 8)
+exp <- list(libpts=lpt, voting=vote, cptparam=prm,
+            cpt=cbind(pos=cpt, val=cpt/20, nvote=nvote))
+res2 <- merge.cpt(res, x, prm$qvote, prm$sep, prm$fsep, prm$libsep)
+verify.cpt(paste0('qvote ', prm$qvote[1], ',', prm$qvote[2]), res2, exp)
+
+prm <- set.cptparam(libsep=2, sep=4, fsep=0.5, qvote=c(0.3,0.8), res, npt)
+vote <- sprintf('lib%d', 2:7)
+cpt <- c(20, 40, 80, 120, 160, 200)
+nvote <- c(6, 3, 4, 5, 6, 6)
+exp <- list(libpts=lpt, voting=vote, cptparam=prm,
+            cpt=cbind(pos=cpt, val=cpt/20, nvote=nvote))
+res2 <- merge.cpt(res, x, prm$qvote, prm$sep, prm$fsep, prm$libsep)
+verify.cpt(paste0('qvote ', prm$qvote[1], ',', prm$qvote[2]), res2, exp)
+
+prm <- set.cptparam(libsep=2, sep=4, fsep=0.15, qvote=c(0.2,0.8), res, npt)
+vote <- sprintf('lib%d', 1:7)
+cpt <- c(20, 80, 120, 160, 200)
+nvote <- c(7, 4, 5, 6, 7)
+exp <- list(libpts=lpt, voting=vote, cptparam=prm,
+            cpt=cbind(pos=cpt, val=cpt/20, nvote=nvote))
+res2 <- merge.cpt(res, x, prm$qvote, prm$sep, prm$fsep, prm$libsep)
+verify.cpt(paste0('qvote ', prm$qvote[1], ',', prm$qvote[2]), res2, exp)
+
+prm <- set.cptparam(libsep=2, sep=4, fsep=0.15, qvote=c(0.3,0.9), res, npt)
+vote <- sprintf('lib%d', 2:8)
+cpt <- c(20, 40, 80, 120, 160, 200)
+nvote <- c(7, 4, 5, 6, 7, 7)
+exp <- list(libpts=lpt, voting=vote, cptparam=prm,
+            cpt=cbind(pos=cpt, val=cpt/20, nvote=nvote))
+res2 <- merge.cpt(res, x, prm$qvote, prm$sep, prm$fsep, prm$libsep)
+verify.cpt(paste0('qvote ', prm$qvote[1], ',', prm$qvote[2]), res2, exp)
+
+prm <- set.cptparam(libsep=2, sep=4, fsep=0.15, qvote=c(0,1), res, npt)
+vote <- sprintf('lib%d', 0:9)
+cpt <- c(20, 40, 80, 120, 160, 200)
+nvote <- c(9, 5, 6, 7, 8, 9)
+exp <- list(libpts=lpt, voting=vote, cptparam=prm,
+            cpt=cbind(pos=cpt, val=cpt/20, nvote=nvote))
+res2 <- merge.cpt(res, x, prm$qvote, prm$sep, prm$fsep, prm$libsep)
+verify.cpt(paste0('qvote ', prm$qvote[1], ',', prm$qvote[2]), res2, exp)
+
+# Set up with the internal qvote range, then change parameter to actual.
+prm <- set.cptparam(libsep=2, sep=4, fsep=0.15, qvote=c(0.4,0.8), res, npt)
+prm$qvote <- c(0.5, 0.7)
+vote <- sprintf('lib%d', 3:7)
+cpt <- c(20, 40, 80, 120, 160, 200)
+nvote <- c(5, 3, 4, 5, 5, 5)
+exp <- list(libpts=lpt, voting=vote, cptparam=prm,
+            cpt=cbind(pos=cpt, val=cpt/20, nvote=nvote))
+res2 <- merge.cpt(res, x, prm$qvote, prm$sep, prm$fsep, prm$libsep)
+verify.cpt(paste0('qvote ', prm$qvote[1], ',', prm$qvote[2]), res2, exp)
+
+prm <- set.cptparam(libsep=2, sep=4, fsep=0.15, qvote=c(0.5,0.9), res, npt)
+prm$qvote <- c(0.6, 0.8)
+vote <- sprintf('lib%d', 4:8)
+cpt <- c(20, 40, 80, 120, 140, 160, 200)
+nvote <- c(5, 4, 5, 5, 3, 5, 5)
+exp <- list(libpts=lpt, voting=vote, cptparam=prm,
+            cpt=cbind(pos=cpt, val=cpt/20, nvote=nvote))
+res2 <- merge.cpt(res, x, prm$qvote, prm$sep, prm$fsep, prm$libsep)
+verify.cpt(paste0('qvote ', prm$qvote[1], ',', prm$qvote[2]), res2, exp)
+
+## Break-the-part tests.
+
+x <- c(1)
+rawpts <- list(NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL)
+test <- data.frame(library=sprintf('lib%d', 1:length(rawpts)),
+                   detector=sprintf('detect%d', 1:length(rawpts)),
+                   abbrev=sprintf('lib%ddet', 1:length(rawpts)),
+                   ncpt=sapply(rawpts, length))
+rawparam <- list(cptlibs='dummy', maxfncpt=0.10, ncpt=16, timeout=2, nx=1)
+res <- list(test=test, rawpts=rawpts, rawparam=rawparam)
+
+lpt <- rawpts ; names(lpt) <- sprintf('lib%d', 1:length(lpt))
+npt <- sapply(lpt, length)
+prm <- list(libsep=2, sep=4, fsep=0.15, qvote=c(0.1,0.9))
+vote <- names(lpt)
+exp <- list(libpts=lpt, voting=vote, cptparam=NULL, cpt=cbind(pos=double()))
+res2 <- merge.cpt(res, x, prm$qvote, prm$sep, prm$fsep, prm$libsep)
+verify.cpt('BTP 1', res2, exp)
+
+x <- c(rep(1,10), rep(2,10))
+rawpts <- list(NULL, c(9), NULL, c(10), NULL, c(19), NULL)
+test <- data.frame(library=sprintf('lib%d', 1:length(rawpts)),
+                   detector=sprintf('detect%d', 1:length(rawpts)),
+                   abbrev=sprintf('lib%ddet', 1:length(rawpts)),
+                   ncpt=sapply(rawpts, length))
+rawparam <- list(cptlibs='all', maxfncpt=0.10, ncpt=16, timeout=2, nx=length(x))
+res <- list(test=test, rawpts=rawpts, rawparam=rawparam)
+
+lpt <- rawpts ; names(lpt) <- sprintf('lib%d', 1:length(lpt))
+npt <- sapply(lpt, length)
+prm <- list(libsep=2, sep=4, fsep=0.15, qvote=c(0.1,0.9))
+vote <- names(lpt)
+exp <- list(libpts=lpt, voting=vote, cptparam=NULL,
+            cpt=cbind(pos=10, val=x[10], nvote=2))
+res2 <- merge.cpt(res, x, prm$qvote, prm$sep, prm$fsep, prm$libsep)
+verify.cpt('BTP 2', res2, exp)
+
+# Equivalent to running cpt on system without any detectors.
+verify.warning('BTP 3', find.cpt,
+               list(diff(sort(faithful$eruptions), lag=16),
+                    c('-anomaly', '-astsa', '-bcp', '-breakfast', '-bwd',
+                      '-ccid', '-changepoint', '-changepoint.np', '-cpm',
+                      '-cpss', '-ecp', '-ICSS', '-jointseg', '-mosum', '-ocp',
+                      '-otsad', '-Rbeast', '-strucchange', '-Dimodal'),
+                    0.05, 2, c(0.10,0.90), 10,0.02, 2))
+
+
+if (allpass) {
+  cat('  all find.cpt tests PASSED\n')
+}

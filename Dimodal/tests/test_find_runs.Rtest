@@ -1,0 +1,472 @@
+
+# test_find_runs.Rtest:
+# Test benches for the find.runs detector.
+#
+# c 2024-2025 Greg Kreider, Primordial Machine Vision Systems, Inc.
+
+## To Do:
+# - 
+
+
+if (interactive()) {
+  source('../R/Diopt.R')
+  source('../R/detectors.R')
+
+  if (is.loaded('C_find_runs', PACKAGE='Dimodal')) {
+    dyn.unload('../src/Dimodal.so')
+  }
+  dyn.load('../src/Dimodal.so')
+} else {
+  library(Dimodal)
+  # We aren't exporting the detectors, so must link internally.
+  find.runs <- Dimodal:::find.runs
+}
+
+source('../tests/test_common.Rtest')
+
+
+##### Test Framework
+
+# Compare the runs stored in Didata d against those in the C detector
+# find.runs result r.  testID is added to any failure messages, which will
+# also set the global allpass to FALSE.  Returns TRUE if the all checks pass.
+verify.diwruns <- function(testID, d, r) {
+
+  passed <- FALSE
+
+  dsgn <- d['signed',]
+
+  stID <- max(r$nskip[1], 1)
+
+  if (!verify.runs_internal(testID, r)) {
+    # Do nothing, failures already printed.
+  } else if (stID != attr(d, 'diw.stID')) {
+    cat('    test ', testID, ' run start at ', stID, ' not from signed diff ',
+        attr(d,'diw.stID'), '\n')
+  } else if ((1 < stID) && !all(is.na(dsgn[1:(stID-1)]))) {
+    cat('    test ', testID, ' data before run start not NA\n')
+  } else {
+    rlsgn <- rle(dsgn[is.finite(dsgn)])$lengths
+    rl <- r$runs[r$runs!=0]
+    if (length(rlsgn) != length(rl)) {
+      cat('    test ', testID, ' runs count ', length(rl), ' not rle count ',
+          length(rlsgn), '\n')
+    } else if (!all(rlsgn == rl)) {
+      cat('    test ', testID, ' runs not match rle lengths\n')
+    } else {
+      passed <- TRUE
+    }
+  }
+
+  if (!passed) {
+    allpass <<- FALSE
+  }
+  passed
+}
+
+# Check that the find.runs result r is internally consistent.  Adds testID
+# to failure messages, and also sets the global allpass to FALSE.  Returns
+# TRUE If all checks pass.
+verify.runs_internal <- function(testID, r) {
+
+  passed <- TRUE
+
+  # r$runs, r$nskip have length of original data.
+  ndata <- length(r$runs)
+  if (ndata != length(r$nskip)) {
+    cat('    test ', testID, ' lengths differ, runs ', ndata,
+        ' nskip ', length(r$nskip), '\n')
+  } else if (ndata != (sum(r$runs) + sum(r$nskip))) {
+    cat('    test ', testID, ' data length ', ndata,
+        ' not sum runs ', sum(r$runs), ' and nskip ', sum(r$nskip), '\n')
+  } else {
+    # Note three cases here.
+    #   A: runs[1] != 0, nskip[1] == 0  prev 1, next at (runs+nskip)[prev]
+    #   B: runs[1] != 0, nskip[1] != 0  prev 1, next at (runs+nskip)[prev]
+    #   C: runs[1] == 0, nskip[1] != 0  prev nskip+1, 
+    #                                   next at runs+nskip if nskip+1 <= ndata
+    if (0 == r$runs[1]) {
+      iprev <- r$nskip[1] + 1
+    } else {
+      iprev <- 1
+    }
+    if (iprev <= ndata) {
+      inext <- iprev + r$runs[iprev] + r$nskip[iprev]
+    } else {
+      inext <- ndata + 1
+    }
+    while (inext <= ndata) {
+      if (0 == r$runs[inext]) {
+        cat('    test ', testID, ' run from ', iprev, ' ends inside run\n')
+        passed <- FALSE
+        break
+      } else if (((iprev + 1) < inext) &&
+                 !all(0 == r$runs[(iprev+1):(inext-1)])) {
+        cat('    test ', testID, ' skip from ', iprev+1, ' to ', inext-1,
+            ' includes run\n')
+        passed <- FALSE
+        break
+      }
+      iprev <- inext
+      inext <- inext + r$runs[inext] + r$nskip[inext]
+    }
+    if (ndata < inext) {
+      passed <- TRUE
+      if (r$stats['nrun'] != sum(r$runs!=0)) {
+        cat('    test ', testID, ' has ', sum(r$runs!=0), ' runs, not nrun ',
+            r$stats['nrun'], '\n')
+        passed <- FALSE
+      }
+      if (r$stats['maxrun'] != max(r$runs)) {
+        cat('    test ', testID, ' longest run ', max(r$runs), ' not maxrun ',
+            r$stats['maxrun'], '\n')
+        passed <- FALSE
+      }
+      if (r$stats['nx'] != ndata) {
+        cat('    test ', testID, ' data length ', ndata, ' not nx ',
+            r$stats['nx'], '\n')
+        passed <- FALSE
+      }
+    }
+  }
+
+  if (!passed) {
+    allpass <<- FALSE
+  }
+  passed
+}
+
+# Independent verification of find.runs on discrete data d.  testID added to
+# failure error message, which also sets the global allpass to FALSE.
+# Returns TRUE if find.runs is correct.
+verify.runs_discrete <- function(testID, d) {
+
+  passed <- TRUE
+
+  r <- find.runs(d, 0)
+  if (!verify.runs_internal(testID, r)) {
+    passed <- FALSE
+  } else {
+    # Capture before deletion, b/c rle cannot handle bad values.
+    ndata <- length(d)
+    if (all(is.numeric(d))) {
+      d <- d[is.finite(d)]
+    } else {
+      d <- d[!is.na(d)]
+    }
+    if (0 == length(d)) {
+      rl <- c(0)
+    } else {
+      rl <- rle(d)$lengths
+    }
+    if (!all(rl == r$runs[r$runs!=0])) {
+      cat('    test ', testID, ' runs do not match rle\n')
+      passed <- FALSE
+    }
+    if (sum(rl!=0) != r$stats['nrun']) {
+      cat('    test ', testID, ' runs count ', r$stats['nrun'],
+          ' does not match rle ', sum(rl!=0), '\n')
+      passed <- FALSE
+    }
+    if (max(rl) != r$stats['maxrun']) {
+      cat('    test ', testID, ' longest run ', r$stats['maxrun'],
+          ' does not match rle ', max(rl), '\n')
+      passed <- FALSE
+    }
+    if (ndata != r$stats['nx']) {
+      cat('    test ', testID, ' source data length ', r$stats['nx'],
+          ' not actual ', ndata, '\n')
+      passed <- FALSE
+    }
+  }
+
+  if (!passed) {
+    allpass <<- FALSE
+  }
+  passed
+}
+
+# Use find.runs on real data d with relative eps to consider values the same.
+# Compare to the expected runs lengths rl.  testID added to failure error
+# message.  Returns TRUE if find.runs is correct.
+verify.runs_real <- function(testID, d, eps, rl) {
+
+  passed <- TRUE
+
+  r <- find.runs(d, eps)
+  
+  if (!verify.runs_internal(testID, r)) {
+    passed <- FALSE
+  } else {
+    if (is.null(rl)) {
+      if (0 != sum(r$runs)) {
+        cat('    test ', testID, ' did not generate empty runs\n')
+        passed <- FALSE
+      }
+      if ((0 != r$stats['nrun']) || (0 != r$stats['maxrun'])) {
+        cat('    test ', testID, ' empty run stats not 0\n')
+        passed <- FALSE
+      }
+    } else {
+      if (!all(rl == r$runs[r$runs!=0])) {
+        cat('    test ', testID, ' runs do not match expected\n')
+        passed <- FALSE
+      }
+      # Note access via $nrun, while verify.runs_discrete tests ['nrun'].
+      if (length(rl) != r$stats$nrun) {
+        cat('    test ', testID, ' runs count ', r$stats$nrun,
+            ' does not match expected ', length(rl), '\n')
+        passed <- FALSE
+      }
+      if (max(rl) != r$stats$maxrun) {
+        cat('    test ', testID, ' longest run ', r$stats$maxrun,
+            ' does not match expected ', max(rl), '\n')
+        passed <- FALSE
+      }
+      if (length(d) != r$stats$nx) {
+        cat('    test ', testID, ' source data length ', r$stats$nx,
+            ' not actual ', length(d), '\n')
+        passed <- FALSE
+      }
+    }
+  }
+  
+  if (!passed) {
+    allpass <<- FALSE
+  }
+  passed
+}
+
+# Taken from Dimodal, generate the default interval spacing and its signed
+# difference for data x, upon which we will search for runs.  Returns a 5 row
+# matrix with the raw data 'x', sorted 'xsort', spacing 'Di', interval spacing
+# with an 0.10 window 'Diw', and signed difference 'signed'.  There are
+# length(x) columns.  Also adds attributes to mock those created in Dimodal.
+gen.data <- function(x) {
+
+  xsrt <- sort(x)
+  di <- c(NA, diff(xsrt))
+  wdiw <- round(0.10 * length(x))
+  diw <- c(rep(NA, wdiw), diff(xsrt, lag=wdiw))
+  sdiw <- c(NA, sign(diff(diw)))
+
+  m <- matrix(c(x, xsrt, di, diw, sdiw), nrow=5, byrow=TRUE,
+              dimnames=list(c('x', 'xsort', 'Di', 'Diw', 'signed'), NULL))
+  attributes(m) <- c(attributes(m),
+                     list(diw.window=0.10, wdiw=wdiw, diw.stID=wdiw+1))
+  m
+}
+
+
+##### Runs
+
+# Manually copy meuse$cadmium data into a vector so as not to require package.
+cadmium <- c(
+ 11.7,  8.6,  6.5,  2.6,  2.8,  3.0,  3.2,  2.8,  2.4,  1.6,  1.4,  1.8,
+ 11.2,  2.5,  2.0,  9.5,  7.0,  7.1,  8.7, 12.9,  5.5,  2.8,  2.9,  1.7,
+  1.4,  1.5,  1.3,  1.3,  1.8,  1.5,  1.3,  1.3,  2.1,  1.2,  1.6,  3.0,
+  5.8,  7.9,  8.1, 14.1,  2.4,  1.2,  1.7,  1.3,  4.2,  4.3,  3.1,  1.7,
+  1.7,  2.1,  1.7,  8.2, 17.0, 12.0,  9.4,  8.2,  2.6,  3.5, 10.9,  7.3,
+  9.4,  8.3,  7.0,  6.8,  7.4,  6.6,  7.8,  0.7,  3.4,  3.9,  3.5,  4.7,
+  3.9,  3.1,  2.9,  3.9,  2.7,  2.5,  5.6,  9.4, 10.8, 18.1,  6.3,  2.1,
+  1.8,  2.2,  2.8,  2.4,  2.6,  1.8,  2.0,  2.7,  2.7,  0.9,  0.9,  0.4,
+  0.8,  0.4,  0.4,  0.4,  0.8,  0.4,  0.4,  0.4,  0.2,  0.2,  0.4,  0.2,
+  0.2,  0.4,  0.2,  0.2,  0.2,  0.2,  0.2,  0.2,  0.2,  3.7,  0.2,  0.2,
+  0.2,  0.2,  1.2,  2.4,  0.2,  0.2,  0.2,  0.2,  0.4,  1.6,  0.8,  1.2,
+  0.2,  0.2,  0.8,  1.0,  0.8,  1.2,  2.0,  1.5,  1.1,  0.8,  0.8,  2.1,
+  2.5,  3.8,  3.2,  3.1,  1.5,  1.2,  0.8,  3.1,  2.1,  0.8,  2.7
+)
+dm <- gen.data(cadmium)
+r <- find.runs(dm['signed',], 0)
+verify.diwruns(1, dm, r)
+
+set.seed(3) ; d <- c(rpois(90,3), rpois(30,2))
+verify.runs_discrete(2, d)
+verify.runs_discrete(3, 1.0*d)
+
+# Note skipping silently if data not available, but it should be.
+if ('faithful' %in% data()$results[,3]) {
+  dm <- gen.data(faithful$waiting)
+  r <- find.runs(dm['signed',], 0)
+  verify.diwruns(4, dm, r)
+}
+
+if ('iris' %in% data()$results[,3]) {
+  dm <- gen.data(iris$Petal.Width)
+  r <- find.runs(dm['signed',], 0)
+  verify.diwruns(5, dm, r)
+}
+
+if ('quakes' %in% data()$results[,3]) {
+  dm <- gen.data(quakes[,3])
+  r <- find.runs(dm['signed',], 0)
+  verify.diwruns(6, dm, r)
+}
+
+x <- c(NA,NA, 1,1,1,NA,1,NA, 3,3,3, 2,2,2, NA, 1, 4, 1, 5, NA,NA)
+verify.runs_discrete(7, x)
+
+x <- c(NA,NA, 1,NA,1,1,NA,1,NA, 3,3,3, 2,2,2, NA, 1, 4, 1, 5, NA,NA)
+verify.runs_discrete(8, x)
+
+x <- c(NA,NA, TRUE,TRUE,NA,TRUE,NA,TRUE, FALSE,FALSE,FALSE, NA,TRUE,TRUE,
+       FALSE, NA, TRUE, FALSE, NA, TRUE, NA)
+verify.runs_discrete(9, x)
+
+x <- c(NA, 'a',NA, 'b','b',NA,'b','b', 'c', 'd',NA, 'c', 'a', NA)
+verify.runs_discrete(10, x)
+
+x <- c(NA, 'ab',NA,'ab', 'ba','ba','ba',NA, 'c', 'def', 'de', 'd', NA,NA,NA)
+verify.runs_discrete(11, x)
+
+# 0.04 diff with avg value 1.6+ is > eps = 0.025.
+# Note asymmetry from avg 1.98,2.03 is 0.02494, 1.98,1.93 is 0.02558.
+x <- c(1.01, 0.97, 0.99, 1.01, 1.04, 1.07, NA,NA, 1.98, 2.02, 2.01, 2.03, 1.95,
+       1.93, NA, 1.98, 2.04, NA, 0.98, 1.03, 0.93, 0.93, 0.93)
+r <- c(1, 2, 1, 1, 1, 5, 1, 1, 1, 1, 1, 3)
+verify.runs_real(12, x, 0.025, r)
+r <- c(rep(1, sum(is.finite(x))-3), 3)
+verify.runs_real(13, x, 0, r)
+
+x <- c(NaN, NaN, -Inf, Inf, Inf, NaN, 1.0, -Inf, NaN, -Inf, 1.0, NaN, 1.0)
+r <- c(1, 2, 1, 2, 2)
+verify.runs_real(14, x, 0.025, r)
+
+x <- c(1.0, 0.0, 0.0, 0.0, 0.0, 2.0, 2.03, 1.97, 1.95, 0.0, 0.0)
+r <- c(1, 4, 3, 1, 2)
+verify.runs_real(15, x, 0.025, r)
+
+## Stress Tests
+
+x <- rep(1L, 50)
+verify.runs_discrete(16, x)
+
+x <- diff(as.integer(1:100), lag=16)
+verify.runs_discrete(17, x)
+
+x <- c(rep(NA_integer_, 5), rep(1,50))
+verify.runs_discrete(18, x)
+
+x <- c(rep(1L,50), rep(NA_integer_, 5))
+verify.runs_discrete(19, x)
+
+x <- c(rep(1L,20), NA_integer_, NA_integer_, rep(2L,10),
+       NA_integer_, NA_integer_, rep(3L,20))
+verify.runs_discrete(20, x)
+
+x <- rep(1.2, 50)
+r <- c(50)
+verify.runs_real(21, x, 0.001, r)
+
+x <- diff(0.01*(0:100), lag=16)
+r <- c(85)
+verify.runs_real(22, x, 0.001, r)
+
+x <- c(rep(NA_real_, 5), rep(1.3, 50))
+r <- c(50)
+verify.runs_real(23, x, 0.001, r)
+
+x <- c(rep(1.1, 50), rep(NA_real_, 6))
+r <- c(50)
+verify.runs_real(24, x, 0.001, r)
+
+x <- c(rep(1.1, 20), rep(NA_real_, 6), rep(1.1, 30))
+r <- c(50)
+verify.runs_real(25, x, 0.001, r)
+
+x <- c(rep(1.1, 20), rep(NA_real_, 6), rep(1.2, 30))
+r <- c(20, 30)
+verify.runs_real(26, x, 0.001, r)
+
+x <- c(rep(NA_real_, 3), rep(1.1, 20), rep(NA_real_, 4), rep(1.2, 10),
+       rep(NA_real_, 2), rep(1.1, 20), rep(NA_real_, 5))
+r <- c(20, 10, 20)
+verify.runs_real(27, x, 0.001, r)
+
+x <- c(rep(NaN, 5), rep(1.3, 50))
+r <- c(50)
+verify.runs_real(28, x, 0.001, r)
+
+x <- c(rep(1.1, 50), rep(NaN, 6))
+r <- c(50)
+verify.runs_real(29, x, 0.001, r)
+
+x <- c(rep(1.1, 20), rep(NaN, 6), rep(1.1, 30))
+r <- c(50)
+verify.runs_real(30, x, 0.001, r)
+
+x <- c(rep(1.1, 20), rep(NaN, 6), rep(1.2, 30))
+r <- c(20, 30)
+verify.runs_real(31, x, 0.001, r)
+
+x <- as.integer(0:20)
+verify.runs_discrete(32, x)
+
+x <- as.integer(rep(c(0,1), 20))
+verify.runs_discrete(33, x)
+
+x <- 0.1 * (0:20)
+r <- rep(1, length(x))
+verify.runs_real(34, x, 0.001, r)
+
+x <- rep(c(0,1), 20)
+r <- rep(1, length(x))
+verify.runs_real(35, x, 0.001, r)
+
+x <- 1L
+verify.runs_discrete(36, x)
+
+x <- c(1L, 1L)
+verify.runs_discrete(37, x)
+
+x <- c(1L, 2L)
+verify.runs_discrete(38, x)
+
+x <- 1.01
+r <- c(1)
+verify.runs_real(39, x, 0.001, r)
+
+x <- c(1.01, 1.0099)
+r <- c(2)
+verify.runs_real(40, x, 0.001, r)
+
+x <- c(1.10, 1.09)
+r <- c(1, 1)
+verify.runs_real(41, x, 0.001, r)
+
+x <- matrix(c(1L, 2L), nrow=3, ncol=2, byrow=TRUE)
+verify.runs_discrete(42, x)
+
+x <- matrix(c(1L, 2L), nrow=3, ncol=2, byrow=FALSE)
+verify.runs_discrete(43, x)
+
+x <- matrix(c(1.1, 1.2), nrow=3, ncol=2, byrow=TRUE)
+r <- c(3, 3)
+verify.runs_real(44, x, 0.001, r)
+
+x <- matrix(c(1.1, 1.2), nrow=3, ncol=2, byrow=FALSE)
+r <- c(1, 1, 1, 1, 1, 1)
+verify.runs_real(45, x, 0.001, r)
+
+
+
+
+## Break the Part Tests
+
+x <- c(NA_integer_, NA_integer_, NA_integer_)
+verify.runs_discrete('BTP1', x)
+
+x <- c(NA_real_, NA_real_, NaN, NaN)
+verify.runs_real('BTP2', x, 0.025, NULL)
+
+verify.error('BTP3', find.runs, list(c(1, 1, 1), -0.01))
+verify.error('BTP4', find.runs, list(c(1, 1, 1), 1.01))
+verify.error('BTP5', find.runs, list(c(2i+1, i+2, 3i), 0))
+verify.error('BTP6', find.runs, list(vector(mode='integer', length=0), 0.001))
+verify.error('BTP7', find.runs, list(vector(mode='real', length=0), 0.001))
+verify.error('BTP8', find.runs, list(NULL, 0.001))
+
+
+if (allpass) {
+  cat('  all find.runs tests PASSED\n')
+}

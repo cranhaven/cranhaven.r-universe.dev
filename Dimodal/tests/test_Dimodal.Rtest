@@ -1,0 +1,823 @@
+
+# test_Dimodal.Rtest:
+# Test bench for the Dimodal() function.
+#
+# c 2024-2025 Greg Kreider, Primordial Machine Vision Systems, Inc.
+
+## To Do:
+# - 
+#   
+
+
+if (interactive()) {
+  source('../R/Diopt.R')
+  source('../R/Dimodal.R')
+  source('../R/methods.R')
+  source('../R/detectors.R')
+  source('../R/sigtests.R')
+  source('../R/utility.R')
+  source('../R/cpt.R')
+
+  if (is.loaded('C_find_peaks', PACKAGE='Dimodal')) {
+    dyn.unload('../src/Dimodal.so')
+  }
+  dyn.load('../src/Dimodal.so')
+} else {
+  library(Dimodal)
+  # We aren't exporting the data generator, so must link internally.
+  gen.data <- Dimodal:::gen.data
+  mockup.Dipeak <- Dimodal:::mockup.Dipeak
+  mockup.Diflat <- Dimodal:::mockup.Diflat
+  mockup.Dicpt <- Dimodal:::mockup.Dicpt
+}
+
+source('../tests/test_common.Rtest')
+
+
+##### Test Framework
+
+# Check that the positions of the peaks and flats in the two Dimodal result
+# m against a list pos of positions, with elements named the same as in m
+# set as matrices with columns 'pos', 'ismax' for peaks or 'stID', 'endID'
+# for flats.  Have a 0 row matrix, b.v. from mockup.Di*, if there are no
+# results.  Cover if TRUE means that flats in m must lie within the range
+# of a flat in pos.  Returns whether the feature positions are correct.  If
+# any fail, use testID in the failure message and set the global allpass FALSE.
+verify.pos <- function(testID, m,  pos, cover=FALSE) {
+
+  passed <- TRUE
+
+  for (i in c('lp.peaks', 'diw.peaks')) {
+    if (is.null(pos[[i]]) && (0 != nrow(m[[i]]))) {
+      cat('    ', testID, ' expected no ', i, ' but in Dimodal result\n')
+      passed <- FALSE
+    } else if (!is.null(pos[[i]])) {
+      if (nrow(pos[[i]]) != nrow(m[[i]])) {
+        cat('    ', testID, ' expected ', nrow(pos[[i]]), i,
+            ' but Dimodal has ', nrow(m[[i]]), '\n')
+        passed <- FALSE
+      } else {
+        if (!verify.vectors(paste0(testID, ' ', i, '/pos'),
+                            m[[i]][,'pos'], pos[[i]][,'pos'])) {
+          passed <- FALSE
+        }
+      }
+    }
+  }
+
+  for (i in c('lp.flats', 'diw.flats')) {
+    if (is.null(pos[[i]]) && (0 != nrow(m[[i]]))) {
+      cat('    ', testID, ' expected no ', i, ' but in Dimodal result\n')
+      passed <- FALSE
+    } else if (!is.null(pos[[i]])) {
+      if (nrow(pos[[i]]) != nrow(m[[i]])) {
+        cat('    ', testID, ' expected ', nrow(pos[[i]]), i,
+            ' but Dimodal has ', nrow(m[[i]]), '\n')
+        passed <- FALSE
+      } else {
+        if (cover) {
+          outside <- (m[[i]][,'stID'] < pos[[i]][,'stID']) |
+                     (pos[[i]][,'endID'] < m[[i]][,'endID'])
+          if (any(outside)) {
+            cat('    ', testID, i, ' flats ', which(outside),
+                ' lie outside expected\n')
+            passed <- FALSE
+          }
+        } else {
+          for (j in c('stID', 'endID')) {
+            if (!verify.vectors(paste0(testID, ' ', i, '/', j),
+                                m[[i]][,j], pos[[i]][,j])) {
+              passed <- FALSE
+            }
+          }
+        }
+      }
+    }
+  }
+
+  if (!passed) {
+    allpass <<- FALSE
+  }
+  passed
+}
+
+# Test that gen.data applied to data x and filter method ('lp' or 'diw')
+# _only_ creates the base values: sorted x, mid-distribution function, and
+# spacing.  opt is a list that need only contain the parameters for the
+# filter, [lp|diw].window and lp.kernel.  gen.data must generate a warning
+# for the bad setup or the test fails.  Returns whether all checks pass, and
+# if not sets the global variable allpass to FALSE.  testID is an identifier
+# used in failure messages.
+verify.basedata <- function(testID, x, method, opt) {
+
+  passed <- TRUE
+
+  if (!verify.warning(testID, gen.data, list(x, method, opt))) {
+    passed <- FALSE
+  }
+  
+  d <- suppressWarnings(gen.data(x, method, opt))
+  if ((4 != nrow(d)) ||
+      (0 < length(setdiff(rownames(d), c('x', 'xsort', 'xmid', 'Di'))))) {
+    cat('    test ', testID, ' did not generate only base data (spacing, xmid)')
+    passed <- FALSE
+  }
+
+  if (!passed) {
+    allpass <<- FALSE
+  }
+  passed
+}
+
+# Yet another test for peaks, this time looking at the common subset of data
+# frames pk1 and pk2.  If the columns $ismax and $ppeak appear in the frame,
+# then only valid maxima are used for the comparison if screen is TRUE.
+# Rather loose accuracy on probabilities and and other values.  Returns
+# whether the two match or FALSE if not, in which case the global variable
+# allpass is also set to FALSE.  testID is an identifier used in failure
+# messages.
+verify.peaks <- function(testID, pk1, pk2, screen=TRUE) {
+
+  passed <- TRUE
+
+  if (screen && ('ismax' %in% names(pk1)) && ('ppeak' %in% names(pk1))) {
+    pk1 <- pk1[pk1$ismax & !is.na(pk1$ppeak),]
+  }
+  if (screen && ('ismax' %in% names(pk2)) && ('ppeak' %in% names(pk2))) {
+    pk2 <- pk2[pk2$ismax & !is.na(pk2$ppeak),]
+  }
+
+  cols1 <- colnames(pk1)
+  cols2 <- colnames(pk2)
+  if (nrow(pk1) != nrow(pk2)) {
+    cat('    test ', testID, ' mismatch in number of peaks: ',
+        nrow(pk1), ' vs. ', nrow(pk2), '\n')
+    passed <- FALSE
+  } else {
+    for (i in intersect(cols1, cols2)) {
+      if ('pos' == i) {
+        eps <- 0
+      } else if ('p' == substr(i,1,1)) {
+        eps <- 0.005
+      } else {
+        eps <- 0.01
+      }
+      if (!all(nearly(pk1[[i]], pk2[[i]], eps))) {
+        cat('    test ', paste0(testID, ' ', i), ' values differ\n')
+        cat('      pk1 ', pk1[[i]], '\n')
+        cat('      pk2 ', pk2[[i]], '\n')
+        passed <- FALSE
+      }
+    }
+    if (('ht' %in% cols1) && ('lht' %in% cols2) && ('rht' %in% cols2)) {
+      ht2 <- pmax(pk2[['lht']], pk2[['rht']])
+      if (!all(nearly(pk1[['ht']], ht2, 0.01))) {
+        cat('    test ', paste0(testID, ' ht'), ' values differ\n')
+        cat('      pk1 ', pk1[['ht']], '\n')
+        cat('      pk2 ', ht2, '\n')
+        passed <- FALSE
+      }
+    } else if (('lht' %in% cols1) && ('rht' %in% cols1) && ('ht' %in% cols2)) {
+      ht1 <- pmax(pk1[['lht']], pk1[['rht']])
+      if (!all(nearly(ht1, pk2[['ht']], 0.01))) {
+        cat('    test ', paste0(testID, ' ht'), ' values differ\n')
+        cat('      pk1 ', ht1, '\n')
+        cat('      pk2 ', pk2[['ht']], '\n')
+        passed <- FALSE
+      }
+    }
+  }
+
+  if (!passed) {
+    allpass <<- FALSE
+  }
+  passed
+}
+
+# Yet another test for flats, this time looking at the common subset of both
+# data frames ft1 and ft2.  Rather loose accuracy on probabilities and and
+# other values.  Returns whether the two match or FALSE if not, in which case
+# the global variable allpass is also set to FALSE.  testID is an identifier
+# used in failure messages.
+verify.flats <- function(testID, ft1, ft2) {
+
+  passed <- TRUE
+
+  if (nrow(ft1) != nrow(ft2)) {
+    cat('    test ', testID, ' mismatch in number of flats: ',
+        nrow(ft1), ' vs. ', nrow(ft2), '\n')
+    passed <- FALSE
+  } else {
+    for (i in intersect(colnames(ft1), colnames(ft2))) {
+      if (('stID' == i) || ('endID' == i) || ('len' == i)) {
+        eps <- 0
+      } else if ('p' == substr(i,1,1)) {
+        eps <- 0.001
+      } else {
+        eps <- 0.01
+      }
+      if (!all(nearly(ft1[[i]], ft2[[i]], eps))) {
+        cat('    test ', paste0(testID, ' ', i), ' values differ\n')
+        cat('      ft1 ', ft1[[i]], '\n')
+        cat('      ft2 ', ft2[[i]], '\n')
+        passed <- FALSE
+      }
+    }
+  }
+
+  if (!passed) {
+    allpass <<- FALSE
+  }
+  passed
+}
+
+# Check that the data frame/matrix d has no rows but the same columns as
+# Dipeak/Diflat/Dicpt/Didata.  Returns TRUE if so, or FALSE if the data is
+# not empty.  On failure the global variable allpass is also set to FALSE.
+# testID is an identifier used in the failure messages.
+verify.empty <- function(testID, d) {
+
+  passed <- TRUE
+  
+  if ('Dipeak' %in% class(d)) {
+    if (0 != nrow(d)) {
+      cat('    test ', testID, ' fails because data not empty\n')
+      passed <- FALSE
+    } else if (0 != length(setdiff(colnames(d), colnames(mockup.Dipeak())))) {
+      cat('    test ', testID, ' fails for column mis-match\n')
+      passed <- FALSE
+    }
+  } else if ('Diflat' %in% class(d)) {
+    if (0 != nrow(d)) {
+      cat('    test ', testID, ' fails because data not empty\n')
+      passed <- FALSE
+    } else if (0 != length(setdiff(colnames(d), colnames(mockup.Diflat())))) {
+      cat('    test ', testID, ' fails for column mis-match\n')
+      passed <- FALSE
+    }
+  } else if ('Dicpt' %in% class(d)) {
+    if (0 != nrow(d)) {
+      cat('    test ', testID, ' fails because data not empty\n')
+      passed <- FALSE
+    } else if (0 != length(setdiff(names(d), names(mockup.Dicpt())))) {
+      cat('    test ', testID, ' fails for element mis-match\n')
+      passed <- FALSE
+    }
+  } else if ('Didata' %in% class(d)) {
+    if (0 != nrow(d)) {
+      cat('    test ', testID, ' fails because data not empty\n')
+      passed <- FALSE
+    } else if (0 != length(setdiff(colnames(d), colnames(mockup.Didata())))) {
+      cat('    test ', testID, ' fails for column mis-match\n')
+      passed <- FALSE
+    }
+  } else {
+    cat('    test ', testID, ' internal failure - unknown data format\n')
+    passed <- FALSE
+  }
+
+  if (!passed) {
+    allpass <<- FALSE
+  }
+  passed
+}
+
+# Create a Dipeaks results with one row per element in pos/ismax and the
+# positions and maximum flags set.  All other columns will be NA.
+set.peakpos <- function(pos, ismax) {
+
+  if (length(pos) != length(ismax)) {
+    stop('internal error - argument lengths differ')
+  }
+
+  pk <- mockup.Dipeak()
+  # Grow the right number of rows.
+  pk[length(pos),'pos'] <- pos[length(pos)]
+  pk$pos <- pos
+  pk$ismax <- ismax
+  
+  pk
+}
+
+# Create a Diflats results with one row per element in stID/endID and the
+# endpoints and lengths set.  All other columns will be NA.
+set.flatpos <- function(stID, endID) {
+
+  if (length(stID) != length(endID)) {
+    stop('internal error - endpoint lengths differ')
+  }
+
+  flt <- mockup.Diflat()
+  flt[length(stID),'stID'] <- stID[length(stID)]
+  flt$stID <- stID
+  flt$endID <- endID
+  flt$len <- endID - stID + 1
+  
+  flt
+}
+
+
+##### Test Bench
+
+allpass <- TRUE
+
+
+## Data Generation
+
+x <- iris$Petal.Length
+nx <- length(x) ; ndi <- nx - 1
+exp.di <- c(NA_real_, diff(sort(x)))
+
+# Expected values come from development version - checking port of code OK.
+w <- 0.12
+d <- gen.data(x, 'lp', list(data.midq=4, lp.window=w, lp.kernel='kaiser'))
+whalf <- round(w * ndi / 2) ; off <- round(w*ndi) %% 2
+# The + 1 here are for the initial NA for the spacing.
+exp.attr <- list(lp.kernel='kaiser', lp.window=w, wlp=round(w*ndi),
+                 lp.stID=1+whalf+off, lp.endID=1+ndi-whalf)
+exp.lp <- c(rep(NA_real_, whalf+off),
+ 0.016874500, 0.013689949, 0.011227301, 0.009891294, 0.007904638, 0.006982103,
+ 0.007199001, 0.006983206, 0.006906565, 0.006983206, 0.007199001, 0.006982103,
+ 0.007904638, 0.008566199, 0.008911571, 0.008911571, 0.008566199, 0.007904638,
+ 0.006982103, 0.007199001, 0.006983206, 0.006906565, 0.006983206, 0.007199001,
+ 0.006982103, 0.007904638, 0.009891294, 0.011227301, 0.012364854, 0.013233675,
+ 0.016428734, 0.018595664, 0.035261157, 0.052016936, 0.069045962, 0.089543784,
+ 0.108947418, 0.127693542, 0.145678351, 0.160481068, 0.171251544, 0.176144229,
+ 0.175352000, 0.170298883, 0.159317714, 0.145416024, 0.128366147, 0.109432380,
+ 0.090181859, 0.073443067, 0.052228178, 0.044963724, 0.040728164, 0.035311978,
+ 0.032238336, 0.029841409, 0.027724133, 0.027587159, 0.027568886, 0.028459127,
+ 0.028868348, 0.029543743, 0.030436145, 0.030704878, 0.030334881, 0.029344247,
+ 0.027251595, 0.025768669, 0.023669838, 0.021886246, 0.020554489, 0.019002687,
+ 0.018675588, 0.017487467, 0.017634386, 0.017239591, 0.017893387, 0.019534499,
+ 0.020457034, 0.020585680, 0.021483686, 0.023092675, 0.023737936, 0.023930035,
+ 0.023669060, 0.022975112, 0.023211341, 0.022239849, 0.022239849, 0.021886246,
+ 0.021984477, 0.022531507, 0.022715842, 0.022531507, 0.021984477, 0.020561150,
+ 0.019924120, 0.018786566, 0.018543865, 0.017101206, 0.018012053, 0.018341126,
+ 0.019950115, 0.021164309, 0.023224398, 0.025984790, 0.028459127, 0.031777540,
+ 0.033572043, 0.035817794, 0.037031987, 0.037130219, 0.036109452, 0.035373131,
+ 0.033413435, 0.030921776, 0.028869451, 0.027408117, 0.025323229, 0.025657690,
+ 0.024945468, 0.026664624, 0.027252698, 0.030100410, 0.032106613, 0.033125500,
+ 0.037306072, 0.041218783, 0.046767743, 0.052316832, 0.057012562, 0.063189692,
+ rep(NA_real_, whalf))
+verify.vectors(1.1, d['Di',], exp.di)
+verify.vectors(1.2, d['lp',], exp.lp)
+verify.lists(1.3, attributes(d)[names(exp.attr)], exp.attr)
+
+w <- 12
+d <- gen.data(x, 'lp', list(data.midq=4, lp.window=w, lp.kernel='Bartlett'))
+whalf <- 6
+exp.attr <- list(lp.kernel='Bartlett', lp.window=w, wlp=w,
+                 lp.stID=1+whalf, lp.endID=1+ndi-whalf)
+exp.lp <- c(rep(NA_real_, whalf),
+ 0.021428571, 0.016666667, 0.014285714, 0.014285714, 0.014285714, 0.014285714,
+ 0.011904762, 0.009523810, 0.007142857, 0.004761905, 0.002380952, 0.000000000,
+ 0.002380952, 0.004761905, 0.007142857, 0.009523810, 0.011904762, 0.014285714,
+ 0.014285714, 0.011904762, 0.009523810, 0.007142857, 0.004761905, 0.002380952,
+ 0.000000000, 0.002380952, 0.004761905, 0.007142857, 0.009523810, 0.011904762,
+ 0.014285714, 0.014285714, 0.014285714, 0.014285714, 0.014285714, 0.014285714,
+ 0.019047619, 0.023809524, 0.054761905, 0.090476190, 0.126190476, 0.166666667,
+ 0.202380952, 0.235714286, 0.245238095, 0.226190476, 0.202380952, 0.173809524,
+ 0.140476190, 0.111904762, 0.078571429, 0.066666667, 0.057142857, 0.045238095,
+ 0.040476190, 0.033333333, 0.026190476, 0.023809524, 0.023809524, 0.026190476,
+ 0.026190476, 0.026190476, 0.028571429, 0.030952381, 0.030952381, 0.030952381,
+ 0.030952381, 0.033333333, 0.033333333, 0.030952381, 0.028571429, 0.026190476,
+ 0.023809524, 0.019047619, 0.014285714, 0.011904762, 0.011904762, 0.011904762,
+ 0.014285714, 0.016666667, 0.021428571, 0.023809524, 0.023809524, 0.026190476,
+ 0.026190476, 0.023809524, 0.021428571, 0.021428571, 0.023809524, 0.023809524,
+ 0.021428571, 0.021428571, 0.023809524, 0.023809524, 0.021428571, 0.019047619,
+ 0.021428571, 0.023809524, 0.023809524, 0.021428571, 0.021428571, 0.021428571,
+ 0.019047619, 0.014285714, 0.011904762, 0.011904762, 0.014285714, 0.016666667,
+ 0.021428571, 0.028571429, 0.035714286, 0.040476190, 0.042857143, 0.045238095,
+ 0.045238095, 0.042857143, 0.038095238, 0.033333333, 0.028571429, 0.026190476,
+ 0.021428571, 0.019047619, 0.019047619, 0.021428571, 0.023809524, 0.026190476,
+ 0.028571429, 0.033333333, 0.035714286, 0.038095238, 0.040476190, 0.040476190,
+ 0.045238095, 0.050000000, 0.057142857, 0.066666667, 0.073809524, 0.085714286,
+ rep(NA_real_, whalf))
+verify.vectors(2.1, d['Di',], exp.di)
+verify.vectors(2.2, d['lp',], exp.lp)
+verify.lists(2.3, attributes(d)[names(exp.attr)], exp.attr)
+
+w <- 13
+d <- gen.data(x, 'lp', list(data.midq=4, lp.window=w, lp.kernel='hann'))
+whalf <- 6
+exp.attr <- list(lp.kernel='hann', lp.window=w, wlp=w,
+                 lp.stID=1+whalf+1, lp.endID=1+ndi-whalf)
+exp.lp <- c(rep(NA_real_, whalf+1),
+ 0.0176824381, 0.0149930795, 0.0142857143, 0.0142857143, 0.0142857143,
+ 0.0135783491, 0.0115963557, 0.0087322924, 0.0055534219, 0.0026893586,
+ 0.0007073652, 0.0007073652, 0.0026893586, 0.0055534219, 0.0087322924,
+ 0.0115963557, 0.0135783491, 0.0142857143, 0.0135783491, 0.0115963557,
+ 0.0087322924, 0.0055534219, 0.0026893586, 0.0007073652, 0.0007073652,
+ 0.0026893586, 0.0055534219, 0.0087322924, 0.0115963557, 0.0135783491,
+ 0.0142857143, 0.0142857143, 0.0142857143, 0.0142857143, 0.0142857143,
+ 0.0157004447, 0.0196644314, 0.0331735756, 0.0627479737, 0.1039447838,
+ 0.1500192029, 0.1932603577, 0.2258111725, 0.2426392896, 0.2418264244,
+ 0.2242409402, 0.1933658577, 0.1553163657, 0.1183359980, 0.0890418047,
+ 0.0718211295, 0.0623037210, 0.0524715053, 0.0428571429, 0.0346575109,
+ 0.0280819166, 0.0244327371, 0.0237253719, 0.0246851929, 0.0257073652,
+ 0.0265894352, 0.0278640633, 0.0292787938, 0.0305534219, 0.0314354919,
+ 0.0317502991, 0.0321428571, 0.0325354152, 0.0321428571, 0.0310429338,
+ 0.0287461334, 0.0250000000, 0.0205465014, 0.0162677076, 0.0130110862,
+ 0.0114216509, 0.0111068438, 0.0121290162, 0.0149930795, 0.0191317710,
+ 0.0230180067, 0.0251747048, 0.0258820700, 0.0257073652, 0.0246851929,
+ 0.0230180067, 0.0217433786, 0.0218211295, 0.0225284947, 0.0230180067,
+ 0.0231927115, 0.0230180067, 0.0225284947, 0.0218211295, 0.0210360133,
+ 0.0210360133, 0.0218211295, 0.0225284947, 0.0230180067, 0.0231927115,
+ 0.0223106414, 0.0198391362, 0.0162677076, 0.0130110862, 0.0114216509,
+ 0.0118142090, 0.0141110095, 0.0185645081, 0.0250000000, 0.0321428571,
+ 0.0385783491, 0.0430318476, 0.0453286481, 0.0457212062, 0.0441317710,
+ 0.0408751495, 0.0365963557, 0.0314354919, 0.0264147305, 0.0225284947,
+ 0.0198391362, 0.0188793152, 0.0198391362, 0.0218211295, 0.0244327371,
+ 0.0278640633, 0.0314354919, 0.0344396576, 0.0369889138, 0.0392857143,
+ 0.0408751495, 0.0428571429, 0.0462538666, 0.0518072885, 0.0605395809,
+ 0.0707212062, 0.0810429338,
+ rep(NA_real_, whalf))
+verify.vectors(3.1, d['Di',], exp.di)
+verify.vectors(3.2, d['lp',], exp.lp)
+verify.lists(3.3, attributes(d)[names(exp.attr)], exp.attr)
+ 
+w <- 0.07
+d <- gen.data(x, 'lp', list(data.midq=4, lp.window=w, lp.kernel='gaussian'))
+whalf <- round(w * ndi / 2) ; off <- round(w*ndi) %% 2
+exp.attr <- list(lp.kernel='gaussian', lp.window=w, wlp=round(w*ndi),
+                 lp.stID=1+whalf+off, lp.endID=1+ndi-whalf)
+exp.lp <- c(rep(NA_real_, whalf+off),
+ 0.026675245, 0.014655601, 0.007777721, 0.007777721, 0.012094489, 0.018897523,
+ 0.021928589, 0.018897523, 0.012094489, 0.005748553, 0.002029168, 0.000000000,
+ 0.000000000, 0.000000000, 0.000531944, 0.002029168, 0.005748553, 0.012094489,
+ 0.018897523, 0.021928589, 0.018897523, 0.012094489, 0.005748553, 0.002029168,
+ 0.000000000, 0.000000000, 0.000000000, 0.000531944, 0.002029168, 0.005748553,
+ 0.012094489, 0.018897523, 0.021928589, 0.018897523, 0.012626433, 0.007777721,
+ 0.007777721, 0.012094489, 0.019961411, 0.025986925, 0.036246014, 0.060200148,
+ 0.112865191, 0.197235271, 0.286009606, 0.334125074, 0.311905719, 0.239894996,
+ 0.163778885, 0.116131290, 0.088945636, 0.083847175, 0.077905629, 0.064417708,
+ 0.050864223, 0.038769734, 0.030238254, 0.022955860, 0.017843042, 0.018374986,
+ 0.022955860, 0.027677142, 0.030992012, 0.031523956, 0.029706310, 0.027207189,
+ 0.026218146, 0.030394630, 0.036052246, 0.038326991, 0.036052246, 0.030394630,
+ 0.026218146, 0.024646077, 0.023957757, 0.018897523, 0.012094489, 0.006280497,
+ 0.004058336, 0.005748553, 0.012626433, 0.020926691, 0.027677142, 0.030992012,
+ 0.030992012, 0.028209086, 0.022955860, 0.017843042, 0.017843042, 0.021458635,
+ 0.023957757, 0.024646077, 0.024188978, 0.024646077, 0.024489701, 0.020926691,
+ 0.017843042, 0.017843042, 0.021458635, 0.023957757, 0.024646077, 0.024188978,
+ 0.024646077, 0.023957757, 0.018897523, 0.012094489, 0.006280497, 0.004058336,
+ 0.006280497, 0.014123657, 0.025178021, 0.036052246, 0.044075544, 0.048146735,
+ 0.049292153, 0.048678679, 0.045572768, 0.041800799, 0.036740566, 0.033021180,
+ 0.027677142, 0.021458635, 0.014123657, 0.011497107, 0.014655601, 0.020926691,
+ 0.027677142, 0.031523956, 0.033021180, 0.033957639, 0.035050348, 0.037272510,
+ 0.041800799, 0.045572768, 0.047181454, 0.048133880, 0.050642408, 0.059173888,
+ 0.077539467, 0.099504673,
+ rep(NA_real_, whalf))
+verify.vectors(4.1, d['Di',], exp.di)
+verify.vectors(4.2, d['lp',], exp.lp)
+verify.lists(4.3, attributes(d)[names(exp.attr)], exp.attr)
+
+w <- 0.18
+d <- gen.data(x, 'lp', list(data.midq=4, lp.window=w, lp.kernel='ham'))
+whalf <- round(w * ndi / 2) ; off <- round(w*ndi) %% 2
+exp.attr <- list(lp.kernel='ham', lp.window=w, wlp=round(w*ndi),
+                 lp.stID=1+whalf+off, lp.endID=1+ndi-whalf)
+exp.lp <- c(rep(NA_real_, whalf+off),
+ 0.010380963, 0.009236303, 0.008350187, 0.008256881, 0.007645260, 0.007645260,
+ 0.007645260, 0.007645260, 0.007645260, 0.007645260, 0.008256881, 0.007645260,
+ 0.007645260, 0.007645260, 0.007645260, 0.007645260, 0.007645260, 0.008256881,
+ 0.008350187, 0.008624682, 0.009064415, 0.010867070, 0.011739104, 0.019767519,
+ 0.023577376, 0.028512673, 0.037012992, 0.046395544, 0.058136523, 0.071070817,
+ 0.084668889, 0.098362627, 0.110966736, 0.122453638, 0.132767378, 0.140214167,
+ 0.145066152, 0.146336427, 0.145045558, 0.141268566, 0.134130565, 0.124751318,
+ 0.114287532, 0.102252935, 0.089346933, 0.077413967, 0.067147537, 0.058049902,
+ 0.050556475, 0.046197138, 0.036952730, 0.033284014, 0.032571167, 0.030516510,
+ 0.030133159, 0.029515225, 0.029088084, 0.028654402, 0.028017225, 0.027696354,
+ 0.027710437, 0.026259338, 0.025226706, 0.024672555, 0.023534699, 0.022584193,
+ 0.021171351, 0.020472672, 0.020528761, 0.019537040, 0.019354463, 0.019380018,
+ 0.020223843, 0.020037579, 0.020631368, 0.020654155, 0.021199005, 0.022234253,
+ 0.022605345, 0.022290713, 0.022403034, 0.022935780, 0.022763598, 0.022601424,
+ 0.022458680, 0.022343664, 0.022263060, 0.021516625, 0.021242129, 0.021455526,
+ 0.020345095, 0.020386311, 0.019870765, 0.020144967, 0.020098592, 0.020345955,
+ 0.020872681, 0.021741464, 0.023513434, 0.024286294, 0.025814445, 0.027397456,
+ 0.028943328, 0.030362221, 0.031478366, 0.032226900, 0.032657624, 0.033357128,
+ 0.032485443, 0.031892543, 0.031612888, 0.030568338, 0.030136147, 0.029247043,
+ 0.029269243, 0.029107068, 0.028769943, 0.030595092, 0.031582737, 0.034308574,
+ 0.036425407, 0.039220068, 0.043141761,
+ rep(NA_real_, whalf))
+verify.vectors(5.1, d['Di',], exp.di)
+verify.vectors(5.2, d['lp',], exp.lp)
+verify.lists(5.3, attributes(d)[names(exp.attr)], exp.attr)
+
+w <- 0.13
+d <- gen.data(x, 'lp', list(data.midq=4, lp.window=w, lp.kernel='blackman'))
+# Round goes to an even digit, and here we need odd, so use floor.
+whalf <- floor(w * ndi / 2) ; off <- floor(w*ndi) %% 2
+exp.attr <- list(lp.kernel='blackman', lp.window=w, wlp=round(w*ndi),
+                 lp.stID=1+whalf+off, lp.endID=1+ndi-whalf)
+exp.lp <- c(rep(NA_real_, whalf+off),
+ 0.014511671, 0.013225643, 0.011843281, 0.010188577, 0.008149202, 0.006268316,
+ 0.004672813, 0.003776513, 0.003776513, 0.004672813, 0.006268316, 0.008149202,
+ 0.009994964, 0.011273045, 0.011730294, 0.011273045, 0.009994964, 0.008149202,
+ 0.006268316, 0.004672813, 0.003776513, 0.003776513, 0.004672813, 0.006268316,
+ 0.008149202, 0.010188577, 0.011843281, 0.013032030, 0.013747822, 0.014484767,
+ 0.015364377, 0.018957119, 0.025900534, 0.037982782, 0.056696420, 0.081834836,
+ 0.112105053, 0.144274021, 0.174198239, 0.197326821, 0.210064804, 0.210738236,
+ 0.200024342, 0.180377146, 0.155558630, 0.129568138, 0.105343082, 0.084819724,
+ 0.068249904, 0.055578619, 0.045447192, 0.038344839, 0.032990503, 0.029068270,
+ 0.026980718, 0.026058272, 0.026241271, 0.026981413, 0.027974058, 0.028999212,
+ 0.029986752, 0.030737444, 0.031347961, 0.031576474, 0.031321480, 0.030468351,
+ 0.028873184, 0.026634867, 0.023912049, 0.020850011, 0.017979094, 0.015708368,
+ 0.014317364, 0.014021378, 0.014920169, 0.016572318, 0.018843097, 0.021019968,
+ 0.022763358, 0.023742786, 0.024175686, 0.023992687, 0.023548479, 0.023093720,
+ 0.022752061, 0.022671423, 0.022660873, 0.022593400, 0.022467260, 0.022294800,
+ 0.022020561, 0.021920679, 0.021920679, 0.022020561, 0.022101187, 0.021897024,
+ 0.021291664, 0.020186096, 0.018568846, 0.016870971, 0.015514755, 0.015048864,
+ 0.015764656, 0.018043318, 0.021589458, 0.026128296, 0.031038587, 0.035561718,
+ 0.039096661, 0.041319270, 0.041897502, 0.040872571, 0.038617553, 0.035391760,
+ 0.031689461, 0.028145812, 0.025065575, 0.022969329, 0.022011807, 0.022237829,
+ 0.023515910, 0.025592899, 0.028167671, 0.030957962, 0.033626623, 0.036279418,
+ 0.038956450, 0.041984874, 0.045657106, 0.050246675, 0.056254181,
+ rep(NA_real_, whalf))
+verify.vectors(6.1, d['Di',], exp.di)
+verify.vectors(6.2, d['lp',], exp.lp)
+verify.lists(6.3, attributes(d)[names(exp.attr)], exp.attr)
+
+w <- 0.09
+d <- gen.data(x, 'diw', list(data.midq=4, diw.window=w))
+wdiw <- round(w * nx)
+exp.attr <- list(diw.window=w, wdiw=wdiw, diw.stID=1+wdiw)
+exp.diw <- c(rep(NA_real_, wdiw),
+ 0.4, 0.3, 0.2, 0.2, 0.1,  0.1, 0.1, 0.1, 0.1, 0.1,  0.2, 0.1, 0.1, 0.1, 0.1,
+ 0.1, 0.1, 0.1, 0.1, 0.1,  0.1, 0.1, 0.1, 0.2, 0.1,  0.1, 0.1, 0.1, 0.1, 0.1,
+ 0.2, 0.2, 0.2, 0.2, 0.4,  0.4, 1.5, 1.7, 1.7, 1.9,  1.9, 2.0, 2.1, 2.2, 2.2,
+ 2.2, 2.2, 2.3, 2.1, 2.1,  1.0, 0.7, 0.8, 0.6, 0.6,  0.6, 0.5, 0.4, 0.3, 0.4,
+ 0.4, 0.4, 0.4, 0.4, 0.4,  0.5, 0.4, 0.4, 0.4, 0.3,  0.3, 0.3, 0.3, 0.3, 0.3,
+ 0.2, 0.3, 0.3, 0.3, 0.2,  0.2, 0.3, 0.3, 0.3, 0.3,  0.4, 0.4, 0.3, 0.3, 0.3,
+ 0.3, 0.3, 0.3, 0.3, 0.4,  0.3, 0.3, 0.3, 0.3, 0.2,  0.2, 0.2, 0.3, 0.3, 0.3,
+ 0.3, 0.4, 0.4, 0.4, 0.4,  0.4, 0.5, 0.5, 0.5, 0.5,  0.5, 0.4, 0.5, 0.4, 0.4,
+ 0.4, 0.4, 0.3, 0.4, 0.4,  0.4, 0.4, 0.5, 0.5, 0.5,  0.7, 0.7, 0.9, 1.0, 0.9,
+ 1.1)
+exp.sign <- c(NA_real_, sign(diff(exp.diw)))
+verify.vectors(7.1, d['Di',], exp.di)
+verify.vectors(7.2, d['Diw',], exp.diw)
+verify.vectors(7.3, d['signed',], exp.sign)
+verify.lists(7.4, attributes(d)[names(exp.attr)], exp.attr)
+
+
+## Constructed Examples
+
+Diopt(analysis=c('lp', 'diw'))
+
+# Constant spacing = no peaks, one flat spanning Di/Diw
+m <- Dimodal(0.01*(0:100))
+a <- attributes(m$data)
+exp <- list(lp.peaks=mockup.Dipeak(),
+            lp.flats=set.flatpos(a$lp.stID, a$lp.endID),
+            diw.peaks=mockup.Dipeak(),
+            diw.flats=set.flatpos(a$diw.stID, ncol(m$data)))
+verify.pos(8, m, exp)
+
+# Constant increase = extrema at Di/Diw ends, no flats
+m <- Dimodal(0.001*((0:100)^2))
+a <- attributes(m$data)
+exp <- list(lp.peaks=set.peakpos(c(a$lp.stID, a$lp.endID), c(FALSE, TRUE)),
+            lp.flats=mockup.Diflat(),
+            diw.peaks=set.peakpos(c(a$diw.stID, ncol(m$data)), c(FALSE, TRUE)),
+            diw.flats=mockup.Diflat())
+verify.pos(9, m, exp)
+
+# Sigmoid = peak at center, no flats
+x <- gen.pwl(c(0,1,0), 0.02)$x
+m <- Dimodal(cumsum(x))
+a <- attributes(m$data)
+exp <- list(lp.peaks=set.peakpos(c(a$lp.stID, 51, a$lp.endID),
+                                 c(FALSE, TRUE, FALSE)),
+            lp.flats=mockup.Diflat(),
+            diw.peaks=set.peakpos(c(a$diw.stID, 51+(a$wdiw/2), ncol(m$data)),
+                                  c(FALSE, TRUE, FALSE)),
+            diw.flats=mockup.Diflat())
+verify.pos(10, m, exp)
+
+set.seed(5)
+x <- c(x[1:16], x[16]*(1.0+0.0025*runif(50,-1,1)),
+       x[17:66], x[66]*(1.0+0.0025*runif(60,-1,1)),
+       x[67:length(x)])
+m <- Dimodal(cumsum(x), opt=Diopt.local(flat.fripple=0.01, flat.minlen=20))
+a <- attributes(m$data)
+# The filter round the flat so we don't match endpoints exactly.
+# Endpoints taken from Di, Diw +/- 1% about x[16],x[66].  The peaks just
+# shift by the first flat length.
+exp <- list(lp.peaks=set.peakpos(c(a$lp.stID, 51+50, a$lp.endID),
+                                 c(FALSE, TRUE, FALSE)),
+            lp.flats=set.flatpos(c(16,116), c(66,176)),
+            diw.peaks=set.peakpos(c(a$diw.stID, 51+50+floor(a$wdiw/2),
+                                    ncol(m$data)),
+                                 c(FALSE, TRUE, FALSE)),
+            diw.flats=set.flatpos(c(34,133), c(68,179)))
+verify.pos(11, m, exp, cover=TRUE)
+
+xsrt <- c(rep(1,5), rep(2,20), rep(6,10), rep(8,5), rep(10,10))
+x <- sample(xsrt, length(xsrt))
+d <- gen.data(x, 'diw', list(data.midq=4, diw.window=6))
+# See utility test case 14.
+exp.xmid <- c(rep(1, 2),
+              1+(((2:14)-2)/(14.5-2)), 2+(4*((15:29)-14.5)/(29.5-14.5)),
+              6+(2*((30:36)-29.5)/(37-29.5)), 8+(2*((37:44)-37)/(44.5-37)),
+              rep(10, 5))
+exp.di <- c(NA, rep(0,4), 1,rep(0,19), 4,rep(0,9), 2,rep(0,4), 2,rep(0,9))
+exp.diw <- c(rep(NA,6), rep(1,5), rep(0,14), rep(4,6), rep(0,4),
+             rep(2,5), 4, rep(2,5),rep(0,4))
+exp.sgn <- c(rep(NA,7), rep(0,4), -1,rep(0,13), 1,rep(0,5), -1,rep(0,3),
+             1,rep(0,4), 1,-1,rep(0,4), -1,rep(0,3))
+exp.attr <- list(diw.window=6, wdiw=6, diw.stID=7)
+verify.vectors(12.1, d['x',], x)
+verify.vectors(12.2, d['xsort',], xsrt)
+verify.vectors(12.3, d['Di',], exp.di)
+verify.vectors(12.4, d['Diw',], exp.diw)
+verify.vectors(12.5, d['signed',], exp.sgn)
+verify.vectors(12.6, d['xmid',], exp.xmid)
+verify.lists(12.7, attributes(d)[names(exp.attr)], exp.attr)
+
+x <- iris$Petal.Length
+# Ignore the model range warning (flp too small).
+m <- suppressWarnings(Dimodal(iris$Petal.Length, 
+                              Diopt.local(analysis='lp',
+                                          lp.window=3, peak.fht=0.1)))
+exp.pk <- data.frame(pos=c(51, 54, 147),
+                     lht=c(10.33, 1.14, 2.07),
+                     rht=c(9.67, 1.81, 1.67),
+                     pht=c(0.000, 0.265, 0.234))
+verify.peaks(13.1, m$lp.peaks, exp.pk)
+exp.ft <- data.frame(stID=6, endID=37, len=32, plen=0.04186)
+verify.flats(13.2, m$lp.flats, exp.ft)
+m <- suppressWarnings(Dimodal(iris$Petal.Length, 
+                      Diopt.local(analysis='diw',
+                                  diw.window=3, peak.fht=0.2)))
+exp.pk <- data.frame(pos=c(53, 147),
+                     lht=c(6.85, 2.45),
+                     rht=c(6.85, 0.98))
+verify.peaks(13.3, m$diw.peaks, exp.pk)
+exp.ft <- mockup.Diflat()[,c('stID','endID','len')]
+verify.flats(13.4, m$diw.flats, exp.ft)
+
+x <- iris$Petal.Length
+m <- suppressWarnings(Dimodal(iris$Petal.Length, 
+                              Diopt.local(analysis='lp',
+                                          lp.window=length(x)-3)))
+exp.pk <- data.frame(pos=c(75, 76, 77),
+                     lht=c(NA, NA, 1.01),
+                     rht=c(2.00, NA, NA),
+                     pht=c(NA, NA, NA))
+verify.peaks(14.1, m$lp.peaks, exp.pk, screen=FALSE)
+exp.ft <- mockup.Diflat()[,c('stID','endID','len')]
+verify.flats(14.2, m$lp.flats, exp.ft)
+m <- suppressWarnings(Dimodal(iris$Petal.Length, 
+                              Diopt.local(analysis='diw',
+                                          diw.window=length(x)-3)))
+exp.pk <- data.frame(pos=c(148, 149, 150),
+                     lht=c(NA, NA, 1.73),
+                     rht=c(1.73, NA, NA))
+verify.peaks(14.3, m$diw.peaks, exp.pk, screen=FALSE)
+exp.ft <- mockup.Diflat()[,c('stID','endID','len')]
+verify.flats(14.4, m$diw.flats, exp.ft)
+
+# Full analysis.
+set.seed(5)
+x <- c(rnorm(90, -2.25, 1.25), rnorm(60, -0.75, 0.2),
+       rnorm(90,  2.25, 1.25), rnorm(60,  0.75, 0.2))
+Diopt(analysis=c('lp','diw'), flat.minlen=20, excur.seed=7, perm.seed=3,
+      lp.param=list(peak.fhsupp=1.0), excur.ntop=10)
+m <- Dimodal(x)
+exp.pk <- data.frame(pos=c(61, 151),
+                     ht=c(2.694, 2.431),
+                     hexcur=c(0.0325, 0.0294),
+                     pht=c(0.00486, 0.0127),
+                     pexcur=c(0.000, 0.000),
+                     ppeak=c(0.000, 0.000),
+                     naccept=c(2, 1))
+verify.peaks(15.1, m$lp.peaks, exp.pk)
+exp.ft <- data.frame(stID=c(94, 177, 222),
+                     endID=c(126, 197, 241),
+                     len=c(33, 21, 20),
+                     hexcur=c(0.00229, 0.00209, 0.00214),
+                     plen=c(0.5258, 0.6983, 0.7126),
+                     pexcur=c(0.001, 0.014, 0.022),
+                     pflat=c(0.001, 0.014, 0.022),
+                     naccept=c(1, 0, 0))
+verify.flats(15.2, m$lp.flats, exp.ft)
+exp.pk <- data.frame(pos=c(76, 166, 250, 299),
+                     hexcur=c(0.9585, 0.8159, 0.6223, 0.5146),
+                     nrun=c(32, 26, 26, 16),
+                     runlen=c(8,12,14,15),
+                     runht=c(28, 22, 20, 16),
+                     pexcur=c(0.0024, 0.0060, 0.0351, 0.0674),
+                     pnrun=c(0.0355, 0.0061, 0.5445, 0.0854),
+                     prunlen=c(0.1915, 0.0340, 0.0089, 0.0039),
+                     prunht=c(0.0116, 0.0000, 0.0384, 0.5968),
+                     ppeak=c(0.0039, 0.0002, 0.0089, 0.0039),
+                     naccept=c(1, 3, 2, 1))
+verify.peaks(15.3, m$diw.peaks, exp.pk)
+exp.ft <- data.frame(stID=c(105, 155, 191),
+                     endID=c(145, 174, 214),
+                     hexcur=c(0.0939, 0.0767, 0.0647),
+                     pexcur=c(0.000, 0.0041, 0.0001),
+                     pflat=c(0.000, 0.0041, 0.0001),
+                     naccept=c(1, 1, 1))
+verify.flats(15.4, m$diw.flats, exp.ft)
+Diopt(NULL)
+
+set.seed(3)
+x <- c(rnorm(120, 0.211, sqrt(0.012)), rnorm(60, 0.75, sqrt(0.062)),
+       rbeta(80,5,2))
+Diopt(analysis=c('lp', 'diw'), excur.seed=7, perm.seed=12, alpha.runht=0.04,
+      excur.ntop=10)
+m <- Dimodal(x)
+exp.pk <- data.frame(pos=c(139, 177),
+                     ht=c(2.907, 1.794),
+                     hexcur=c(0.00436, 0.00271),
+                     pht=c(0.00415, 0.1060),
+                     pexcur=c(0.0013, 0.0203),
+                     ppeak=c(0.0013, 0.0203),
+                     naccept=c(2, 1))
+verify.peaks(16.1, m$lp.peaks, exp.pk)
+exp.ft <- data.frame(stID=25, endID=110, len=86, hexcur=0.000358,
+                     plen=0.0212, pexcur=0.000, pflat=0.000, naccept=2)
+verify.flats(16.2, m$lp.flats, exp.ft)
+exp.pk <- data.frame(pos=c(148, 186),
+                     hexcur=c(0.1357, 0.0782),
+                     nrun=c(52, 10),
+                     runlen=c(8, 14),
+                     runht=c(19, 14),
+                     pexcur=c(0.0788, 0.1943),
+                     pnrun=c(0.7139, 0.0007),
+                     prunlen=c(0.1904, 0.0031),
+                     prunht=c(0.0063, 0.0863),
+                     ppeak=c(0.0063, 0.0007),
+                     naccept=c(1, 2))
+verify.peaks(16.3, m$diw.peaks, exp.pk)
+exp.ft <- data.frame(stID=33, endID=125, hexcur=0.0218,
+                     pexcur=0.0000, pflat=0.0000, naccept=1)
+verify.flats(16.4, m$diw.flats, exp.ft)
+# Check all attributes added by Dimodal outside gen.data.
+verify.lists(16.5, attributes(m$lp.peaks)["source"], list(source="LP"))
+verify.lists(16.6, attributes(m$lp.flats)["source"], list(source="LP"))
+verify.lists(16.7, attributes(m$diw.peaks)["source"], list(source="Diw"))
+verify.lists(16.8, attributes(m$diw.flats)["source"], list(source="Diw"))
+exp.attr <- list(lp.kernel="kaiser", lp.window=0.15, wlp=39,
+                 lp.stID=21, lp.endID=241,
+                 diw.window=0.10, wdiw=26, diw.stID=27,
+                 data.name="x")
+verify.lists(16.9, attributes(m$data)[names(exp.attr)], exp.attr)
+Diopt(NULL)
+
+
+## Broken Examples Fixed During Debugging
+
+x <- iris$Petal.Length
+# This generated negative draw sizes for the LP excursion.
+Diopt(analysis='lp')
+verify.noerror(17, Dimodal,
+               list(x, opt=Diopt.local(lp.window=0.02, lp.tests='pkexcur')))
+
+
+
+## Break-the-Part and Stress Tests
+
+x <- iris$Petal.Length
+
+Diopt(analysis='lp')
+verify.basedata('BTP data1', x, 'lp',
+                list(data.midq=4, lp.window=0.01, lp.kernel='kaiser'))
+verify.basedata('BTP data2', x, 'lp',
+                list(data.midq=4, lp.window=1, lp.kernel='kaiser'))
+verify.basedata('BTP data3', x, 'lp',
+                list(data.midq=4, lp.window=2, lp.kernel='kaiser'))
+verify.error('BTP data4', gen.data, 
+             list(x, 'lp', list(data.midq=4, lp.window=0.10, lp.kernel='rectangular')))
+verify.basedata('BTP data5', x, 'lp',
+                list(data.midq=4, lp.window=190, lp.kernel='kaiser'))
+
+Diopt(analysis='lp')
+verify.basedata('BTP data6', x, 'diw', list(data.midq=4, diw.window=0.0025))
+verify.basedata('BTP data7', x, 'diw', list(data.midq=4, diw.window=190))
+
+Diopt(analysis=c('lp', 'diw'))
+verify.error('BTP 1', Dimodal, list(rep('a', 50)))
+verify.error('BTP 2', Dimodal, list(rep(20i, 50)))
+verify.error('BTP 3', Dimodal, list(NULL))
+verify.warning('BTP 4', Dimodal, list(rep(NA_real_, 50)))
+verify.warning('BTP 5', Dimodal, list(c(1,3,1,3,1,3)))
+
+Diopt(NULL)
+Diopt(lp.tests=NULL, diw.tests=NULL, analysis=c('lp', 'diw'))
+m <- Dimodal(tstds1)
+verify.empty('BTP 6 LP peak', m$lp.peaks)
+verify.empty('BTP 6 Diw peak', m$diw.peaks)
+verify.empty('BTP 6 LP flat', m$lp.flats)
+verify.empty('BTP 6 Diw flat', m$diw.peaks)
+
+
+Diopt(NULL)
+
+
+if (allpass) {
+  cat('  all Dimodal tests PASSED\n')
+}
+
+
+
