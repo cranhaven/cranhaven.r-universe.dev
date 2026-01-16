@@ -1,0 +1,17 @@
+#' Measurements on Two Hawk Species
+#'
+#' A dataset containing size-related measurements for two different Hawk species.
+#' Each species is further categorized by sex.
+#'
+#' @usage data(Hawks)
+#' @format A matrix with 323 observations on the following variables:
+#' \describe{
+#'   \item{Class}{1 = Male CH hawks, 2 = Male SS hawks, 3 = Female CH hawks or 4 = Female SS hawks}
+#'   \item{Wing}{Length (in mm) of primary wing feather from tip to wrist it attaches to.}
+#'   \item{Weight}{Body weight (in gm).}
+#'   \item{Tail}{Measurement (in mm) related to the length of the tail.}
+#' }
+#' @source This dataset is a subset of the \code{Hawks} dataset contained in the \code{Stat2Data} R package.
+#' @references Cannon et al. (2019). Stat2Data: Datasets for Stat2.
+#'     \url{https://CRAN.R-project.org/package=Stat2Data}.
+"Hawks"
