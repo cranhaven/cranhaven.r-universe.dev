@@ -1,0 +1,108 @@
+---
+title: "Example of `stringdist_inner_join`: Correcting misspellings against a dictionary"
+author: "David Robinson"
+date: "`r Sys.Date()`"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Example of `stringdist_inner_join`: Correcting misspellings against a dictionary}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, echo = FALSE}
+library(knitr)
+opts_chunk$set(cache = TRUE, message = FALSE)
+```
+
+Often you find yourself with a set of words that you want to combine with a "dictionary"- it could be a literal dictionary (as in this case) or a domain-specific category system. But you want to allow for small differences in spelling or punctuation.
+
+The fuzzyjoin package comes with a set of common misspellings ([from Wikipedia](https://en.wikipedia.org/wiki/Wikipedia:Lists_of_common_misspellings/For_machines)):
+
+```{r}
+library(dplyr)
+library(fuzzyjoin)
+data(misspellings)
+
+misspellings
+```
+
+```{r words}
+# use the dictionary of words from the qdapDictionaries package,
+# which is based on the Nettalk corpus.
+library(qdapDictionaries)
+words <- tbl_df(DICTIONARY)
+
+words
+```
+
+As an example, we'll pick 1000 of these words (you could try it on all of them though), and use `stringdist_inner_join` to join them against our dictionary.
+
+```{r sub_misspellings}
+set.seed(2016)
+sub_misspellings <- misspellings %>%
+  sample_n(1000)
+```
+
+```{r joined, dependson = c("words", "sub_misspellings")}
+joined <- sub_misspellings %>%
+  stringdist_inner_join(words, by = c(misspelling = "word"), max_dist = 1)
+```
+
+By default, `stringdist_inner_join` uses optimal string alignment (Damerau–Levenshtein distance), and we're setting a maximum distance of 1 for a join. Notice that they've been joined in cases where `misspelling` is close to (but not equal to) `word`:
+
+```{r dependson = "joined"}
+joined
+```
+
+Note that there are some redundancies; words that could be multiple items in the dictionary. These end up with one row per "guess" in the output. How many words did we classify?
+
+```{r dependson = "joined"}
+joined %>%
+  count(misspelling, correct)
+```
+
+So we found a match in the dictionary for about half of the misspellings. In how many of the ones we classified did we get at least one of our guesses right?
+
+```{r dependson = "joined"}
+which_correct <- joined %>%
+  group_by(misspelling, correct) %>%
+  summarize(guesses = n(), one_correct = any(correct == word))
+
+which_correct
+
+# percentage of guesses getting at least one right
+mean(which_correct$one_correct)
+
+# number uniquely correct (out of the original 1000)
+sum(which_correct$guesses == 1 & which_correct$one_correct)
+```
+
+Not bad.
+
+Note that `stringdist_inner_join` is not the only function we can use. If we're interested in including the words that we *couldn't* classify, we could have used `stringdist_left_join`:
+
+```{r left_joined, dependson = "misspellings"}
+left_joined <- sub_misspellings %>%
+  stringdist_left_join(words, by = c(misspelling = "word"), max_dist = 1)
+
+left_joined
+
+left_joined %>%
+  filter(is.na(word))
+```
+
+(To get *just* the ones without matches immediately, we could have used `stringdist_anti_join`). If we increase our distance threshold, we'll increase the fraction with a correct guess, but also get more false positive guesses:
+
+```{r left_joined2, dependson = "misspellings"}
+left_joined2 <- sub_misspellings %>%
+  stringdist_left_join(words, by = c(misspelling = "word"), max_dist = 2)
+
+left_joined2
+
+left_joined2 %>%
+  filter(is.na(word))
+```
+
+Most of the missing words here simply aren't in our dictionary.
+
+You can try other distance thresholds, other dictionaries, and other distance metrics (see [stringdist-metrics](https://www.rdocumentation.org/packages/stringdist/versions/0.9.4.6/topics/stringdist-metrics) for more). This function is especially useful on a domain-specific dataset, such as free-form survey input that is likely to be close to one of a handful of responses.
