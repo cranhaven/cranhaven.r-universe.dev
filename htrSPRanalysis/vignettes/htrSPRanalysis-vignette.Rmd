@@ -1,0 +1,226 @@
+---
+title: "Introduction to htrSPRanalysis"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Introduction to htSPRanalysis}
+  %\VignetteEngine{knitr::knitr}
+  %\VignetteEncoding{UTF-8}
+---
+
+
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  fig.width = 10
+)
+```
+
+This R package consists of a library of functions for processing and analyzing data from SPR binding kinetics experiments, and also contains an example script that executes those functions in a basic pipeline.
+
+Install using install.packages(htrSPRanalysis)
+
+Then load the library using:
+
+```{r}
+library(htrSPRanalysis)
+```
+
+## Input
+
+The user must provide two input files
+
+1.  A time series file that contains the times and corresponding response unit (RU) values for a complete high-throughput SPR run. The software assumes this file is in the output format from the Carterra LSA, with 384 spots on the chip. There are two header lines, as shown below:
+
+![](figs/CarterraFile.png){width="120%"}
+
+2.  A sample information file in the form of an Excel spreadsheet with the following columns
+
+### Sample information column definitions
+
+-   Incl. - Whether or not to include this sample
+-   Block/Chip/Tray - The block the sample is in. This may be any combination of 1,2,3,4 - separated by commas. Use multiple values for replicates
+-   Position/Channel/Sensor - The sample well id in the format of a letter (A-H) followed by a number (1-12). The user may enter ranges (for example A1-B12) when there are replicates. The software will automatically generate a row in the sample information data frame for each of the 384 spots on the chip.
+-   Analyte - the name of the analyte
+-   Ligand - the name of the ligand
+-   Baseline - the length of the baseline data collection phase
+-   Association - the length of the association phase
+-   Dissociation - the length of the dissociation phase
+-   Assoc. Skip - the length of time to skip in the beginning of the association phase. Not currently implemented
+-   Dissoc. Skip - the length of time to skip in the beginning of the dissociation phase. Not currently implemented
+-   All Concentrations - the concentrations of analyte used. This is a list, separated by commas. It *must* be the same length as the number of time series corresponding to this spot.
+-   Incl. Concentrations - either a comma separated list of 4 or 5 consecutive concentrations to use for curve fitting *or* the string "All". If "All" is entered, the software will automatically choose 4 or 5 optimal concentrations, as described in the documentation.
+-   Bulkshift - whether or not to force a fit of bulk shift. Value should be "Y" or "N"
+-   Regen. - whether or not the surface of the chip is regenerated between cycles
+-   Bsl Start - start time for using the baseline data to perform baseline correction, if the entire baseline is not to be used
+-   Base Corr - whether or not to perform baseline correction
+-   Global Rmax - if set to "Y", the Rmax will be fit globally (one Rmax for all concentrations), otherwise Rmax is fit locally (one per concentration)
+-   Automate Dissoc. Window - whether or not to automate the length of dissociation phase data used in curve fitting.
+-   Automate Bulkshift - whether or not to automatically detect bulk shift
+
+### Reading and processing input files, obtaining user supplied options
+
+The function `process_input` when executed in Rstudio will prompt the user for the sample information file and the titration data file. It will also prompt for settings such as the minimum and maximum RU to use for the dissocation window determination, the maximum iterations and the tolerances `ptol` and `ftol`to use for the non-linear least squares curve fit. It returns a `list` object with the sample information, the original time series, the baseline adjusted RUs and several other variables used internally. This is the object that will be passed to the functions for fitting and plotting.
+
+As soon as these files are selected, the software will read in both files and check that the formats are correct. This may take some time, depending on the size of the titration data file.
+
+Next, the user will be prompted to select the minimum allowed $k_d$. This is used in the curve/parameter fitting as a lower bound.
+
+The maximum number of iterations is the number of iterations at which the optimization algorithm should stop if convergence is not obtained.
+
+The automatic detection of the dissociation window will be suppressed if the maximum RU is too high or the minimum RU is too low. The following prompts allow the user to determine these.
+
+It is **highly** recommended that this software be run on a high-performance platform. The compute-intensive processes are all parallelized. The software automatically detects the total number of cores available. The user can change this to their preferred value.
+
+There are three default output files:
+
+1.  A `.pdf` file with each page corresponding to a spot on the chip. For each spot, there is a sensorgram with the baseline corrected data and the fitted RU curve for each concentration used to fit the curves/parameters, a residual plot, a response curve showing the selected concentrations and a table of kinetics parameters and their standard errors.
+
+2.  A `.pdf` file that tracks any errors encountered in fitting/plotting
+
+3.  A `.csv` file that outputs all fitted parameters and their standard errors
+
+The software uses the data directory as the default output path, and uses the sample information filename along with a time/date stamp to name each output file. These can be changed by the user via arguments to `process_input`
+
+### Output
+
+As explained in the previous section, the standard pipeline outputs $3$ files, a `.pdf` consisting of plots and tables for each spot on the chip:
+
+### The Pipeline
+
+```{r warning=FALSE, message=FALSE}
+# CRAN has strict limits on package sizes, and the titration files tend to be
+#large. Therefore, we will need to download the titration data from the gitlab 
+#repository. The following will download necessary files from gitlab onto
+#your computer.
+
+# By default, the files will go to the temp directory for this R session. 
+# To change this, change the filename in destfile 
+
+destfile <- file.path(tempdir(),"titration_data.xlsx")
+
+download.file("https://gitlab.oit.duke.edu/janice/htrspranalysis/-/raw/master/inst/extdata/titration_data.xlsx?ref_type=heads",
+              destfile = destfile, mode = "wb")
+
+sample_sheet_path <- system.file("extdata",
+                                 "sample_sheet.xlsx",
+                                 package="htrSPRanalysis")
+
+data_file_path <- destfile
+
+output_file_path <- tempdir()
+
+# process the input
+processed_input <- process_input(sample_sheet_path,
+                    data_file_path,
+                    num_cores = 2,
+                    output_file_path = output_file_path)
+
+
+```
+
+### Obtain plots of raw data
+
+```{r}
+plots_before_processing <- get_plots_before_baseline(processed_input)
+
+```
+
+Example plot:
+
+```{r}
+plots_before_processing[[1]]
+```
+
+### Fit the data to the 1:1 Languir model
+
+```{r}
+fits_list <- get_fits(processed_input)
+```
+
+### Plot the sensorgrams with fitted curves
+
+```{r}
+plot_list <- get_fitted_plots(processed_input, fits_list)
+```
+
+Example plot:
+
+```{r}
+plot_list[[1]]
+```
+
+### Create the response curve plots
+
+These plots show the average response vs $log_{10}$ of the concentration of analyte. The color indicates the concentrations selected for fitting. These should be within the linear part of the curve.
+
+```{r}
+rc_list <- get_rc_plots(processed_input)
+
+```
+
+Example plot
+
+```{r}
+rc_list[[5]]
+```
+
+### Create a pdf with fitted sensorgrams, curve parameters, standard errors, residual plot and response curve.
+
+```{r}
+pdf_pages <- create_pdf(processed_input, fits_list, rc_list, plot_list)
+```
+
+### Create a .csv file with all model parameters and standard errors.
+
+```{r}
+parameter_table <- create_csv(processed_input, fits_list)
+```
+
+## Bulk shift example
+
+### Pipeline
+
+```{r}
+
+sample_sheet_path <- system.file("extdata", "bulkshift_example_sample_sheet.xlsx", package="htrSPRanalysis")
+data_file_path <- system.file("extdata", "bulkshift_example_titration_data.xlsx", package="htrSPRanalysis")
+
+# process the input
+
+pdfpath <- tempdir()
+
+
+bulkshift_example <- process_input(sample_sheet_path = sample_sheet_path,
+                data_file_path = data_file_path,
+                num_cores = 2, 
+                output_file_path = pdfpath)
+
+bulkshift_plots_before_processing <- get_plots_before_baseline(bulkshift_example)
+
+bulkshift_fits <- get_fits(bulkshift_example)
+
+bulkshift_plots <- get_fitted_plots(processed_input = bulkshift_example,
+                                    fits_list = bulkshift_fits)
+
+bulkshift_rc <- get_rc_plots(processed_input = bulkshift_example)
+
+```
+
+### Output
+
+```{r}
+bulkshift_plots_before_processing[[1]]
+
+bulkshift_plots[[1]]
+
+bulkshift_rc[[1]]
+
+create_pdf(processed_input = bulkshift_example, 
+           fits_list = bulkshift_fits,
+           rc_list = bulkshift_rc)
+
+create_csv(processed_input = bulkshift_example, 
+           fits_list = bulkshift_fits)
+```
