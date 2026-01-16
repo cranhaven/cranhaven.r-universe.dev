@@ -1,0 +1,28 @@
+#'
+#' @title Heartbeat
+#' @description Multivariate time series (MTS) indicating heart sound from healthy patients and pathological patients
+#' (with a confirmed cardiac diagnosis).
+#' @usage data(Heartbeat)
+#' @format A \code{list} with two elements, which are:
+#' \describe{
+#' \item{\code{data}}{A list with 409 MTS.}
+#' \item{\code{classes}}{A numeric vector indicating the corresponding classes associated with the elements in \code{data}.}
+#' }
+#' @details Each element in \code{data} is a matrix formed by 405 rows (time points) indicating readings in a spectrogram and 61 columns
+#' (variables) indicating frequency band from the spectrogram. The first 204 elements correspond to the training set, whereas the last 205 elements
+#' correspond to the test set. The numeric vector \code{classes} is formed by integers from 1 to 2, indicating that there are 2
+#' different classes in the database. Each class is associated with a different alphabetical character.
+#' For more information, see \insertCite{bagnall2018uea;textual}{mlmts}.
+#' To access this dataset, run "install.packages("ueadata1", repos="https://anloor7.github.io/drat")"
+#' and use the syntax "ueadata1::Heartbeat".
+#' @references{
+#'
+#'   \insertRef{bagnall2018uea}{mlmts}
+#'
+#'   \insertRef{ruiz2021great}{mlmts}
+#'
+#'   \insertRef{bagnallweb}{mlmts}
+#'
+#' }
+"Heartbeat"
+
