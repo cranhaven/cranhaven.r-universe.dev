@@ -1,0 +1,297 @@
+---
+title: "arealDB - Harmonize and integrate heterogeneous areal data"
+output: 
+  bookdown::html_document2:
+    fig_caption: yes
+    number_sections: yes
+    theme: spacelab
+    highlight: pygments
+    toc: yes
+    toc_float: yes
+urlcolor: blue
+fontsize: 12pt
+linestretch: 1.15
+link-citations: yes
+vignette: >
+  %\VignetteIndexEntry{arealDB - Harmonise and integrate heterogeneous areal data}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+```r
+library(arealDB)
+library(tidyverse)
+
+DBDir <- tempdir()
+gazDir <- "directory/to/gazetteer.rds"
+ontoDir <- "directory/to/ontology.rds"
+```
+
+
+# Rationale
+
+Areal data are any data that summarise a certain aspect related to a particular region. Those data are relevant in many applications in the environmental and socio-economic sciences, such as biodiversity check-lists, agricultural statistics, or socio-economic surveys. For applications that surpass the spatial, temporal or thematic scope of any single data source, data must be integrated from several heterogeneous sources. Inconsistent concepts, definitions, or messy data tables make this a tedious and error-prone process.
+
+`arealDB` has been developed for the purpose of providing an easy-to-use way to integrate areal data together with associated geometries into a standardised database. In the current version it makes use of the `ontologics` R-package to harmonise the names of territories (the geometries) and the target variables (the tables).
+
+A previous version of this tutorial can be found in the replication script [appendix/source](https://arxiv.org/format/1909.06610) of the pre-print. This version is not an exact replication script, as it is built mostly with dummy-code. However, it should still serve to exemplify how to use `arealDB` in the current version.
+
+
+# The basics
+
+To ensure that databases that are built with `arealDB` are properly standardized, the R-package makes use of a particular data-structure in which concepts and and their hierarchical relationships are recorded. The idea for this structure is based on a broader effort that shall make the internet more interoperable and machine-readable, the [\"Semantic Web\"](https://en.wikipedia.org/wiki/Semantic_Web). This can be useful for both, the names of territories (which are typically different across languages and across statistical agencies) and also the values of the variables that shall be recorded. For both registers, `arealDB` makes use of the R-package  [`ontologics`](https://github.com/luckinet/ontologics), that allows recording of various concepts in such a data-structure.
+
+## Ontology
+
+> [...] More simply, an ontology is a way of showing the properties of a subject area and how they are related, by defining a set of concepts and categories that represent the subject. [[wikipedia]](https://en.wikipedia.org/wiki/Ontology_(computer_science))
+
+Any target variable can (and should be) recorded in a standardized fashion. It may be extremely tricky to identify a domain-specific standard because this usually involves social processes (people need to agree upon it), however this is not part of this tutorial. For example, concepts such as biological species are part of a complex taxonomy of terms that identify *kingdoms*, *families*, *species*, *varieties* and many more. Species are nested within families and other hierarchical and synonymous relationships exist in such taxonomies. All these issues are addressed in an ontology (or typology, etc).
+
+
+## Gazetteer
+
+> A gazetteer is a geographical index or directory used in conjunction with a map or atlas... [[wikipedia]](https://en.wikipedia.org/wiki/Gazetteer)
+
+Territory names are recorded in a gazetteer, which can be regarded as an ontology of territorial names. Territorial names are typically nested within regions at several levels, such as counties that are nested in a nation. To showcase how a gazetteer (and also an ontology by extension) should be configured, we are building one for the United Nations geoscheme here.
+
+```r
+# The regions and subregions we want to include into the gazetteer
+un_region <- c("AFRICA", "AMERICAS", "ANTARCTICA", "ASIA", "EUROPE", "OCEANIA")
+                         
+un_subregion <- tibble(concept = c(
+  "Eastern Africa", "Middle Africa", "Northern Africa", "Southern Africa", "Western Africa",
+  "Caribbean", "Central America", "Northern America", "Southern America",
+  "Antarctica",
+  "Central Asia", "Eastern Asia", "Southeastern Asia", "Southern Asia", "Western Asia",
+  "Eastern Europe", "Northern Europe", "Southern Europe", "Western Europe",
+  "Australia and New Zealand", "Melanesia", "Micronesia", "Polynesia"),
+  broader = c(rep(un_region[1], 5), rep(un_region[2], 4), rep(un_region[3], 1),
+             rep(un_region[4], 5), rep(un_region[5], 4), rep(un_region[6], 4)))
+
+# To start building the gazetteer, we first need to record some meta-data ...
+gazetteer <- start_ontology(
+    name = "gazetteer", 
+    path = paste0(DBDir, "/tables/"),
+    version = "1.0.0",
+    code = ".xxx",
+    description = "UN geomscheme gazetteer",
+    homepage = "https://en.wikipedia.org/wiki/United_Nations_geoscheme",
+    license = "CC-BY-4.0",
+    notes = "This gazetteer nests each nation into the United Nations geoscheme.")
+
+# ... then we define the ontology-specific classes used for recording items of the geoscheme. 
+# Here we define the three classes 'un_region', 'un_subregion' and 'nation'.
+gazetteer <- new_class(
+    new = "un_region", 
+    target = NA,
+    description = "region according to the UN geoscheme", 
+    ontology = gazetteer
+) %>% new_class(
+    new = "un_subregion", 
+    target = "un_region",                               # un_subregion is nested into un_region
+    description = "sub-region according to the UN geoscheme", 
+    ontology = .
+) %>% new_class(
+    new = "nation", 
+    target = "un_region",
+    description = "groups of geometries that together form a nation", 
+    ontology = .)
+
+# Finally, the new concepts can be added, they need to associated to a classes we just defined
+gazetteer <- new_concept(
+    new = un_region,
+    class = "un_region",
+    ontology =  gazetteer)
+
+# when adding concepts that are nested in other concepts, we need to provide the full concept in 
+# 'broader = '. We can get this with the 'get_concept()' function.
+gazetteer <- new_concept(
+    new = un_subregion$concept,
+    broader = get_concept(table = un_subregion %>% select(label = broader), 
+                          ontology = gazetteer),
+    class = "un_subregion",
+    ontology =  gazetteer)
+              
+write_rds(x = gazetteer, file = gazDir)
+```
+
+## Thematic data
+
+As mentioned above, any data can be the thematic data of a areal database. For an areal database these are, however, typically data that are some attribute of the region or territory they are associated to or metrics that describe a population, inventory or other set of entities within an area. Thematic data come in all forms and shapes and standardization is often rather poor. This is largely due to the fact that there are no clear and commonly agreed-upon rules on how to set up tables, and most tools that are typically used for recording and storing data do this in vastly different data-structures. To reshape data into a common format, `arealDB` makes use of schema-descriptions that are built with the `tabshiftr` R-package (more on this below).
+
+## Spatial data
+
+Any areal database connects the thematic data to some set of spatial data (they are called *geometries* here). Spatial data are typically already quite well standardized so that we only need to record how exactly the data are structured. Spatial data are primarily the geometries themselves, but most of the time they also come with an ID that identifies each geometry and a set of ancillary attributes to each geometry. For spatial data that are supposed to be useful for more than being visualized there should be a name of the territorial units or meta-data that allow identification of those names. 
+
+# Working with `arealDB`
+
+## Start the database (stage 1)
+
+To build a new database with `arealDB`, one has to start with the `start_arealDB()` function. Also when resuming to work with that database, it is required to run this function again, as it pastes the current root directory into the options of R, based on which paths for files are derived. The argument `gazetteer = ` is mandatory because without the information recorded in a gazetteer it would not be possible to determine the spatial/topological relation between geometries. The argument `top = ` takes that class in the ontology that shall be regarded as the top-most class at which territorial units are distinguished (this might be different to the top-most level in the gazetteer). It is, however, optional to provide an ontology. In case the thematic data do already contain well harmonized value terms, this can be omitted. 
+
+```r 
+start_arealDB(root = DBDir,
+              gazetteer = gazDir, top = "al1",
+              ontology = list("targetVar" = ontoDir))
+``` 
+
+As there is sometimes more than one target variable recorded in an areal database, it is possible to provide more than one ontology. When providing the link between target variable and an ontology, it is important that the name of the target variable is a column in the (harmonized) thematic data. In the above example, `"targetVar"` would have to be the column in any of the thematic data tables that are stored in the database.
+
+Additionally to starting the database, it is part of stage 1 to identify all thematic and geometric data and storing them in the respective folders in `DBDir/adb_tables/` and `DBDir/adb_geometries/`.
+
+
+## Register the data (stage 2)
+
+In this example we are working with three dataseries, GADM (the Database of global administrative areas), IBGE (the Brazilian Statistical and Geographic agency) and USDA (the United States Department of Agriculture). The second step in any areal database is in registering the dataseries that are relevant. Thematic and spatial data are primarily described by the meta-data that are represented by the dataseries.
+
+```r
+regDataseries(name = "gadm",
+              description = "Database of Global Administrative Areas",
+              homepage = "https://gadm.org/index.html",
+              version = "3.6",
+              licence_link = "https://gadm.org/license.html",
+              update = TRUE)
+
+regDataseries(name = "ibge",
+              description = "Instituto Brasileiro de Geografia e Estatistica",
+              version = "2023.12",                                 
+              homepage = "https://sidra.ibge.gov.br",
+              update = TRUE)
+# in case no version is available, use the last date you checked the source
+
+regDataseries(name = "usda",
+              description = "US Dept. of Agriculture",
+              version = "2023.12",
+              homepage = "https://www.nass.usda.gov/Quick_Stats/Lite",
+              update = TRUE)
+```
+
+Next, the geometries are registered. Here, we need to provide the dataseries for geometries in `gSeries = ` and various other meta-data. If the geometries are valid for only a particular territorial unit, this can be specified with a dynamic `name = value` combination. `name` must, in this case, be a class in the gazetteer (such as *nation* in our gazetteer). In case the geometries contain several territorial units that shall be handled separately, the territory names are taken from what has been defined as `top = ` in `start_arealDB()`. Relations between the columns/attributes in the geometry and the gazetteer are defined in the argument `label = `, where a list that links them is provided.
+
+```r
+# Often it makes sense to start with a global set of geometries, especially if databases encompas
+# several nations
+regGeometry(gSeries = "gadm",
+            label = list(al1 = "NAME_0"),
+            archive = "gadm36_levels_gpkg.zip|gadm36_levels.gpkg",
+            archiveLink = "https://biogeo.ucdavis.edu/data/gadm3.6/gadm36_levels_gpkg.zip",
+            updateFrequency = "unknown")
+
+regGeometry(gSeries = "gadm",
+            label = list(al1 = "NAME_0", al2 = "NAME_1"),
+            archive = "gadm36_levels_gpkg.zip|gadm36_levels.gpkg",
+            archiveLink = "https://biogeo.ucdavis.edu/data/gadm3.6/gadm36_levels_gpkg.zip",
+            updateFrequency = "unknown")
+
+regGeometry(gSeries = "gadm",
+            label = list(al1 = "NAME_0", al2 = "NAME_1", al3 = "NAME_2"),
+            archive = "gadm36_levels_gpkg.zip|gadm36_levels.gpkg",
+            archiveLink = "https://biogeo.ucdavis.edu/data/gadm3.6/gadm36_levels_gpkg.zip",
+            updateFrequency = "unknown")
+
+# For Brazil, there are dedicated geometries available, not so for the US
+regGeometry(nation = "Brazil",
+            gSeries = "ibge",
+            label = list(al2 = "NM_ESTADO"),
+            archive = "BR.zip|BRUFE250GC_SIR.shp",
+            archiveLink = "https://mapas.ibge.gov.br/bases-e-referenciais/bases-cartograficas/malhas-digitais",
+            updateFrequency = "notPlanned")
+
+regGeometry(nation = "Brazil",
+            gSeries = "ibge",
+            label = list(al3 = "NM_MUNICIP"),
+            archive = "BR.zip|BRMUE250GC_SIR.shp",
+            archiveLink = "https://mapas.ibge.gov.br/bases-e-referenciais/bases-cartograficas/malhas-digitais",
+            updateFrequency = "notPlanned")
+```
+
+Finally, the thematic data are registered. Here, we first need to define the schema description. To learn more about this, consult the documentation of the [`tabshiftr`](https://github.com/luckinet/tabshiftr) R-package. In addition to the `gSeries = `, thematic data also have a `dSeries = `, which documents the thematic dataseries that can deviate from the geometry dataseries. In case several tables are available for one dataseries, the argument `subset = ` can be used to specify dynamically what is reported in the respective table. As no two tables can have the same name at stage2 (the result of registering the data), this argument also serves the purpose to give the tables different names.
+
+```r
+schema_ibge <- 
+  setCluster(id = "year", left = 1, top = 3, height = 400536) %>%
+  setIDVar(name = "al2", columns = 1, split = "(?<=\\().*(?=\\))") %>%
+  setIDVar(name = "al3", columns = 1, split = "^.*?(?=\\s\\()") %>%
+  setIDVar(name = "year", columns = 3) %>%
+  setIDVar(name = "commodity", columns = 2) %>%
+  setObsVar(name = "planted", unit = "ha", columns = 4) %>%
+  setObsVar(name = "harvested", unit = "ha", columns = 5) %>%
+  setObsVar(name = "production", unit = "t", columns = 6) %>%
+  setObsVar(name = "yield", unit = "t/ha", factor = 0.001, columns = 7)
+
+regTable(nation = "Brazil",
+         subset = "crops",
+         label = "al3",
+         dSeries = "ibge",
+         gSeries = "ibge",
+         schema = schema_ibge,
+         begin = 2000,
+         end = 2018,
+         archive = "ibge.7z|tabela5457_1990.csv",
+         archiveLink = "https://sidra.ibge.gov.br/tabela/5457",
+         nextUpdate = "unknown",
+         updateFrequency = "annually",
+         metadataLink = "https://metadados.ibge.gov.br/consulta/estatisticos/operacoes-estatisticas/PA",
+         metadataPath = "unavailable")
+         
+schema_usda <- 
+  setFormat(na_values = "(D)", thousand = ",") %>%
+  setIDVar(name = "al2", columns = 18) %>%
+  setIDVar(name = "al3", columns = 23) %>%
+  setIDVar(name = "year", columns = 32) %>%
+  setIDVar(name = "commodities", columns = 5) %>%
+  setObsVar(name = "planted", unit = "ha", factor = 0.4046856422, columns = 39,
+            key = 9, value = "AREA PLANTED") %>%
+  setObsVar(name = "harvested", unit = "ha", factor = 0.4046856422, columns = 39,
+            key = 9, value = "AREA HARVESTED") %>%
+  setObsVar(name = "production", unit = "t", factor = 0.907185, columns = 39,
+            key = 9, value = "PRODUCTION") %>%
+  setObsVar(name = "yield", unit = "kg/ha", factor = 2241.7, columns = 39,
+            key = 9, value = "YIELD")
+
+regTable(nation = "UnitedStatesOfAmerica",
+         level = 3,
+         subset = "surveyFieldCrops",
+         dSeries = "usda",
+         gSeries = "gadm",                                   # here, dSeries and gSeries deviate
+         schema = schema_usda,
+         begin = 1918,
+         end = 2018,
+         archive = "qs.crops_20220129.txt.gz|usda_tons_crops_l3.csv",
+         archiveLink = "https://quickstats.nass.usda.gov/",
+         updateFrequency = "annually",
+         nextUpdate = "unknown",
+         metadataLink = "https://www.nass.usda.gov/Quick_Stats/index.php",
+         metadataPath = "unknown")
+```
+
+
+## Normalise the input (stage 3)
+
+Finally, we need to align all data so that they follow the same structure. This is called *normalization*,in `arealDB`, and is carried out with the functions `normGeometry()` and `normTable()`, for the respective input data. Geometries are normalized first, because the thematic data are associated to the standardized versions of them.
+
+This process of normalization has been designed so that a user has to interact with the function as little as possible, but some interactions are still required. Especially when working with the names of territories, it is not always completely clear how the names of one dataset translate to names of another dataset. However, in the current version or `arealDB` this has been simplified further. Via a spatial match, new geometries are intersected with the already harmonised basis and based on the topological relationships (whether a new geometry matches well, is larger or is smaller), the matches are denoted with `close`, `narrower` or `broader` labels and the respective overlap with the harmonised basis. Names and IDs are then either derived (when an overlap is sufficiently large) or the original names are inserted into the gazetteer.
+
+```r
+normGeometry(pattern = "Brazil",
+             outType = "gpkg")
+             
+normGeometry(pattern = "UnitedStatesOfAmerica",
+             outType = "gpkg")
+
+```
+
+When finally normalizing the thematic tables, interaction is required when the `ontoMatch = ` argument has been provided, otherwise no matching of terms of the target variables with the ontology is carried out. Also here, hierarchical relationships can be included by providing the target variable terms in the respective columns in the translation table (that opens automatically when required), or simple 1:1 translations or terms from other taxonomies or languages can be specified.
+
+```r
+normTable(ontoMatch = "targetVar",
+          outType = "rds")
+```
+
