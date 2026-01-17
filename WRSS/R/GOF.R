@@ -1,0 +1,1 @@
+GOF<-function(basin,object,observed) UseMethod("GOF")

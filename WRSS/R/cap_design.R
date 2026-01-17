@@ -1,0 +1,1 @@
+cap_design<-function(area,params,w,plot) UseMethod("cap_design")
