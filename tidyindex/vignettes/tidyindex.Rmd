@@ -1,0 +1,109 @@
+---
+title: "tidyindex"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{tidyindex}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+```{r setup, echo = TRUE, message = FALSE}
+library(tidyindex)
+library(dplyr)
+library(lubridate)
+library(lmomco)
+library(ggplot2)
+library(tsibble)
+```
+
+The tidyindex package provides functionality to construct indexes in a data 
+pipeline, align with the tidyverse paradigm. The pipeline approach is 
+universally applicable to indexes of all kinds. It allows indexes to be broken 
+down into a set of defined building blocks (modules) and hence provides means 
+to standardise the workflow to construct, compare, and analyse indexes.
+
+## Decomposing an index into steps
+
+Here we present an example to calculate one of the most widely used drought 
+index: Standardised Precipitation Index (SPI). The index is composed to three 
+steps: 
+
+  - step 1: aggregate the precipitation series in a rolling window
+  - step 2: fit a distribution (usually gamma), per month, to the aggregated 
+  precipitation
+  - step 3: normalise the fitted values to a standard normal distribution as 
+  the index
+  
+## Pipeline design  
+
+These three steps correspond to three modules in the tidyindex pipeline 
+(`temporal_aggregate()`, `distribution_fit()`, and `normalise()`). Each module 
+uses a tidyverse-mutate style to calculate a step within the module. 
+For example, the following code fits a gamma distribution to the variable 
+`.agg`. Different distributions are available and prefixed with `dist_*()` 
+and additional distribution can be added by the user following a similar style 
+to the existing `dist_*()` steps. The step `dist_*()` can also be evaluated 
+standalone and seen as a recipe of the step: 
+
+```{r eval = FALSE}
+distribution_fit(.fit = dist_gamma(...))
+```
+
+```{r}
+dist_gamma(var = ".agg")
+```
+
+## Standardised Precipitation Index (SPI): An example
+
+Here we select a single station, Texas Post Office, where is heavily impacted 
+during the 2019/20 bushfire season, in Queensland, Australia, to demonstrate 
+the calculation.
+
+```{r}
+texas_post_office <- queensland %>% 
+  filter(name == "TEXAS POST OFFICE") %>% 
+  mutate(month = lubridate::month(ym)) 
+
+dt <- texas_post_office |>
+  init(id = id, time = ym, group = month) |> 
+  temporal_aggregate(.agg = temporal_rolling_window(prcp, scale = 24)) |> 
+  distribution_fit(.fit = dist_gamma(var = ".agg")) |>
+  tidyindex::normalise(.index = norm_quantile(.fit))
+dt
+```
+
+The results contain a summary of the steps used and the data with intermediate 
+variables (`.agg`, `.fit`, and `.fit_obj`) and the index (`.index`). We can plot 
+the result using `ggplot2` as:
+
+```{r}
+dt$data |> 
+  ggplot(aes(x = ym, y = .index)) + 
+  geom_hline(yintercept = -2, color = "red",  linewidth = 1) + 
+  geom_line() + 
+  scale_x_yearmonth(name = "Year", date_break = "2 years", date_label = "%Y") +
+   theme_bw() +
+  facet_wrap(vars(name), ncol = 1) + 
+  theme(panel.grid = element_blank(), 
+        legend.position = "bottom") + 
+  ylab("SPI")
+```
+
+# What's more
+
+There are many different things you can do with the package, for example:
+
+  - to switch from SPI to  Standardized Precipitation-Evapotranspiration Index 
+  (SPEI), simply add an variable transformation step to compute 
+  evapotranspiration from temperature data: `variable_trans(.pet = trans_thornthwaite(.tavg = tavg, .lat = lat))`
+  - a set of existing drought indexes are available as `idx_spi()`, `idx_spei()`,
+  `idx_edi()`, and `idx_rdi()`
+  - to compute multiple indexes at once, check `compute_indexes()`
+  - to calculate parameter uncertainty with the distribution fit, check the `.n_boot` argument in the `distribution_fit()`
