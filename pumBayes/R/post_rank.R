@@ -1,0 +1,43 @@
+#' @title Generate Quantile Ranks for Legislators
+#' @description This function calculates quantile ranks for each legislator based on posterior samples of beta parameters from MCMC.
+#' The function can handle any specified quantiles, such as median (0.5), and is flexible to support other quantiles provided as input.
+#' @param beta A matrix of posterior samples of beta obtained from MCMC, with columns representing legislators.
+#' @param quantiles A numeric vector specifying the quantiles to be calculated for the ranks (default is `c(0.5)` for median rank).
+#' @return A data frame containing the legislators' names, party affiliations, states, and their ranks at each specified quantile.
+#' If the median is included, it will be named `median` in the output. The output data frame is sorted in ascending order based on the values in the median column.
+#' @examples
+#' data(h116)
+#' h116.c = preprocess_rollcall(h116)
+#' hyperparams <- list(beta_mean = 0, beta_var = 1, alpha_mean = c(0, 0),
+#'                     alpha_scale = 5, delta_mean = c(-2, 10), delta_scale = sqrt(10))
+#' control <- list(num_iter = 2, burn_in = 0, keep_iter = 1, flip_rate = 0.1)
+#' h116.c.pum <- sample_pum_static(h116.c, hyperparams,
+#'                                   control, pos_leg = grep("SCALISE", rownames(h116.c$votes)),
+#'                                   verbose = FALSE, pre_run = NULL, appended = FALSE)
+#' h116.c.beta.pum.rank = post_rank(beta = h116.c.pum$beta, quantiles = c(0.5))
+#' @export
+
+post_rank = function(beta, quantiles = c(0.5)){
+
+  rank_matrix <- apply(beta, 1, function(x) rank(x))
+  rank_matrix <- t(rank_matrix)
+
+  rank_quantiles <- apply(rank_matrix, 2, function(x) {
+    quantiles_result <- quantile(x, probs = quantiles, names = FALSE)
+    rounded_result <- round(quantiles_result)
+    positive_result <- ifelse(rounded_result > 0, rounded_result, NA)
+    return(positive_result)
+  })
+  if (length(quantiles) == 1) {
+    rank_quantiles <- t(matrix(rank_quantiles))
+  }
+
+  name_vector = colnames(beta)
+
+  rank_data <- data.frame(name = name_vector, t(rank_quantiles))
+  colnames(rank_data)[-1] <- quantiles
+
+  rank_data$`0.5` <- rank(rank_data$`0.5`, ties.method = "first")
+  rownames(rank_data) = NULL
+  return(rank_data)
+}
