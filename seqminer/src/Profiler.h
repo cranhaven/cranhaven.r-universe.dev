@@ -1,0 +1,48 @@
+#ifndef _PROFILER_H_
+#define _PROFILER_H_
+
+#include <map>
+#include <string>
+
+#include "SimpleTimer.h"
+
+class Profiler {
+ public:
+  Profiler();
+  virtual ~Profiler();
+  static void addTimer(const char* func);
+  static void deleteTimer(const char* func);
+  static void dump();
+
+  struct Timer {
+    Timer(const char* func_) {
+      this->func = func_;
+      Profiler::addTimer(func_);
+    }
+    ~Timer() {
+      Profiler::deleteTimer(func);
+    }
+    const char* func;
+  };
+
+  struct Metric {
+    Metric() : nHits(0) {}
+    int nHits;
+    AccurateTimer timer;
+  };
+
+ private:
+  static std::map<std::string, Metric> data;
+};
+
+#define PROFILE_DUMP() Profiler::dump();
+#define CURRENT_FUNCTION() __PRETTY_FUNCTION__
+#define PROFILE_FUNCTION() \
+  Profiler::Timer tempProfilerTimer(CURRENT_FUNCTION());
+#define PROFILE_SCOPE(text) \
+  Profiler::Timer tempProfilerTimer##__LINE__(text);
+#define PROFILE_NAME_START(text) \
+  Profiler::addTimer(text)
+#define PROFILE_NAME_STOP(text) \
+  Profiler::deleteTimer(text)  
+#endif /* _PROFILER_H_ */
