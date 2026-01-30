@@ -1,0 +1,22 @@
+#' Public Attitudes on Economic Issues in ANES 2008
+#'
+#' A dataset containing gender, party ID, education, and responses to 10 survey items
+#' on economic issues from the American National Election Studies, 2008.
+#'
+#' @format A data frame with 2268 rows and 13 variables: \describe{
+#'   \item{gender}{gender. 1: male; 2: female}
+#'   \item{party}{party identification: Democrat, independent, or Republican}
+#'   \item{educ}{education. 1: high school or less; 2: some college or above}
+#'   \item{health_ins7}{Support for government or private health insurance, 7 categories}
+#'   \item{jobs_guar7}{Support for government guarantee jobs and income, 7 categories}
+#'   \item{gov_services7}{Should government reduce or increase spending on services?, 7 categories}
+#'   \item{FS_poor3}{Federal spending on the poor, 3 categories}
+#'   \item{FS_childcare3}{Federal spending on child care, 3 categories}
+#'   \item{FS_crime3}{Federal spending on crime, 3 categories}
+#'   \item{FS_publicschools3}{Federal spending on public schools, 3 categories}
+#'   \item{FS_welfare3}{Federal spending on welfare, 3 categories}
+#'   \item{FS_envir3}{Federal spending on environment, 3 categories}
+#'   \item{FS_socsec3}{Federal spending on Social Security, 3 categories}
+#'   }
+"nes_econ2008"
+
