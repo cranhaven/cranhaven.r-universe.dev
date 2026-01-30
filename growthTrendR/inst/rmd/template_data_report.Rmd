@@ -1,0 +1,579 @@
+---
+title: "Data summary report"
+
+date: "`r Sys.Date()`"
+output:
+  html_document:
+  theme: flatly
+highlight: tango
+
+params:
+  robj: NULL
+  data_report.reports_sel: NULL
+  qa.min_nseries: !r 50
+  scale.N_nbs: !r 10
+  scale.max_dist_km: !r 20
+  qa.label_data: !r NULL
+  qa.label_trt: !r NULL
+  
+
+---
+```{r setup_data, include=FALSE}
+# This chunk sets global options to hide all R code from appearing in the output
+if (!requireNamespace("htmltools", quietly = TRUE)) {
+  # stop("Package 'htmltools' is required to run this function. Please install it.")
+  install.packages("htmltools")
+}
+knitr::opts_chunk$set(echo = FALSE)
+library(data.table)
+library(growthTrendR)
+library(gt)
+# library(htmltools)
+library(stringr)
+# 
+ robj <- params$robj
+ reports.sel <- params$data_report.reports_sel
+ label_data <- params$qa.label_data
+ label_trt <- params$qa.label_trt
+ qa.min_nseries <- params$qa.min_nseries
+
+ # max.dist_km <- params$parms.qa["max.dist_km"]
+ N.nbs.qa <- params$scale.N_nbs
+scale.max_dist_km <- params$scale.max_dist_km
+ 
+ # for test
+ 
+ 
+  if (!inherits(robj, "cfs_format")) stop("please check the input , make sure it's the result of CFS_format() function")
+
+  tr_long <- robj$tr_all_long
+  
+ tr_w6 <- robj$tr_all_wide[, c("uid_site", "site_id", "uid_tree", "uid_sample",  "uid_radius", "radius_id", "rw_yend", "rw_ystart", "latitude", "longitude", "species", "dbh_cm", "ht_tot_m")]
+tr_7 <- merge(tr_w6, tr_long$tr_7_ring_widths, by ="uid_radius")
+
+spc.lst <- unique(tr_long$tr_3_trees$species)
+
+dt.freq <- CFS_freq(tr_w6) 
+dist.uids <- melt(dt.freq$dist_uids, id.vars = c("uid_label", "species" , "ord", "N", "pct.species" , "lat"),
+                  variable.name = "lon",
+                  value.name = "nuids")[!is.na(nuids)]
+dist.uids[, lon:= as.numeric(as.character(lon))]
+setorder(dist.uids, ord, lon, lat)
+
+# label_trt <- "differentiated"
+
+# min.nseries.qa <- 20; N.nbs.qa <- 6;
+# by species
+# qa<- vector("list", length(spc.lst))
+# for (i.spc in seq_along(spc.lst)){
+# print(i.spc)
+
+rep_proj <- 1; rep_species <- 2; rep_site <- 3; rep_radii <- 4
+```
+
+
+<br>
+<br>
+
+This report provides an overview of the tree ring data's quality and characteristics at four levels:  
+
+    1. project: Data Completeness: Assessment of missing or incomplete data of the whole data;
+    2. project-species: Data Summary: Summary statistics and descriptions;
+    3. project-species-site: data summary tables and series graphing; 
+    4. project-species-site-radii: Correlation Analysis and quality assessment. 
+  
+
+<br>
+
+project name: <b><u>`r tr_long$tr_1_projects$project_name`</u> </b>
+
+selected reports: <b><u>`r sort(reports.sel)`</u> </b>
+
+<br>
+
+
+```{r qa, eval = any(reports.sel > 1), results = "hide", echo=FALSE, warning=FALSE, message=FALSE}
+
+
+
+# qa <- lapply(1:length(spc.lst), function(i.spc, min.nseries = min.nseries.qa, N.nbs = N.nbs.qa){
+if (!("RW_trt" %in% names(tr_7))) {
+  setorder(tr_7, uid_radius, year)
+  # tr_7[, RW_trt:= rw_mm - shift(rw_mm), by = uid_radius]
+  tr_7$RW_trt <-
+  ave(
+    as.numeric(tr_7$rw_mm),
+    tr_7$uid_radius,
+    FUN = function(x)
+      if (length(x) > 1L) c(NA_real_, diff(x)) else NA_real_
+  )
+
+ label_trt <- "differentiated"
+  }
+ qa <- lapply(1:length(spc.lst), function(i.spc){
+ 
+  # plot-level summary
+tr_6i <- tr_w6[species == spc.lst[i.spc]]
+tr_7i <- tr_7[species == spc.lst[i.spc]]
+rw_ref <- tr_7i
+
+
+if (any(c(2,4) %in% reports.sel)) {
+  rep_radii.fin <- ( TRUE & nrow(tr_6i) >= qa.min_nseries)
+  # dt.radii.spc <- table_spc_site_radii(tr_6i, tr_7i, rep_radii = rep_radii.fin)
+  } else rep_radii.fin <- FALSE
+  # dt.radii.spc <- table_spc_site_radii(tr_6i, tr_7i, rep_radii = rep_radii.fin)
+  
+  
+  if (rep_radii.fin == TRUE) {
+  tr_7ispc<- copy(tr_7i)
+  # setnames(tr_7ispc, c("uid_radius", "year", "rw_mm"), c("SampleID", "Year" ,"RawRing"))
+  tr_7ispc[, c("SampleID", "Year" ,"RawRing"):= .(uid_radius, year, rw_mm)]
+  # check duplication
+ # if (nrow( tr_7ispc[, .N, by = .(SampleID, Year)][N>1]) > 0) stop("SampleID-Year is not unique key, please check...")
+  # include RW_trt, this is the series that qa process works on,
+  # tr_7ispc[, RW_trt:= RawRing - shift(RawRing), by = SampleID]; label_trt <- "differentiated"
+  # if (!("RW_trt" %in% names(tr_7ispc))) stop("please assign the column RW_trt for running the qa process...")
+  # acf.trt <- tr_7ispc[!is.na(RW_trt), .( ar1_trt = round(acf(RW_trt, plot = FALSE)$acf[2],2) ), by = .(SampleID)]
+
+  # run quality assessment procedure
+  qa.trt.ccf <-CFS_qa(dt.input = tr_7ispc, qa.label_data = params$qa.label_data, qa.label_trt = label_trt, qa.min_nseries = qa.min_nseries)
+  dt.radii.spc <- copy(qa.trt.ccf$dt.stats)
+  qa_code <- qa.trt.ccf$qa.parms$qa.code_desc
+  dt.radii.spc[, uid_radius:= as.integer(SampleID)]
+  dt.radii.spc <- merge(tr_6i[, c("uid_radius", "site_id", "radius_id")], dt.radii.spc, by = "uid_radius")
+
+}else{
+  # qa.trt.ccf <- list()
+  qa_code <- NULL
+  dt.radii.spc <- tr_7i[, .(N = .N, rw.mean = mean(rw_mm), rw.sd = sd(rw_mm), rw.min = min(rw_mm), rw.max = max(rw_mm), ymin = min(year), ymax = max(year), ar1_rw = acf(rw_mm, plot = FALSE)$acf[2] ), by = .(site_id, radius_id, uid_radius)]
+  # if more than 10 series, running the correlation with mean
+  if (nrow(tr_6i) > 10){
+    # mean.rw <- tr_7i[, mean_rw:= mean(rw_mm), by = uid_radius]
+    tmp <- merge(tr_7i, tr_7i[, .(mean_rw= mean(rw_mm)), by = year], by = "year")
+    chk <- tmp[, .(ncorr_mean_rw = .N, result = cor.test(mean_rw, rw_mm)), by = .(uid_radius)]
+
+    chk.corr <- chk[, .SD[4], by = uid_radius][, corr_mean_rw:= as.numeric(unlist(result))]
+
+    chk.pvalue <- chk[, .SD[3], by = uid_radius][, pcorr_mean_rw:= as.numeric(unlist(result))]
+
+    dt.radii.spc <- dt.radii.spc[chk.corr[, c("uid_radius", "corr_mean_rw", "ncorr_mean_rw")], on = "uid_radius"][chk.pvalue[, c("uid_radius", "pcorr_mean_rw")], on = "uid_radius"]
+  }
+}
+  
+  
+  
+  
+
+if (rep_site %in% reports.sel) dt.site.out <- growthTrendR:::table_spc_site(dt.radii.spc, rw_ref, scale.max_dist_km, N.nbs.qa) else dt.site.out <- data.table()
+if (rep_species %in% reports.sel)summary_spc <- growthTrendR:::table_spc(tr_6i,dt.radii.spc) else summary_spc <- data.table()
+
+return(list(dt.spc_radii=dt.radii.spc, dt.spc_site = dt.site.out, dt.spc = summary_spc, qa_code = qa_code) )
+})
+```
+
+```{r 1_project_tab,eval=rep_proj %in% reports.sel, results='asis'}
+
+
+
+cat("
+
+###  data completeness
+
+<br>
+
+This table presents the completeness of each variable of the whole dataset as a percentage. A value of 0 indicates no effective data. Please carefully verify that all required data has been included in the submission.
+
+")
+# library(gt)
+# library(htmltools)
+# if (usage != 1) return()
+# Split the data into three blocks
+split_dfs <- split(robj$complete_vars, cut(seq_len(nrow(robj$complete_vars)), breaks = 3, labels = FALSE))
+
+# Generate gt tables
+gt1_html <- gt(split_dfs[[1]]) %>% as_raw_html()
+# %>%
+# tab_header(title = "Block 1")
+gt2_html <- gt(split_dfs[[2]]) %>% as_raw_html() 
+# %>%
+# tab_header(title = "Block 2")
+gt3_html <- gt(split_dfs[[3]]) %>% as_raw_html() 
+
+
+if (requireNamespace("htmltools", quietly = TRUE)) {
+  # Use htmltools functions here
+  grid_layout <- htmltools::tagList(
+  htmltools::tags$div(style = "display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px;",
+           htmltools::tags$div(htmltools::HTML(gt1_html)),
+           htmltools::tags$div(htmltools::HTML(gt2_html)),
+           htmltools::tags$div(htmltools::HTML(gt3_html))
+  )
+)
+} else {
+  # Provide fallback or error message
+  stop("Package 'htmltools' is required but not available")
+}
+
+
+
+# Output the grid layout
+grid_layout
+
+
+
+```
+  
+```{r 2_spc_plot, eval = rep_species %in% reports.sel, results='asis', warning=FALSE, message=FALSE, fig.width=10, fig.height=5, fig.align='left'}
+cat("
+### Data Summary (Species)
+
+<br>
+
+This section presents key summary statistics, including spatial and temporal ranges, summary of ring width measurements, series length, etc., categorized by species.
+
+<br>
+
+In this dataset, ", if (length(spc.lst) == 1) "there's" else "there're", 
+length(spc.lst), "species: ", paste(spc.lst, collapse = ', '),  "
+
+<br>
+")
+
+library(knitr)
+library(kableExtra)
+library(gt)
+library(patchwork)
+library(ggplot2)
+
+for (i.spc in seq_along(spc.lst)){
+# print(i.spc)
+tr_6i <- tr_w6[species == spc.lst[i.spc]]
+tr_7i <- tr_7[species == spc.lst[i.spc]]
+
+# # summary table of spc
+summary_spc <- qa[[i.spc]]$dt.spc
+
+  
+table_out <- summary_spc %>%
+  gt() %>%
+  # tab_spanner(label = "Series", columns = everything()) %>%
+  cols_align(
+    align = "left",  # Align all columns to the left
+    columns = everything()  # Apply to all columns
+  ) %>%
+
+# %>%
+  tab_options(
+    column_labels.hidden = TRUE,  # Hide the header
+    table.border.top.style = "none",  # Remove top border
+    table.border.bottom.style = "none",  # Remove bottom border
+    # table_body.border.style = "none",  # Remove all horizontal lines
+    table_body.hlines.style = "none",  # Remove horizontal lines between rows
+    table_body.vlines.style = "none"  # Remove vertical lines between columns
+  )
+table_grob <- table_out %>% gt::as_gtable()
+
+# Convert table_grob to a ggplot object
+table_plot <- ggplot() + 
+  annotation_custom(table_grob, xmin = 0, xmax = 1, ymin = 0, ymax = 1) + 
+  theme_void() +
+  theme(plot.margin = margin(2,20, 0,0))  # Add margin around the table
+
+
+p.ispc<- growthTrendR:::plot_ds(list(tr_6i, tr_7i))
+
+
+
+p.ispc <- p.ispc + 
+  theme(plot.margin = margin(50, 50, 50, 50))
+# Combine the table and plot side by side using patchwork with layout adjustments
+final_output <- table_plot + p.ispc + 
+ plot_layout(widths = c(1,1.5)) +
+  plot_annotation() &
+  theme(plot.margin = margin(5, 10, 5, 10))
+
+# Display the combined output
+# final_output
+
+# print(final_output)
+print(table_plot | p.ispc  + plot_layout(widths = c(1,20),heights = c(7,5)))
+
+}
+
+cat(paste(" 
+
+ *Number of series that passed the test of CFS_qa() on ", label_trt, " series 
+<br> 
+ 
+**The values refer to mean ± sd (min, max)  
+ <br>
+ 
+ "))
+
+```
+
+
+<br>
+
+```{r 3_site_plot, eval = rep_site %in% reports.sel, results='asis', echo=FALSE, warning=FALSE, message=FALSE, fig.width=12, fig.height=5, fig.align='left'}  
+cat("
+
+###  site-level data summary
+
+<br>
+
+This section presents site-level data summaries, including a figure showing ring width measurements over time and a table with key statistics.
+
+<br>
+
+")
+# plot rw by site_id
+library(ggplot2)
+library(ggforce)
+
+for (i.spc in seq_along(spc.lst)){
+  
+  
+dt.radii.spc <- qa[[i.spc]]$dt.spc_radii
+# dt.radii[, year:= as.numeric(year)]
+# plotting 
+tr_7i <- tr_7[species == spc.lst[i.spc]]
+
+plot_list.rw <- growthTrendR:::plot_facet(data = tr_7i, varcols = c("year", "rw_mm", "site_id"), xylabels = c("Year", "Ring Width (mm)"), nrow = 2, ncol = 2)
+# plot_list.rw[[4]] <- NULL
+library(patchwork)
+
+cat(paste("\n\n"))
+cat(paste("#####", spc.lst[i.spc], "on ring width measurement", "\n\n"))
+
+ n_plots <- length(plot_list.rw)
+plots_per_page <- 2
+
+for (page in seq(1, n_plots, by = plots_per_page)) {
+  # Select plots for this page (1 or 2)
+  plots_this_page <- plot_list.rw[page:min(page + 1, n_plots)]
+  
+  # Combine and print
+  print(
+    wrap_plots(plots_this_page, ncol = length(plots_this_page)) +
+      plot_annotation() &
+      theme(plot.margin = margin(5, 5, 5, 5))
+  )
+}
+
+
+
+}
+
+
+
+```
+
+<br>
+
+```{r 3_site_tab, eval = rep_site %in% reports.sel, results='asis', echo=FALSE, message=FALSE, warning=FALSE, warning=FALSE}  
+cat("
+
+
+ This table provides a site-level summary, including the series length, raw ring width measurements, the median ring width, the median ring width of its", N.nbs.qa, " closest neighbors, and the ratio between them. This offers insights into potential outliers caused by scaling issues. 
+ <br><br> 
+")
+
+for (i.spc in seq_along(spc.lst)){
+  
+  dt.site.out <- qa[[i.spc]]$dt.spc_site
+  # if ("Nradius" %in% names(dt.site.out)) setnames(dt.site.out, "Nradius", "Nb. radiuses")
+  # if ("Nsamples" %in% names(dt.site.out)) setnames(dt.site.out, "Nsamples", "Nb. samples")
+if ("Nsamples" %in% names(dt.site.out)) dt.site.out$Nsamples <- NULL  
+if ("Nradius" %in% names(dt.site.out)) dt.site.out$Nradius <- NULL  
+  setnames(dt.site.out, c("latitude", "longitude", "Ntrees",   "summ_rw", "summ_len"),
+           c("lat", "lon", "Nb. trees",   "rw(mm)**", "len.series**"))
+  
+  if (all(c( "rw.median", "rw.median.nbs", "ratio_median") %in% names(dt.site.out)))
+  setnames(dt.site.out, c( "rw.median", "rw.median.nbs", "ratio_median"),
+           c( "median rw(mm)", "neigh median rw(mm)", "ratio_rw*"))
+  
+  
+  
+  gt_table <- gt(dt.site.out[, -c("uid_site", "species")]) %>%
+    tab_header(title = spc.lst[i.spc]) %>%
+    tab_style(
+      style = cell_text(weight = "bold"),  # Set header text to bold
+      locations = cells_column_labels(everything())  # Apply style to all headers
+    ) %>%
+    cols_align(
+      align = "center", # Center align content
+      columns = everything() # Apply to all columns
+    )%>%
+    #  cols_width(
+    #   everything()[7] ~ pct(8),         # First column: 20% width
+    #   everything()[8] ~ pct(12),        # Second column: 30% width
+    #   everything()[9] ~ pct(12)         # Third column: 50% width
+    # )%>%
+    tab_options(
+      table.width = "100%",
+      heading.title.font.weight = "bold",  # Make the header bold
+      table.border.top.width = px(0),
+      table_body.border.top.width = px(0),
+      table_body.border.bottom.width = px(0)
+    )
+  
+  # Add scrolling through CSS
+  if (requireNamespace("htmltools", quietly = TRUE)) {
+  scrollable_table <- htmltools::div(
+    gt_table %>% as_raw_html(),
+    style = "overflow-y: auto; height: 400px; border: 1px solid #ddd; padding: 10px;"
+  )
+  }else {
+  # Provide fallback or error message
+  stop("Package 'htmltools' is required but not available")
+}
+
+  # scrollable_table
+  # Print the table
+  print(scrollable_table, browse = FALSE)  # Render the scrollable table
+  rm(gt_table, scrollable_table)
+  # cat("<br><br>")
+}
+
+cat(paste("
+<br>
+<br>
+    *ratio between median of rw of the site and median of rw of its ", N.nbs.qa, " nearest neighbors. 
+<br>    
+    **The values refer to mean ± sd (min, max)
+ 
+    "))
+
+```
+
+<br>
+
+
+```{r 4_radii_tab, eval = rep_radii %in% reports.sel, results='asis', warning=FALSE, fig.width=10, fig.height=5, fig.align='left'}  
+
+
+cat(paste("
+
+<br>
+<br>
+
+###  Correlation and quality assessment code
+
+<br>
+
+This table provides a summary for each series, including raw ring width measurements, autocorrelation, correlation with chronologies for both raw and ", label_trt, " data, and quality assessment code (qa_code) which was derived from the CFS_qa() function. The chronologies includes all the series with qa_code 'pass'.
+
+<br>
+    "))
+
+
+# qa_code <- qa[[1]]$qa_code
+if (!is.null(qa[[1]]$qa_code))
+  gt(qa[[1]]$qa_code) %>%
+  tab_header(
+    title = "Description of qa_code"
+  )%>%
+  tab_style(
+    style = cell_text(weight = "bold"),
+    locations = cells_body(columns = vars(qa_code))
+  ) %>%
+  opt_css(css = "td:nth-child(1) { padding-right: 20px; }")
+
+cat(paste("
+
+<br>
+<br>"))
+
+for (i.spc in seq_along(spc.lst)){
+
+dt.radii.spc <- qa[[i.spc]]$dt.spc_radii
+
+# dt.radii.spc[, summ_rw := paste0(round(rw.mean,2), " ± ", round(rw.sd,2), " ( ", round(rw.min,2), ", ", round(rw.max,2), " )")]
+
+if ("corr_mean_rw" %in% names(dt.radii.spc)) dt.radii.spc[!is.na(corr_mean_rw),summ_corr_rw:= paste0(round(corr_mean_rw,2), " ( ", round(pcorr_mean_rw,2), " )") ]
+if ("corr_mean_trt" %in% names(dt.radii.spc)) dt.radii.spc[!is.na(corr_mean_trt),summ_corr_trt:= paste0(round(corr_mean_trt,2), " ( ", round(pcorr_mean_trt,2), " )") ]
+if ("ar1_rw" %in% names(dt.radii.spc)) dt.radii.spc[, ar1_rw:=round(ar1_rw, 2)]
+setorder(dt.radii.spc, uid_radius) 
+if ("ar1_trt" %in% names(dt.radii.spc)) {
+  dt.radii.spc.stats <- dt.radii.spc[, c("site_id", "radius_id", "ymin", "ymax", "N", "ar1_rw", "summ_corr_rw","ar1_trt",  "summ_corr_trt", "qa_code")]
+setnames(dt.radii.spc.stats, c("ar1_trt", "summ_corr_trt", "qa_code"), c("trt AR1**", "trt corr_mean**&", "qa_code**%"))
+} else {
+  if (!("summ_corr_rw" %in% names(dt.radii.spc)))dt.radii.spc[, summ_corr_rw:=""]
+  dt.radii.spc.stats <- dt.radii.spc[, c("site_id", "radius_id", "ymin", "ymax", "N", "ar1_rw", "summ_corr_rw")]
+  
+  }
+ setnames(dt.radii.spc.stats, c("ymin", "ymax", "N", "ar1_rw","summ_corr_rw"), 
+           c("year from", "year to", "len series", "raw AR1*", "raw corr_mean*&"))   
+
+  
+
+   
+gt_table <- gt(dt.radii.spc.stats) %>%
+  tab_header(title = spc.lst[i.spc]) %>%
+ tab_style(
+    style = cell_text(weight = "bold"),  # Set header text to bold
+    locations = cells_column_labels(everything())  # Apply style to all headers
+  ) %>%
+  cols_align(
+    align = "center", # Center align content
+    columns = everything() # Apply to all columns
+  )%>%
+  # cols_width(
+  #     everything()[1] ~ pct(7),
+  #     everything()[2] ~ pct(10),
+  #   everything()[3] ~ pct(5),         # First column: 20% width
+  #   everything()[4] ~ pct(5),
+  #   everything()[5] ~ pct(6),
+  #   everything()[7] ~ pct(7),
+  #   everything()[9] ~ pct(7),
+  #   everything()[11] ~ pct(10)# Third column: 50% width
+  # )%>%
+  tab_options(
+    table.width = "100%",
+    heading.title.font.weight = "bold",  # Make the header bold
+    table.border.top.width = px(0),
+    table_body.border.top.width = px(0),
+    table_body.border.bottom.width = px(0)
+  )
+
+# Add scrolling through CSS
+if (requireNamespace("htmltools", quietly = TRUE)) {
+scrollable_table <- htmltools::div(
+  gt_table %>% as_raw_html(),
+  style = "overflow-y: auto; height: 400px; border: 1px solid #ddd; padding: 10px;"
+)
+}else {
+  # Provide fallback or error message
+  stop("Package 'htmltools' is required but not available")
+}
+
+
+# Print the table
+print(scrollable_table, browse = FALSE)  # Render the scrollable table
+rm(gt_table, scrollable_table)
+# cat("<br><br>")
+}
+
+cat(paste("
+
+<br><br>
+     *developed  from raw series
+<br><br>
+    **developed  from ",  label_trt, " series
+<br><br>
+     &correlation with chronologies, the value represents correlation (p-value)
+<br><br>
+     %qa_code is identified using the current data as reference dataset
+
+"))
+
+```
+
+
+
+
+
+ 
+
