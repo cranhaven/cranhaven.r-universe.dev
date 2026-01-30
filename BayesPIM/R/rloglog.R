@@ -1,0 +1,1 @@
+rloglog = function(x,lambda, gamma){ rllogis(x, shape = gamma, scale= lambda ) }

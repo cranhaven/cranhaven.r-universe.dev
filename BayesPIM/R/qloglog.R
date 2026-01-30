@@ -1,0 +1,1 @@
+qloglog = function(x,lambda, gamma){ qllogis(x, shape = gamma, scale= lambda ) }
