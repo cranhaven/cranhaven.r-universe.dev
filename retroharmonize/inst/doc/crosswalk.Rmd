@@ -1,0 +1,278 @@
+---
+title: "Working with a Crosswalk Table"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Working with a Crosswalk Table}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r knitrsetup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+```{r setup, message=FALSE}
+library(retroharmonize)
+library(dplyr)
+```
+
+Let's read in the package's small examples, and create a metadata table from them. These steps were explained in the vignette [Working With Survey Metadata](https://retroharmonize.dataobservatory.eu/articles/metadata.html).
+
+From a technical perspective, the aim of the survey harmonization is to create a single, tidy, joined table in the form of a data frame that contains a row identifier, which is truly unique across all observations and the concatenated and harmonized variables.
+
+```{r surveyfiles}
+examples_dir <- system.file("examples", package = "retroharmonize")
+survey_files <- dir(examples_dir)[grepl("\\.rds", dir(examples_dir))]
+survey_files
+```
+
+```{r surveypaths}
+survey_paths <- file.path(examples_dir, survey_files)
+```
+
+```{r examplemetadata}
+example_metadata <- metadata_create(survey_paths = survey_paths)
+```
+## Crosswalk Table
+
+A schema crosswalk, or a crosswalk table is a table that shows equivalent elements (or "fields") in more than one survey. In this example, we will create a crosswalk table of a subset of the tree example surveys. We will use three variables: the unique row identifier, the Trust in the European Parliament concept, and the country code.
+
+By filtering out the other variables, we have the basic information in our metadata table.
+
+```{r subsetmetadata}
+subset_example_metadata <- example_metadata %>%
+  filter(grepl("^unique_identifier_in|trust|country_code", var_label_orig)) %>%
+  filter(grepl(
+    "^unique_identifier_in|european_parliament|country_code",
+    var_label_orig
+  )) %>%
+  filter(var_name_orig != "uniqid")
+
+subset_example_metadata
+```
+
+### Create a crosswalk table
+
+You can easily create a crosswalk table with `crosswalk_table_create()`. Crosswalk tables are validated with `is.crosswalk()`. You can create or modify your own crosswalk table in any spreadsheet program. The mandatory elements of a crosswalk table are 
+
+* `id`: a unique identifier for a survey
+* `filename`: the original source data file
+* `var_name_orig`: the original variable name at source
+* `var_name_target`: the original variable name after using the crosswalk, by default, it equal to     `var_name_orig`.  
+
+All other columns are optional because they are needed for specific tasks, namely to change the numeric coding and labelling of valid and special survey response values, or to harmonize the eventual R type representation of the data.
+
+```{r ct1}
+ct <- crosswalk_table_create(subset_example_metadata)
+ct
+```
+
+### Variable name harmonization
+
+The harmonization of the variable names requires a single, unambiguous name for the variables that represent the same concept: 
+
+```{r varnames}
+ct %>%
+  mutate(var_name_target = case_when(
+    var_name_orig == "rowid" ~ .data$var_name_orig,
+    var_name_orig == "isocntry" ~ "geo",
+    TRUE ~ "trust_ep"
+  )) %>%
+  distinct(across(all_of(c("filename", "var_name_orig", "var_name_target"))))
+```
+
+### Value numeric code and label harmonization
+
+For code and label harmonization, the crosswalk table should optionally contain instructions on harmonizing the numeric value codes and value labels. 
+
+* The `crosswalk_table_create()` will create identical source and target columns for labeling (and type setting.) 
+* You can save this table into `.csv` or `.xls` and edit it in a spreadsheet application if you want. If you do not change the default values (`source`=`target`) then the harmonization in those aspects will not take place. 
+
+In this example, for full reproducability, we do not work in a spreadsheet program like Excel or Numbers or OpenOffice but we create programatically an unambiguous coding. To be on the safe side, the special missing value is placed far away from the normal values. 
+
+```{r vallabels}
+ct %>%
+  mutate(val_numeric_target = case_when(
+    val_numeric_orig == 1 ~ .data$val_numeric_orig,
+    val_numeric_orig == 2 ~ 0,
+    TRUE ~ 99999
+  )) %>%
+  mutate(val_label_target = case_when(
+    val_numeric_orig == 1 ~ "trust",
+    val_numeric_orig == 2 ~ "distrust",
+    TRUE ~ "declined"
+  )) %>%
+  distinct(across(all_of(c(
+    "filename",
+    "val_numeric_orig", "val_numeric_target",
+    "val_label_orig", "val_label_target"
+  ))))
+```
+And now let's turn our attention to the special (missing) cases. Sometimes there may be other special cases in the code range, but the most likely suspects are values that represent some form of missing answers to a question or a missing questionnaire item selection.
+
+```{r nalabels}
+ct %>%
+  mutate(na_numeric_target = case_when(
+    na_numeric_orig == 3 ~ 99999,
+    TRUE ~ NA_real_
+  )) %>%
+  mutate(na_label_target = case_when(
+    na_numeric_target == 99999 ~ "declined",
+    TRUE ~ NA_character_
+  )) %>%
+  distinct(across(all_of(c(
+    "filename", "val_numeric_orig",
+    "na_numeric_orig", "na_numeric_target",
+    "na_label_orig", "na_label_target"
+  ))))
+```
+
+### A reproducible recoding and relabelling
+
+Let's put the entire process into a tidyverse pipeline with [dplyr](https://dplyr.tidyverse.org/):
+
+```{r crosswalktarget}
+example_crosswalk_table <- ct %>%
+  mutate(var_name_target = case_when(
+    var_name_orig == "rowid" ~ .data$var_name_orig,
+    var_name_orig == "isocntry" ~ "geo",
+    TRUE ~ "trust_ep"
+  )) %>%
+  mutate(val_numeric_target = case_when(
+    val_numeric_orig == 1 ~ .data$val_numeric_orig,
+    val_numeric_orig == 2 ~ 0,
+    TRUE ~ 99999
+  )) %>%
+  mutate(val_label_target = case_when(
+    val_numeric_orig == 1 ~ "trust",
+    val_numeric_orig == 2 ~ "distrust",
+    TRUE ~ "declined"
+  )) %>%
+  mutate(na_numeric_target = case_when(
+    na_numeric_orig == 3 ~ 99999,
+    TRUE ~ NA_real_
+  )) %>%
+  mutate(na_label_target = case_when(
+    na_numeric_target == 99999 ~ "declined",
+    TRUE ~ NA_character_
+  ))
+
+example_crosswalk_table
+```
+
+Needless to say that you do not need to work with *dplyr*. 
+
+Reading the crosswalk table is very simple, for example, the last two (15-16) rows read like this:
+
+* In `ZA6863.rds` rename the variable storing questionnaire item `qa14_1` to `trust_ep` (`Trust in European Parliament`).  
+* Recode the numeric values from `2` to `0` and label them as `distrust`.
+* Recode the special values from `3` to `99999` and label them as `declined`.
+
+### Subsetting
+
+From a technical perspective, the aim of the survey harmonization is to create a single, tidy, joined table. For making joining possible (and to reduce memory use), a first processing step is to remove irrelevant variables that will not be harmonized. 
+
+There are several ways how the subsetting can be made.  With smaller tasks all the surveys can be stored in memory and the subsequent processing made fast in memory. With many surveys, we provide a slower but memory-saving way of importing and subsetting consecutive surveys from files. 
+
+Recall from  the vignette [Working With Survey Metadata](https://retroharmonize.dataobservatory.eu/articles/metadata.html) that you can read files into a list of surveys: 
+
+```{r readtomemory}
+example_surveys <- read_surveys(survey_paths, .f = "read_rds")
+```
+
+Now let's focus of our attention to a small subset of the variables.
+
+```{r subsetsave1}
+subset_survey_list_1 <- subset_surveys(
+  survey_list = example_surveys,
+  subset_vars = c("rowid", "isocntry", "qa10_1", "qa14_1"),
+  subset_name = "subset_example"
+)
+```
+
+We still have the three surveys in a list: 
+
+```{r subsetsave11}
+vapply(subset_survey_list_1, function(x) attr(x, "id"), character(1))
+``` 
+
+The top few rows of the first subsetted survey to see if the subsetting took place:
+
+```{r subsetsave13}
+head(subset_survey_list_1[[1]])
+```
+
+While `qa10_1` and `qa14_1` refer to trust in the European Parliament, they cannot be joined because they have dissimilar names. These names are not too easy to remember, either. 
+
+```{r subsetsave14}
+lapply(subset_survey_list_1, names)
+```
+
+The next step is to harmonize the names of those variables that represent the same concept, in this case, *Trust in the European Parliament*.  The next steps, i.e. the harmonization of the numerical codes of answers and their labels will be discussed in the [Harmonize Value Labels](https://retroharmonize.dataobservatory.eu/articles/harmonize_labels.html) vignette.
+
+## Variable Name Harmonization
+
+It is very practical to do the subsetting and the variable name harmonization in one step.  The `subset_save_surveys()` function will do this optionally, and a wrapper function `harmonize_surveys()` will validate that all metadata (i.e. the original, source variable names and the new, target variable names) are present. 
+
+```{r subsetsave21}
+subset_survey_list_2 <- subset_surveys(
+  crosswalk_table = example_crosswalk_table,
+  survey_list = example_surveys,
+  subset_name = "trust_ep"
+)
+```
+
+We have again the three surveys in a list: 
+
+```{r subsetsave22}
+vapply(subset_survey_list_2, function(x) attr(x, "id"), character(1))
+``` 
+
+The top few rows of the first subsetted survey now show that we have new, harmonized names.
+
+```{r subsetsave23}
+head(subset_survey_list_2[[1]])
+```
+
+Our variable names are harmonized:  
+
+```{r subsetsave24}
+lapply(subset_survey_list_2, names)
+```
+
+While this example easily fits in the memory, when working with several dozens of SPSS files, it is better to sequentially import the surveys from file, and save the output to files. By default, the parameters `import_path` and `export_path` are set to `NULL`. If you enter a valid path to a directory, the function will look for the files specified in the `crosswalk_table$filename` on this path.
+
+* If you do not specify the `export_path`, a list of surveys will be returned.
+* If you specify the `export_path`, a vector of the saved file names (with full path) will be returned.
+
+The `subset_surveys()` is a versatile function that fits with several workflows. It works in memory or with larger tasks, with sequentially read survey files; it for simple tasks it can use a simple vector for names to keep, or it can use an entire crosswalk table. You can read more about it with `?subset_surveys`.
+
+```{r subsetsave}
+subset_surveys(
+  survey_list = example_surveys,
+  crosswalk_table = example_crosswalk_table,
+  subset_name = "trust_ep",
+  import_path = examples_dir,
+  export_path = tempdir()
+)
+```
+
+The subsetted surveys are saved with a common name element, `trust_ep` to the export file location, in this case a temporary directory created with `tempdir()`.
+
+```{r reread}
+readRDS(file.path(tempdir(), "ZA5913_trust_ep.rds")) %>%
+  head()
+```
+
+## Further Steps
+
+Having a subsetted list of surveys with harmonized variable names is usually not yet an output that is ready for statistical analysis.  In the next step, the numerical codes, the variable labels need to be made consistent, with a special attention given to special values, particularly to missing values.
+
+At last, if the statistical analysis will take place in R, a conversion to basic R classes is necessary to rely on the vast arsenal of R’s statistical packages. This means that the survey data must be brought to a consistent numeric or a consistent factor format (and in some cases, for visualization, to a character format).
+
+We created a special s3 class (see `?labelled_spss_survey`), which retains the metadata about coding and special values, and created three methods that take into consideration the retained metadata. For example, if 999 is the code for declined answers, then the base are `as.numeric()` will coerce observations (survey responses) with a value `999` to a numerical value of `999`, but the `as_numeric()` method will give a `NA_real_` representation to this observation.  Averaging numerical, coded values will give a logically wrong result with the basic as.numeric, but a correct with the `as_numeric()` method.
+
+The crosswalk table is a map for value code and label harmonization, and for type conversion, too.  This is the topic of the [Harmonize Value Labels](https://retroharmonize.dataobservatory.eu/articles/harmonize_labels.html) vignette.
