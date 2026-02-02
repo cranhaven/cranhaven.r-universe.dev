@@ -1,0 +1,173 @@
+---
+title: "Basic workflow of layer matching and profile alignment"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Basic workflow of layer matching and profile alignment}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  out.width = "100%"
+)
+```
+
+## Snow profile alignment and similarity assessment for aggregating, clustering, and evaluating of snowpack model output for avalanche forecasting
+
+The package builds on `sarp.snowprofile` for basic data input/output, profile manipulation and visualization. 
+
+This vignette demonstrates the workflow of the analysis methods described in detail in "Herla, F., Horton, S., Mair, P., and Haegeli, P.: Snow profile alignment and similarity assessment for aggregating, clustering, and evaluating of snowpack model output for avalanche forecasting, Geosci. Model Dev., https://doi.org/10.5194/gmd-14-239-2021, 2021."
+```{r setup}
+library(sarp.snowprofile.alignment)
+```
+
+## 1. Aligning snow profiles
+*Dynamic Time Warping* (DTW) can be used to match layers between pairs of snow profiles so that one profile can be warped 
+onto the other profile. That means that the warped profile, which contains the unchanged layer sequences, is optimally aligned to the second profile
+by adjusting its layer thicknesses.
+
+The core functions for aligning profiles are
+
+  - `dtwSP`: calculate the alignment between two profiles
+  - `plotSPalignment`: plot the alignment 
+  - `plotCostDensitySP`: inspect more details behind the alignment with a cost density plot
+  
+```{r}
+## Compute alignment:
+dtwAlignment <- dtwSP(SPpairs$A_modeled, SPpairs$A_manual, open.end = FALSE)
+```
+```{r, eval=FALSE}
+## Plot alignment:
+plotSPalignment(dtwAlignment = dtwAlignment)
+```
+```{r, echo=FALSE}
+knitr::include_graphics("figures/alignment.png")
+```
+
+```{r, echo=FALSE, out.width="100%"}
+knitr::include_graphics("figures/legend_gtype.png")
+```
+
+Both functions `dtwSP` and `plotSPalignment` allow for controlling the settings of the alignment, such as matching of subsequences or constraints to the warping path (i.e., open window size, local slope constraint). See `?dtwSP`, or the vignette **Technical details** for more information.
+
+
+```{r, eval=FALSE}
+## Inspect local cost:
+plotCostDensitySP(dtwAlignment)
+```
+```{r, echo=FALSE}
+knitr::include_graphics("figures/costDensity.png")
+```
+
+The local cost matrix visualizes the distances (i.e., dissimilarities) between individual layer combinations and ultimately shapes
+the alignment of the profiles through the warping path of least resistance through the matrix.  
+
+The local cost matrix can be modified by changing the included layer characteristics (e.g., include/exclude layer date information), 
+by changing the relative weights of the included layer characteristics, or by modifying the preferential layer matching
+implementation. Read the vignette **Technical details** for more information.
+
+
+## 2. Assessing the similarity of profiles
+
+The package provides a function `simSP` to calculate the similarity between two aligned profiles based on considerations 
+relevant for avalanche hazard assessment. The resulting similarity ranges between `[0, 1]`. Note that the recent version of this package
+contains several different approaches of how that similarity measure is computed. See `?simSP` for more details.
+
+The similarity score can be accessed from the alignment object via `$sim`. 
+To use different methods for computing the score, provide the corresponding parameter `simType` to your function call to `dtwSP`.
+Otherwise, the score can be calculated for a precomputed alignment object by
+
+```{r}
+dtwAlignment$sim <- simSP(dtwAlignment$reference, dtwAlignment$queryWarped, verbose = TRUE, simType = "HerlaEtAl2021")
+```
+
+## 3. Clustering and aggregating profiles
+
+The above methods get even more interesting and useful when applied to sets of snow profiles in order to aggregate or cluster them.
+Therefore, the package provides `medoidSP`, which identifies the medoid profile among a set of profiles, and a wrapper function 
+`distanceSP` (for `dtwSP` and `simSP`), which returns the distance between two profiles (i.e., a common input for clustering
+algorithms).
+
+Note that this vignette describes approaches from the Herla et al (2021) paper cited above. Both tasks, aggregating and clustering,
+need to and will be improved in future work to appropriately address operational needs. Check out new vignettes as the methods improve.
+
+### 3.1 Clustering
+
+Let's start with a clustering demonstration of the sample data set `SPgroup`. You don't need to, but it is recommended to
+rescale the set of profiles to identical snow heights before computing a pairwise distance matrix for the profile set.
+
+```{r medoid, eval=TRUE}
+## rescaling and resampling of the snow profiles:
+setRR <- reScaleSampleSPx(SPgroup)$set
+
+## compute the pairwise distance matrix:
+distmat <- distanceSP(setRR)
+
+## hierarchichal clustering:
+setRR_hcl <- stats::hclust(distmat, method = "complete")
+```
+
+The source file to the vignette details how to produce the exact plot based on the cluster object `setRR_hcl`:
+```{r, echo=FALSE, out.width="100%"}
+knitr::include_graphics("figures/cluster_hierarchy.png")
+```
+
+```{r, echo=FALSE, eval=FALSE}
+## This can be used to produce the cluster hierarchy plot:
+
+## prepare plot:
+cluster_colors <- c("dark orange", "blue", "dark green", "red")
+setRR_dend <- stats::as.dendrogram(setRR_hcl)
+dendextend::labels_colors(setRR_dend) <- cluster_colors[stats::cutree(setRR_hcl, 4)[order.dendrogram(setRR_dend)]]
+dendextend::labels_cex(setRR_dend) <- 2.5
+dendextend::labels(setRR_dend) <- seq(12)
+
+layout(matrix(c(1, 1, 2, 2), 2, 2, byrow = T), heights = c(1, 2))
+
+## plot hierarchy
+plot(setRR_dend, yaxt = "n", xlim = c(1, nrow(distmat)))
+mtext("Cluster hierarchy", side = 2, line = 1)
+
+## plot profiles
+plot(setRR[order.dendrogram(setRR_dend)], SortMethod = 'unsorted', box = F, ylab = "", 
+     yPadding = 0, xPadding = 0, xaxs = 'i', yaxs = 'i')
+mtext("Rescaled snow height", side = 2, line = 1, las = 0)
+mtext("Individual snow profiles", side = 1, line = 2)
+
+## plot vertical lines between most dominant clusters
+abline(v = 4.5, lwd = 3)
+abline(v = 7.5, lwd = 2, lty = "dashed")
+abline(v = 9.5, lwd = 2, lty = "dotted")
+
+```
+
+Cutting the hierarchical tree to obtain four clusters leads to the colored clusters and the vertical black lines you see in the figure.
+
+### 3.2 Aggregating
+
+The simplest method to aggregating, or summarizing, a set of snow profiles is computing the medoid profile of the set. 
+That medoid profile is the profile with the smallest accumulated distance to all profiles in that set. In other words, 
+it's the profile closest to the geometric center of the set.
+
+The function `medoidSP` can be used to conveniently compute the pairwise distance matrix among all profiles (as done above),
+and to elicit the index of the medoid profile from that distance matrix. The medoid profile of the first (blue) cluster,
+for example, can be found with
+
+
+```{r, eval=TRUE}
+unname(medoidSP(distmat = distmat[1:4]))
+```
+
+We can visualize the pairwise distances among all profiles in the set with a configuration plot that is based on multidimensional
+scaling (MDS). That nicely illustrates why a certain profile is supposed to be the medoid profile.
+
+```{r, eval=FALSE}
+fit <- smacof::mds(as.dist(distmat), type = "ordinal")
+```
+Such an MDS fit can be applied to the whole set, or to individual clusters, and can look similar to the following:
+```{r, echo=FALSE, out.width="100%"}
+knitr::include_graphics("figures/configuration_plots.png")
+```

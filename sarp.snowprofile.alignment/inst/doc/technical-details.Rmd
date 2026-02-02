@@ -1,0 +1,102 @@
+---
+title: "Technical details: layer matching"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Technical details: layer matching}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+## Snow profile alignment and similarity assessment for aggregating, clustering, and evaluating of snowpack model output for avalanche forecasting
+
+This vignette creates a detailed link between the methods described in the paper 
+```
+Herla, F., Horton, S., Mair, P., and Haegeli, P.: Snow profile alignment and similarity assessment for aggregating, clustering, and evaluating of snowpack model output for avalanche forecasting, Geosci. Model Dev., https://doi.org/10.5194/gmd-14-239-2021, 2021.
+```
+and this companion R package. While the basic workflow and the use of the high-level functions are described in the vignette **Basic workflow**, this vignette describes how the (default) workflow of the package can be altered and the how the methods could be improved.
+
+```{r setup}
+library(sarp.snowprofile.alignment)
+```
+
+
+## 1. Aligning snow profiles based on Dynamic Time Warping (DTW)
+
+The individual steps of aligning snow profiles---taken from the documentation of the core function `dtwSP`:
+
+  1. (optional) **Rescale** the profiles to the same height (cf., `scaleSnowHeight`)
+  2. **Resample** the profiles onto the same depth grid. 2 different approaches:
+      - regular grid with a sampling rate that is provided by the user (recommended, cf., `resampleSP`).  
+      - irregular grid that includes all layer interfaces within the two profiles (i.e., set `resamplingRate = NA`) (cf., `resampleSPpairs`). This approach handles the profiles with minimum layer storage, but leads to skewed profile alignments since the algorithm cannot keep track of different layer thicknesses.
+  3. Compute a weighted **local cost matrix** from multiple layer characteristics (cf., `distanceSPlayers`)
+  4. **Match the layers** of the profiles with a call to `dtw` (eponymous R package)
+  5. Align the profiles by **warping** the query profile onto the reference profile (cf., `warpSP`)
+  6. (optional) If the function has been called with multiple different boundary conditions (global, top-down, or bottom-up alignments),
+  the optimal alignment as determined by an avalanche-focused similarity measure (`simSP`) will be returned.
+
+
+
+### 1.1 Preprocessing of the profiles prior to the alignment
+
+A series of functions exist that manipulate the snow profiles prior to the alignment or the similarity assessment. All these manipulations can be controlled in the arguments to `dtwSP`.  
+**Rescaling and resampling**
+
+  - `scaleSnowHeight`: Scale the total snow height of a profile with a uniform scaling factor (commonly determined from the height of a second 'reference' profile). While there certainly are justified scenarios for this approach, it is not used per default anymore. For most cases it is advised to align the profiles on their native height grids without rescaling them.
+  - `resampleSP`: Resample an individual profile 
+  - `reScaleSampleSPx`: Both rescale and resample a set of profiles to identical snow heights and onto a regular grid
+  
+**Reducing the number of layers**
+
+  - `mergeIdentLayers`: Merge adjacent layers that have identical properties
+  - `rmZeroThicknessLayers`: Remove or reset layers of zero thickness (i.e., these layers originate from warping one profile onto another)
+
+
+### 1.2 Computing a weighted local cost matrix from multiple layer characteristics
+
+Computing a local cost matrix is fundamental to DTW alignments and is carried out in `distanceSPlayers`.
+
+ 1. **Assessing the differences of individual snow layers**
+ Currently, distance functions are implemented for the layer characteristics *grain type, hardness, and deposition date*. The distance function 
+ for categorical grain types relies on a matrix that stores the distances between different categories. Since the similarity requirements are slightly  different for aligning profiles versus assessing their similarity, two matrices are implemented: 
+
+    - `grainSimilarity_align` (Table 1A in the paper)
+    - `grainSimilarity_evaluate` (Table 1B in the paper)
+    - `swissSimilarityMatrix` (grain type similarity matrix defined by Lehning et al, 2001)
+    
+  2. **Computing a local cost matrix**  
+  First, a distance matrix is computed for each included layer characteristic that stores the distances between individual layer combinations. Then these distance matrices are combined into one resulting distance matrix (i.e., local cost matrix) by weighted averaging. Optionally, a preferential layer matching manipulation can be included into the local cost matrix.
+  
+In `distanceSPlayers` all parameters related to the local cost matrix can be controlled, e.g.
+  
+  - Layer characteristics to include
+  - Relative averaging weights of the layer characteristics
+  - Grain type similarity matrix
+  - Warping window function
+  - Preferential layer matching (defined by the coefficients in Table 2 in the paper: `layerWeightingMat`)---currently, implemented solely based on grain type information. Note that this approach should not be applied when the profiles are matched with deposition date information that is only available for a few select layers
+  
+
+### 1.3 Obtaining the optimal alignment of the snow profiles
+
+Obtaining the optimal alignment of pairs of snow profiles is the root task of this package. All functions and controls from the sections 1.1 and 1.2 above can be modified in the call to the core function `dtwSP`. Additional controls are, e.g.
+
+  - local slope constraint
+  - boundary conditions: global alignment vs. partial alignment  
+
+Partial alignments (i.e., `open.end`) can be started from the snow surface downwards (`top.down`) or from the ground upwards (`bottom.up`). When the function is called to align the profiles with *multiple different boundary conditions (global, top-down, bottom-up), the alignment that yields the highest similarity is returned*.
+
+While DTW computes the matching between the layers, the actual alignment is carried out with a warping function `warpSP`. Since that warping is different for bottom-up and top-down alignments, and it is different for the two profiles, `warpSP` provides solutions for most combinations.
+
+
+### 1.4 Limitations
+
+While the hyperparameters and alignment approaches can be tuned to optimize the alignment of select pairs of profiles in a supervised manner, the algorithm will likely be applied unsupervised to a large set of profiles, either to obtain similarity results or to aggregate/cluster a large amount of information. While the default alignment settings produce good results in most cases, large and highly diverse data sets will inevitably contain cases that are not well taken care of. If you align large amounts of profiles, make sure to understand the diversity of conditions in your data set and in which situations the alignment algorithm works well and does not. As a general example, poor layer matches are likelier if their snow depths differ considerably or their layer sequences show very few common patterns.
+
+
+

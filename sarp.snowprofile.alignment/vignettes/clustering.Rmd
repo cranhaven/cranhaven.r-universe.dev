@@ -1,0 +1,142 @@
+---
+title: "Clustering snow profiles"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Clustering snow profiles}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  out.width = "100%"
+)
+```
+
+## Objective
+
+This vignette summarizes the methods for clustering snow profiles available in `sarp.snowprofile.alignment` from the following papers:
+
+-   Horton, S., Herla, F., Haegeli, P.,: Clustering simulated snow profiles to form avalanche forecast regions, Geosci. Model Dev., submitted.
+-   Herla, F., Horton, S., Mair, P., and Haegeli, P.: Snow profile alignment and similarity assessment for aggregating, clustering, and evaluating 390 snowpack model output for avalanche forecasting, Geosci. Model Dev., 14, 239–258, <https://doi.org/10.5194/gmd-14-239-2021>, 2021.
+-   Herla, F., Haegeli, P., and Mair, P.: A data exploration tool for averaging and accessing large data sets of snow stratigraphy profiles useful for avalanche forecasting, The Cryosphere, 16, 3149–3162, <https://doi.org/10.5194/tc-16-3149-2022>, 2022.
+
+## Sample profiles
+
+We demonstrate clustering with the `SPgroup2` snowprofile set which contains 5 snow profiles from a single date.
+
+```{r}
+## Load packages
+library(sarp.snowprofile.alignment)
+
+## Sample profiles
+plot(SPgroup2, SortMethod = 'hs')
+```
+
+## Distance between profiles
+
+Many clustering methods in R use a distance matrix of class `dist` as an input. The `distanceSP` function provides several ways to produce a distance matrix from a `snowprofileSet` by making pairwise comparisons of snow profile similarities. `distanceSP` passes arguments to `dtw` and then further to `simSP` to configure the comparisons. We recommend checking the documentation for `simSP` for available approaches to calculate similarities.
+
+```{r}
+## Distance matrix using default settings
+distmat1 <- distanceSP(SPgroup2)
+print(distmat1)
+```
+
+### Faster clustering
+
+Pairwise distance calculations can be slow for large datasets. Three options for improved performance include:
+
+1. Calculate the distances in parallel on multiple cores via the `n_cores` argument, which activates the `parallel` package.
+2. Setting `symmetric = FALSE` to only compute one of `dtwSP(A, B)` or `dtw(B, A)`, potentially resulting in a loss of accuracy but cutting the number of alignments in half.
+3. Setting `fast_summary = TRUE` to compute approximate distances nearly instantaneously without aligning profiles with dynamic time warping by comparing summary statistics.
+
+```{r}
+## Check for same result when computing distant in parallel on multiple cores
+# library(parallel)
+# n_cores <- detectCores() - 1
+# distmat1b <- distanceSP(SPgroup2, n_cores = n_cores)
+# identical(distmat1, distmat1b)
+
+## Fast version of pairwise distances based on summary stats
+distmat2 <- distanceSP(SPgroup2, fast_summary = TRUE)
+print(distmat1)
+print(distmat2)
+```
+
+For clustering applications, the `clusterSP` function handles the distance calculations, but it is worthwhile understanding how you can control the distance calculations with the `clusterSPconfig` function, which has an output `args_distance` for passing arguments to the distance calculations.
+
+```{r}
+config <- clusterSPconfig(simType = 'layerwise', ddate = T)
+str(config)
+distmat3 <- do.call('distanceSP', c(list(SPgroup2), config$args_distance))
+```
+
+## Clustering methods
+
+We present three distinct clustering methods:
+
+1.  Hierarchical clustering of the distance matrix with `hclust`.
+2.  Partition clustering of the distance matrix with `pam`.
+3.  k-dimension barycentric averaging clustering by directly calculating average profiles with `averageSP`.
+
+All methods are applied using the `clusterSP` function with different `type` arguments. We use the already computed a distance matrix `distmat1`, however, `clusterSP`can also compute distance matrices if only provided with a a `snowprofileSet`. The output is a list of class `clusterSP` that contains a variety of information about the clustering solution, which has a plot method `plot.clusterSP` to show the grouping of clustered profiles.
+
+### Hierarchical clustering
+
+Hierarchical clustering organizes data into a tree of nested clusters. Agglomerative hierarchical clustering begins with each profile as a separate cluster and then iteratively merges the closest clusters until all are combined into one. This process forms a dendrogram representing the data's hierarchical structure. The desired number of clusters can be set by specifying the number of groups $k$ or by setting the threshold height for cutting the tree. The method is implemented using the `stats::hclust` function.
+
+```{r}
+cl_hclust <- clusterSP(SPx = SPgroup2, k = 2, type = 'hclust', distmat = distmat1)
+plot(cl_hclust)
+```
+
+### Partitioning around medoids
+
+Partitioning around medoids (PAM) is a partition-based clustering method, where data points are assigned to a predetermined number of distinct clusters $k$. Data points are iteratively assigned to clusters to minimizing the sum of squared distances between data points and the cluster centers. PAM uses actual data points as centers (medoids), as opposed to common k-means clustering that uses an average of data points as the center (centroids). The method is implemented using the `cluster::pam` function.
+
+```{r}
+cl_pam <- clusterSP(SPx = SPgroup2, k = 2, type = 'pam', distmat = distmat1)
+plot(cl_pam)
+```
+
+Horton et al. (submitted) use a fuzzy variant of PAM where data points are assign partial membership values to each cluster, which can be done with the `cluster::fanny` function. Note the example `snowprofileSet` in this vignette does not have enough data points for fanny clustering.
+
+### k-dimension barycentric averaging
+
+k-dimensional barycenter averaging (kdba)) is a variant of k-means clustering that operates directly on sequences or time series data (Petitjean et al., 2011). It computes the barycenter (centroid) of each cluster based on the average dissimilarity between the objects in the cluster and assigns each object to the closest barycenter. For snow profiles, the cluster barycenters are represented by the average snow profile of each using the dynamic time warping barycenter averaging (DBA) method described by Herla et al. (2022).
+
+An initial clustering condition (which can be random or based on a 'sophisticated guess') is iteratively refined by assigning individual profiles to the most similar cluster and at the end of every iteration recomputing the cluster centroids. The result is sensitive to the initial conditions. An advantage of this method is it considered the stratigraphy of the profiles in greater details, but a disadvantage is that iterating over different values of $k$ is slow.
+
+```{r}
+cl_kdba <- clusterSP(SPx = SPgroup2, k = 2, type = 'kdba')
+plot(cl_kdba, centers = 'n')
+```
+
+## Representative profile
+
+Producing representative profiles for each cluster can be useful. You can compute these profiles as centroids using `averageSP` or as medoids using `medoidSP`. Depending on the clustering method, these may already be computed and included in the output of `clusterSP` as medoid indices (`$id.med`) or a `snowprofileSet` of centroid profiles (`$centroids`). To explicitly request specific representative profiles, use the `centers` argument with options 'medoids', 'centroids', 'both', or 'none'. The plot method for `clusterSP` can plot the representative profile beneath the cluster groups.
+
+```{r, fig.height = 4}
+plot(cl_pam, centers = 'medoids')
+plot(cl_kdba, centers = 'centroids')
+```
+
+## Manipulate distance matrix
+
+Horton et al. (submitted) apply clustering to forecast regions by manipulating the distance matrix to also account for spatial and temporal criteria. Here is an example modifying the distance matrix based on an additional criteria: is the top layer in the profile surface hoar?
+
+```{r}
+## A binary vector identifying which profiles have SH on the surface
+sh <- sapply(SPgroup2, function(x) x$layers$gtype[nrow(x$layers)] == 'SH')
+
+## Construct a distance matrix
+distmat_sh <- dist(sh)
+
+## Create weighted average
+distmat <- 0.25 *  distmat1 + 0.75 * distmat_sh
+cl_sh <- clusterSP(SPx = SPgroup2, k = 2, type = 'hclust', distmat = distmat)
+plot(cl_sh)
+```

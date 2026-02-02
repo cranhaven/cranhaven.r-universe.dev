@@ -1,0 +1,228 @@
+---
+title: "Averaging of profiles and retrieval of distributions"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Averaging of profiles and retrieval of distributions}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  out.width = "100%"
+)
+```
+
+## A data exploration tool for averaging and accessing large data sets of snow stratigraphy profiles useful for avalanche forecasting
+
+This vignette creates a link between the methods described in the paper 
+```
+Herla, F., Haegeli, P., and Mair, P.: A data exploration tool for averaging and accessing large data sets of snow stratigraphy profiles useful for avalanche forecasting, The Cryosphere, 16, 3149–3162, https://doi.org/10.5194/tc-16-3149-2022, 2022.
+```
+and this companion R package. While the basic workflow of matching layers between pairs of snow stratigraphy profiles and thereby aligning them is described in the vignette **Basic workflow**, this vignette describes how larger groups of profiles can be aggregated into a representative summary profile (*average profile*) and how underlying distributions of layer or profile properties can be queried through the average profile. 
+
+```{r setup}
+library(sarp.snowprofile.alignment)
+```
+
+To demonstrate how useful aggregations and distributions of snow profiles can be computed with our R package, we use two very simplistic and brief example data sets of snow profiles: `SPgroup2` and `SPspacetime`. While the results of these simplified examples will not look overly interesting, these examples teach you how to apply our tools to your own more challenging data sets.
+
+As detailed in the reference paper, this package includes two different averaging algorithms for snow profiles, one that can be applied to any group of profiles (*default algorithm*) and one that can be applied to seasonal data sets of profiles (*timeseries algorithm*).
+
+## 1. Default algorithm
+
+### 1.1 Averaging of profiles
+The default averaging algorithm can be accessed conveniently through the function `averageSP` and is implemented exactly as described in the reference paper. You can also consult the documentation (`?averageSP`) for more details.
+```{r avgSPdisp, eval=FALSE, echo=TRUE}
+## compute the average profile (here with default settings)
+avgSP <- averageSP(SPgroup2)
+## plot profile set and resulting average profile
+plot(SPgroup2, SortMethod = 'hs', xticklabels = 'originalIndices')
+plot(avgSP$avg)
+```
+```{r avgSPcalc, eval=TRUE, echo=FALSE, fig.asp=0.7, dpi = 300}
+avgSP <- averageSP(SPgroup2, n = 1, progressbar = FALSE)
+layout(matrix(c(1, 2), ncol = 2), widths = c(2.5, 1))
+par(cex = 0.3)
+plot(SPgroup2, SortMethod = 'hs', xticklabels = 'originalIndices', ylim = c(0, 150), main = "individual profiles of example set 'SPgroup2'")
+par(mar = c(5.1, 2.1, 2.1, 1.1))
+plot(avgSP$avg, main = "average profile", ymax = 150)
+```
+Note: To speed up the computation in this vignette, the above figure was not computed with default settings in the background, but with a limited number of initial conditions. The displayed result might not represent the optimal average profile, so recompute it yourself with the default settings displayed above, or experiment with other settings! 
+
+It might be worthwhile to reflect on which layers you consider weak layers. With the function argument `classifyPWLs` you can make the averaging algorithm consider your perspective on weak layers and make them more likely to get included in the resulting profile. One approach (the default) could be to consider all surface/depth hoar layers as weak layers. Another approach could be to consider all persistent grain types that have one particular stability index above or below a certain threshold. Or you can also consider multiple different stability indices. Make sure to consult the documentation for some more details and tips.
+
+
+### 1.2 Retrieval of distributions: Backtracking of layers
+Since all layers of all individual profiles are matched against the layers of the average profile, we can backtrack each layer of the average profile to obtain all underlying layers that were matched against it. This allows us to compute various layer distributions or profile distributions as visualized in Figure 2 of the reference paper:
+
+```{r, echo=FALSE}
+knitr::include_graphics("figures/averageSPdistributions.png")
+```
+
+To compute an underlying distribution for the average example profile from above, we have to call the function `backtrackLayers`. You can either backtrack all layers of the average profile, or select specific layers of your interest. 
+
+### Backtracking individual layers
+
+In the next example, let's only backtrack the surface hoar layer that is buried just below the new snow in the average example profile:
+
+```{r, echo=TRUE, eval=TRUE, fig.asp=0.5, dpi = 300}
+## identify layer of interest: we need its row index
+deepestSH_index <- min(findPWL(avgSP$avg, pwl_gtype = "SH"))  # this is the deepest SH of the profile, in our specific case exactly what we want
+## alternatively, you can (additionally) query for its date, 
+## or you can identify it manually by investigating the profile layers data frame:
+# View(avgSP$avg$layers)
+
+## backtrack this one layer
+backtrackedlayers <- backtrackLayers(avgSP$avg, layer = deepestSH_index, profileSet = avgSP$set)
+## analyze result:
+str(backtrackedlayers)  
+## the backtrackedLayers object is a list of data frames, one data frame for each averaged layer (in our case 1); 
+## list elements are named by the height (cm) of the averaged layer
+```
+
+```{r, fig.asp=0.3, dpi = 300}
+## compute whatever distribution you're interested: e.g., depth histogram
+par(cex = 0.3)
+hist(backtrackedlayers[[1]]$depth, 
+     main = "Depth distribution of deepest SH layer", xlab = "Depth (cm)")
+```
+
+### Backtracking all layers simultaneously
+
+This is most meaningful if you're interested in the stability distributions of all layers.
+
+```{r, echo=TRUE, eval=TRUE}
+## backtrack all layers by not providing a row index
+backtrackedlayers <- backtrackLayers(avgSP$avg, profileSet = avgSP$set)
+```
+
+```{r}
+## identify proportion of underlying layers with good/fair/poor stability 
+## (here with RTA, but feel free to choose any other index or thresholds!)
+transitional <- sapply(backtrackedlayers, function(bti) {
+  sum(bti$rta >= 0.6)/ length(bti$rta)
+  })  # proportion of layers fair stability
+poor <- sapply(backtrackedlayers, function(bti) {
+  sum(bti$rta >= 0.8)/ length(bti$rta)
+  })  # proportion of layers poor stability
+```
+
+
+Currently, visualizing the stability distributions for the entire profile needs to be done by hand because no convenient wrapper function exists yet. In the following you get an idea of how that can be done:
+
+```{r, echo=TRUE, eval=TRUE, fig.asp=0.7, dpi = 300}
+## visualize profile
+layout(matrix(c(2, 1), 1, 2, byrow = TRUE), c(1.2, 1.8))
+par(mar = c(9.1, 0, 2.1, 2.1), bg = "transparent", cex = 0.3)
+plot(avgSP$avg, axes = FALSE, xlab = "")
+axis(1, at = seq(5), labels = c("F", "4F", "1F", "P", "K"))
+mtext("Hardness", side = 1, line = 5.5, cex = 0.3)
+##
+## stacked barplot for stability distributions
+par(mar = c(9.1, 5.1, 2.1, 0))
+x0 <- 0
+ygrid <- as.numeric(names(backtrackedlayers))  # the names of the list define the height grid
+cols <- c("gray90", "gray70", "gray20")
+stackedhist <- rbind(data.frame(xleft = 0, xright = 1-transitional, ytop = ygrid, 
+                                ybottom = c(0, ygrid[1:(length(ygrid)-1)]), col = cols[1]),
+                     data.frame(xleft = 1-transitional, xright = (1-transitional) + transitional, 
+                                ytop = ygrid, ybottom = c(0, ygrid[1:(length(ygrid)-1)]), col = cols[2]),
+                     data.frame(xleft = 1-poor, xright = 1, ytop = ygrid, 
+                                ybottom = c(0, ygrid[1:(length(ygrid)-1)]), col = cols[3]))
+plot(ygrid, xlim = c(0, 1), ylim = c(0, max(ygrid)), frame.plot = FALSE, type = 'n', 
+     axes = FALSE, xlab = "", ylab = "Height (cm)")
+mtext("Proportion of  \nindividual profiles", side = 1, line = 5.5, cex = 0.3)
+rect(xleft = x0+stackedhist$xleft, ybottom = stackedhist$ybottom, 
+     xright = x0+stackedhist$xright, ytop = stackedhist$ytop, 
+     col = stackedhist$col, border = NA)
+xaxisticks <- c(0, 0.2, 0.5, 0.8, 1)
+axis(1, at = xaxisticks, labels = rev(xaxisticks))
+axis(2, at = pretty(ygrid))
+abline(v = 0.2, lty = "dotted", col = "gray")
+abline(v = 0.5, lty = "dotted", col = "gray")
+abline(v = 0.8, lty = "dotted", col = "gray")
+```
+Admittedly, the distribution looks very pixelated, but that's solely due to the few number of underlying profiles (it's 5 underlying profiles in our case here). Grab a data set of yours and try it yourself with more profiles!
+
+# 2. Timeseries algorithm
+To run the timeseries algorithm, you need spatially distributed snow profiles from consecutive days of a season in the form of a `snowprofileSet` object. So far, temporal sampling needs to be at 1 day, or in other words for every grid point you need one profile per day. If that's not sufficient for you, please reach out, so that we can potentially tweak these requirements for you.
+
+The timeseries averaging algorithm is accessible through the function `averageSPalongSeason`. If you provide the function with your profile set, it will start averaging all profiles from the first day and then iterate through the time range available within your profile set. If you want to create an average time series on a day-by-day basis as the season progresses, you can provide the average profile from the day before as initial condition to save lots of computing time. 
+
+While labeling of weak layers is optional in the default algorithm, because a simple default approach has been implemented, for various reasons the user needs to label weak layers herself before calling the timeseries algorithm:
+
+```{r timeseries}
+## labeling of weak layers; again you can choose your own rules and thresholds!
+SPspacetime <- snowprofileSet(lapply(SPspacetime, function(sp) {
+  labelPWL(sp, pwl_gtype = c("SH", "DH", "FC", "FCxr"), threshold_RTA = 0.8)
+  }))  # label weak layers in each profile of the profile set 'SPspacetime'
+
+## average along several days
+avgSP <- averageSPalongSeason(SPspacetime)
+```
+```{r, dpi=300, fig.asp=0.7}
+## explore the average timeseries object:
+names(avgSP)
+avgSP$call
+avgSP$meta
+
+## visualize the time series
+par(cex = 0.3)
+plot(avgSP$avgs, main = "Timeseries of average profile with median HS and median new snow amounts highligted", xlab = "Daily progression")
+lines(avgSP$meta$date, avgSP$meta$hs_median)
+lines(avgSP$meta$date, avgSP$meta$hs - avgSP$meta$thicknessPPDF_median, lty = "dashed")
+```
+
+The median height or depth of predominant layers will be close to the height or depth as displayed by the average time series. However, since the time series also displays the median snow height or the median new snow amounts, the displayed height or depth of individual layers will not always be correct. If you're interested in the actual median height/depth, you can look up the layer properties `medianPredominantHeight`, `medianPredominantDepth` and visualize them in the time series with the help of the following brief helper function:
+
+```{r, fig.asp=0.7, dpi = 300}
+## brief helper function for median vertical locations of specific layers (i.e., height or depth)
+medianVLOC <- function(avgObj, pwldate, vloc = "Depth", pwlgt = c("SH", "DH"), date_range_earl = -5, draw = TRUE) {
+  mvl <- unname(do.call("c", lapply(avgObj$avgs, function(avg) {
+    median(avg$layers[, paste0("medianPredominant", vloc)][findPWL(avg, pwl_gtype = pwlgt, pwl_date = pwldate, 
+                                                                   date_range_earlier = as.difftime(date_range_earl, units = "days"))])
+  })))
+  if (draw) {
+    if (vloc == "Depth") lines(avgObj$meta$date, avgObj$meta$hs_median - mvl, lty = "dotted", lwd = 2)
+    else if (vloc == "Height") lines(avgObj$meta$date, mvl, lty = "dotted", lwd = 2)
+  }
+  return(mvl)
+}
+
+## plot time series...
+par(cex = 0.3)
+plot(avgSP$avgs, main = "Time series with median depth of middle Nov 22 DH layer highlighted", xlab = "Daily progression")
+## ... and apply above function to the Nov 22 weak layer
+medianDepth_NOV22 <- medianVLOC(avgSP, "2018-11-23", vloc = "Depth")
+```
+
+## 2.1 Visualizing layer distributions in the timeseries
+Analogously to the default algorithm, you can backtrack layers in the timeseries application. Since you will have a lot more profiles and layers to backtrack you need to account for more computation time though. To speed up cases that we find particularly insightful, the timeseries object will already contain a few of these backtracked distributions, for example the distributions of layer stabilities as diagnosed by the index p_unstable (Mayer et al, 2022). You can find that distribution as layer property `ppu` (*proportion p_unstable*) and `ppu_all`. While `ppu` contains the stability distribution of the predominant layer, `ppu_all` contains the stability distribution of all layers that were matched against an average layer. 
+
+To make the package as customizable as possible, you can plot a time series of snow profiles based various different properties (see `?plot.snowprofileSet`). Most often we personally use grain types to visualize sets of profiles. However, besides various different stability indices, you can also plot *percentages* of distributions. Since we cannot anticipate what kind of distributions you will be interested in, you have to rename your distribution of interest into a layer property `percentage` to visualize it conveniently. For the stability distribution of p_unstable, this can be done as follows:
+
+```{r, fig.asp=0.7, dpi=300}
+## rename the variable ppu_all to 'percentage' for subsequent plotting
+avgSP$avgs <- snowprofileSet(lapply(avgSP$avgs, function(avg) {
+  avg$layers$percentage <- avg$layers$ppu_all
+  avg
+}))
+
+## overplot the grain type time series with the stability distribution
+par(cex = 0.3)
+plot(avgSP$avgs[avgSP$meta$date>="2018-09-20"], colAlpha = 0.5, main = "time series of average profile overplotted with stability distribution", xlab = "Daily progression")
+plot(avgSP$avgs[avgSP$meta$date>="2018-09-20"], ColParam = "percentage", add = TRUE)
+```
+
+Again, the resulting figure of our demo example looks pixelated and not really helpful, but if you do this for an entire season of profiles from a proper forecast region, you will end up with a time series as shown in Figure 4 of the reference paper:
+
+```{r echo=FALSE}
+knitr::include_graphics("figures/averageSPseason_stability.png")
+```
+
+
+# 3. Next steps
+Now grab your own data sets of snow profiles and try these examples yourself. Always remember that each function has a proper documentation that you can consult, and most of the functions are implemented highly customizable. If you happen to need even more of a template, you can go to the Data and Code repository of the reference paper at [https://osf.io/7ma6g/] and follow the calculations of the paper step-by-step. And finally, if you run into bugs, please excuse us and reach out to us so that we can fix them!
