@@ -1,0 +1,420 @@
+---
+title: "Multi-State Models for Oncology"
+author: "Kevin Kunzmann"
+bibliography: references.bib
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{oncomsm}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r knitr-options, include=FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  fig.width = 7,
+  fig.height = 7 / 1.61,
+  fig.align = "center"
+)
+```
+
+```{r setup}
+library(oncomsm)
+library(dplyr, warn.conflicts = FALSE)
+library(ggplot2)
+```
+
+
+
+**tl;dr:** *The multi-state characteristics of RECIST-like visit data
+in oncology can be exploited to reduce bias at interim analyses of objective
+response rate and drive event prediction for probability of success/go 
+calculations.*
+
+In early oncology trials, (objective tumor) response based on the RECIST
+criteria is often used as primary endpoint to establish the activity of
+a treatment. 
+Often, response is treated as binary variable although it is
+a delayed event endpoint. 
+At the final analysis, this simplification is of little concern since all 
+individuals tend to be followed up long enough to ignore the small amount of
+censoring. 
+However, when continuously monitoring such a trial, the assumption of
+sufficient follow-up is no longer fulfilled at interim analyses and a simple 
+binary analysis is biased.
+
+The problem can be addressed by extending the statistic binary response model 
+to a three-state model for "stable", "response", and "progression or death".
+The respective transition numbers are given in the graph below.
+
+```{r msm-1, eval=TRUE, echo=FALSE}
+DiagrammeR::mermaid("
+graph LR
+  stable -- 1 --> response
+  response -- 3 --> progression[progression or death]
+  stable -- 2 --> progression[progression or death]
+", height = 200)
+```
+
+Often, a hazard-based approach is used to model multi-state data. 
+However, a hazard-based approach has several disadvantages:
+
+1. The hazard scale is difficult to interpret since it is a momentary risk, 
+not a probability. 
+This leads to problems with prior specification in a Bayesian setting.
+The Bayesian approach is, however, particularly useful in the early development 
+process since it allows to augment data with prior opinion or evidence and thus 
+improve accuracy.
+
+2. A hazard based, non-Markov multi-state model leads to intractable expressions 
+for the implicitly given transition probabilities. Hence they need to be 
+calculated by simulation which makes the model less convenient to work with if
+transition probabilities a or of primary interest. Since the (objective) response 
+rate often plays an important role in the analysis of early oncology trials,
+this is a disadvantage. 
+
+An alternative framework to model multi-state data are mixture models.
+For details, see @jackson_comparison_2022 and @jackson_flexible_2022.
+Here, we describe the concrete application to he simplified "stable", 
+"response", "progression" model.
+The approach is similar to @aubel_bayesian_2021 and @beyer_multistate_2020.
+
+Here, a semi-Markov approach is used.
+This means that the time to the next transition only depends on the time
+already spent in a state, not on the full history of previous jumps.
+Additionally, it is assumed that the transition times between states conditional
+on both originating and target state can be described by Weibull distributions. 
+This parametric family encompasses the exponential distribution with constant
+transition rates as special cases but also allows increasing or decreasing 
+hazards over time.
+
+Let $T_{S}$ be the transition time from the "stable" state and
+$T_{R}$ the transition time from the "response" state (also "sojourn" times).
+Let further $R$ be a binary random variable with $R=1$ if a response occurs, 
+then the model can be specified as:
+
+$$
+\begin{align}
+R &\sim \operatorname{Bernoulli}(p) \\
+T_{S} \,|\, R = 1 &\sim \operatorname{Weibull}(k_1, \lambda_1) \\
+T_{S} \,|\, R = 0 &\sim \operatorname{Weibull}(k_2, \lambda_2) \\
+T_{R}             &\sim \operatorname{Weibull}(k_3, \lambda_3)
+\end{align}
+$$
+where $k$ is the vector of shape- and $\lambda$ the vector of scale parameters.
+Let further $f_i(t)$ be the PDF of the Weibull distribution of transition 
+$i\in\{1,2,3\}$ as indicated in the above figure and let $F_i(t)$ the 
+corresponding CDF.
+This model implies that 
+$$
+\operatorname{Pr}\big[\,T_{S} > t \,\big]  = p\cdot(1 - F_1(t))  + (1 - p)\cdot(1 - F_2(t))\\
+$$
+hence, it can be seen as a mixture model. 
+
+The median of a Weibull-distributed random variable is directly related to 
+shape and scale parameters.
+Since the former is more convenient to interpret, the Weibull distributions are
+parameterized directly via their shape and median.
+The scale parameter can then be recovered via the relationship 
+
+$$
+\operatorname{scale} = \frac{\operatorname{median}}{\log(2)^{1/\operatorname{shape}}} . 
+$$
+
+The following prior classes are used.
+
+For the response probability $p$, a $(1-\eta)\,\operatorname{Beta}(a,b)+\eta\,\operatorname{Unif}(0,1)$ is used.
+The prior is specified via the equivalent sample size $a+b$ and the mean of the
+informative component $a/(a+b)$.
+
+A log-normal distribution is used for the median time-to-next event, the
+parameters are inferred from specified $0.05$ and $0.95$ quantiles.
+
+A log-normal distribution is used for the shape parameter of the Weibull
+distributions,
+the parameters are inferred from specified $0.05$ and $0.95$ quantiles.
+
+It is assumed that the observation process (visit spacing) is fixed. 
+Since transitions can only be recorded after the next visit,
+all transition times are interval censored.
+
+Recruitment times are assumed to follow a poisson distribution.
+
+Default parameters assume a timescale in months.
+
+
+## Specifying the model
+
+The following code defined the prior assumptions for a two-group trial with
+a visit-spacing of 1 months.
+The prior variance on the shape parameter is very low.
+For sampling from the prior, this does not not matter and more uncertainty about
+the Weibull shape parameters can be assumed.
+During posterior inference, identifying shape and scale (median time to event)
+from a small sample of interval censored observations is not feasible and leads
+to divergent MCMC samples.
+The shape thus has to be kept almost fixed in most cases when doing inference.
+
+```{r specify-model}
+mdl <- create_srpmodel(
+  A = define_srp_prior(
+    p_mean = 0.4, p_n = 10,
+    median_t_q05 = c(3, 2, 6) - 1, # s->r s->p r->p
+    median_t_q95 = c(3, 2, 6) + 1
+  ),
+  B = define_srp_prior(
+    p_mean = 0.6, p_n = 10,
+    median_t_q05 = c(2, 8, 3) - 1, # s->r s->p r->p
+    median_t_q95 = c(2, 8, 12) + 1,
+    shape_q05 = c(2, 2, 0.75),
+    shape_q95 = c(2.1, 2.1, 0.76)
+  )
+)
+
+print(mdl)
+```
+
+The model assumptions can be visualized by sampling from the prior.
+
+
+## Prior checks
+
+First, we plot the cumulative distribution functions (CDF) of the 
+time-to-next-event over the first 36 (months) and the CDF of the 
+response probabilities per group.
+These are based on a sample drawn from the prior distribution of the model.
+We can re-use the same parameter sample for sampling from the prior-predictive
+distribution by separating the sampling from the plotting steps.
+
+Often, the rate of progression free survival (PFS) at a particular time point 
+is of interest.
+This quantity is a direct function of the model parameters.
+Since the simplified model does not distinguish between progression or 
+death, we denote the combined endpoint as "progression".
+$$
+\begin{align}
+\operatorname{PFS}(t) :&= \operatorname{Pr}\big[\,\text{no progression before } t\,\big] \\
+  &= 1 - \operatorname{Pr}\big[\,\text{progression before } t\,] \\
+  &= 1 - \Big(\ \operatorname{Pr}\big[\,\text{progression before } t\,|\, \text{response}\,]\cdot\operatorname{Pr}\big[\,\text{response}\,] \\
+  &\qquad+ \operatorname{Pr}\big[\,\text{progression before } t\,|\, \text{no response}\,]\cdot\operatorname{Pr}\big[\,\text{no response}\,] \ \Big)\\
+  &= 1 - p\cdot\int_0^t f_1(u) \cdot F_3(t - u) \operatorname{d}u - (1 - p)\cdot F_2(t) \ .
+\end{align}
+$$
+The integral arises from the need to reflect the uncertainty over the 
+state change from "stable" to "response" on the way to "progression".
+Any parameter sample thus also induces a sample of the PFS rate at any given 
+time point and the curve of PFS rate over time corresponds to the survival
+function of the "progression or death" event.
+
+```{r plotting-the-prior}
+smpl_prior <- sample_prior(mdl, seed = 36L)
+
+# plot(mdl) also works but need to resample prior further below
+plot(mdl, parameter_sample = smpl_prior, confidence = 0.75)
+```
+
+
+## Sampling from the prior-predictive distribution
+
+Next, we draw samples from the prior-predictive distribution of the model.
+We sample 100 trials with 30 individuals per arm.
+Here, we can re-use the sample prior sample already used for plotting.
+
+```{r prior-predictive}
+tbl_prior_predictive <- sample_predictive(
+  mdl,
+  sample = smpl_prior,
+  n_per_group = c(30L, 30L),
+  nsim = 100,
+  seed = 342
+)
+
+print(tbl_prior_predictive, n = 25)
+```
+
+We can then run some quick checks on the sampled data, e.g., the observed 
+response rates.
+
+```{r}
+tbl_prior_predictive %>%
+  group_by(group_id, iter, subject_id) %>%
+  summarize(
+    responder = any(state == "response"),
+    .groups = "drop"
+  ) %>%
+  group_by(group_id) %>%
+  summarize(
+    p_response = mean(responder),
+    se = sd(responder) / sqrt(n())
+  )
+```
+
+A crude approximation of the median transition times can be compared with the
+prior means. 
+
+```{r}
+tbl_prior_predictive %>%
+  distinct(subject_id, iter, state, .keep_all = TRUE) %>%
+  group_by(iter, group_id, subject_id) %>%
+  summarize(
+    dt = t - lag(t),
+    from = lag(state),
+    to = state,
+    .groups = "drop"
+  ) %>%
+  filter(to != "stable") %>%
+  group_by(group_id, from, to) %>%
+  summarize(
+    `median transition time` = median(dt),
+    .groups = "drop"
+  )
+```
+
+By default, the prior predictive distribution is given in terms of panel visit
+data.
+The data can be transformed to interval-censored multi-state representation,
+(here only first sampled trial).
+
+```{r convert-to-mstate}
+tbl_mstate <- tbl_prior_predictive %>%
+  filter(iter == 1) %>%
+  visits_to_mstate(mdl)
+
+tbl_mstate
+```
+
+The multi-state data can be visualized in swimmer plots.
+
+```{r plot-preior-predictive, fig.height=6}
+plot_mstate(tbl_mstate, mdl)
+```
+
+It is also possible to simulate from the prior predictive distribution while
+fixing some of the parameter values.
+Fixing parameter values can be interpreted as conditioning on some or all of
+the parameters.
+For instance one could set the response probabilities to fixed values of $0.1$
+and $0.9$:
+
+```{r prior-predictive-fixed}
+sample_predictive(
+    mdl,
+    sample = smpl_prior,
+    p = c(0.1, 0.9),
+    n_per_group = c(30L, 30L),
+    nsim = 100,
+    seed = 3423423
+  ) %>%
+  group_by(group_id, iter, subject_id) %>%
+  summarize(
+    responder = any(state == "response"),
+    .groups = "drop"
+  ) %>%
+  group_by(group_id) %>%
+  summarize(
+    p_response = mean(responder),
+    se = sd(responder) / sqrt(n())
+  )
+```
+
+
+
+## A hypothetical interim analysis
+
+First, we sample a single data set under extreme response probabilities that
+deviate from the chosen prior.
+The data can then be curtailed to a hypothetical interim time-point simply by
+filtering the visit time-points.
+
+```{r}
+tbl_data_interim <- sample_predictive(
+    mdl,
+    sample = smpl_prior,
+    p = c(0.2, 0.8),
+    n_per_group = c(30L, 30L),
+    nsim = 1,
+    seed = 42L
+  ) %>%
+  filter(
+    t <= 15
+  )
+``` 
+
+The censoring in the interim data can be visualized in a swimmer plot again.
+
+```{r, fig.height=6}
+tbl_data_interim %>%
+  visits_to_mstate(mdl, now = 15) %>%
+  plot_mstate(mdl, relative_to_sot = FALSE, now = 15)
+```
+
+We can check the observed response rates again.
+Due to censoring at the interim time point, the response rate estimate is biased.
+
+```{r}
+tbl_data_interim %>%
+  group_by(group_id, iter, subject_id) %>%
+  summarize(
+    responder = any(state == "response"),
+    .groups = "drop"
+  ) %>%
+  group_by(group_id) %>%
+  summarize(
+    p_response = mean(responder),
+    se = sd(responder) / sqrt(n())
+  )
+```
+
+Instead, one can now do inference by drawing sample from the posterior
+distribution this will account for censoring.
+Since the data conflicts with the prior, the posterior mass will move 
+in the direction of the observed response rates.
+
+```{r}
+smpl_posterior <- sample_posterior(mdl, tbl_data_interim, seed = 43L)
+# plot under posterior
+plot(mdl, parameter_sample = smpl_posterior, confidence = 0.75)
+# calculate posterior quantiles of response probability
+smpl_posterior %>%
+  parameter_sample_to_tibble(mdl, .) %>%
+  filter(parameter == "p") %>%
+  group_by(group_id) %>%
+  summarize(
+    p_posterior_mean = median(value),
+    q25 = quantile(value, probs = .25),
+    q75 = quantile(value, probs = .75)
+  )
+```
+
+Alternatively, the analysis could also be run using the default
+weakly-informative prior.
+For details on the prior choice, see the corresponding vignette.
+
+```{r}
+mdl2 <- create_srpmodel(
+  A = define_srp_prior(),
+  B = define_srp_prior()
+)
+smpl_posterior2 <- sample_posterior(mdl2, tbl_data_interim, seed = 43L)
+# plot under posterior
+plot(mdl2, parameter_sample = smpl_posterior2, confidence = 0.75)
+# calculate posterior quantiles of response probability
+smpl_posterior2 %>%
+  parameter_sample_to_tibble(mdl2, .) %>%
+  filter(parameter == "p") %>%
+  group_by(group_id) %>%
+  summarize(
+    p_posterior_mean = median(value),
+    q25 = quantile(value, probs = .25),
+    q75 = quantile(value, probs = .75)
+  )
+```
+
+
+
+## Session info
+
+```{r session-info}
+sessionInfo()
+```
