@@ -1,0 +1,297 @@
+---
+title: "EcoCleanR: Overview on Steps for Data cleaning and defining Biogeographic ranges"
+output: rmarkdown::html_vignette
+
+vignette: >
+  %\VignetteIndexEntry{data_cleaning}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  # eval = FALSE,
+  fig.width = 8,
+  fig.height = 6,
+  out.width = "70%"
+)
+```
+## Introduction:
+
+In this tutorial, we will demonstrate the step-by-step process of cleaning occurrences and extracting environmental data for the coastal species Mexacanthina lugubris.
+
+This workflow covers data Cleaning: <br>
+1. Remove duplicates<br>
+2. Check bad taxon using WoRMs<br>
+3. Improve the coordinate information utilizing external georeference tools<br>
+4. check the coordinate precision and rounding<br>
+5. Flag the records associated with the wrong ocean/sea and inland<br>
+6. Extract the environmental variables<br>
+7. Impute the environmental variables if no assignment from online resources<br>
+8. Identifying outliers<br>
+9. Data visualization: <br>
+Below is the demonstration of each steps:
+
+**Note:** For details on data integration, see the [`data_merging`]
+
+```{r setup}
+# package loading
+library(EcoCleanR)
+library(dplyr)
+```
+```{r}
+# provide example species name
+species_name <- "Mexacanthina lugubris"
+```
+
+## Step1: Remove duplicates
+Remove duplicates from the merged dataset which is a product after merging data from various sources
+
+`ec_rm_duplicate` will return an occurrence table "ecodata" after removing duplicates based on unique catalog numbers, while retaining abundance counts wherever available.
+
+```r
+ecodata <- ec_rm_duplicate(Mixdb.occ, catalogNumber = "catalogNumber", abundance = "abundance")
+str(ecodata[,1:3])
+
+### Optional to perform: check the institution code
+# inst_counts <- ecodata %>%
+# group_by(institutionCode) %>%
+# summarise(record_count = n(), .groups = "drop")
+
+### optional to perform..
+# ecodata <- ecodata %>%
+# filter(is.na(institutionCode) | institutionCode != "NRM")
+
+```
+```{r}
+ec_geographic_map(ecodata,
+  latitude = "decimalLatitude",
+  longitude = "decimalLongitude"
+)
+```
+
+## Step2: Remove bad taxa
+This step helps to check if any wrong taxonomy has fetched from online datasources by checking if it is an accepted synonym in the WoRMS (World Register of Marine Species) taxonomy database
+
+`ec_worms_synonym` returns a table named comparison with two columns: the first column lists the synonyms accepted in the WoRMS database, and the second column lists the unique species names from ecodata with the counts of occurrences
+
+```{r}
+comparison <- ec_worms_synonym(species_name,
+  ecodata,
+  scientificName = "scientificName"
+)
+print(comparison)
+# compare the columns to know if any taxa found that is not a synonym in WoRMS data base, filter bad taxa from ecodata using dplyr::filter()
+```
+
+## Step3: Georeferencing using external tool
+
+This step generates a table "data_need_correction" that can potentially assign georeferences based on the locality and verbatim locality information in the occurrence table by using furntion `ec_flag_with_locality`.
+
+This table can be further used as an input file for the GEOLocate tool to perform georeferencing. Currently, there is no R code available to automate this process. This process require manual validation on each records for the assigned coordinates and uncertainty. (see Scenario B in the manuscript for this example)
+
+Use `ec_merge_coorected_Coordinates` to assigned corrected coordinates - latitude, longitude and coordinte uncertainty, back into main data table. 
+Pre-saved data file ecodata_corrected.rda, an example to use as template.
+
+```r
+ecodata$flag_check_geolocate <- ec_flag_with_locality(ecodata,
+  uncertainty = "coordinateUncertaintyInMeters",
+  locality = "locality",
+  verbatimLocality = "verbatimLocality"
+)
+str(ecodata[,1:3])
+data_need_correction <- ecodata %>%
+filter(flag_check_geolocate!= 1)
+#save the data as local file to insert in GEOLocate web tool
+#write.csv(data_need_correction, "data_check_geolocate.csv")
+
+#Load back the corrected coordinate file extracted from GEOLocate 
+#ecodata_corrected <- read.csv("M lugubris_corrected_geolocate.csv")
+
+### Merged records with improved georeference:
+ecodata <- ec_merge_corrected_coordinates(
+  ecodata_corrected, 
+  ecodata, 
+  latitude = "decimalLatitude", 
+  longitude = "decimalLongitude",       
+  uncertainty_col = "coordinateUncertaintyInMeters"
+)
+str(ecodata[,1:3]) 
+
+### Plot the map to visualize the datapoints
+ec_geographic_map(ecodata, latitude = "decimalLatitude", longitude = "decimalLongitude")
+```
+## Step4: Extreme high uncertainty
+
+`ec_filter_by_uncertainty` function can be used in all scenarios (see manuscript) to help remove extremely high uncertainty from the remaining data. 
+
+```{r}
+ecodata_cl <- ec_filter_by_uncertainty(ecodata,
+  uncertainty_col = "coordinateUncertaintyInMeters",
+  percentile = 0.95,
+  ask = FALSE,
+  latitude = "decimalLatitude",
+  longitude = "decimalLongitude"
+)
+str(ecodata_cl[, 1:3])
+### plot the map
+ec_geographic_map(ecodata_cl,
+  latitude = "decimalLatitude",
+  longitude = "decimalLongitude"
+)
+```
+
+## Step5: Coordinate precision and rounding
+`ec_flag_precision` checks the precision of the coordinates. This function flags the records based on two checkpoints: 1) flag both coordinates independently if they have <2 decimal points; 2) check if any rounding to the nearest 0.5° in either of those coordinates. 
+```{r}
+ecodata_cl$flag_precision <- ec_flag_precision(ecodata_cl,
+  latitude = "decimalLatitude",
+  longitude = "decimalLongitude"
+)
+
+# filter the flag - flag_cordinate_precision
+ecodata_cl <- ecodata_cl %>%
+  filter(flag_precision != 1)
+str(ecodata_cl[1:3])
+```
+
+## Step6: Records tagged to wrong ocean/sea
+
+`ec_flag_non_region` function helps identify records that are incorrectly tagged under the wrong ocean or sea. Expert knowledge is required to recognize when a species is unlikely to occur in certain ocean regions. For example, Mexacanthina lugubris is an Eastern Pacific species; therefore, any occurrences reported from the Atlantic Ocean would be flagged after running this function. <br>
+  Variables "direction" accepts input as "east" or "west",
+and variable "ocean" accepts input "atlantic" or "pacific". <br>
+  If given species lives globally, this cleaning step would not be needed.
+
+```{r heavy-processing-0, eval = FALSE}
+# This is a heavy processing step, won’t execute during vignette building.
+direction <- "east"
+buffer <- 25000
+ocean <- "pacific"
+ecodata_cl$flag_non_region <- ec_flag_non_region(direction,
+  ocean,
+  buffer,
+  ecodata_cl,
+  latitude = "decimalLatitude",
+  longitude = "decimalLongitude"
+)
+str(ecodata_cl[, 1:3])
+# filter flagged records
+ecodata_cl <- ecodata_cl %>%
+  filter(flag_non_region != 1)
+### map view to see accepted records
+ec_geographic_map(ecodata_cl,
+  latitude = "decimalLatitude",
+  longitude = "decimalLongitude"
+)
+```
+
+## Step7: Extract the environmental data
+
+`ec_extract_env_layers` This function extracts environmental data for occurrence points using their associated coordinates. It is designed with the 'sdmpredictors' package to extract layers from sources such as Bio-ORACLE, MARSPEC, and WorldClim.
+
+`ec_impute_env_values` imputes environmental data for coordinates lacking values in the environmental data sources. This will provide average value of existing data within input radius.
+
+```{r heavy-processing-1, eval = FALSE}
+# This is a heavy processing step, won’t execute during vignette building.
+# get the unique combination of coordiantes
+ecodata_unique <- ecodata_cl[, c("decimalLatitude", "decimalLongitude")]
+ecodata_unique <- base::unique(ecodata_unique)
+# It is recommended to check what layers available in sdm_predictors and correct name.
+# available_layers <- list_layers() # returns something like c("BO_sstmean", "BO_sstmax", ...)
+# provide layers as input to env_layers variable
+env_layers <- c("BO_sstmean", "BO_sstmin", "BO_sstmax")
+
+### extraction env layers
+ecodata_unique <- ec_extract_env_layers(ecodata_unique,
+  env_layers = env_layers,
+  latitude = "decimalLatitude",
+  longitude = "decimalLongitude"
+)
+# A warning message if layers are in saved in cache.
+
+### impute env var values those were missing after extraction
+ecodata_unique <- ec_impute_env_values(
+  ecodata_unique,
+  latitude = "decimalLatitude",
+  longitude = "decimalLongitude",
+  radius_km = 10,
+  iter = 3
+)
+
+### omit the coordinate which couldn't get any env values after imputation
+ecodata_unique <- na.omit(ecodata_unique)
+```
+
+## Step8: Identify outliers
+ec_flag_outlier function helps to identify outliers based on both spatial (coordinates) and non-spatial (environmental) attributes. (see manuscript for more detail about this function)
+```{r heavy-processing-2, eval = FALSE}
+# This is a heavy processing step, won’t execute during vignette building.
+# Instead of executing it here, we will use a pre-saved cleaned file.
+ecodata_unique$flag_outliers <- ec_flag_outlier(ecodata_unique,
+  latitude = "decimalLatitude",
+  longitude = "decimalLongitude",
+  env_layers,
+  itr = 50,
+  k = 3,
+  geo_quantile = 0.99,
+  maha_quantile = 0.99
+)$outlier
+
+### these unique combinations of coordiantes, environmental variables and outliers will be mergeed to main ecodata_cl file
+ecodata_cl <- ecodata_cl %>%
+  left_join(ecodata_unique[, c("decimalLatitude", "decimalLongitude", "flag_outliers", env_layers)],
+    by = c("decimalLatitude", "decimalLongitude")
+  )
+```
+```{r}
+# pre-saved file ecodata_with_outliers instead of using ecodata_cl
+### map view to see records with outlier probability
+ec_geographic_map_w_flag(ecodata_with_outliers,
+  flag_column = "outliers",
+  latitude = "decimalLatitude",
+  longitude = "decimalLongitude"
+)
+```
+```r
+### Filter outliers those have higher outlier probability >0.90, 0.95 etc.
+ecodata_cleaned <- ecodata_cl %>%
+  filter(flag_outliers < 0.95)
+```
+```{r}
+### mapview to visualize accepted data
+ec_geographic_map(ecodata_cleaned,
+  latitude = "decimalLatitude",
+  longitude = "decimalLongitude"
+)
+```
+
+## Step9: Display final accepted biogeographic range
+`ec_var_summary` generates a summary table of accepted occurrences after data cleaning, showing mean, minimum, and maximum values for spatial and non-spatial attributes.
+
+`ec_plot_var_range` shows a plot of accepted ranges.
+
+```{r}
+env_layers <- c("BO_sstmean", "BO_sstmax", "BO_sstmin")
+data("ecodata_cleaned")
+summary_table <- ec_var_summary(ecodata_cleaned,
+  latitude = "decimalLatitude",
+  longitude = "decimalLongitude",
+  env_layers
+)
+head(summary_table)
+
+ec_plot_var_range(ecodata_with_outliers,
+  summary_df = summary_table,
+  latitude = "decimalLatitude",
+  longitude = "decimalLongitude",
+  env_layers = env_layers
+)
+```
+
+Further documents:<br>
+  
+  *see data merging vignette: [`data_merging`]<br>
+  
+  *see citation guidelines for the downloaded files from gbif, obis, idigbio and InvertEbase vignettes/article/cite_data.rmd
