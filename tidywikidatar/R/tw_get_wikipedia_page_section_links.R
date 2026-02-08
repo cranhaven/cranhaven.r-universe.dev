@@ -1,0 +1,205 @@
+#' Get links from a specific section of a Wikipedia page
+#'
+#' @param section_title Defaults to `NULL`. If given, it should correspond to
+#'   the human-readable title of a section of the relevant Wikipedia page. See
+#'   also [tw_get_wikipedia_page_sections()]
+#' @param section_index Defaults to `NULL`. If given, it should correspond to
+#'   the ordinal of a section of the relevant Wikipedia page. See also
+#'   [tw_get_wikipedia_page_sections()]
+#'
+#' @inheritParams tw_get_image
+#' @inheritParams tw_get_image_metadata
+#' @inheritParams tw_get_wikipedia_page_links
+#' @inheritParams tw_get_wikipedia_page_links_single
+#' @return A data frame (a tibble).
+#' @export
+#'
+#' @examples
+#' if (interactive()) {
+#'   tw_get_wikipedia_page_section_links(title = "Margaret Mead", language = "en", section_index = 1)
+#' }
+tw_get_wikipedia_page_section_links <- function(
+  url = NULL,
+  title = NULL,
+  section_title = NULL,
+  section_index = NULL,
+  language = tidywikidatar::tw_get_language(),
+  cache = NULL,
+  overwrite_cache = FALSE,
+  cache_connection = NULL,
+  disconnect_db = TRUE,
+  wait = 1,
+  attempts = 10,
+  wikipedia_page_qid_df = NULL
+) {
+  if (is.null(section_index) && is.null(section_title)) {
+    cli::cli_abort(c(
+      "Either {.arg section_index} or {.arg section_title} must be provided.",
+      i = "See also {.help tidywikidatar::tw_get_wikipedia_page_sections}."
+    ))
+  }
+
+  db <- tw_connect_to_cache(
+    connection = cache_connection,
+    language = language,
+    cache = cache
+  )
+
+  sections_df <- tw_get_wikipedia_page_sections(
+    url = url,
+    title = title,
+    language = language,
+    cache = cache,
+    overwrite_cache = overwrite_cache,
+    cache_connection = db,
+    disconnect_db = FALSE,
+    wait = wait,
+    attempts = attempts
+  )
+
+  if (is.null(section_index)) {
+    section_index <- sections_df %>%
+      dplyr::filter(.data$line == section_title) %>%
+      dplyr::pull("index") %>%
+      utils::head(1)
+
+    if (length(section_index) == 0) {
+      cli::cli_abort(c(
+        "Section title does not exist.",
+        i = "Consider running `tw_get_wikipedia_sections(overwrite_cache = TRUE)` if you believe this may be due to oudated cache."
+      ))
+    }
+  }
+
+  if (is.null(section_title)) {
+    section_title <- sections_df %>%
+      dplyr::filter(.data$index == as.character(section_index)) %>%
+      dplyr::pull("fromtitle") %>%
+      utils::head(1)
+
+    if (length(section_index) == 0) {
+      cli::cli_abort(c(
+        "Section title does not exist.",
+        i = "Consider running `tw_get_wikipedia_sections(overwrite_cache = TRUE)` if you believe this may be due to oudated cache."
+      ))
+    }
+  }
+
+  wikipedia_page_qid_df <- tw_get_wikipedia_page_qid(
+    title = title,
+    language = language,
+    url = url,
+    cache = cache,
+    overwrite_cache = overwrite_cache,
+    cache_connection = db,
+    disconnect_db = FALSE,
+    wait = wait,
+    attempts = attempts
+  )
+
+  json_url <- tw_get_wikipedia_section_links_api_url(
+    url = url,
+    title = title,
+    language = language,
+    section_index = section_index
+  )
+
+  api_result <- FALSE
+
+  attempt_n <- 1
+
+  while (isFALSE(api_result) & attempt_n <= attempts) {
+    attempt_n <- sum(attempt_n, 1)
+    api_result <- tryCatch(
+      jsonlite::read_json(path = json_url),
+      error = function(e) {
+        logical(1L)
+      }
+    )
+    Sys.sleep(time = wait)
+  }
+
+  if (isFALSE(api_result)) {
+    cli::cli_abort(c(
+      "Could not reach the API with {attempts} attempts.",
+      i = "Consider increasing the waiting time between calls with the {.arg wait} parameter or check your internet connection."
+    ))
+  } else if ("error" %in% names(api_result)) {
+    cli::cli_abort(
+      "{api_result[['error']][['code']]}: {api_result[['error']][['info']]} - {json_url}"
+    )
+    api_result[["error"]]
+  } else {
+    base_json <- api_result
+  }
+
+  links_df <- purrr::map_dfr(
+    .x = base_json %>%
+      purrr::pluck("parse", "links"),
+    .f = tibble::as_tibble_row
+  )
+
+  if (nrow(links_df) < 1) {
+    return(tidywikidatar::tw_empty_wikipedia_page)
+  }
+
+  output_df <- tw_get_wikipedia_page_qid(
+    title = links_df[["*"]],
+    language = language,
+    cache = cache,
+    overwrite_cache = overwrite_cache,
+    cache_connection = db,
+    disconnect_db = FALSE,
+    wait = wait,
+    attempts = attempts
+  )
+
+  tw_disconnect_from_cache(
+    cache = cache,
+    cache_connection = db,
+    disconnect_db = disconnect_db,
+    language = language
+  )
+
+  output_df
+}
+
+
+#' Facilitates the creation of MediaWiki API base URLs to retrieve sections of a
+#' page
+#'
+#' Mostly used internally
+#'
+#' @param url A character vector with the full URL to one or more Wikipedia
+#'   pages. If given, title and language can be left empty.
+#' @param title Title of a Wikipedia page or final parts of its url. If given,
+#'   url can be left empty, but language must be provided.
+#' @param section_index Required. It should correspond to the ordinal of a
+#'   section of the relevant Wikipedia page. See also
+#'   `tw_get_wikipedia_page_sections()`.
+#' @param language Two-letter language code used to define the Wikipedia version
+#'   to use. Defaults to language set with `tw_set_language()`; if not set,
+#'   "en". If url given, this can be left empty.
+#'
+#' @return A character vector of base urls to be used with the MediaWiki API
+#' @export
+#'
+#' @examples
+#' tw_get_wikipedia_section_links_api_url(title = "Margaret Mead", section_index = 1, language = "en")
+tw_get_wikipedia_section_links_api_url <- function(
+  url = NULL,
+  title = NULL,
+  section_index,
+  language = tidywikidatar::tw_get_language()
+) {
+  stringr::str_c(
+    tw_get_wikipedia_base_api_url(
+      url = url,
+      title = title,
+      language = language,
+      action = "parse"
+    ),
+    "&section=",
+    section_index
+  )
+}

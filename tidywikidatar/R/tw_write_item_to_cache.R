@@ -1,0 +1,88 @@
+#' Writes item to cache
+#'
+#' Writes item to cache. Typically used internally, but exported to enable
+#' custom caching solutions.
+#'
+#' @param item_df A data frame with three columns typically generated with
+#'   [tw_get()].
+#' @inheritParams tw_get
+#'
+#' @return Nothing, used for its side effects.
+#' @export
+#'
+#' @examples
+#'
+#' tw_set_cache_folder(path = fs::path(tempdir(), paste(sample(letters, 24), collapse = "")))
+#' tw_create_cache_folder(ask = FALSE)
+#' tw_disable_cache()
+#'
+#' df_from_api <- tw_get(id = "Q180099", language = "en")
+#'
+#' df_from_cache <- tw_get_cached_item(
+#'   id = "Q180099",
+#'   language = "en"
+#' )
+#'
+#' is.null(df_from_cache) # expect TRUE, as nothing has yet been stored in cache
+#'
+#' tw_write_item_to_cache(
+#'   item_df = df_from_api,
+#'   language = "en",
+#'   cache = TRUE
+#' )
+#'
+#' df_from_cache <- tw_get_cached_item(
+#'   id = "Q180099",
+#'   language = "en",
+#'   cache = TRUE
+#' )
+#'
+#' is.null(df_from_cache) # expect a data frame, same as df_from_api
+tw_write_item_to_cache <- function(
+  item_df,
+  language = tidywikidatar::tw_get_language(),
+  cache = NULL,
+  overwrite_cache = FALSE,
+  cache_connection = NULL,
+  disconnect_db = TRUE
+) {
+  if (isFALSE(tw_check_cache(cache = cache))) {
+    return(invisible(NULL))
+  }
+  db <- tw_connect_to_cache(
+    connection = cache_connection,
+    language = language,
+    cache = cache
+  )
+
+  table_name <- tw_get_cache_table_name(
+    type = "item",
+    language = language
+  )
+
+  if (pool::dbExistsTable(conn = db, name = table_name) == FALSE) {
+    # do nothing: if table does not exist, previous data cannot be there
+  } else {
+    if (overwrite_cache) {
+      statement <- glue::glue_sql(
+        "DELETE FROM {`table_name`} WHERE id = {id*}",
+        id = unique(item_df$id),
+        table_name = table_name,
+        .con = db
+      )
+      result <- pool::dbExecute(
+        conn = db,
+        statement = statement
+      )
+    }
+  }
+
+  pool::dbWriteTable(db, name = table_name, value = item_df, append = TRUE)
+
+  tw_disconnect_from_cache(
+    cache = cache,
+    cache_connection = db,
+    disconnect_db = disconnect_db,
+    language = language
+  )
+}

@@ -1,0 +1,92 @@
+#' Perform simple Wikidata queries
+#'
+#' This function aims to facilitate only the most basic type of queries: return
+#' which items have the following property pairs. For more details on Wikidata
+#' queries, the
+#' \href{https://www.wikidata.org/wiki/Wikidata:SPARQL_query_service/queries/examples}{examples
+#' in the official documentation}.
+#'
+#' Consider [tw_get_all_with_p()] if you want to get all items with a given
+#' property, irrespective of the value.
+#'
+#' @param query A list of named vectors, or a data frame (see example and
+#'   readme).
+#' @param fields A character vector of Wikidata fields. Ignored if
+#' `return_as_tw_search` is set to `TRUE` (as per default). Defaults to
+#' `("item", "itemLabel", "itemDescription")`
+#' @param language Defaults to language set with [tw_set_language()]; if not
+#'   set, "en". If more than one, can be set in order of preference, e.g.
+#'   `c("it", "fr", "en")`. Use "all_available" to keep all languages. For
+#'   available language values, see the
+#'   \href{https://www.wikidata.org/wiki/Help:Wikimedia_language_codes/lists/all}{list
+#'   of available language codes in the official documentation}.
+#' @param return_as_tw_search Logical, defaults to `TRUE`. If `TRUE`, returns a
+#'   data frame with three columns (`id`, `label`, and `description`) that can
+#'   be piped to other `tw_` functions. If `FALSE`, a data frame with as many
+#'   columns as fields.
+#' @param user_agent Defaults to a combination of `tidywikidatar` and package
+#'   version number. Consider customising it for the current sessions with
+#'   [tw_set_user_agent()], in particular if you are making many queries.
+#'
+#' @return A data frame
+#' @export
+#'
+#' @examples
+#'
+#' if (interactive()) {
+#'   query <- list(
+#'     c(p = "P106", q = "Q1397808"),
+#'     c(p = "P21", q = "Q6581072")
+#'   )
+#'   tw_query(query)
+#' }
+tw_query <- function(
+  query,
+  fields = c("item", "itemLabel", "itemDescription"),
+  language = tidywikidatar::tw_get_language(),
+  return_as_tw_search = TRUE,
+  user_agent = tidywikidatar::tw_get_user_agent()
+) {
+  if (!is.data.frame(query)) {
+    query_df <- dplyr::bind_rows(query)
+  } else {
+    query_df <- query
+  }
+
+  query_t <- query_df %>%
+    glue::glue_data("wdt:{p} wd:{q}") %>%
+    stringr::str_c(collapse = ";\n")
+
+  sparql_t <- glue::glue(
+    "SELECT
+             {stringr::str_c(\"?\", stringr::str_c(fields, collapse = \" ?\"))}
+             WHERE{{?item {query_t} .
+             SERVICE wikibase:label {{ bd:serviceParam wikibase:language '{stringr::str_c(language, collapse = ',')},[AUTO_LANGUAGE]' . }}
+             }}"
+  )
+
+  req <- httr2::request("https://query.wikidata.org/sparql") %>%
+    httr2::req_headers(Accept = "text/csv") %>%
+    httr2::req_user_agent(user_agent) %>%
+    httr2::req_url_query(query = sparql_t) %>%
+    httr2::req_retry(max_tries = 5, backoff = ~2)
+
+  resp <- httr2::req_perform(req)
+
+  response <- read.csv(
+    text = httr2::resp_body_string(resp),
+    stringsAsFactors = FALSE
+  ) %>%
+    tibble::as_tibble()
+
+  if (return_as_tw_search) {
+    response %>%
+      dplyr::transmute(
+        id = stringr::str_extract(.data$item, pattern = "Q[[:digit:]]+$"),
+        label = .data$itemLabel,
+        description = .data$itemDescription
+      )
+  } else {
+    tibble::as_tibble(response)
+  }
+}

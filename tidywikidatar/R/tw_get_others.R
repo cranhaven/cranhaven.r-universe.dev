@@ -1,0 +1,265 @@
+#' Get Wikidata label in given language
+#'
+#' @param id_df Default to NULL. If given, it should be a dataframe typically
+#'   generated with [tw_get()], and is used instead of calling Wikidata or
+#'   using SQLite cache. Ignored when `id` is of length more than one.
+#' @inheritParams tw_get_image
+#' @inheritParams tw_get
+#'
+#' @return A character vector of the same length as the vector of id given, with
+#'   the Wikidata label in the requested language.
+#' @export
+#'
+#' @examples
+#'
+#' tw_get_label(
+#'   id = c(
+#'     "Q180099",
+#'     "Q228822"
+#'   ),
+#'   language = "en"
+#' )
+#'
+#' # If a label is not available, a NA value is returned
+#' if (interactive()) {
+#'   tw_get_label(
+#'     id = c(
+#'       "Q64733534",
+#'       "Q4773904",
+#'       "Q220480"
+#'     ),
+#'     language = "sc"
+#'   )
+#' }
+tw_get_label <- function(
+  id,
+  language = tidywikidatar::tw_get_language(),
+  id_df = NULL,
+  cache = NULL,
+  overwrite_cache = FALSE,
+  cache_connection = NULL,
+  disconnect_db = TRUE,
+  wait = 0
+) {
+  if (is.data.frame(id)) {
+    id <- id[["id"]]
+  }
+
+  if (!is.character(id)) {
+    cli::cli_abort(c(
+      x = "{.var id} must be either a character vector of Wikidata identifiers, or a data frame with an {.var id} column with Q identifiers.",
+      i = "Wikidata identifiers are always composed by the the letter {.val Q} followed by digits."
+    ))
+  }
+
+  if (is.null(id_df)) {
+    id_df <- tw_get(
+      id = id,
+      cache = cache,
+      overwrite_cache = overwrite_cache,
+      cache_connection = cache_connection,
+      language = language,
+      wait = wait,
+      disconnect_db = disconnect_db
+    )
+  } else {
+    current_id <- id
+    id_df <- id_df %>%
+      dplyr::filter(.data$id %in% current_id)
+
+    missing_id_v <- current_id[!current_id %in% id_df$id]
+
+    if (length(missing_id_v) > 0) {
+      id_df <- dplyr::bind_rows(
+        id_df,
+        tw_get(
+          id = missing_id_v,
+          cache = cache,
+          overwrite_cache = overwrite_cache,
+          cache_connection = cache_connection,
+          language = language,
+          wait = wait,
+          disconnect_db = disconnect_db
+        )
+      )
+    }
+  }
+
+  tw_get_field(
+    df = id_df,
+    field = "label",
+    language = language,
+    id = id
+  )
+}
+
+
+#' Get Wikidata description in given language
+#'
+#' @inheritParams tw_get_label
+#' @inheritParams tw_get_image
+#'
+#' @return A character vector of the same length as the vector of id given, with
+#'   the Wikidata description in the requested language.
+#' @export
+#'
+#' @examples
+#' tw_get_description(
+#'   id = c(
+#'     "Q180099",
+#'     "Q228822"
+#'   ),
+#'   language = "en"
+#' )
+tw_get_description <- function(
+  id,
+  language = tidywikidatar::tw_get_language(),
+  id_df = NULL,
+  cache = NULL,
+  overwrite_cache = FALSE,
+  cache_connection = NULL,
+  disconnect_db = TRUE,
+  wait = 0
+) {
+  if (is.data.frame(id)) {
+    id <- id$id
+  }
+
+  if (is.null(id_df)) {
+    id_df <- tw_get(
+      id = id,
+      cache = cache,
+      overwrite_cache = overwrite_cache,
+      cache_connection = cache_connection,
+      language = language,
+      wait = wait,
+      disconnect_db = disconnect_db
+    )
+  } else {
+    current_id <- id
+    id_df <- id_df %>%
+      dplyr::filter(.data$id %in% current_id)
+
+    missing_id_v <- current_id[!current_id %in% id_df$id]
+
+    if (length(missing_id_v) > 0) {
+      id_df <- dplyr::bind_rows(
+        id_df,
+        tw_get(
+          id = missing_id_v,
+          cache = cache,
+          overwrite_cache = overwrite_cache,
+          cache_connection = cache_connection,
+          language = language,
+          wait = wait,
+          disconnect_db = disconnect_db
+        )
+      )
+    }
+  }
+
+  tw_get_field(
+    df = id_df,
+    field = "description",
+    language = language,
+    id = id
+  )
+}
+
+#' Get URL to a Wikipedia article corresponding to a Wikidata Q identifier in
+#' given language
+#'
+#' @param full_link Logical, defaults to `TRUE`. If `FALSE`, returns only the
+#'   part of the url that corresponds to the title.
+#' @inheritParams tw_get_label
+#' @inheritParams tw_get
+#'
+#' @return A character vector of the same length as the vector of id given, with
+#'   the Wikipedia link in the requested language.
+#' @export
+#'
+#' @examples
+#' tw_get_wikipedia(id = "Q180099")
+tw_get_wikipedia <- function(
+  id,
+  full_link = TRUE,
+  language = tidywikidatar::tw_get_language(),
+  id_df = NULL,
+  cache = NULL,
+  overwrite_cache = FALSE,
+  cache_connection = NULL,
+  disconnect_db = TRUE,
+  wait = 0
+) {
+  if (is.data.frame(id)) {
+    id <- id$id
+  }
+
+  if (sum(is.na(id)) == length(id)) {
+    return(rep(as.character(NA), length(id)))
+  }
+
+  if (length(tw_check_qid(id = id)) == 0) {
+    return(rep(as.character(NA), length(id)))
+  }
+
+  if (is.null(id_df)) {
+    id_df <- tw_get(
+      id = id,
+      cache = cache,
+      overwrite_cache = overwrite_cache,
+      cache_connection = cache_connection,
+      disconnect_db = disconnect_db,
+      language = language,
+      wait = wait
+    )
+  } else {
+    current_id <- id
+    id_df <- id_df %>%
+      dplyr::filter(.data$id %in% current_id)
+
+    missing_id_v <- current_id[!current_id %in% id_df$id]
+
+    if (length(missing_id_v) > 0) {
+      id_df <- dplyr::bind_rows(
+        id_df,
+        tw_get(
+          id = missing_id_v,
+          cache = cache,
+          overwrite_cache = overwrite_cache,
+          cache_connection = cache_connection,
+          language = language,
+          wait = wait,
+          disconnect_db = disconnect_db
+        )
+      )
+    }
+  }
+
+  base_string <- stringr::str_c("sitelink_", language, "wiki")
+
+  field_df <- id_df %>%
+    dplyr::filter(.data$property == base_string) %>%
+    dplyr::distinct(.data$id, .keep_all = TRUE)
+
+  if (nrow(field_df) == 0) {
+    base_link <- rep(as.character(NA), length(id))
+  } else if (nrow(field_df) < length(id)) {
+    base_link <- tibble::tibble(id = id) %>%
+      dplyr::left_join(y = field_df, by = "id") %>%
+      dplyr::pull("value")
+  } else {
+    base_link <- field_df %>%
+      dplyr::pull("value")
+  }
+
+  if (length(base_link) == 0) {
+    rep(as.character(NA), length(id))
+  } else {
+    if (full_link) {
+      stringr::str_c("https://", language, ".wikipedia.org/wiki/", base_link)
+    } else {
+      base_link
+    }
+  }
+}

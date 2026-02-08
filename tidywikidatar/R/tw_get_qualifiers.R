@@ -1,0 +1,541 @@
+#' Get Wikidata qualifiers for a given property of a given item
+#'
+#' N.B. In order to provide for consistently structured output, this function
+#' outputs either id or value for each  qualifier. The user should keep in mind
+#' that some of these come with additional detail (e.g. the unit, precision, or
+#' reference calendar).
+#'
+#' @inheritParams tw_get
+#' @inheritParams tw_get_property
+#'
+#' @return A data frame (a tibble) with eight columns: `id` for the input id,
+#'   `property`,  `qualifier_id`, `qualifier_property`, `qualifier_value`,
+#'   `rank`, `qualifier_value_type`, and `set` (to distinguish sets of data when
+#'   a property is present more than once)
+#'
+#' @examples
+#' if (interactive()) {
+#'   tidywikidatar:::tw_get_qualifiers_single(id = "Q180099", p = "P26", language = "en")
+#' }
+#'
+#' #' ## using `tw_test_items` in examples in order to show output without calling
+#' ## on Wikidata servers
+#'
+#' tidywikidatar:::tw_get_qualifiers_single(
+#'   id = "Q180099",
+#'   p = "P26",
+#'   language = "en",
+#'   id_l = tw_test_items
+#' )
+tw_get_qualifiers_single <- function(
+  id,
+  p,
+  language = tidywikidatar::tw_get_language(),
+  cache = NULL,
+  overwrite_cache = FALSE,
+  cache_connection = NULL,
+  disconnect_db = TRUE,
+  wait = 0,
+  id_l = NULL
+) {
+  if (tw_check_cache(cache) & !overwrite_cache) {
+    db_result <- tw_get_cached_qualifiers(
+      id = id,
+      p = p,
+      language = language,
+      cache = cache,
+      cache_connection = cache_connection,
+      disconnect_db = FALSE
+    )
+
+    if (is.data.frame(db_result) & nrow(db_result) > 0) {
+      tw_disconnect_from_cache(
+        cache = cache,
+        cache_connection = cache_connection,
+        disconnect_db = disconnect_db,
+        language = language
+      )
+
+      return(
+        db_result %>%
+          tibble::as_tibble()
+      )
+    }
+  }
+
+  Sys.sleep(time = wait)
+
+  if (!is.null(id_l)) {
+    w <- id_l[
+      purrr::map_chr(
+        .x = id_l,
+        .f = function(x) {
+          purrr::pluck(x, "id")
+        }
+      ) %in%
+        id
+    ]
+
+    if (length(w) == 0) {
+      w <- tryCatch(WikidataR::get_item(id = id), error = function(e) {
+        as.character(e[[1]])
+      })
+    } else if (length(w) > 1) {
+      w <- w[1]
+    }
+  } else {
+    w <- tryCatch(WikidataR::get_item(id = id), error = function(e) {
+      as.character(e[[1]])
+    })
+  }
+
+  if (is.character(w)) {
+    cli::cli_alert_danger(w)
+    return(tidywikidatar::tw_empty_qualifiers)
+  } else {
+    qualifiers_df <- tw_extract_qualifier(id = id, p = p, w = w)
+  }
+
+  if (nrow(qualifiers_df) == 0) {
+    # keep one row, otherwise nothing remains in cache, and it will query
+    # each time the script is re-run
+    qualifiers_df <- tibble::tibble(
+      id = as.character(id),
+      property = as.character(p),
+      qualifier_id = NA_character_,
+      qualifier_property = NA_character_,
+      qualifier_value = NA_character_,
+      qualifier_value_type = NA_character_,
+      rank = NA_character_,
+      set = NA_real_
+    )
+  }
+
+  if (tw_check_cache(cache)) {
+    tw_write_qualifiers_to_cache(
+      qualifiers_df = qualifiers_df,
+      language = language,
+      overwrite_cache = overwrite_cache,
+      cache_connection = cache_connection,
+      disconnect_db = disconnect_db
+    )
+  }
+
+  qualifiers_df
+}
+
+
+#' Get Wikidata qualifiers for a given property of a given item
+#'
+#' N.B. In order to provide for consistently structured output, this function
+#' outputs either id or value for each  qualifier. The user should keep in mind
+#' that some of these come with additional detail (e.g. the unit, precision, or
+#' reference calendar).
+#'
+#' @inheritParams tw_get
+#' @inheritParams tw_get_property
+#'
+#' @return A data frame (a tibble) with eight columns: `id` for the input id,
+#'   `property`,  `qualifier_id`, `qualifier_property`, `qualifier_value`,
+#'   `rank`, `qualifier_value_type`, and `set` (to distinguish sets of data when
+#'   a property is present more than once)
+#' @export
+#'
+#' @examples
+#' if (interactive()) {
+#'   tidywikidatar::tw_get_qualifiers(id = "Q180099", p = "P26", language = "en")
+#' }
+#'
+#' #' ## using `tw_test_items` in examples in order to show output without calling
+#' ## on Wikidata servers
+#'
+#' tidywikidatar::tw_get_qualifiers(
+#'   id = "Q180099",
+#'   p = "P26",
+#'   language = "en",
+#'   id_l = tw_test_items
+#' )
+tw_get_qualifiers <- function(
+  id,
+  p,
+  language = tidywikidatar::tw_get_language(),
+  cache = NULL,
+  overwrite_cache = FALSE,
+  cache_connection = NULL,
+  disconnect_db = TRUE,
+  wait = 0,
+  id_l = NULL
+) {
+  if (is.data.frame(id)) {
+    id <- id$id
+  }
+
+  db <- tw_connect_to_cache(
+    connection = cache_connection,
+    language = language,
+    cache = cache
+  )
+
+  if (length(id) == 0 || length(p) == 0) {
+    cli::cli_abort("`id` and `p` must have length 1 or more.")
+  } else if (length(id) == 1 & length(p) == 1) {
+    return(tw_get_qualifiers_single(
+      id = id,
+      p = p,
+      language = language,
+      cache = cache,
+      overwrite_cache = overwrite_cache,
+      cache_connection = db,
+      disconnect_db = disconnect_db,
+      wait = wait,
+      id_l = id_l
+    ))
+  } else if (length(id) > 1 | length(p) > 1) {
+    if (overwrite_cache | tw_check_cache(cache) == FALSE) {
+      pb <- progress::progress_bar$new(total = length(id) * length(p))
+
+      qualifiers_df <- purrr::map2_dfr(
+        .x = id,
+        .y = p,
+        .f = function(x, y) {
+          pb$tick()
+          tw_get_qualifiers_single(
+            id = x,
+            p = y,
+            language = language,
+            cache = cache,
+            overwrite_cache = overwrite_cache,
+            cache_connection = db,
+            disconnect_db = FALSE,
+            wait = wait,
+            id_l = id_l
+          )
+        }
+      )
+      tw_disconnect_from_cache(
+        cache = cache,
+        cache_connection = db,
+        disconnect_db = disconnect_db,
+        language = language
+      )
+      return(qualifiers_df)
+    }
+
+    if (overwrite_cache == FALSE & tw_check_cache(cache)) {
+      qualifiers_from_cache_df <- tw_get_cached_qualifiers(
+        id = id,
+        p = p,
+        language = language,
+        cache_connection = db,
+        disconnect_db = FALSE
+      )
+
+      not_in_cache_df <- tibble::tibble(id = id, property = p) %>%
+        dplyr::anti_join(qualifiers_from_cache_df, by = c("id", "property"))
+
+      if (nrow(not_in_cache_df) == 0) {
+        tw_disconnect_from_cache(
+          cache = cache,
+          cache_connection = db,
+          disconnect_db = disconnect_db,
+          language = language
+        )
+        return(
+          dplyr::left_join(
+            x = tibble::tibble(id = id),
+            y = qualifiers_from_cache_df,
+            by = "id"
+          )
+        )
+      } else if (nrow(not_in_cache_df) > 0) {
+        pb <- progress::progress_bar$new(total = nrow(not_in_cache_df))
+
+        qualifiers_not_in_cache_df <- purrr::map2_dfr(
+          .x = unique(not_in_cache_df$id),
+          .y = unique(not_in_cache_df$property),
+          .f = function(x, y) {
+            pb$tick()
+            tw_get_qualifiers_single(
+              id = x,
+              p = y,
+              language = language,
+              cache = cache,
+              overwrite_cache = overwrite_cache,
+              cache_connection = db,
+              disconnect_db = FALSE,
+              wait = wait,
+              id_l = id_l
+            )
+          }
+        )
+
+        tw_disconnect_from_cache(
+          cache = cache,
+          cache_connection = db,
+          disconnect_db = disconnect_db,
+          language = language
+        )
+
+        dplyr::left_join(
+          x = tibble::tibble(id = id),
+          y = dplyr::bind_rows(
+            qualifiers_from_cache_df,
+            qualifiers_not_in_cache_df
+          ),
+          by = "id"
+        )
+      }
+    }
+  }
+}
+
+
+#' Retrieve cached qualifier
+#'
+#' @inheritParams tw_get
+#' @inheritParams tw_get_property
+#'
+#' @return If data present in cache, returns a data frame with cached data.
+#' @export
+#'
+#' @examples
+#'
+#' tw_set_cache_folder(path = tempdir())
+#' tw_enable_cache()
+#' tw_create_cache_folder(ask = FALSE)
+#'
+#' df_from_api <- tw_get_qualifiers(id = "Q180099", p = "P26", language = "en")
+#'
+#' df_from_cache <- tw_get_cached_qualifiers(
+#'   id = "Q180099",
+#'   p = "P26",
+#'   language = "en"
+#' )
+#'
+#' df_from_cache
+tw_get_cached_qualifiers <- function(
+  id,
+  p,
+  language = tidywikidatar::tw_get_language(),
+  cache = NULL,
+  cache_connection = NULL,
+  disconnect_db = TRUE
+) {
+  if (isFALSE(tw_check_cache(cache = cache))) {
+    return(invisible(tidywikidatar::tw_empty_qualifiers))
+  }
+
+  db <- tw_connect_to_cache(
+    connection = cache_connection,
+    language = language,
+    cache = cache
+  )
+
+  table_name <- tw_get_cache_table_name(
+    type = "qualifiers",
+    language = language
+  )
+
+  if (!pool::dbExistsTable(conn = db, name = table_name)) {
+    tw_disconnect_from_cache(
+      cache = cache,
+      cache_connection = db,
+      disconnect_db = disconnect_db,
+      language = language
+    )
+    return(tidywikidatar::tw_empty_qualifiers)
+  }
+
+  db_result <- tryCatch(
+    dplyr::tbl(src = db, table_name) %>%
+      dplyr::filter(
+        .data$id %in% !!stringr::str_to_upper(id),
+        .data$property %in% !!stringr::str_to_upper(p)
+      ),
+    error = function(e) {
+      logical(1L)
+    }
+  )
+  if (isFALSE(db_result)) {
+    tw_disconnect_from_cache(
+      cache = cache,
+      cache_connection = db,
+      disconnect_db = disconnect_db,
+      language = language
+    )
+    return(tidywikidatar::tw_empty_qualifiers)
+  } else if (
+    isFALSE(identical(
+      colnames(tidywikidatar::tw_empty_qualifiers),
+      colnames(db_result)
+    ))
+  ) {
+    cli::cli_abort(c(
+      x = "The cache has been generated with a previous version of `tidywikidatar` that is not compatible with the current version.",
+      i = "You may want to delete the old cache or reset just this table with {.fn tw_reset_qualifiers_cache}."
+    ))
+  }
+
+  cached_qualifiers_df <- tibble::as_tibble(db_result)
+
+  tw_disconnect_from_cache(
+    cache = cache,
+    cache_connection = db,
+    disconnect_db = disconnect_db,
+    language = language
+  )
+
+  cached_qualifiers_df
+}
+
+#' Write qualifiers to cache
+#'
+#' Mostly to be used internally by `tidywikidatar`, use with caution to keep
+#' caching consistent.
+#'
+#' @param qualifiers_df A data frame typically generated with
+#'   [tw_get_qualifiers()].
+#'
+#' @inheritParams tw_get
+#' @inheritParams tw_get_property
+#'
+#' @return Silently returns the same data frame provided as input. Mostly used
+#'   internally for its side effects.
+#'
+#' @export
+#'
+#' @examples
+#'
+#' q_df <- tw_get_qualifiers(
+#'   id = "Q180099",
+#'   p = "P26",
+#'   language = "en",
+#'   cache = FALSE
+#' )
+#'
+#' tw_write_qualifiers_to_cache(
+#'   qualifiers_df = q_df,
+#'   language = "en",
+#'   cache = TRUE
+#' )
+tw_write_qualifiers_to_cache <- function(
+  qualifiers_df,
+  language = tidywikidatar::tw_get_language(),
+  cache = NULL,
+  overwrite_cache = FALSE,
+  cache_connection = NULL,
+  disconnect_db = TRUE
+) {
+  if (isFALSE(tw_check_cache(cache = cache))) {
+    return(invisible(qualifiers_df))
+  }
+
+  db <- tw_connect_to_cache(
+    connection = cache_connection,
+    language = language,
+    cache = cache
+  )
+
+  table_name <- tw_get_cache_table_name(
+    type = "qualifiers",
+    language = language
+  )
+
+  if (!pool::dbExistsTable(conn = db, name = table_name)) {
+    # do nothing: if table does not exist, previous data cannot be there
+  } else {
+    if (overwrite_cache) {
+      statement <- glue::glue_sql(
+        "DELETE FROM {`table_name`} WHERE id = {id*} AND property = {p*}",
+        id = unique(qualifiers_df$id),
+        p = unique(qualifiers_df$property),
+        table_name = table_name,
+        .con = db
+      )
+      result <- pool::dbExecute(
+        conn = db,
+        statement = statement
+      )
+    }
+  }
+
+  pool::dbWriteTable(
+    db,
+    name = table_name,
+    value = qualifiers_df,
+    append = TRUE
+  )
+
+  tw_disconnect_from_cache(
+    cache = cache,
+    cache_connection = db,
+    disconnect_db = disconnect_db,
+    language = language
+  )
+
+  invisible(qualifiers_df)
+}
+
+#' Reset qualifiers cache
+#'
+#' Removes the table where qualifiers are cached
+#'
+#' @inheritParams tw_get
+#' @inheritParams tw_reset_item_cache
+#'
+#' @return Nothing, used for its side effects.
+#' @export
+#'
+#' @examples
+#' if (interactive()) {
+#'   tw_reset_qualifiers_cache()
+#' }
+tw_reset_qualifiers_cache <- function(
+  language = tidywikidatar::tw_get_language(),
+  cache = NULL,
+  cache_connection = NULL,
+  disconnect_db = TRUE,
+  ask = TRUE
+) {
+  db <- tw_connect_to_cache(
+    connection = cache_connection,
+    language = language,
+    cache = cache
+  )
+
+  table_name <- tw_get_cache_table_name(
+    type = "qualifiers",
+    language = language
+  )
+
+  if (pool::dbExistsTable(conn = db, name = table_name) == FALSE) {
+    # do nothing: if table does not exist, nothing to delete
+  } else if (isFALSE(ask)) {
+    pool::dbRemoveTable(conn = db, name = table_name)
+    cli::cli_alert_info(
+      "Qualifiers cache reset for language {.val {language}} completed."
+    )
+  } else if (
+    utils::menu(
+      c("Yes", "No"),
+      title = paste0(
+        "Are you sure you want to remove from cache the qualifiers table for language: ",
+        sQuote(language),
+        "?"
+      )
+    ) ==
+      1
+  ) {
+    pool::dbRemoveTable(conn = db, name = table_name)
+    cli::cli_alert_info(
+      "Qualifiers cache reset for language {.val {language}} completed."
+    )
+  }
+
+  tw_disconnect_from_cache(
+    cache = cache,
+    cache_connection = db,
+    disconnect_db = disconnect_db,
+    language = language
+  )
+}
