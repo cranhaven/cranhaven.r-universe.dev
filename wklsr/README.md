@@ -1,0 +1,209 @@
+# `wklsr`: Well-Known Locations in R
+
+`wklsr` is the R port of [wkls](https://github.com/wherobots/wkls) and
+makes it easy to find global administrative boundaries — from countries
+to cities — using readable, chainable R syntax.
+
+It fetches geometries from a mirror of [Overture Maps
+Foundation](https://overturemaps.org/) GeoParquet data (version
+2025-11-19.0) hosted on HuggingFace.
+
+You can instantly get geometries in formats like Well-known Text (WKT),
+Well-known Binaries (WKB), HexWKB, GeoJSON, and SVG:
+
+``` r
+library(wklsr)
+
+# prints "MULTIPOLYGON (((-122.5279985 37.8155806...)))"
+print(wkls$us$ca$sanfrancisco$wkt())
+
+#prints "2025-11-19.0"
+print(wkls$overture_version())
+```
+
+## Installation
+
+``` r
+install.packages(wklsr)
+```
+
+> This command also loads DuckDB with its related spatial extension.
+
+## Quick Start
+
+After installing `wklsr`, run the following commands to get started:
+
+``` r
+library(wklsr)
+
+# Get country geometry
+usa_wkt <- wkls$us$wkt()
+print(sprintf("USA geometry: %s...", substr(usa_wkt, 1, 50)))
+
+# Get state/region geometry
+california_geojson <- wkls$us$ca$geojson()
+
+# Get city geometry
+sf_svg <- wkls$us$ca$sanfrancisco$svg()
+
+# Check dataset version
+print(sprintf("Using Overture Maps data: %s", wkls$overture_version()))
+
+# Explore available data
+print(sprintf("Countries: %d", nrow(wkls$countries())))
+print(sprintf("Dependencies: %d", nrow(wkls$dependencies())))
+print(sprintf("US regions: %d", nrow(wkls$us$regions())))
+print(sprintf("CA counties: %d", nrow(wkls$us$ca$counties())))
+```
+
+## Handling namespace collisions
+
+## Usage
+
+### Accessing geometry
+
+wklsr supports **up to 3 chained attributes**: 1.
+**Country/Dependencies** (required) – must be a 2-letter ISO 3166-1
+alpha-2 code (e.g. `us`, `de`, `fr`) 2. **Region** (optional) – must be
+a valid region code suffix as specified by Overture (e.g. `ca` for
+`US-CA`, `ny` for `US-NY`) 3. **Place** (optional) – a **name** match
+against subtypes: `county`, `locality`, or `neighborhood`
+
+Examples:
+
+``` r
+wkls$us$wkt()                          # country: United States
+wkls$us$ca$wkt()                       # region: California
+wkls$us$ca$sanfrancisco$wkt()          # city/county: San Francisco
+wkls[["us"]][["ca"]][["sanfrancisco"]]$wkt() # dictionary-style access
+```
+
+#### Supported formats
+
+`wklsr` supports the following formats:
+
+-   `$wkt()` – Well-Known Text
+-   `$wkb()` – Raw binary WKB
+-   `$hexwkb()` – Hex-encoded WKB
+-   `$geojson()` – GeoJSON string
+-   `$svg()` – SVG path string
+
+### Example: Find the administrative boundary of San Francisco, California
+
+Chained expressions like `wkls$us$ca$sanfrancisco` return a WKL object.
+Internally, this wkls_proxy object containing one or more rows
+that match the given chain.
+
+``` r
+        id           country    region   subtype       name     
+0  085718963fffff...   US       US-CA    county    San Francisco
+```
+
+In most cases, wklsr resolves to a single administrative boundary. But if
+there are name collisions (e.g., both a county and a locality called
+“San Francisco”), multiple rows may be returned.
+
+By default, geometry methods like `$wkt()` will use the first matching
+row.
+
+### Helper methods
+
+The following methods return Pandas DataFrames for easy exploration:
+
+| Method | Description |
+|-----------------------------|-------------------------------------------|
+| `wkls$countries()` | List all countries |
+| `wkls$dependencies()` | List all [dependencies](https://docs.overturemaps.org/schema/reference/divisions/division/) |
+| `wkls$us$regions()` | List regions in the US |
+| `wkls$us$ca$counties()` | List counties in California |
+| `wkls$us$ca$cities()` | List cities in California |
+| `wkls$subtypes()` | Show all distinct division subtypes |
+
+Some countries/dependencies may not have regions, so for those
+countries/dependencies you can directly call either `$counties()` or
+`$cities()`, to further explore the available data\$
+
+``` r
+wkls$fk$cities()
+```
+
+### Dataset information
+
+You can check which version of the Overture Maps dataset is being used:
+
+``` r
+print(wkls$overture_version())
+```
+
+``` sh
+> "2025-11-19.0"
+```
+
+> **Note**: The `overture_version()` method is only available at the
+> root level, not on chained objects like `wkls$us$overture_version()`.
+
+## How It Works
+
+`wklsr` works in two stages:
+
+### 1. In-memory GERS ID resolution
+
+Your chained attributes — up to 3 levels — are parsed in this order:
+
+1.  `country/dependency` → matched by ISO 2-letter code (e.g. `"us"`)
+2.  `region` → matched using region code suffix as specified by Overture
+    (e.g. `"ca"` → `"US-CA"`)
+3.  `place` → fuzzy-matched against names in subtypes: `county`,
+    `locality`, or `neighborhood`
+
+This resolves to a wkls_proxy object containing metadata from the
+in-memory wklsr table (stored in DuckDB). At this stage, no geometry is
+loaded yet — only metadata (like id, name, region, subtype, etc.) is
+queried from the database. When you print the proxy object or call a
+geometry method, the actual data is retrieved via `dbGetQuery()`.
+
+### 2. Geometry lookup using DuckDB
+
+The geometry lookup is triggered only when you call one of the geometry
+methods:
+
+-   `$wkt()`
+-   `$wkb()`
+-   `$hexwkb()`
+-   `$geojson()`
+-   `$svg()`
+
+At that point, `wklsr` uses the previously resolved **GERS ID** to query
+the Overture **division_area** GeoParquet directly from S3.
+
+The current Overture Maps dataset version can be checked with
+`wkls$overture_version()`.
+
+## Contributing
+
+## License
+
+This project is licensed under the Apache License 2.0.
+`wklsr` includes, references, and
+leverages data from the "Divisions" theme of
+[Overture](https://overturemaps.org), from Overture Maps Foundation:
+
+-   © OpenStreetMap contributors. Available under the [Open Database
+    License](https://www.openstreetmap.org/copyright).
+-   [geoBoundaries](https://www.geoboundaries.org/). Available under [CC
+    BY 4.0](https://creativecommons.org/licenses/by/4.0/).
+-   [Esri Community Maps
+    contributors](https://communitymaps.arcgis.com/home/). Available
+    under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
+-   [Land Information New Zealand (LINZ)](https://www.linz.govt.nz/).
+    Available under [CC BY
+    4.0](https://creativecommons.org/licenses/by/4.0/).
+
+## Acknowledgments
+
+-   [Overture Maps Foundation](https://overturemaps.org/) for providing
+    high-quality, open geospatial data.
+-   [DuckDB](https://duckdb.org/) for fast analytical queries with
+    spatial support.
+-   [AWS Open Data Registry](https://registry.opendata.aws/) for hosting
+    the dataset.
