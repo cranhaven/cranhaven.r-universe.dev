@@ -1,0 +1,144 @@
+#' Wikipedia
+#'
+#' @export
+#' @template args
+#' @param wiki (character) wiki language. default: en. See [wikipedias] for
+#' language codes.
+#' @family Wikipedia functions
+#' @return `wt_wikipedia` returns a list, with slots:
+#' \itemize{
+#'  \item langlinks - language page links
+#'  \item externallinks - external links
+#'  \item common_names - a data.frame with `name` and `language` columns
+#'  \item classification - a data.frame with `rank` and `name` columns
+#'  \item synonyms - a character vector with taxonomic names
+#' }
+#'
+#' `wt_wikipedia_parse` returns a list with same slots determined by
+#' the `types` parmeter
+#'
+#' `wt_wikipedia_search` returns a list with slots for `continue` and
+#' `query`, where `query` holds the results, with `query$search` slot with
+#' the search results
+#' @references <https://www.mediawiki.org/wiki/API:Search> for help on search
+#' @examples \dontrun{
+#' # high level
+#' wt_wikipedia(name = "Malus domestica")
+#' wt_wikipedia(name = "Malus domestica", wiki = "fr")
+#' wt_wikipedia(name = "Malus domestica", wiki = "da")
+#'
+#' # low level
+#' pg <- wt_wiki_page("https://en.wikipedia.org/wiki/Malus_domestica")
+#' wt_wikipedia_parse(pg)
+#' wt_wikipedia_parse(pg, tidy = TRUE)
+#'
+#' # search wikipedia
+#' # FIXME: utf=FALSE for now until curl::curl_escape fix 
+#' # https://github.com/jeroen/curl/issues/228
+#' wt_wikipedia_search(query = "Pinus", utf8=FALSE)
+#' wt_wikipedia_search(query = "Pinus", wiki = "fr", utf8=FALSE)
+#' wt_wikipedia_search(query = "Pinus", wiki = "br", utf8=FALSE)
+#'
+#' ## curl options
+#' # wt_wikipedia_search(query = "Pinus", verbose = TRUE, utf8=FALSE)
+#'
+#' ## use search results to dig into pages
+#' res <- wt_wikipedia_search(query = "Pinus", utf8=FALSE)
+#' lapply(res$query$search$title[1:3], wt_wikipedia)
+#' }
+wt_wikipedia <- function(name, wiki = "en", utf8 = TRUE, ...) {
+  assert(name, "character")
+  assert(wiki, "character")
+  stopifnot(length(name) == 1)
+  prop <- c("langlinks", "externallinks", "common_names", "classification",
+            "synonyms")
+  res <- wt_wiki_url_build(
+    wiki = wiki, type = "wikipedia", page = name,
+    utf8 = utf8,
+    prop = prop)
+  pg <- wt_wiki_page(res, ...)
+  wt_wikipedia_parse(page = pg, types = prop, tidy = TRUE)
+}
+
+#' @export
+#' @rdname wt_wikipedia
+wt_wikipedia_parse <- function(page, types = c("langlinks", "iwlinks",
+                                         "externallinks", "common_names",
+                                         "classification"),
+                               tidy = FALSE) {
+
+  result <- wt_wiki_page_parse(page, types = types, tidy = tidy)
+  json <- jsonlite::fromJSON(rawToChar(page$content), simplifyVector = TRUE)
+  if (is.null(json$parse)) {
+    return(result)
+  }
+  ## Common names
+  if ("common_names" %in% types) {
+    xml <- xml2::read_html(json$parse$text[[1]])
+    names_xml <- list(
+      regular_bolds = xml2::xml_find_all(
+        xml,
+        xpath = "/html/body/p[count(preceding::div[contains(@id, 'toc') or contains(@class, 'toc')]) = 0 and count(preceding::h1) = 0 and count(preceding::h2) = 0 and count(preceding::h3) = 0]//b[not(parent::*[self::i]) and not(i)]"), #nolint
+      regular_biotabox_header =
+        xml2::xml_find_all(
+          xml,
+          xpath = "(//table[contains(@class, 'infobox biota') or contains(@class, 'infobox_v2 biota')]//th)[1]/b[not(parent::*[self::i]) and not(i)]") #nolint
+    )
+    # NOTE: Often unreliable.
+    regular_title <- stats::na.omit(
+      match_(json$parse$displaytitle, "^([^<]*)$")[2])
+    common_names <- unique(c(unlist(lapply(names_xml, xml2::xml_text)),
+                             regular_title))
+    language <- match_(page$url, 'http[s]*://([^\\.]*)\\.')[2]
+    cnms <- lapply(common_names, function(name) {
+      list(name = name, language = language)
+    })
+    result$common_names <- if (tidy) atbl(dt_df(cnms)) else cnms
+  }
+  ## classification
+  if ("classification" %in% types) {
+    txt <- xml2::read_html(json$parse$text[[1]])
+    html <-
+      xml2::xml_find_all(txt, "//table[@class=\"infobox biota\"]//span")
+    labels <- xml2::xml_attr(html, "class")
+    labels <- gsub("^\\s+|\\s$|\\(|\\)", "", labels)
+    values <- gsub("^\\s+|\\s$", "", xml2::xml_text(html))
+    clz <- mapply(list, rank = labels, name = values,
+                  SIMPLIFY = FALSE, USE.NAMES = FALSE)
+    result$classification <- if (tidy) atbl(dt_df(clz)) else clz
+  }
+  ## synonyms
+  if ("synonyms" %in% types) {
+    syns <- list()
+    txt <- xml2::read_html(json$parse$text[[1]])
+    html <-
+      xml2::xml_find_all(txt, "//table[@class=\"infobox biota\"]//td")
+    syn_node <-
+      xml2::xml_find_first(html, "//th/a[contains(text(), \"Synonyms\")]")
+    if (length(stats::na.omit(xml2::xml_text(syn_node))) > 0) {
+      if (grepl("<br>", html[[length(html)]])) {
+        syns <- xml2::xml_text(
+          xml2::xml_find_all(
+            xml2::xml_find_first(html[[length(html)]], "p"), "i"))
+      } else {
+        syn <- strsplit(xml2::xml_text(html[length(html)]), "\n")[[1]]
+        syns <- syn[nzchar(syn)]
+      }
+    }
+    result$synonyms <- syns
+  }
+
+  return(result)
+}
+
+#' @export
+#' @rdname wt_wikipedia
+wt_wikipedia_search <- function(query, wiki = "en", limit = 10, offset = 0,
+                                utf8 = TRUE, ...) {
+
+  assert(wiki, "character")
+  tmp <- g_et(search_base(wiki, "wikipedia"), sh(query, limit, offset, utf8),
+              ...)
+  tmp$query$search <- atbl(tmp$query$search)
+  return(tmp)
+}
