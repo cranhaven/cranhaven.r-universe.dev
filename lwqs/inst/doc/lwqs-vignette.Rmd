@@ -1,0 +1,271 @@
+---
+title: "Introduction to Lagged Weighted Quantile Sum Regression"
+author: "Paul Curtin, Stefano Renzetti, Chris Gennings"
+date: "`r Sys.Date()`"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Introduction to Lagged Weighted Quantile Sum Regression}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  fig.width=8, fig.height=4
+)
+```
+
+
+
+```{r setup}
+library(lwqs)
+
+```
+
+
+
+## Introduction 
+
+The lWQS package provides a convenient wrapper based on the gWQS and gamm4 packages to implement lagged weighted quantile sum (lWQS) regression<sup>1</sup>. This provides an approach for the estimation of time-varying mixture effects, particularly in contexts of environmental medicine and public health. The general premise of the procedure is to integrate the generalized weighted quantile sum regression (WQS) algorithm<sup>2</sup> in a longitudinal context with repeated measures. To achieve this, WQS is applied to estimate mixture effects at specific time points;  the mixture indices derived from WQS are then used to construct a longitudinal model, consistent with the reverse distributed lag approach outlined by Chen et al<sup>3</sup>. The package is currently in development and users should expect syntax and functionality to evolve over time. 
+
+## General Usage, Requirements, and Data Structures
+Lagged weighted quantile sum regression is used to link fixed outcome data to the mixed effects of multiple time-varying predictors. Repeated measures should be organized in "long" format, with each row representing a successive observation per subject. For purposes of estimating confidence intervals the package assumes a z-scored outcome distribution. 
+
+The package includes a simulated data set (lwqs_data) that illustrates the intended data structure for use of this package. Data can be attached and viewed as in the below: 
+
+```{r, echo=TRUE}
+library(lwqs)
+data(lwqs_data)
+```
+
+The simulated data are structured as in below snippet (use head(lwqs_data) to reconstruct) from the lwqs_data. Note that each simulated person - identified by the "ID" variable - has a single fixed outcome, identified as "outcome". The outcome variable was simulated from a standardized (z-score) Gaussian distribution. A simulated binary covariate, "sex", was also generated from a binomial distribution. As well, each individual has 5 simulated predictor variables (pred1-pred5) which are measured at 30 distinct time points ("time"). In an environmental epidemiological study design, this might correspond to 5 measurements of exposure collected at each month post birth for a total of 30 months; and, our goal is to identify the developmental window at which the mixture of exposures relates to our health outcome, while adjusting for a covariate (s) such as sex. 
+
+Note the provided data are "balanced" in the sense that all participants are sampled at every sampling interval. In practice, with data providing incomplete or unbalanced coverage, it may be necessary to prune, aggregate, or otherwise manipulate data to ensure reliable estimates. If only a handful of subjects were observed at a given sampling interval, for example, it will be difficult to generate reliable estimates; or, if a given sampling interval only includes 1 level of some key covariate (e.g., only females are sampled at time point 3 in a model with sex as a covariate) this may compromise model convergence and/or effect estimation.   
+
+
+```{r, echo=FALSE, R.options = list(width = 200)}
+head(lwqs_data)
+
+```
+
+## Simulation Parameters
+
+Simulated data were generated with autoregressive models to approximate expected patterns of within-subject correlation. As well, each predictor was simulated with a time-varying association with the health oucome.
+
+Predictors 1 and 2 have no association with the outcome at time points 1-10 and 21-30; but, at time points 11-20 have either a strong positive association with the outcome (predictor 1) or a weak positive association with the outcome (predictor 2). 
+
+Likewise, predictors 3 and 4 have no association with the outcome in months following time point 10, but from time 1-10 have either a weak (predictor 3) or strong (predictor 4) negative association with the outcome. 
+
+Predictor 5, unlike the others, has no association with the outcome at all. 
+
+The below plot illustrates these parameters. On the y-axis the simulated associations between each predictor and the outcome are shown, plotted against the change in these parameters over time (x-axis). Beta 1, beta 2, etc, refer to the effects associated with predictor 1, predictor 2, etc.  
+
+```{r, echo=F}
+library(data.table)
+library(ggplot2)
+time=seq(1, 30, 1)    #time vector
+
+#beta for predictor 1
+beta1=data.frame(seq(1,length(time),1))
+beta1[1:10,]<-0
+beta1[11:20,]<-0.35
+beta1[21:30,]<-0
+beta1$time<-seq(1,length(time),1)
+names(beta1)[1]<-"beta1"
+
+#beta2
+beta2=data.frame(seq(1,length(time),1))
+beta2[1:10,]<-0
+beta2[11:20,]<-0.25
+beta2[21:30,]<-0
+beta2$time<-seq(1,length(time),1)
+names(beta2)[1]<-"beta2"
+
+#beta3
+beta3=data.frame(seq(1,length(time),1))
+beta3[1:10,]<--0.25
+beta3[11:20,]<-0
+beta3[21:30,]<-0
+beta3$time<-seq(1,length(time),1)
+names(beta3)[1]<-"beta3"
+
+#beta 4
+beta4=data.frame(seq(1,length(time),1))
+beta4[1:10,]<--0.35
+beta4[11:20,]<-0
+beta4[21:30,]<-0
+beta4$time<-seq(1,length(time),1)
+names(beta4)[1]<-"beta4"
+
+#beta 5
+beta5=data.frame(seq(1,length(time),1))
+beta5[1:30,]<- -0
+beta5$time<-seq(1,length(time),1)
+names(beta5)[1]<-"beta5"
+
+#merge betas
+betas=cbind(beta1, beta2, beta3, beta4, beta5)
+betas=betas[,-c(2,4,6,8)]
+blong=melt(setDT(betas), measure=names(betas)[1:5], id.vars="time")
+ggplot(blong, aes(x=time, y=value, group=variable, color=variable)) + geom_line(size=1)+
+  theme_bw() + ylab("Simulated Association with Outcome")
+
+
+```
+
+## Application of lWQS 
+
+With respect to the effects summarized above, the lwqs algorithm should identify a negative mixture, comprised of predictor 3 (weak effect) and predictor 4 (strong effect) from times 1-10; and, likewise, a positive mixture, comprised of predictor 1 (strong) and predictor 2 (weak) from time points 11-20. There should be no significant mixture effects from times 21-30.
+
+To dissect the counteracting effects of mixtures acting in opposing directions, the lWQS algorithm leverages the usage of constraints implemented in the weighted quantile regression procedure (see gWQS package for details). In practice this means the algorithm is run twice in succession; first, examining mixture effects that may relate positively to the outcome of interest, and then again to examine negative associations. 
+
+**Note that lwqs is generally a computationally-intensive procedure involving multiple ensemble steps. For example, the estimation of a model across 30 time points, with 50 bootstraps at each time point, will involve more than 1500 discrete models. Patience is a virtue in this pursuit.**
+
+### Identifying mixture effects positively associated with outcomes
+
+The below code is used to implement the lWQS algorithm.
+
+First, it is neccesary to identify the time-varying predictors that will comprise the mixture. In our simulation data, these are pred1-pred5, which correspond to columns 5-9 of lwqs_data. In the below code we save these to an index called "mixvars"  
+
+```{r, echo=T}
+mixvars=names(lwqs_data)[5:9]
+```
+
+Next, we specify the call to the lwqs algorithm. Each parameter will be explained as follows, but in general this involves specifying the identity of a few key variables (ID, time, and outcome variable names), and specifying the desired parameters for the mixture (wqs_parms). Each parameter is identified in the accompanying comments. For now we will ignore covariates. Parameters specific to the longitudinal component of the model (rDLM_parms) are automatically passed to gamm4. For users that may wish to modify these parameters for covariate adjustment, model selection, etc, we recommend the use of the extract_function() procedure explained subsequently.
+
+```{r, echo=T, fig.align='center'}
+posmod=lwqs(data=lwqs_data,                       #specifies the dataframe containing study data
+            timevar="time",                       #specifies the variable that denotes temporal intervals
+            wqs_parms=list(formula=out ~ wqs,     #formula for the WQS component of the model, applied at each timepoint
+                           data = lwqs_data,      #data frame, as above, for reference by the gWQS algorithm     
+                           mix_name=mixvars,      #mixture variables, identified previously
+                           b1_constr = T,         #specificies use of a directionality constraint
+                           b1_pos=T,              #specifies directionality of constraint, in this case positive
+                           b = 5,                 #specifies number of bootstraps used at each temporal interval
+                           q = 5,                 #specifies quantiling, in this case to quintiles. 
+                           validation = 0,        #specifies that no validation split is done on the data
+                           family = "gaussian",   #indicates identity link appropriate for gaussian outcomes
+                           seed = 1),           #specifies seed for reproducibility
+            outcome="out",                        #specifies outcome variable
+            ID="ID")                              #specifies ID variable that identifies each subject
+
+
+
+```
+
+
+By default, the lwqs function will generate two plots to summarize the model output, as in the above. In the left panel, the time-varying effect estimate associated with the exposure mixture is shown. Note that the confidence intervals on this estimate overlap zero except for the interval from ~11-20. This would be interpreted as the "critical window" in which our simulated exposures positively relate to the outcome of interest. In the right plot, the time-varying weights estimated for each predictor contributing to the mixture are shown. We would focus our interpretation on time points where the mixture is significant, i.e. where the confidence intervals at left depart from zero. At those time points, the mixture is dominated by predictors 1 and 2, with predictor 1 contributing the most, consistent with the parameters of the simulation. 
+
+**Note: in the code provided the "b" parameter is set to 5, which indicates 5 bootstrap samples are used at time point in the ensemble estimation step. This is done purely to create a fast-running example; in practice, the number of bootstraps must be sufficient that one can have confidence of an accurate aggregate estimate** This parameter should be tuned with use but in general between 30-100 bootstraps may be sufficient for the standard ensemble, depending on processing limitations. 
+
+
+
+### Identifying mixture effects negatively associated with outcomes
+
+The procedure for testing for mixture effects in opposing directions is identical except for the reversal of one parameter. To test for negative associations with an outcome, alter the "b1_pos" parameter in the call to the gWQS function to be set to "FALSE", as in the below. This will specificy the estimation of mixtures constrained toward negative associations. 
+
+```{r, echo=T}
+negmod=lwqs(data=lwqs_data,                       
+            timevar="time",                       
+            wqs_parms=list(formula=out ~ wqs,     
+                           data = lwqs_data,           
+                           mix_name=mixvars,      
+                           b1_constr = T,         
+                           b1_pos=F,              #Parameter to specificy directionality. Specify "F" for negative. 
+                           b = 5,                 
+                           q = 5,                 
+                           validation = 0,        
+                           family = "gaussian",   
+                           seed = 1),          
+            outcome="out",                        
+            ID="ID")                              
+
+
+
+```
+
+
+As in the prior example, the lwqs function automatically generates two plots to summarize model estimates. At left, the time-varying mixture effect estimates depart from the zero boundary line from time points 1-10, indicating that within this window the simulated predictors are negatively associated with the outcome. At right, we see the weights associated with the mixture in this window are dominated by predictors 3 and 4, which, as per the simulation parameters, exert a moderate and strongly negative association with the outcome. 
+
+## Adjustment for covariates
+
+The models estimated thus far have considered the time-varying association of 5 predictors with a health outcome, but have not been adjusted for covariates. The lwqs algorithm can be adjusted for covariates at two levels; either in the estimation of mixture effects at each sampling interval, or in the estimation of time-varying effects. Users can choose to apply either, neither, or both strategies. 
+
+### Adjustment for covariates in mixture estimation
+Adjustment for covariates at the level of mixture estimation at each sampling interval can be done by modifying the gWQS parameter used in the lwqs function, as below. When specifying the call to the formula used in estimating each interval-specific mixture, simply add the covariate terms to the model formula.
+
+
+```{r, echo=T}
+negcovmod=lwqs(data=lwqs_data,                       
+            timevar="time",                       
+            wqs_parms=list(formula=out ~ wqs + as.factor(sex),   #specifies covariate adjustment for sex variable     
+                           data = lwqs_data,           
+                           mix_name=mixvars,      
+                           b1_constr = T,         
+                           b1_pos=F,              
+                           b = 5,                 
+                           q = 5,                 
+                           validation = 0,        
+                           family = "gaussian",   
+                           seed = 1),          
+            outcome="out",                        
+            ID="ID")                              
+
+
+
+```
+
+Interpretation of the covariate-adjusted model is otherwise identical to previous models; that is, the mixture effect estimates (left panel) indicate a significant negative association with the outcome from time 1-10, and this is driven by predictors 3 and 4 (right panel). The key difference is that in this model those estimates are adjusted for sex. 
+
+To evaluate the time-specific significance of each covariate, one could use output stored in the saved model to evaluate parameter estimates for WQS models constructed at each time point. The below code, for example, provides a model summary at time point 1.   
+
+```{r, echo=T, eval=FALSE}
+
+#gWQS (and covariate) effect estimates at time point 1
+summary(negcovmod$parameters$res$`1`)
+
+
+```
+
+### Adjustment for covariates in longitudinal model estimation
+It may also be advantageous to consider how covariates modify the estimation of time-varying effects. The default lwqs model does not provide this, but an additional function, extract_mixture, can be used to extract the time-varying mixture estimated during the lwqs procedure, at which point it can be used as an input to the gamm4 procedure to allow for covariate adjustment. 
+As an example, the previous model implemented (saved as negcovmod) has implemented an lwqs with adjustment, at the level of the mixture, for sex. Here we use the extract_mixture function to pull the time-varying mixture estimated in this model:
+
+```{r, echo=T}
+
+#extract time-varying wqs index
+timewqs=extract_mixture(negcovmod)
+
+```
+
+Next, we will merge the covariate data from our original dataset, and input this in a gamm4 model. 
+
+```{r, echo=T, warning=F}
+library(gamm4)
+
+#merge covariate data
+timewqs=merge(timewqs, unique(lwqs_data[,1:2]))
+
+#reconstruct gam with fixed effect of sex
+sexgam=gamm4(wqs ~ s(time, by=y, bs="cr") + sex,   #model formula
+             data=timewqs,                         #dataset
+             random = ~ (1 | ID))                 #random term for within-subject correlation
+
+plot(sexgam$gam)
+```
+
+This will yield a gamm4 object, from which corresponding plots and parameter estimates can be extracted (see package gamm4 for details). Importantly, note that the error intervals provided in gamm4 are expressed in standard error, rather than 95% confidence intervals. If the latter are of interest toward the research question, these should be expressed with respect to a appropriate critical value, e.g. multiplied by 1.96, assuming a standardized distribution. This is done automatically with the lwqs function, which assumes a z-scored outcome distribution. Effect estimates and corresponding SEs can be extracted from the gamm4 object.   
+
+
+Note as well that the construction of customized gamm4 models to capture mixture effects allows tremendous flexibility in the selection of basis functions, knot intervals, estimation procedures, random effects, and related parameters; these choices may be critical in extending lwqs to contexts such as twin studies, modeling time-varying covariates, and/or focusing on critical intervals. Care should be taken in model selection procedures to ensure appropriate model specification.
+
+## References
+1. Gennings C, Curtin P, Bello G, Wright R, Arora M, Austin C. Lagged WQS regression for mixtures with many components. Environ Res. 2020;186:109529. Epub 2020/05/07. doi: 10.1016/j.envres.2020.109529. PubMed PMID: 32371274.
+
+2. Carrico C, Gennings C, Wheeler DC, Factor-Litvak P. Characterization of Weighted Quantile Sum Regression for Highly Correlated Data in a Risk Analysis Setting. J Agric Biol Environ Stat. 2015;20(1):100-20. Epub 2015/03/01. doi: 10.1007/s13253-014-0180-3. PubMed PMID: 30505142; PubMed Central PMCID: PMCPMC6261506.
+
+3. Chen YH, Ferguson KK, Meeker JD, McElrath TF, Mukherjee B. Statistical methods for modeling repeated measures of maternal environmental exposure biomarkers during pregnancy in association with preterm birth. Environ Health. 2015;14:9. Epub 2015/01/27. doi: 10.1186/1476-069X-14-9. PubMed PMID: 25619201; PubMed Central PMCID: PMCPMC4417225.
+
