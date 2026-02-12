@@ -1,0 +1,151 @@
+# Filename: constructCrestrSTRS.R
+#
+# Date: 06.06.2025
+# Author: Felix Willems
+# Contact: mail.willemsf+MOSAlloc@gmail.com
+#         (mail[DOT]willemsf+MOSAlloc[AT]gmail[DOT]com)
+# Licensing: GPL-3.0-or-later
+#
+# Please report any bugs or unexpected behavior to 
+# mail.willemsf+MOSAlloc@gmail.com 
+# (mail[DOT]willemsf+MOSAlloc[AT]gmail[DOT]com)
+#
+#---------------------------------------------------------------------------
+#
+#' @title Constructor for cost constraints
+#'
+#' @description A helper function for generating cost coefficient matrix
+#' \code{C} and corresponding right-hand side \code{c} under stratified
+#' random sampling (STRS) as input to the the multiobjective allocation
+#' function \code{mosalloc()}.
+#'
+#' @param H (type: \code{numeric})
+#' The number of strata.
+#' @param list (type: \code{list})
+#' A list of lists taking subpopulation- (domain/area) specific arguments.
+#' Elements are lists containing the following components which correspond
+#' to one specific cost restriction:
+#' \cr \code{..$stratum_id} (type: \code{numeric})
+#' A vector containing the indices of the strata considered for the current
+#' restriction. The indices must coincide with the row numbers of
+#' \code{X_var} and \code{X_tot}.
+#' \cr \code{..$c_coef} (type: \code{numeric})
+#' A vector of length \code{length(stratum_id)} containing the stratum-specific
+#' cost components for the set of strata that is going to be bounded by above
+#' and/or below.
+#' \cr \code{..$c_upper} (type: \code{numeric})
+#' The cost upper bound value. \code{NULL} if not present.
+#' \cr \code{..$c_lower} (type: \code{numeric})
+#' The cost lower bound value. \code{NULL} if not present.
+#' \cr \code{..$name} (type: \code{character})
+#' The name of the subpopulation (domain/area).
+#'
+#' @return The function \code{constructCrestrSTRS()} returns a list
+#' @returns C (type: \code{matrix}): a cost matrix for the cost
+#' restrictions and
+#' @returns c (type: \code{vector}): a cost vector for the corresponding
+#' right-hand side
+#' \cr usable as input to the multiobjective allocation function
+#' \code{mosalloc()}.
+#'
+#' @examples
+#' # Artificial population of 50 568 business establishments and 5 business
+#' # sectors (data from Valliant, R., Dever, J. A., & Kreuter, F. (2013).
+#' # Practical tools for designing and weighting survey samples. Springer.
+#' # https://doi.org/10.1007/978-1-4614-6449-5, Example 5.2 pages 133-9)
+#'
+#' # See also https://umd.app.box.com/s/9yvvibu4nz4q6rlw98ac/file/297813512360
+#' # file: Code 5.3 constrOptim.example.R
+#'
+#' Nh <- c(6221, 11738, 4333, 22809, 5467) # stratum sizes
+#' H <- length(Nh)
+#' ch <- c(120, 80, 80, 90, 150) # stratum-specific cost of surveying
+#' budget <- 300000
+#'
+#' # Examples
+#' #----------------------------------------------------------------------------
+#' # Example 1: Assume we want so specify one overall cost constraint for the
+#' # five strata. The cost of surveying must not exceed 300000 $.
+#'
+#' # The input \code{C} and \code{C} to \code{mosalloc} can be specified as
+#' # follows:
+#'
+#' C <- matrix(ch, nrow = 1)
+#' c <- as.vector(budget)
+#'
+#' # Using \code{constructCrestrSTRS} this can also be done via
+#' list <- list(list(stratum_id = 1:5, c_coef = ch, c_lower = NULL,
+#'                   c_upper = budget, name = "Overall"))
+#' Cc <- constructCrestrSTRS(H, list)
+#'
+#' # Evaluation of the output
+#' Cc$C - C
+#' Cc$c - c
+#'
+#' # Example 2: In addition to the overall cost constraint from Example 1,
+#' # we want to specify a minimum sample size for strata 1 to 3.
+#'
+#' # The input \code{C} and \code{C} to \code{mosalloc} can be specified as
+#' # follows:
+#'
+#' C <- rbind(ch,
+#'            ch * c(-1, -1, -1, 0, 0))
+#' c <- c(budget,                        # Maximum overall survey budget
+#'        - 0.5 * budget)                # Minimum overall budget for strata 1-3
+#'
+#' # Using \code{constructCrestrSTRS} this can also be done via
+#' list <- list(list(stratum_id = 1:5, c_coef = ch, c_lower = NULL,
+#'                   c_upper = budget, name = "Overall"),
+#'              list(stratum_id = 1:3, c_coef = ch[1:3], c_lower = 0.5 * budget,
+#'                   c_upper = NULL, name = "1to3"))
+#' Cc <- constructCrestrSTRS(H, list)
+#'
+#' # Evaluation of the output
+#' Cc$C - C
+#' Cc$c - c
+#'
+#' @export
+
+constructCrestrSTRS <- function(H, list) {
+
+  # For each list element construct the corresponding cost components
+  out <- lapply(list, function(L) {
+    # Check if all parameter are specified
+    lnams <- c("stratum_id", "c_coef", "c_lower", "c_upper", "name")
+    if (!all(lnams %in% names(L))) {
+      stop("Incorrect format of list!")
+    }
+    if (all(as.integer(L$stratum_id) != as.numeric(L$stratum_id))) {
+      stop("stratum_id is not an index!")
+    }
+    if (length(L$stratum_id) != length(L$c_coef)) {
+      stop("Length of c_coef and stratum_id differ!")
+    }
+    C1 <- matrix(0, nrow = 1, ncol = H + 1)
+    C1[1, L$stratum_id] <- L$c_coef
+    if (!is.null(L$c_lower)) {
+      LOW <- -C1
+      LOW[ncol(LOW)] <- -L$c_lower
+      rownames(LOW) <- paste0(L$name, "_", "lower")
+    } else {
+      LOW <- matrix(0, nrow = 0, ncol = H + 1)
+    }
+    if (!is.null(L$c_upper)) {
+      UPP <- C1
+      UPP[ncol(UPP)] <- L$c_upper
+      rownames(UPP) <- paste0(L$name, "_", "upper")
+    } else {
+      UPP <- matrix(0, nrow = 0, ncol = H + 1)
+    }
+    C0 <- rbind(LOW, UPP)
+    colnames(C0) <- c(1:H, "")
+    C0
+  })
+
+  # Construct output
+  res <- do.call(rbind, out)
+  C <- res[, -ncol(res), drop = FALSE]
+  c <- as.vector(res[, ncol(res)])
+  names(c) <- rownames(C)
+  list(C = C, c = c)
+}
