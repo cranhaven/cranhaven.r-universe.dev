@@ -1,0 +1,19 @@
+#' Simulated study data.
+#'
+#' This is the code to create the study data - a simulated dataset that can be
+#' used to demonstrate how to use the codebook package.
+#'
+#' @format A data frame with 20 rows and 10 variables:
+#' \describe{
+#'   \item{id}{Participant's study identification number}
+#'   \item{address}{Participant's home address}
+#'   \item{sex}{Biological sex of the participant assigned at birth, female/male}
+#'   \item{date}{Participant's date of enrollment}
+#'   \item{time}{Participant's time of enrollment}
+#'   \item{date_time}{Participant's date and time of enrollment}
+#'   \item{days}{Total number of days the participant was enrolled in the study}
+#'   \item{height}{Participant's height in inches at date of enrollment}
+#'   \item{likert}{An example Likert scale item, 1-5}
+#'   \item{outcome}{Participant experienced the outcome of interest, TRUE or FALSE}
+#' }
+"study"
