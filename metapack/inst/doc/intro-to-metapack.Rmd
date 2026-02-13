@@ -1,0 +1,223 @@
+---
+title: "Introduction to metapack"
+author: Daeyoung Lim
+date: "`r Sys.Date()`"
+bibliography:
+- ../inst/bib/metapack.bib
+vignette: >
+  %\VignetteIndexEntry{Introduction to metapack}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+  \usepackage[utf8]{inputenc}
+output: rmarkdown::html_vignette
+---
+
+```{r setup, echo = FALSE}
+knitr::opts_knit$set(global.par = TRUE)
+knitr::opts_chunk$set(fig.width = 7, fig.height = 4)
+```
+<script type="text/x-mathjax-config">
+MathJax.Hub.Config({
+  TeX: { equationNumbers: { autoNumber: "AMS" } }
+});
+</script>
+
+
+### Table of Contents
++ [Meta-analytic data](#meta-data)
++ [`bmeta_analyze`](#meta-analyze)
+    + [Using `Formula`](#using-formula)
+    + [Function arguments](#arguments)
++ [Use case 1 - multivariate meta-analysis](#bayes-parobs)
++ [Use case 2 - univariate network meta-analysis](#bayes-nmr)
++ [Appendix: model descriptions](#appx)
++ [References](#references)
+
+## Meta-analytic data {#meta-data}
+Meta-analytic data is largely characterized in three ways: univariate or multivariate, meta-analysis or network meta-analysis, and aggregate data or individual participant data. All other modeling choices fall into prior specification. For aggregate-data models, the standard data format is shown in the following table:
+<a name="table-1"></a>
+
+| Outcome | Std.Dev | XCovariate | WCovariate | Trial (`k`) | Treat (`t`) | Npt |
+|:-------:|:--:|:----------:|:----------:|:-----:|:-----:|:---:|
+| $\bar{y}_{\cdot 13}$ | $S_{13}$ | $\boldsymbol{x}_{13}^\top$ | $\boldsymbol{w}_{13}^\top$ | 1 | 3 | 1000 |
+| $\bar{y}_{\cdot 10}$ | $S_{10}$ | $\boldsymbol{x}_{10}^\top$ | $\boldsymbol{w}_{20}^\top$ | 1 | 0 | 1000 |
+| $\bar{y}_{\cdot 20}$  | $S_{20}$ | $\boldsymbol{x}_{20}^\top$ | $\boldsymbol{w}_{20}^\top$ | 2 | 0 | 1000 |
+| $\vdots$ | $\vdots$ | $\vdots$ | $\vdots$ | $\vdots$ | $\vdots$ | $\vdots$ |
+
+Outcome is the response(s), Std.Dev is the standard deviation(s) of the response(s), XCovariate and WCovariate are the design matrices, and Npt is the trial sample sizes. The pair of trial and treatment indicators is unique to a specific row. Individual participant data obviously doesn't have Std.Dev and Npt.
+
+## `bmeta_analyze` {#meta-analyze}
+`bmeta_analyze` is the main function in **metapack** that supersedes and subsumes all previous worker functions. `bmeta_analyze` internally parses the formula and identifies the model, which ultimately passes the arguments to a suitable worker function. The vanilla **formula** class lacks *parts* and should strictly have one left-hand side (LHS) and one right-hand side (RHS). **Formula** [@Formula2010] extends this formula interface to allow multiple parts and multiple responses, lending itself well into (network) meta-analysis.
+
+Aside from the model-specific arguments, `control` has two items universally applicable: `scale_x` and `verbose`. When `TRUE`, the former standardizes the fixed-effects design matrix, and the latter allows printing the progress bar of the Markov chain Monte Carlo algorithm. Both default to `FALSE` if not provided. Note that if `scale_x` is `TRUE`, the subsequent methods like `print`, `summary`, or `coef` will revert the scaling to their original units. If this behavior is not desired, scale the variables explicitly in the formula.
+
+### Using `Formula` {#using-formula}
+Each *part* in LHS or RHS is an R expression where variables (or functions of variables) are chained with a plus sign (`+`), e.g., `x1 + x2`. The tilde (`~`) separates all LHS's from all RHS's, each side further broken down into parts by vertical bars (`|`). The meaning of each part is syntactically determined by its location within a formula, like the English language. Therefore, the order must be observed as presribed for `bmeta_analyze` to correctly identify and configure the model.
+
+Capitalizing on the unique data structure of meta-analysis data, the general form of the formula is as follows:
+```{R, eval=FALSE, echo=TRUE}
+y1 + y2 | sd1 + sd2 ~ x1 + x2 + x3 + ns(n) | z1 + z2 + z3 | treat + trial (+ groups)
+```
+
+* The first LHS (`y1 + y2`), the responses, is required of all models. Depending on the number of variables given in the first LHS, the model is either univariate or multivariate.
+* The second LHS (`sd1 + sd2`) supplies the standard deviations of the endpoints required of an aggregate-data meta-analysis. Currently, with no IPD models implemented, `bmeta_analyze` will break if this part is missing; however, in the coming weeks, this requirement will be relaxed with the introduction of IPD models.
+* The first RHS (`x1 + x2 + x3 + ns(n)`) defines the fixed-effects covariates. For aggregate-data models, the trial sample sizes must be passed as an argument to `ns()`. In the example code, `n` is the variable containing the trial sample sizes. IPD models do not have trial samples sizes. In fact, `bmeta_analyze` checks the existence of `ns()` to determine whether it's aggregate data.
+* The second RHS (`z1 + z2 + z3`) defines either the random-effects covariates (e.g., $w_{tk}^\top\boldsymbol{\gamma}$) or the variance-related covariates (e.g., $\log \tau = z_{tk}^\top \boldsymbol{\phi}$)—see [Appendix](#appx).
+* The third RHS (`treat + trial` or `treat + trial + groups`) corresponds to the treatment and trial indicators, and optionally the grouping variable if it exists. Variables here must be provided in the exact order shown in the example. If variables for this part are not already factors, they are coerced to extract the levels and number of levels—and *unfactored* afterward.
+
+### Function arguments {#arguments}
+Aside from `formula` and `data`, there are four remaining arguments that are required to be lists: `prior`, `mcmc`, `control`, and `init`. 
+
+* All prior-related values should be included in `prior`.
+* `mcmc` contains the numbers of Markov chain Monte Carlo (MCMC) iterations: `ndiscard` for the number of burn-in iterations, `nskip` for thinning, and `nkeep` for the posterior sample size.
+* `control` configures the estimation algorithm. Currently, the Metropolis-Hastings algorithm is the only estimation method that allows tuning. `*_stepsize` with the asterisk replaced with one of the parameter names indicates the stepsize for determining the sample evaluation points in the localized Metropolis algorithm.
+* `init` provides the initial values for the parameters in case a user has *a priori* known high-quality starting values.
+
+## Use case 1 - (multivariate) meta-analysis with `bmeta_analyze` {#bayes-parobs}
+Univariate meta-analysis can be specified with one response endpoint and two treatments, except that the covariance modeling must be "NoRecovery".
+
+Multivariate meta-analysis is characterized by multiple response endpoints and two treatments. Additionally, multivariate meta-analysis requires a model for the covariance matrix to be specified as `model` in the `prior` argument—which defaults to `model=NoRecovery` if left unspecified. The available options are listed below. The objects parenthesized at the end of every bullet point are the hyperparameters associated with each model.
+
+<a name="model-spec"></a>
+
++ `model="NoRecovery"` - $\Sigma_{tk} = \mathrm{diag}(\sigma_{tk,11}^2,\ldots,\sigma_{tk,JJ}^2)$ where $\sigma_{tk,jj}^2 \sim \mathcal{IG}(a_0,b_0)$ and $\mathcal{IG}(a,b)$ is [the inverse-gamma distribution](https://en.wikipedia.org/wiki/Inverse-gamma_distribution). This specification is useful if the user does not care about the correlation recovery. (`c0`, `dj0`, `a0`, `b0`, `Omega0`)
++ `model="EquiCovariance"` - $\Sigma_{tk}=\Sigma$ for every combination of $(t,k)$ and $\Sigma^{-1}\sim\mathcal{W}_{s_0}(\Sigma_0)$. This specification assumes that the user has prior knowledge that the correlation structure does not change across the arms included. (`c0`, `dj0`, `s0`, `Omega0`, `Sigma0`)
++ `model="EquiWithinTreat"` - $\Sigma_{tk}=\Sigma_t$ and $\Sigma_t^{-1}\sim \mathcal{W}_{s_0}(\Sigma_0)$. This is a relaxed version of `model="EquiCovariance"`, allowing the correlation structure to differ across trials but forcing it to stay identical within a trial. (`c0`, `dj0`, `s0`, `Omega0`, `Sigma0`)
++ `model="EquiCorrelation"` - $\Sigma_{tk}=\boldsymbol{\delta}_{tk}\boldsymbol{\rho}\boldsymbol{\delta}_{tk}$ where $\boldsymbol{\delta}_{tk}=\mathrm{diag}(\Sigma_{tk,11}^{1/2},\ldots,\Sigma_{tk,JJ}^{1/2})$, and $\boldsymbol{\rho}$ is the correlation matrix. This specification allows the variances to vary across arms but requires that the correlations be the same. This is due to the lack of correlation information in the data, which would in turn lead to the nonidentifiability of the correlations if they were allowed to vary. However, this still is an ambitious model which permits maximal degrees of freedom in terms of variance and correlation estimation. (`c0`, `dj0`, `a0`, `b0`, `Omega0`)
++ `model="Hierarchical"` - The fifth model is hierarchical and thus may require more data than the others: $(\Sigma_{tk}^{-1}\mid \Sigma)\sim \mathcal{W}_{\nu_0}((\nu_0-J-1)^{-1}\Sigma^{-1})$ and $\Sigma \sim \mathcal{W}_{d_0}(\Sigma_0)$. $\Sigma_{tk}$ encodes the within-treatment-arm variation while $\Sigma$ captures the between-treatment-arm variation. The hierarchical structure allows the "borrowing of strength" across treatment arms. (`c0`, `dj0`, `d0`, `nu0`, `Sigma0`, `Omega0`)
+
+The boilerplate code for multivariate meta-analysis is as follows:
+```{R, eval=FALSE, echo=TRUE}
+f <- "y1 + y2 | sd1 + sd2 ~ x1 + x2 + x3 + ns(n) | z1 + z2 + z3 | treat + trial + groups"
+out <- bmeta_analyze(formula(f), data = df,
+        mcmc = list(ndiscard = 20000, nskip = 5, nkeep = 10000),
+        prior = list(model = "NoRecovery"))
+```
+
+Except `model="NoRecovery"`, all else uses `R_stepsize` in the `control` argument. The fourth option—`model=EquiCorrelation`—allows sampling $\boldsymbol{\rho}$. However, researchers oftentimes have a rough—or concrete—idea about the correlation values, and therefore fixing $\boldsymbol{\rho}$ makes sense. That edge case can be accomplished through setting `sample_Rho=FALSE` in `control` and `Rho=<some_matrix>` in `init`. If `sample_Rho=FALSE` but no initial value for `Rho` is given, it will default to 0.5 ($\boldsymbol{\rho}=0.5\boldsymbol{I}+0.5\boldsymbol{1}\boldsymbol{1}^\top$). In full form,
+```{R, eval=FALSE, echo=TRUE}
+Rho_init <- diag(3) # assume 3 by 3
+Rho_init[upper.tri(Rho_init)] <- 
+    Rho_init[lower.tri(Rho_init)] <- 0.2
+out <- bmeta_analyze(formula(f), data = df,
+        prior = list(model = "EquiCorr"), # abbreviation allowed
+        control = list(sample_Rho = FALSE),
+        init = list(Rho = Rho_init))
+```
+
+## Use case 2 - univariate network meta-analysis with `bmeta_analyze` {#bayes-nmr}
+Univariate network meta-analysis is characterized by a single response endpoint and more than two treatments. Similar to `model` in the multivariate meta-analysis case, the degrees of freedom (`df`) for the random effects' multivariate $t$-distribution are the parameter of interest in univariate network meta-analysis. Objects parenthesized at the end are the hyperparameters associated with the model.
+
+* `df = <positive_real_value>` - the random effects follow a multivariate $t$-distribution. If `df` is not provided by the user, it defaults to 20. (`c01`, `c02`)
+* `df = Inf` - the random effects follow a multivariate normal distribution. (`c01`, `c02`)
+* `sample_df=TRUE` in `control` - the random effects follow a multivariate $t$-distribution but the degrees of freedom are treated as random, in which case a hierarchical prior distribution is considered for `df`. That is, `(df | nu_a, nu_b) ~ Ga(nu_a, nu_a / nu_b)`, `nu_a ~ Ga(a4, b4)`, and `nu_b ~ IG(a5, b5)`. (`c01`, `c02`, `a4`, `b4`, `a5`, `b5`)
+
+The boilerplate code for univariate network meta-analysis is as follows:
+```{R, eval=FALSE, echo=TRUE}
+f <- "y | sd ~ x1 + x2 + x3 + ns(n) | z1 + z2 + z3 | treat + trial"
+out <- bmeta_analyze(formula(f), data = df,
+        mcmc = list(discard = 20000, nskip = 5, nkeep = 10000),
+        prior = list(df = 3)) # heavy-tailed random effects
+```
+
+If `control=list(sample_df=TRUE)`, the `df` value in `prior` is ignored. Identically to the multivariate meta-analysis case, `sample_Rho` can be set to `FALSE` to suppress the sampling of `Rho`, and `Rho` will be initialized using the corresponding value in `init`, which defaults to 0.5 ($\boldsymbol{\rho}=0.5\boldsymbol{I}+0.5\boldsymbol{1}\boldsymbol{1}^\top$). The correlation matrix `Rho` for univariate network meta-analysis belongs to the random effects, **not** the responses.
+```{R, eval=FALSE, echo=TRUE}
+Rho_init <- diag(nT) # nT = the number of treatments
+Rho_init[upper.tri(Rho_init)] <- 
+    Rho_init[lower.tri(Rho_init)] <- 0.2
+out <- bmeta_analyze(formula(f), data = df,
+        control = list(sample_df = TRUE, sample_Rho = FALSE),
+        init = list(Rho = Rho_init))
+```
+
+Sometimes, there is no covariate information available for modeling the variances. The second RHS can be a vector of ones, which reduces the model to have $\mathrm{Var}(\overline{y}_{tk})=\sigma_{tk}^2/n_{tk} + \exp(2\phi)$ for every $(t,k)$. Users can simply do without the second RHS in this case—the second RHS technically exists but is the treatment and trial configuration. An example formula is as follows:
+```{R, eval=FALSE, echo=TRUE}
+f <- "y | sd ~ x1 + x2 + x3 + ns(n) | treat + trial"
+```
+
+
+
+
+## Appendix {#appx}
+#### Multivariate meta-analysis model
+When there are multiple endpoints, the correlations thereof are oftentimes unreported. In a meta-regression setting, the correlations are something we want to know. In the case of subject-level meta-analyses (where individual participant/patient data are available), the correlations may only be one function call away. However, for study-level meta-analyses, the correlations must be estimated, which is not an easy task. `bmeta_analyze` provides five different models to estimate and recover the missing correlations.
+
+Since the aforementioned setting regards the correlations as missing, the reported data are $(\overline{\boldsymbol{y}}_{\cdot tk}, \boldsymbol{s}_{tk}) \in \mathbf{R}^J \times \mathbf{R}^J$ for the $t$th treatment arm and $k$th trial. Every trial out of $K$ trials includes $T$ treatment arms. The sample size of the $t$th treatment arm and $k$th trial is denoted by $n_{tk}$. If we write $\boldsymbol{x}_{tkj}\in \mathbf{R}^{p_j}$ to be the treatment-within-trial level regressor corresponding to the $j$th response, reflecting the fixed effects of the $t$th treatment arm, and $\boldsymbol{w}_{tkj}\in \mathbf{R}^{q_j}$ to be the same for the random effects, the model becomes
+
+\begin{equation}\label{eq:reduced-model}
+\overline{\boldsymbol{y}}_{\cdot tk} = \boldsymbol{X}_{tk}\boldsymbol{\beta} + \boldsymbol{W}_{tk}\boldsymbol{\gamma}_k + \overline{\boldsymbol{\epsilon}}_{\cdot tk},
+\end{equation}
+
+and $(n_{tk}-1)S_{tk} \sim \mathcal{W}_{n_{tk}-1}(\Sigma_{tk})$ where $\boldsymbol{X}_{tk} = \mathrm{blockdiag}(\boldsymbol{x}_{tk1}^\top,\boldsymbol{x}_{tk2}^\top,\ldots,\boldsymbol{x}_{tkJ}^\top)$, $\boldsymbol{\beta} = (\boldsymbol{\beta}_1^\top, \cdots, \boldsymbol{\beta}_J^\top)^\top$, $\boldsymbol{W}_{tk}=\mathrm{blockdiag}(\boldsymbol{w}_{tk1}^\top, \ldots,\boldsymbol{w}_{tkJ}^\top)$, $\boldsymbol{\gamma}_k = (\boldsymbol{\gamma}_{k1}^\top,\boldsymbol{\gamma}_{k2}^\top, \ldots,\boldsymbol{\gamma}_{kJ}^\top)^\top$, $\overline{\boldsymbol{\epsilon}}_{\cdot tk} \sim \mathcal{N}(\boldsymbol{0}, \Sigma_{tk}/n_{tk})$, $S_{tk}$ is the full-rank covariance matrix whose diagonal entries are the observed $\boldsymbol{s}_{tk}$, and $\mathcal{W}_\nu(\Sigma)$ is the Wishart distribution with $\nu$ degrees of freedom and a $J\times J$ scale matrix $\Sigma$ whose density function is
+
+$$
+f(X\mid \nu,\Sigma) = \dfrac{1}{2^{J\nu}|\Sigma|^{\nu/2}\Gamma_J(\nu/2)}|X|^{(\nu-J-1)/2}\exp\left(-\dfrac{1}{2}\mathrm{tr}(\Sigma^{-1}X) \right)I(X\in \mathcal{S}_{++}^J),
+$$
+
+where $\Gamma_p$ is the multivariate gamma function defined by
+
+$$
+\Gamma_p(z) = \pi^{p(p-1)/4}\prod_{j=1}^p \Gamma[z+(1-j)/2],
+$$
+
+and $\mathcal{S}_{++}^J$ is the space of $J\times J$ symmetric positive definite matrices. The statistical independence of $\overline{\boldsymbol{\epsilon}}_{\cdot tk}$ and $S_{tk}$ follows naturally from [the Basu's theorem](https://en.wikipedia.org/wiki/Basu%27s_theorem).
+
+The patients can sometimes be grouped by a factor that will generate disparate random effects. Although an arbitrary number of groups can exist in theory, **metapack** restricts the number of groups to two for practicality. Denoting the binary group indicates by $u_{tk}$ yields
+
+$$
+\overline{y}_{\cdot tkj} = \boldsymbol{x}_{tkj}^\top\boldsymbol{\beta} + (1-u_{tk})\boldsymbol{w}_{tkj}^\top \boldsymbol{\gamma}_{kj}^0 + u_{tk}\boldsymbol{w}_{tkj}^\top \boldsymbol{\gamma}_{kj}^1 + \overline{\epsilon}_{\cdot tkj}.
+$$
+
+The random effects are modeled as $\boldsymbol{\gamma}_{kj}^l \overset{\text{ind}}{\sim}\mathcal{N}(\boldsymbol{\gamma}_j^{l*},\Omega_j^l)$ and $(\Omega_j^l)^{-1} \sim \mathcal{W}_{d_{0j}}(\Omega_{0j})$. Stacking the vectors, $\boldsymbol{\gamma}_k^l = ((\boldsymbol{\gamma}_{k1}^l)^\top, \ldots, (\boldsymbol{\gamma}_{kJ}^l)^\top)^\top \sim \mathcal{N}(\boldsymbol{\gamma}^{l*},\Omega^l)$ where $\boldsymbol{\gamma}^{l*} = ((\boldsymbol{\gamma}_{1}^{l*})^\top,\ldots,(\boldsymbol{\gamma}_{J}^{l*})^\top)^\top$, $\Omega_j = \mathrm{blockdiag}(\Omega_j^0,\Omega_j^l)$, and $\Omega = \mathrm{blockdiag}(\Omega_1,\ldots,\Omega_J)$ for $l \in \{0,1\}$. Adopting the non-centered reparametrization [@bernardo2003non], define $\boldsymbol{\gamma}_{k,o}^l = \boldsymbol{\gamma}_k^l - \boldsymbol{\gamma}^{l*}$. Denoting $\boldsymbol{W}_{tk}^* = [(1-u_{tk})\boldsymbol{W}_{tk}, u_{tk}\boldsymbol{W}_{tk}]$, $\boldsymbol{X}_{tk}^* = [\boldsymbol{X}_{tk},\boldsymbol{W}_{tk}^*]$, and $\boldsymbol{\theta} = (\boldsymbol{\beta}^\top, {\boldsymbol{\gamma}^{0*}}^\top, {\boldsymbol{\gamma}^{1*}}^\top)^\top$, the model is written as follows:
+
+$$
+\overline{\boldsymbol{y}}_{\cdot tk} = \boldsymbol{X}_{tk}^*\boldsymbol{\theta}+\boldsymbol{W}_{tk}^*\boldsymbol{\gamma}_{k,o} + \overline{\boldsymbol{\epsilon}}_{\cdot tk},
+$$
+where $\boldsymbol{\gamma}_{k,o} = ((\boldsymbol{\gamma}_{k,o}^0)^\top, (\boldsymbol{\gamma}_{k,o}^1)^\top)^\top$. If there is no grouping in the patients, setting $u_{tk}=0$ for all $(t,k)$ reduces the model back to $\eqref{eq:reduced-model}$.
+
+The conditional distribution of $(R_{tk} \mid V_{tk}, \Sigma_{tk})$ where $R_{tk} = V_{tk}^{-\frac{1}{2}}S_{tk}V_{tk}^{-\frac{1}{2}}$ and $V_{tk} = \mathrm{diag}(S_{tk11},\ldots,S_{tkJJ})$ becomes
+
+$$
+f(R_{tk}\mid V_{tk},\Sigma_{tk}) \propto |R_{tk}|^{(n_{tk}-J-2)/2}\exp\left\{-\dfrac{(n_{tk}-1)}{2}\mathrm{tr}\left(V_{tk}^{\frac{1}{2}}\Sigma_{tk}^{-1}V_{tk}^{\frac{1}{2}}R_{tk} \right) \right\}.
+$$
+
+#### Univariate network meta-analysis model
+Network meta-analysis is an extension of meta-analysis where more than two treatments are compared. Unlike the traditional meta-analyses that restrict the number of treatments to be equal across trials, network meta-analysis allows varying numbers of treatments. This achieves a unique benefit that two treatments that have not been compared head-to-head can be assessed as a pair.
+
+Start by denoting the comprehensive list of treatments in all $K$ trials by $\mathcal{T}=\{1,\ldots,T\}$. It is rarely the case that all $T$ treatments are included in the data but we drop the subscripts $t_k$ and replace it with $t$ for notational simplicity. Now, consider the model
+
+\begin{equation}\label{eq:nmr-basic}
+\bar{y}_{\cdot tk} = \boldsymbol{x}_{tk}^\top\boldsymbol{\beta} + \tau_{tk}\gamma_{tk} + \bar{\epsilon}_{\cdot tk}, \quad \bar{\epsilon}_{\cdot tk} \sim \mathcal{N}(0,\sigma_{tk}^2/n_{tk}),
+\end{equation}
+where $\bar{y}_{\cdot tk}$ is the univariate aggregate response of the $k$th trial for which treatment $t$ was assigned, $\boldsymbol{x}_{tk}$ is the aggregate covariate vector for the fixed effects, and $\gamma_{tk}$ is the random effects term. The observed standard deviation, $s_{tk}^2$ is modeled by
+
+$$
+\dfrac{(n_{tk}-1)s_{tk}^2}{\sigma_{tk}^2} \sim \chi_{n_{tk}-1}^2.
+$$
+
+$\tau_{tk}$ in Equation $\eqref{eq:nmr-basic}$ encapsulates the variance of the random effect for the $t$th treatment in the $k$th trial, which is modeled as a deterministic function of a related covariate. That is,
+
+$$
+\log \tau_{tk} = \boldsymbol{z}_{tk}^\top\boldsymbol{\phi},
+$$
+
+where $\boldsymbol{z}_{tk}$ is the $q$-dimensional aggregate covariate vector and $\boldsymbol{\phi}$ is the corresponding coefficient vector.
+
+For the $k$th trial, we define a selection/projection matrix $E_k = (e_{t_{1k}},e_{t_{2k}},\ldots, e_{t_{T_k k}})$, where $e_{t_{lk}} = (0,\ldots,1,\ldots,0)^\top$, $l=1,\ldots,T_k$, with $t_{lk}$th element set to 1 and 0 otherwise, and $T_k$ is the number of treatments included in the $k$th trial. Let the scaled random effects $\boldsymbol{\gamma}_k = (\gamma_{1k},\ldots,\gamma_{Tk})^\top$. Then, $\boldsymbol{\gamma}_{k,o}=E_k^\top\boldsymbol{\gamma}_k$ is the vector of $T_k$-dimensional scaled random effects for the $k$th trial. The scaled random effects $\boldsymbol{\gamma}_k \sim t_T(\boldsymbol{\gamma},\boldsymbol{\rho},\nu)$ where $t_T(\boldsymbol{\mu},\Sigma,\nu)$ denotes a multivariate $t$ distribution with $\nu$ degrees of freedom, a location parameter vector $\boldsymbol{\mu}$, and a scale matrix $\Sigma$.
+
+The non-centered reparametrization [@bernardo2003non] gives $\boldsymbol{\gamma}_{k,o} = E_k^\top(\boldsymbol{\gamma}_k - \boldsymbol{\gamma})$. Then, with $\bar{\boldsymbol{y}}_k = (\bar{y}_{kt_{k1}},\ldots,\bar{y}_{kt_{kT_k}})^\top$, $\boldsymbol{X}_k = (\boldsymbol{x}_{kt_{k1}},\ldots, \boldsymbol{x}_{kt_{kT_k}})$, and $\boldsymbol{Z}_k(\boldsymbol{\phi}) = \mathrm{diag}(\exp(\boldsymbol{z}_{kt_{k1}}^\top \boldsymbol{\phi}),\ldots, \exp(\boldsymbol{z}_{kt_{kT_k}}^\top \boldsymbol{\phi}))$, the model is recast as
+
+$$
+\bar{\boldsymbol{y}}_k = \boldsymbol{X}_k^* \boldsymbol{\theta} + \boldsymbol{Z}_k(\boldsymbol{\phi}) \boldsymbol{\gamma}_{k,o}  + \bar{\boldsymbol{\epsilon}}_k,
+$$
+where $\boldsymbol{X}_k^* = (\boldsymbol{X}_k, E_k^\top)$, $\boldsymbol{\theta} = (\boldsymbol{\beta}^\top, \boldsymbol{\gamma}^\top)^\top$, and $\bar{\boldsymbol{\epsilon}}_k \sim \mathcal{N}_{T_k}(\boldsymbol{0},\Sigma_k)$, $\Sigma_k = \mathrm{diag}(\sigma_{kt_{k1}}^2/n_{kt_{k1}}, \ldots, \sigma_{kt_{kT_k}}^2/n_{kt_{kT_k}})$. This allows the random effects $\boldsymbol{\gamma}_{k,o} \sim t_{T_k}(\boldsymbol{0},E_k^\top \boldsymbol{\rho}E_k, \nu)$ to be centered at zero.
+
+Since the multivariate $t$ random effects are not analytically marginalizable, we represent it as a scale mixture of normals as follows:
+
+$$
+(\boldsymbol{\gamma}_{k,o}\mid \lambda_k) \overset{\text{ind}}{\sim} \mathcal{N}_{T_k}\left(\boldsymbol{0}, \lambda_k^{-1}(E_k^\top\boldsymbol{\rho}E_k) \right), \quad \lambda_k \overset{\text{iid}}{\sim}\mathcal{G}a\left(\dfrac{\nu}{2},\dfrac{\nu}{2} \right),
+$$
+where $\mathcal{G}a(a,b)$ indicates the gamma distribution with mean $a/b$ and variance $a/b^2$.
+
+
+## References {#references}
