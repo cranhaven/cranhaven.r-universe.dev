@@ -1,0 +1,209 @@
+---
+title: "Plotting model fit, diagnostics, and spatial patterns"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Plotting model fit, diagnostics, and spatial patterns}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  message = FALSE,
+  warning = FALSE
+)
+```
+
+This vignette walks through plotting helpers that summarize model fit and
+spatial patterns in **trafficCAR**:
+
+- `plot_observed_fitted()` for observed vs predicted values.
+- `plot_mcmc_diagnostics()` for quick effective sample size diagnostics.
+- `plot_predicted()` and `plot_relative_congestion()` for spatial maps.
+
+The workflow below creates a small synthetic outcome on the bundled road
+network, fits a Gaussian CAR model, and uses the plotting helpers to visualize
+results.
+
+## Load data and build segment adjacency
+
+```{r}
+library(trafficCAR)
+library(sf)
+library(ggplot2)
+
+data("roads_small", package = "trafficCAR")
+roads <- roads_small
+
+segments <- roads_to_segments(
+  roads,
+  crs_m = 3857,
+  split_at_intersections = TRUE
+)
+
+# Keep the example lightweight for vignette builds.
+if (nrow(segments) > 200) {
+  segments <- segments[seq_len(200), ]
+}
+
+adjacency <- build_adjacency(segments, crs_m = 3857)
+
+# Drop isolated segments to keep the example compatible with a proper CAR model.
+if (any(adjacency$isolates)) {
+  segments <- segments[!adjacency$isolates, ]
+  adjacency <- build_adjacency(segments, crs_m = 3857)
+}
+```
+
+## Simulate an outcome and fit a CAR model
+
+To keep the example lightweight, the code below simulates a response using
+segment length as a covariate and fits a modest MCMC run. Adjust `n_iter` and
+`burn_in` upward for applied work.
+
+```{r}
+set.seed(123)
+
+segment_length <- segments$length_m
+segment_length <- scale(segment_length)[, 1]
+
+speed <- 40 + 6 * segment_length + rnorm(nrow(segments), sd = 3)
+
+traffic_data <- data.frame(
+  segment_id = segments$seg_id,
+  speed = speed
+)
+
+X <- cbind(
+  intercept = 1,
+  length = segment_length
+)
+
+fit <- fit_car(
+  y = traffic_data$speed,
+  A = adjacency$A,
+  X = X,
+  type = "proper",
+  rho = 0.9,
+  tau = 1,
+  n_iter = 300,
+  burn_in = 150,
+  thin = 2
+)
+```
+
+## Prepare a plotting-ready fit object
+
+The plotting helpers expect draws of the linear predictor (`mu`) alongside the
+raw `x` draws. The helper below derives `mu` from the CAR fit and returns an
+object compatible with the plotting functions.
+
+```{r}
+make_plot_fit <- function(base_fit, X, outcome_col, outcome_label) {
+  x_draws <- base_fit$draws$x
+  beta_draws <- base_fit$draws$beta
+
+  if (is.null(beta_draws) || ncol(beta_draws) == 0) {
+    mu_draws <- x_draws
+  } else {
+    mu_draws <- beta_draws %*% t(X) + x_draws
+  }
+
+  plot_fit <- list(
+    draws = list(
+      mu = mu_draws,
+      x = x_draws,
+      beta = beta_draws,
+      sigma2 = base_fit$draws$sigma2
+    ),
+    outcome_col = outcome_col,
+    outcome_label = outcome_label
+  )
+
+  class(plot_fit) <- "traffic_fit"
+  plot_fit
+}
+
+plot_fit <- make_plot_fit(
+  fit,
+  X = X,
+  outcome_col = "speed",
+  outcome_label = "Speed (mph)"
+)
+```
+
+## Plot observed vs fitted values
+
+```{r, fig.width=7, fig.height=5}
+plot_observed_fitted(plot_fit, data = traffic_data)
+```
+
+Use this plot to check for systematic bias. Points should fall around the 45°
+line if predictions match observed data on average.
+
+## Plot MCMC diagnostics
+
+`plot_mcmc_diagnostics()` provides quick effective sample size (ESS) diagnostics.
+In current versions, it returns a list with a `ggplot` and a summary data frame.
+For robustness in vignette builds, the code below falls back to computing ESS
+directly if a plot/summary is not returned.
+
+```{r, fig.width=7, fig.height=4}
+diag <- plot_mcmc_diagnostics(plot_fit)
+
+if (is.list(diag) && !is.null(diag$plot)) {
+  diag$plot
+} else {
+  ess <- vapply(plot_fit$draws, posterior::ess_basic, numeric(1))
+  ess_df <- data.frame(
+    parameter = names(ess),
+    ess = as.numeric(ess),
+    row.names = NULL
+  )
+
+  ggplot2::ggplot(ess_df, ggplot2::aes(parameter, ess)) +
+    ggplot2::geom_col() +
+    ggplot2::coord_flip() +
+    ggplot2::labs(
+      title = "Effective sample size by parameter",
+      x = NULL,
+      y = "ESS"
+    )
+}
+```
+
+If you want the underlying ESS table:
+
+```{r}
+if (is.list(diag) && !is.null(diag$summary)) {
+  head(diag$summary)
+} else {
+  ess <- vapply(plot_fit$draws, posterior::ess_basic, numeric(1))
+  head(data.frame(parameter = names(ess), ess = as.numeric(ess), row.names = NULL))
+}
+```
+
+Low ESS values indicate slow mixing. Consider increasing the number of
+iterations or adjusting priors if ESS is consistently low.
+
+## Plot spatial predictions
+
+`plot_predicted()` visualizes the posterior mean of the linear predictor on the
+road network, while `plot_relative_congestion()` highlights areas with above- or
+below-average spatial effects.
+
+```{r, fig.width=7, fig.height=6}
+plot_predicted(plot_fit, segments)
+plot_relative_congestion(plot_fit, segments)
+```
+
+## Tips for applied workflows
+
+- Always verify that the ordering of rows in `segments` matches the adjacency
+  matrix used to fit the model.
+- Use the observed vs fitted plot alongside residual diagnostics to assess model
+  adequacy.
+- Pair the spatial plots with domain knowledge (e.g., known bottlenecks) to
+  interpret relative congestion.
