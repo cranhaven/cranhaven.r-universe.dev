@@ -1,0 +1,61 @@
+#' rna egene expression of 48 meningiomas
+#'
+#' A dataset containing the gene expression data od 48 meningioma tumors
+#'
+#'
+#' @format A data frame with 200 rows and 48 variables:
+#' \describe{
+#'   \item{BT_1008}{sample BT_1008, }
+#'   \item{BT_1017}{sample BT_1017, }
+#'   \item{BT_1025}{sample BT_1025, }
+#'   \item{BT_1042}{sample BT_1042, }
+#'   \item{BT_1050}{sample BT_1050, }
+#'   \item{BT_1056}{sample BT_1056, }
+#'   \item{BT_1065}{sample BT_1065, }
+#'   \item{BT_1067}{sample BT_1067, }
+#'   \item{BT_1072}{sample BT_1072, }
+#'   \item{BT_1078}{sample BT_1078, }
+#'   \item{BT_1082}{sample BT_1082, }
+#'   \item{BT_1091}{sample BT_1091, }
+#'   \item{BT_1094}{sample BT_1094, }
+#'   \item{BT_1097}{sample BT_1097, }
+#'   \item{BT_1115}{sample BT_1115, }
+#'   \item{BT_605}{sample BT_605, }
+#'   \item{BT_617}{sample BT_617, }
+#'   \item{BT_619}{sample BT_619, }
+#'   \item{BT_633}{sample BT_633, }
+#'   \item{BT_634}{sample BT_634, }
+#'   \item{BT_644}{sample BT_644, }
+#'   \item{BT_654}{sample BT_654, }
+#'   \item{BT_659}{sample BT_659, }
+#'   \item{BT_690}{sample BT_690, }
+#'   \item{BT_695}{sample BT_695, }
+#'   \item{BT_700}{sample BT_700, }
+#'   \item{BT_738}{sample BT_738, }
+#'   \item{BT_751}{sample BT_751, }
+#'   \item{BT_771}{sample BT_771, }
+#'   \item{BT_797}{sample BT_797, }
+#'   \item{BT_803}{sample BT_803, }
+#'   \item{BT_808}{sample BT_808, }
+#'   \item{BT_820}{sample BT_820, }
+#'   \item{BT_837}{sample BT_837, }
+#'   \item{BT_855}{sample BT_855, }
+#'   \item{BT_862}{sample BT_862, }
+#'   \item{BT_873}{sample BT_873, }
+#'   \item{BT_882}{sample BT_882, }
+#'   \item{BT_887}{sample BT_887, }
+#'   \item{BT_900}{sample BT_900, }
+#'   \item{BT_905}{sample BT_905, }
+#'   \item{BT_907}{sample BT_907, }
+#'   \item{BT_920}{sample BT_920, }
+#'   \item{BT_944}{sample BT_944, }
+#'   \item{BT_962}{sample BT_962, }
+#'   \item{BT_963}{sample BT_963, }
+#'   \item{BT_982}{sample BT_982, }
+#'   \item{BT_990}{sample BT_990, }
+#'   ...
+#' }
+"rna"
+
+
+
