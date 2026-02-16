@@ -1,0 +1,420 @@
+---
+title: "Session and Configuration Management"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Session and Configuration Management}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  fig.width = 7,
+  fig.height = 5
+)
+```
+
+## Overview
+
+SafeMapper manages sessions and checkpoints automatically, but provides tools for inspection and control when needed. This guide covers configuration, session management, and cleanup.
+
+```{r}
+library(SafeMapper)
+```
+
+## Configuration
+
+### s_configure() - Customize Behavior
+
+```{r}
+# View current defaults by calling with no arguments behavior
+# Default configuration:
+# - batch_size = 100
+# - retry_attempts = 3
+# - auto_recover = TRUE
+
+# Customize settings
+s_configure(
+  batch_size = 50,       # Items per checkpoint
+  retry_attempts = 5,    # Retries for failed batches
+  auto_recover = TRUE    # Enable automatic recovery
+)
+```
+
+### Configuration Options Explained
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    Configuration Options                                     │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│   batch_size (default: 100)                                                  │
+│   ┌───────────────────────────────────────────────────────────────────┐     │
+│   │  Controls how often checkpoints are saved                          │     │
+│   │                                                                    │     │
+│   │  Small batch_size (10-50):                                        │     │
+│   │    ✅ More frequent saves, less work lost on failure              │     │
+│   │    ❌ Higher I/O overhead                                         │     │
+│   │    Use for: Slow operations, unstable environments                │     │
+│   │                                                                    │     │
+│   │  Large batch_size (200-500):                                      │     │
+│   │    ✅ Less I/O overhead, faster overall                           │     │
+│   │    ❌ More work lost on failure                                   │     │
+│   │    Use for: Fast operations, stable environments                  │     │
+│   └───────────────────────────────────────────────────────────────────┘     │
+│                                                                              │
+│   retry_attempts (default: 3)                                                │
+│   ┌───────────────────────────────────────────────────────────────────┐     │
+│   │  How many times to retry a failed batch                           │     │
+│   │                                                                    │     │
+│   │  Low (1-2): For persistent errors (local computation)             │     │
+│   │  Medium (3-5): For transient errors (network, APIs)               │     │
+│   │  High (5-10): For very unreliable operations                      │     │
+│   └───────────────────────────────────────────────────────────────────┘     │
+│                                                                              │
+│   auto_recover (default: TRUE)                                               │
+│   ┌───────────────────────────────────────────────────────────────────┐     │
+│   │  Whether to automatically resume from checkpoints                 │     │
+│   │                                                                    │     │
+│   │  TRUE: Re-running same code resumes automatically                 │     │
+│   │  FALSE: Always start fresh (useful for debugging)                 │     │
+│   └───────────────────────────────────────────────────────────────────┘     │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Configuration Recommendations
+
+```{r}
+# For API calls (slow, potentially unstable)
+s_configure(
+  batch_size = 20,      # Save frequently
+  retry_attempts = 5    # Handle transient errors
+)
+
+# For local computation (fast, stable)
+s_configure(
+  batch_size = 500,     # Reduce I/O overhead
+  retry_attempts = 1    # Errors are usually persistent
+)
+
+# For development/debugging
+s_configure(
+  batch_size = 10,      # Easy to test recovery
+  retry_attempts = 1,   # Fail fast
+  auto_recover = FALSE  # Start fresh each run
+)
+
+# Reset to defaults
+s_configure()
+```
+
+## Session IDs
+
+### Automatic vs Manual Session IDs
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    Session ID Strategies                                     │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│   Automatic (Default)                                                        │
+│   ┌───────────────────────────────────────────────────────────────────┐     │
+│   │  session_id = fingerprint(data_characteristics)                   │     │
+│   │                                                                    │     │
+│   │  Pros:                                                            │     │
+│   │    ✅ Zero configuration needed                                   │     │
+│   │    ✅ Same data automatically resumes                             │     │
+│   │    ✅ Different data gets different session                       │     │
+│   │                                                                    │     │
+│   │  Cons:                                                            │     │
+│   │    ⚠️ Similar data might share session unexpectedly              │     │
+│   │    ⚠️ Code changes don't create new session                      │     │
+│   └───────────────────────────────────────────────────────────────────┘     │
+│                                                                              │
+│   Manual (Explicit .session_id)                                              │
+│   ┌───────────────────────────────────────────────────────────────────┐     │
+│   │  session_id = "my_custom_id_v2"                                   │     │
+│   │                                                                    │     │
+│   │  Pros:                                                            │     │
+│   │    ✅ Full control over session identity                          │     │
+│   │    ✅ Can version your computations                               │     │
+│   │    ✅ Predictable behavior                                        │     │
+│   │                                                                    │     │
+│   │  Cons:                                                            │     │
+│   │    ⚠️ Must manage IDs yourself                                   │     │
+│   │    ⚠️ Must remember to update ID when needed                     │     │
+│   └───────────────────────────────────────────────────────────────────┘     │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### When to Use Manual Session IDs
+
+```{r}
+# Define example data and functions
+data <- 1:20
+algo_v1 <- function(x) x^2
+algo_v2 <- function(x) x^3
+
+# Scenario 1: Versioned computation
+result_v1 <- s_map(data, algo_v1, .session_id = "analysis_v1")
+result_v2 <- s_map(data, algo_v2, .session_id = "analysis_v2")
+
+# Scenario 2: Named experiments
+func <- function(x) x * 2
+result_a <- s_map(data, func, .session_id = "experiment_baseline")
+result_b <- s_map(data, func, .session_id = "experiment_treatment")
+
+# Scenario 3: Date-based sessions
+today <- format(Sys.Date(), "%Y%m%d")
+result <- s_map(data, func, .session_id = paste0("daily_job_", today))
+```
+
+## Checkpoint Storage
+
+### Storage Location
+
+```{r}
+# Checkpoints are stored in R's user cache directory:
+# - Linux:   ~/.cache/R/SafeMapper/checkpoints/
+# - macOS:   ~/Library/Caches/org.R-project.R/R/SafeMapper/checkpoints/
+# - Windows: %LOCALAPPDATA%/R/cache/R/SafeMapper/checkpoints/
+
+# Each checkpoint is an .rds file named after its session_id
+```
+
+### Checkpoint File Structure
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    Checkpoint File Contents                                  │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│   checkpoint_file.rds                                                        │
+│   │                                                                          │
+│   ├── results                                                                │
+│   │   └── List of computed results (up to completed items)                  │
+│   │                                                                          │
+│   └── metadata                                                               │
+│       ├── session_id        : "map_abc123def456"                            │
+│       ├── total_items       : 1000                                          │
+│       ├── completed_items   : 500                                           │
+│       ├── mode              : "map"                                         │
+│       ├── created           : "2026-01-23 10:30:00"                         │
+│       └── last_updated      : "2026-01-23 10:45:00"                         │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+## Session Cleanup
+
+### s_clean_sessions() - Remove Old Checkpoints
+
+```{r}
+# Clean sessions older than 7 days (default)
+s_clean_sessions(older_than_days = 7)
+```
+
+### Cleanup Options
+
+```{r eval=FALSE}
+# Clean by age
+s_clean_sessions(older_than_days = 30)  # Remove sessions > 30 days old
+
+# Clean specific sessions
+s_clean_sessions(session_ids = c("old_experiment", "failed_job"))
+
+# Clean by status
+s_clean_sessions(status_filter = "failed")     # Only failed sessions
+s_clean_sessions(status_filter = "corrupted")  # Only corrupted sessions
+```
+
+### Cleanup Workflow
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    Checkpoint Lifecycle                                      │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│   1. Creation                                                                │
+│      s_map() starts ──► Checkpoint created                                  │
+│                                                                              │
+│   2. Updates                                                                 │
+│      Each batch complete ──► Checkpoint updated                             │
+│                                                                              │
+│   3. Automatic Deletion (on success)                                         │
+│      All items complete ──► Checkpoint deleted automatically                │
+│                                                                              │
+│   4. Manual Cleanup (for interrupted sessions)                               │
+│      Task abandoned ──► Use s_clean_sessions()                              │
+│                                                                              │
+│   Recommended Schedule:                                                      │
+│   ┌───────────────────────────────────────────────────────────────────┐     │
+│   │  Daily:   s_clean_sessions(older_than_days = 7)                   │     │
+│   │  Weekly:  s_clean_sessions(status_filter = "failed")              │     │
+│   │  Monthly: Check total disk usage of checkpoint directory          │     │
+│   └───────────────────────────────────────────────────────────────────┘     │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+## Workflow Examples
+
+### Example 1: Long-Running Daily Job
+
+```{r eval=FALSE}
+# daily_job.R
+
+library(SafeMapper)
+
+# Configure for production
+s_configure(
+  batch_size = 100,
+  retry_attempts = 3
+)
+
+# Use date-based session ID for predictable behavior
+job_id <- paste0("daily_process_", format(Sys.Date(), "%Y%m%d"))
+
+# Run the job
+results <- s_map(
+  large_dataset,
+  process_record,
+  .session_id = job_id
+)
+
+# Clean up old sessions at the end
+s_clean_sessions(older_than_days = 7)
+```
+
+### Example 2: Development and Debugging
+
+```{r eval=FALSE}
+# development.R
+
+library(SafeMapper)
+
+# Configure for debugging
+s_configure(
+  batch_size = 10,
+  retry_attempts = 1,
+  auto_recover = FALSE  # Always start fresh
+)
+
+# Test with small dataset
+test_data <- head(full_data, 50)
+
+# Run and iterate
+results <- s_map(test_data, my_function)
+
+# When ready for production, change config
+s_configure(
+  batch_size = 100,
+  retry_attempts = 3,
+  auto_recover = TRUE
+)
+```
+
+### Example 3: Multiple Related Tasks
+
+```{r eval=FALSE}
+# multi_stage_pipeline.R
+
+library(SafeMapper)
+
+# Stage 1: Data extraction
+stage1_results <- s_map(
+  sources,
+  extract_data,
+  .session_id = "pipeline_stage1_v1"
+)
+
+# Stage 2: Transformation
+stage2_results <- s_map(
+  stage1_results,
+  transform_data,
+  .session_id = "pipeline_stage2_v1"
+)
+
+# Stage 3: Loading
+s_walk(
+  stage2_results,
+  load_to_database,
+  .session_id = "pipeline_stage3_v1"
+)
+
+# If pipeline changes, increment version
+# .session_id = "pipeline_stage1_v2"
+```
+
+## Best Practices
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    Session Management Best Practices                         │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│   1. Configuration                                                           │
+│      ├── Set config at script start for consistency                         │
+│      ├── Use environment-specific configs (dev/prod)                        │
+│      └── Document your configuration choices                                │
+│                                                                              │
+│   2. Session IDs                                                             │
+│      ├── Use auto-generated IDs for one-off scripts                        │
+│      ├── Use manual IDs for repeatable jobs                                │
+│      ├── Include version numbers when algorithms change                     │
+│      └── Include dates for time-sensitive jobs                              │
+│                                                                              │
+│   3. Cleanup                                                                 │
+│      ├── Run cleanup regularly (daily or weekly)                           │
+│      ├── Monitor checkpoint directory size                                  │
+│      ├── Clean failed sessions after investigation                         │
+│      └── Don't clean sessions you might need to resume                     │
+│                                                                              │
+│   4. Monitoring                                                              │
+│      ├── Use session IDs that are easy to identify                         │
+│      ├── Log session IDs for tracking                                      │
+│      └── Set up alerts for sessions that never complete                    │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+## Troubleshooting
+
+### Checkpoint Not Resuming
+
+```{r eval=FALSE}
+# Possible causes:
+# 1. auto_recover is FALSE
+s_configure(auto_recover = TRUE)
+
+# 2. Data changed (different fingerprint)
+# Use explicit session_id to force same session
+result <- s_map(data, func, .session_id = "fixed_session")
+
+# 3. Checkpoint was deleted
+# Check if file exists in checkpoint directory
+```
+
+### Too Many Checkpoint Files
+
+```{r}
+# Aggressive cleanup
+s_clean_sessions(older_than_days = 1)
+```
+
+### Checkpoint Corrupted
+
+```{r}
+# Clean corrupted checkpoints
+s_clean_sessions(status_filter = "corrupted")
+```
+
+## Next Steps
+
+- 🎯 [Real-World Examples](real-world-examples.html) - See session management in action
+- 🏆 [Best Practices](best-practices.html) - Production patterns
+- 🔧 [Map Functions](map-functions.html) - Core function reference

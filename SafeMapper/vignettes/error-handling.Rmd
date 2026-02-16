@@ -1,0 +1,448 @@
+---
+title: "Error Handling Strategies"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Error Handling Strategies}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  fig.width = 7,
+  fig.height = 5
+)
+```
+
+## Overview
+
+SafeMapper provides multiple layers of error handling to ensure your long-running computations are robust. This guide covers both the built-in fault tolerance and the explicit error handling functions.
+
+```{r}
+library(SafeMapper)
+```
+
+## Error Handling Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    SafeMapper Error Handling Layers                          │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│   Layer 1: Built-in Fault Tolerance                                          │
+│   ┌───────────────────────────────────────────────────────────────────┐     │
+│   │  • Automatic checkpointing                                         │     │
+│   │  • Batch-level retry (configurable attempts)                      │     │
+│   │  • Session recovery on re-run                                     │     │
+│   └───────────────────────────────────────────────────────────────────┘     │
+│                                                                              │
+│   Layer 2: Explicit Error Wrappers                                           │
+│   ┌───────────────────────────────────────────────────────────────────┐     │
+│   │  s_safely()   ──► Capture errors with result/error structure      │     │
+│   │  s_possibly() ──► Return default value on error                   │     │
+│   │  s_quietly()  ──► Capture messages, warnings, output              │     │
+│   └───────────────────────────────────────────────────────────────────┘     │
+│                                                                              │
+│   Layer 3: Custom Error Handling                                             │
+│   ┌───────────────────────────────────────────────────────────────────┐     │
+│   │  tryCatch() within your function                                  │     │
+│   │  Conditional logic for expected error cases                       │     │
+│   └───────────────────────────────────────────────────────────────────┘     │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+## Layer 1: Built-in Fault Tolerance
+
+### Automatic Retry
+
+SafeMapper automatically retries failed batches:
+
+```{r}
+# Configure retry behavior
+s_configure(
+  retry_attempts = 5,  # Try up to 5 times per batch
+  batch_size = 50      # Each batch contains 50 items
+)
+```
+
+### Retry Flow Diagram
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    Automatic Retry Flow                          │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│   Processing Batch [1-50]                                        │
+│          │                                                       │
+│          ▼                                                       │
+│   ┌─────────────────────────────────────────┐                   │
+│   │  Attempt 1                               │                   │
+│   │  ├── Success? ─────────────► Save & Continue               │
+│   │  └── Error? ───────────────┐                                │
+│   └────────────────────────────┼────────────┘                   │
+│                                │                                 │
+│                                ▼ (wait 1s)                       │
+│   ┌─────────────────────────────────────────┐                   │
+│   │  Attempt 2                               │                   │
+│   │  ├── Success? ─────────────► Save & Continue               │
+│   │  └── Error? ───────────────┐                                │
+│   └────────────────────────────┼────────────┘                   │
+│                                │                                 │
+│                                ▼ (wait 1s)                       │
+│   ┌─────────────────────────────────────────┐                   │
+│   │  Attempt 3 (final)                       │                   │
+│   │  ├── Success? ─────────────► Save & Continue               │
+│   │  └── Error? ───────────────► STOP with error               │
+│   └─────────────────────────────────────────┘                   │
+│                                                                  │
+│   Note: Previous batches already saved to checkpoint            │
+│   On re-run: Resume from last successful batch                  │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+## Layer 2: Error Wrapper Functions
+
+### s_safely() - Capture Errors
+
+`s_safely()` wraps a function to capture errors instead of throwing them:
+
+```{r}
+# Create a safe version of log
+safe_log <- s_safely(log)
+
+# Successful call
+result <- safe_log(10)
+print(result)
+
+# Error call (returns error instead of throwing)
+result <- safe_log("not a number")
+print(result)
+```
+
+### Using s_safely with Mapping
+
+```{r}
+# Define function that might fail
+risky_operation <- function(x) {
+  if (x < 0) stop("Negative values not allowed")
+  sqrt(x)
+}
+
+# Wrap with s_safely
+safe_operation <- s_safely(risky_operation)
+
+# Apply to data that includes problematic values
+data <- c(4, -1, 9, -4, 16)
+results <- s_map(data, safe_operation)
+
+# Extract successful results
+successes <- s_map_dbl(results, ~ .x$result %||% NA_real_)
+print(successes)
+
+# Check which failed
+errors <- s_map_lgl(results, ~ !is.null(.x$error))
+print(errors)
+```
+
+### s_possibly() - Default on Error
+
+`s_possibly()` returns a default value when errors occur:
+
+```{r}
+# Create a function that returns NA on error
+possible_log <- s_possibly(log, otherwise = NA_real_)
+
+# Mix of valid and invalid inputs
+inputs <- list(10, "text", 100, NULL, 1000)
+results <- s_map_dbl(inputs, possible_log)
+print(results)
+```
+
+### Using s_possibly for Robust Pipelines
+
+```{r}
+# Simulated data extraction that might fail
+extract_value <- function(x) {
+  if (is.null(x) || length(x) == 0) stop("Invalid input")
+  x[[1]]
+}
+
+# Wrap with default value
+safe_extract <- s_possibly(extract_value, otherwise = NA)
+
+# Apply to mixed data
+data <- list(
+  list(value = 1),
+  NULL,
+  list(value = 3),
+  list(),
+  list(value = 5)
+)
+
+results <- s_map(data, safe_extract)
+print(unlist(results))
+```
+
+### s_quietly() - Capture Side Effects
+
+`s_quietly()` captures messages, warnings, and printed output:
+
+```{r}
+# Function with side effects
+chatty_function <- function(x) {
+  message("Processing: ", x)
+  if (x > 5) warning("Large value!")
+  cat("Result is:", x^2, "\n")
+  x^2
+}
+
+# Wrap with s_quietly
+quiet_function <- s_quietly(chatty_function)
+
+# Call it - no output during execution
+result <- quiet_function(7)
+
+# Examine captured side effects
+print(names(result))
+print(result$result)
+print(result$messages)
+print(result$warnings)
+print(result$output)
+```
+
+## Comparison of Error Handlers
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    Error Handler Comparison                                  │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│   Function      │ On Error        │ Return Structure  │ Use Case            │
+│   ──────────────┼─────────────────┼───────────────────┼──────────────────── │
+│   s_safely()    │ Captures error  │ list(result,      │ Need to inspect     │
+│                 │                 │      error)       │ what went wrong     │
+│   ──────────────┼─────────────────┼───────────────────┼──────────────────── │
+│   s_possibly()  │ Returns default │ Same as normal    │ Just need results,  │
+│                 │                 │ function output   │ errors = NA/default │
+│   ──────────────┼─────────────────┼───────────────────┼──────────────────── │
+│   s_quietly()   │ Propagates      │ list(result,      │ Debug chatty        │
+│                 │ error           │      output,      │ functions,          │
+│                 │                 │      messages,    │ capture logs        │
+│                 │                 │      warnings)    │                     │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+## Combining Strategies
+
+### Strategy 1: s_safely + Post-Processing
+
+```{r}
+# Best for: When you need to analyze failures
+
+process_item <- function(x) {
+  if (runif(1) < 0.3) stop("Random failure")
+  x^2
+}
+
+safe_process <- s_safely(process_item)
+
+# Process with checkpointing + error capture
+results <- s_map(1:10, safe_process)
+
+# Analyze results
+success_count <- sum(s_map_lgl(results, ~ is.null(.x$error)))
+failure_count <- sum(s_map_lgl(results, ~ !is.null(.x$error)))
+
+cat("Successes:", success_count, "\n")
+cat("Failures:", failure_count, "\n")
+
+# Get successful values
+successful_values <- s_map_dbl(results, function(r) {
+  if (is.null(r$error)) r$result else NA_real_
+})
+print(successful_values)
+```
+
+### Strategy 2: s_possibly for Clean Pipelines
+
+```{r}
+# Best for: When you just need results, failures = NA
+
+robust_sqrt <- s_possibly(
+  function(x) {
+    if (x < 0) stop("negative")
+    sqrt(x)
+  },
+  otherwise = NA_real_
+)
+
+# Clean pipeline
+data <- c(4, -1, 9, -4, 16, -9, 25)
+results <- s_map_dbl(data, robust_sqrt)
+print(results)
+
+# Easy to filter out failures
+valid_results <- results[!is.na(results)]
+print(valid_results)
+```
+
+### Strategy 3: Multi-Layer Protection
+
+```{r}
+# Best for: Critical operations that must not fail
+
+# Layer 1: Function-level error handling
+robust_api_call <- function(x) {
+  tryCatch({
+    # Simulate API call that might fail
+    if (runif(1) < 0.2) stop("Temporary failure")
+    x * 10
+  }, error = function(e) {
+    NA_real_  # Return NA on error
+  })
+}
+
+# Layer 2: s_possibly for unexpected errors
+safe_api_call <- s_possibly(robust_api_call, otherwise = NA_real_)
+
+# Layer 3: SafeMapper checkpointing
+results <- s_map_dbl(
+  1:20, 
+  safe_api_call,
+  .session_id = "critical_operation"
+)
+
+print(results)
+cat("Success rate:", mean(!is.na(results)) * 100, "%\n")
+```
+
+## Decision Guide
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    Which Error Strategy to Use?                              │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│   Q: Do you need to know WHY items failed?                                  │
+│   │                                                                          │
+│   ├── YES ──► Use s_safely()                                                │
+│   │           Results contain both values and error messages                │
+│   │                                                                          │
+│   └── NO ───► Q: Do individual failures matter?                             │
+│               │                                                              │
+│               ├── NO ──► Use s_possibly()                                   │
+│               │          Clean results, failures become default value       │
+│               │                                                              │
+│               └── YES ─► Use built-in retry                                 │
+│                          Configure retry_attempts for transient errors      │
+│                                                                              │
+│   Q: Need to capture warnings/messages too?                                 │
+│   │                                                                          │
+│   └── YES ──► Use s_quietly()                                               │
+│               Captures all side effects for later inspection                │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+## Error Handling Patterns
+
+### Pattern 1: Fail Fast
+
+Let errors stop execution immediately (useful during development):
+
+```{r eval=FALSE}
+# No error wrapping - errors will stop execution
+# Previous batches are saved to checkpoint
+results <- s_map(data, risky_function)
+```
+
+### Pattern 2: Log and Continue
+
+```{r}
+# Create a logging wrapper
+log_errors <- function(f) {
+  function(...) {
+    tryCatch(
+      f(...),
+      error = function(e) {
+        message("Error: ", e$message)
+        NA
+      }
+    )
+  }
+}
+
+# Use with s_map
+logged_sqrt <- log_errors(function(x) {
+  if (x < 0) stop("negative input")
+  sqrt(x)
+})
+
+results <- s_map_dbl(c(4, -1, 9, -4, 16), logged_sqrt)
+print(results)
+```
+
+### Pattern 3: Collect Errors for Reporting
+
+```{r}
+# Process and collect all errors
+process_with_tracking <- function(items) {
+  safe_fn <- s_safely(function(x) {
+    if (x %% 3 == 0) stop("Divisible by 3")
+    x^2
+  })
+  
+  results <- s_map(items, safe_fn)
+  
+  # Build report
+  list(
+    values = s_map(results, "result"),
+    errors = s_map(results, "error"),
+    success_rate = mean(s_map_lgl(results, ~ is.null(.x$error)))
+  )
+}
+
+report <- process_with_tracking(1:10)
+cat("Success rate:", report$success_rate * 100, "%\n")
+```
+
+## Best Practices
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    Error Handling Best Practices                             │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│   1. Match Strategy to Need                                                  │
+│      ├── Development: Let errors propagate (easier debugging)               │
+│      ├── Production: Use s_safely/s_possibly (robust execution)             │
+│      └── Critical: Multi-layer protection                                   │
+│                                                                              │
+│   2. Configure Retries Appropriately                                         │
+│      ├── Network operations: 3-5 retries                                    │
+│      ├── Local computation: 1 retry (errors usually persistent)             │
+│      └── Rate-limited APIs: Consider exponential backoff                    │
+│                                                                              │
+│   3. Log Errors for Analysis                                                 │
+│      ├── Use s_safely to capture error details                              │
+│      ├── Store error counts/types for monitoring                            │
+│      └── Alert on error rate thresholds                                     │
+│                                                                              │
+│   4. Test Error Handling                                                     │
+│      ├── Intentionally inject failures                                      │
+│      ├── Verify checkpoint/recovery works                                   │
+│      └── Check that all error cases are handled                             │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+## Next Steps
+
+- 📋 [Session Management](session-management.html) - Manage checkpoints and sessions
+- 🎯 [Real-World Examples](real-world-examples.html) - See error handling in practice
+- 🏆 [Best Practices](best-practices.html) - Production-ready patterns

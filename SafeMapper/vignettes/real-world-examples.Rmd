@@ -1,0 +1,618 @@
+---
+title: "Real-World Examples"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Real-World Examples}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  fig.width = 7,
+  fig.height = 5
+)
+```
+
+## Overview
+
+This guide presents real-world scenarios where SafeMapper shines. Each example includes complete code, configuration recommendations, and best practices.
+
+```{r}
+library(SafeMapper)
+```
+
+## Example 1: Web API Data Collection
+
+### Scenario
+
+You need to collect data from a REST API for 10,000 records. Each API call takes ~500ms, and the API occasionally returns errors or times out.
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    API Data Collection Challenge                             │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│   Requirements:                                                              │
+│   ├── 10,000 API calls needed                                               │
+│   ├── ~500ms per call = ~83 minutes total                                   │
+│   ├── API has rate limit: 100 calls/minute                                  │
+│   ├── ~5% of calls fail (timeout, server error)                            │
+│   └── Cannot lose progress on failure                                       │
+│                                                                              │
+│   Without SafeMapper:                                                        │
+│   ├── Crash at call 8,000 = Start over (67 min lost)                       │
+│   ├── Must manually implement retry logic                                   │
+│   └── Must manually implement checkpointing                                 │
+│                                                                              │
+│   With SafeMapper:                                                           │
+│   ├── Crash at call 8,000 = Resume from 8,000                              │
+│   ├── Built-in retry for transient failures                                │
+│   └── Automatic checkpointing every batch                                   │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Implementation
+
+```{r}
+# Simulated API function (replace with real API call)
+fetch_api_data <- function(id) {
+  # Simulate API latency
+  Sys.sleep(0.01)
+  
+  # Simulate occasional failures (5% rate)
+  if (runif(1) < 0.05) {
+    stop("API Error: Connection timeout")
+  }
+  
+  # Return simulated data
+  list(
+    id = id,
+    value = rnorm(1),
+    timestamp = Sys.time()
+  )
+}
+
+# Configure for API workload
+s_configure(
+  batch_size = 20,      # Save every 20 calls (~10 seconds of work)
+  retry_attempts = 3    # Retry failed calls up to 3 times
+)
+
+# Wrap with error handling for graceful failure
+safe_fetch <- s_possibly(fetch_api_data, otherwise = NULL)
+
+# Collect data with fault tolerance
+ids <- 1:100  # In production: 1:10000
+
+results <- s_map(
+  ids,
+  safe_fetch,
+  .session_id = "api_collection_2026"
+)
+
+# Process results
+successful <- results[!sapply(results, is.null)]
+cat("Successfully collected:", length(successful), "records\n")
+cat("Failed:", sum(sapply(results, is.null)), "records\n")
+```
+
+### Convert to Data Frame
+
+```{r}
+# Convert successful results to data frame
+if (length(successful) > 0) {
+  df <- do.call(rbind, lapply(successful, function(x) {
+    data.frame(
+      id = x$id,
+      value = x$value,
+      timestamp = as.character(x$timestamp)
+    )
+  }))
+  print(head(df))
+}
+```
+
+## Example 2: Batch File Processing
+
+### Scenario
+
+Process 1,000 large CSV files, each requiring ~30 seconds of computation.
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    Batch File Processing                                     │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│   Pipeline:                                                                  │
+│   ┌─────────┐    ┌─────────┐    ┌─────────┐    ┌─────────┐                 │
+│   │  Read   │───►│  Clean  │───►│ Process │───►│  Save   │                 │
+│   │  File   │    │  Data   │    │  Data   │    │ Result  │                 │
+│   └─────────┘    └─────────┘    └─────────┘    └─────────┘                 │
+│                                                                              │
+│   Challenges:                                                                │
+│   ├── Some files may be corrupted                                          │
+│   ├── Memory constraints (can't load all at once)                          │
+│   ├── ~8 hours total runtime                                               │
+│   └── System might restart overnight                                        │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Implementation
+
+```{r}
+# Simulated file processing function
+process_file <- function(file_info) {
+  # Simulate file processing
+  Sys.sleep(0.01)
+  
+  # Simulate occasional corrupt files
+  if (runif(1) < 0.02) {
+    stop("Corrupt file: ", file_info$name)
+  }
+  
+  # Return processed result
+  list(
+    file = file_info$name,
+    rows_processed = sample(1000:5000, 1),
+    processing_time = runif(1, 20, 40)
+  )
+}
+
+# Create sample file list
+files <- lapply(1:50, function(i) {
+  list(
+    name = paste0("data_", sprintf("%04d", i), ".csv"),
+    path = paste0("/data/raw/data_", sprintf("%04d", i), ".csv"),
+    size_mb = runif(1, 10, 100)
+  )
+})
+
+# Configure for file processing
+s_configure(
+  batch_size = 10,      # Checkpoint every 10 files
+  retry_attempts = 2    # Limited retries (corrupt files won't fix themselves)
+)
+
+# Process with error capture
+safe_process <- s_safely(process_file)
+
+results <- s_map(
+  files,
+  safe_process,
+  .session_id = "file_batch_2026_01"
+)
+
+# Summarize results
+successes <- sum(sapply(results, function(x) is.null(x$error)))
+failures <- sum(sapply(results, function(x) !is.null(x$error)))
+
+cat("Processed:", successes, "files\n")
+cat("Failed:", failures, "files\n")
+
+# Get failure details
+failed_files <- sapply(results, function(x) {
+  if (!is.null(x$error)) x$error$message else NA
+})
+failed_files <- failed_files[!is.na(failed_files)]
+if (length(failed_files) > 0) {
+  cat("\nFailure reasons:\n")
+  print(head(failed_files))
+}
+```
+
+## Example 3: Machine Learning Cross-Validation
+
+### Scenario
+
+Run 5-fold cross-validation with 100 hyperparameter combinations. Each model takes ~2 minutes to train.
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    Cross-Validation Grid Search                              │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│   Grid:                                                                      │
+│   ┌─────────────────────────────────────────────────────────────────────┐   │
+│   │  Hyperparameters × Folds = Total Models                             │   │
+│   │       100        ×   5   =   500 models                             │   │
+│   │                                                                     │   │
+│   │  Time estimate: 500 × 2 min = ~17 hours                            │   │
+│   └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                              │
+│   Strategy with SafeMapper:                                                  │
+│   ├── Checkpoint every 5 models (~10 min of work)                          │
+│   ├── Use parallel processing for CPU-bound training                       │
+│   └── Resume automatically if interrupted                                   │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Implementation
+
+```{r}
+# Create parameter grid
+param_grid <- expand.grid(
+  learning_rate = c(0.01, 0.05, 0.1),
+  max_depth = c(3, 5, 7),
+  fold = 1:3
+)
+
+# Simulated model training function
+train_model <- function(params) {
+  # Simulate training time
+  Sys.sleep(0.01)
+  
+  # Simulate model performance (depends on hyperparameters)
+  base_score <- 0.7
+  lr_bonus <- (0.1 - params$learning_rate) * 0.5
+  depth_bonus <- params$max_depth * 0.01
+  noise <- rnorm(1, 0, 0.05)
+  
+  list(
+    learning_rate = params$learning_rate,
+    max_depth = params$max_depth,
+    fold = params$fold,
+    accuracy = min(1, max(0, base_score + lr_bonus + depth_bonus + noise)),
+    training_time = runif(1, 100, 140)
+  )
+}
+
+# Configure for ML workload
+s_configure(
+  batch_size = 5,       # Checkpoint every 5 models
+  retry_attempts = 2
+)
+
+# Convert grid to list for mapping
+param_list <- split(param_grid, seq_len(nrow(param_grid)))
+
+# Train all models with checkpointing
+results <- s_map(
+  param_list,
+  train_model,
+  .session_id = "cv_grid_search_v1"
+)
+
+# Aggregate results
+results_df <- do.call(rbind, lapply(results, as.data.frame))
+
+# Find best hyperparameters (average across folds)
+best_params <- aggregate(
+  accuracy ~ learning_rate + max_depth,
+  data = results_df,
+  FUN = mean
+)
+best_params <- best_params[order(-best_params$accuracy), ]
+cat("Best hyperparameters:\n")
+print(head(best_params, 3))
+```
+
+## Example 4: Web Scraping Pipeline
+
+### Scenario
+
+Scrape product information from 5,000 web pages with rate limiting.
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    Web Scraping Pipeline                                     │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│   Workflow:                                                                  │
+│                                                                              │
+│   URLs ──► Fetch HTML ──► Parse Data ──► Validate ──► Store                │
+│                │              │              │                               │
+│                ▼              ▼              ▼                               │
+│           [May fail]    [May fail]    [May fail]                            │
+│                                                                              │
+│   Error Handling Strategy:                                                   │
+│   ┌─────────────────────────────────────────────────────────────────────┐   │
+│   │  Level 1: s_possibly for individual page failures                   │   │
+│   │  Level 2: SafeMapper retry for batch failures                       │   │
+│   │  Level 3: Checkpointing for session recovery                        │   │
+│   └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Implementation
+
+```{r}
+# Simulated scraping function
+scrape_page <- function(url) {
+  # Rate limiting (be respectful!)
+  Sys.sleep(0.02)
+  
+  # Simulate various failure modes
+  rand <- runif(1)
+  if (rand < 0.03) stop("HTTP 404: Page not found")
+  if (rand < 0.05) stop("HTTP 503: Service unavailable")
+  if (rand < 0.07) stop("Parsing error: Invalid HTML")
+  
+  # Return scraped data
+  list(
+    url = url,
+    title = paste("Product", sample(1000:9999, 1)),
+    price = round(runif(1, 10, 500), 2),
+    rating = round(runif(1, 1, 5), 1),
+    scraped_at = Sys.time()
+  )
+}
+
+# Create URL list
+urls <- paste0("https://example.com/product/", 1:100)
+
+# Configure for scraping
+s_configure(
+  batch_size = 25,      # Checkpoint every 25 pages
+  retry_attempts = 3    # Retry for transient errors
+)
+
+# Multi-layer error handling
+robust_scrape <- s_possibly(scrape_page, otherwise = NULL)
+
+# Scrape with fault tolerance
+scraped_data <- s_map(
+  urls,
+  robust_scrape,
+  .session_id = "product_scrape_2026_01"
+)
+
+# Analyze results
+successful <- scraped_data[!sapply(scraped_data, is.null)]
+failed_count <- sum(sapply(scraped_data, is.null))
+
+cat("Successfully scraped:", length(successful), "pages\n")
+cat("Failed:", failed_count, "pages\n")
+
+# Convert to data frame
+if (length(successful) > 0) {
+  products_df <- do.call(rbind, lapply(successful, function(x) {
+    data.frame(
+      url = x$url,
+      title = x$title,
+      price = x$price,
+      rating = x$rating,
+      stringsAsFactors = FALSE
+    )
+  }))
+  
+  cat("\nSample products:\n")
+  print(head(products_df))
+  
+  cat("\nPrice statistics:\n")
+  print(summary(products_df$price))
+}
+```
+
+## Example 5: Parallel Bioinformatics Pipeline
+
+### Scenario
+
+Process 500 genomic sequences using parallel computation.
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    Bioinformatics Pipeline                                   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│   Processing Steps per Sequence:                                             │
+│   ┌─────────────────────────────────────────────────────────────────────┐   │
+│   │  1. Quality Control (5 sec)                                         │   │
+│   │  2. Alignment (30 sec)                                              │   │
+│   │  3. Variant Calling (20 sec)                                        │   │
+│   │  4. Annotation (10 sec)                                             │   │
+│   │  Total: ~65 sec per sequence                                        │   │
+│   └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                              │
+│   Sequential: 500 × 65s = ~9 hours                                          │
+│   Parallel (4 cores): ~2.5 hours                                            │
+│   With SafeMapper: Resume if interrupted + parallel speedup                  │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Implementation
+
+```{r eval=FALSE}
+library(future)
+
+# Set up parallel processing
+plan(multisession, workers = 4)
+
+# Simulated genomics processing
+process_sequence <- function(seq_info) {
+  # QC
+  Sys.sleep(0.05)
+  qc_pass <- runif(1) > 0.1
+  
+  if (!qc_pass) {
+    return(list(
+      id = seq_info$id,
+      status = "failed_qc",
+      variants = NULL
+    ))
+  }
+  
+  # Alignment + Variant calling + Annotation
+  Sys.sleep(0.1)
+  
+  list(
+    id = seq_info$id,
+    status = "success",
+    variants = sample(0:50, 1),
+    quality_score = runif(1, 20, 40)
+  )
+}
+
+# Create sequence list
+sequences <- lapply(1:100, function(i) {
+  list(
+    id = paste0("SEQ_", sprintf("%05d", i)),
+    length = sample(1000:5000, 1)
+  )
+})
+
+# Configure for bioinformatics
+s_configure(
+  batch_size = 20,      # Balance checkpoint frequency and parallel efficiency
+  retry_attempts = 2
+)
+
+# Process with parallel + fault tolerance
+results <- s_future_map(
+  sequences,
+  process_sequence,
+  .session_id = "genomics_batch_001",
+  .progress = TRUE
+)
+
+# Clean up parallel backend
+plan(sequential)
+
+# Summarize
+status_counts <- table(sapply(results, function(x) x$status))
+print(status_counts)
+
+# Get variant statistics for successful samples
+successful <- results[sapply(results, function(x) x$status == "success")]
+variants <- sapply(successful, function(x) x$variants)
+cat("\nVariant count summary:\n")
+print(summary(variants))
+```
+
+## Example 6: Database Migration
+
+### Scenario
+
+Migrate 100,000 records from one database to another with transformation.
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    Database Migration                                        │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│   Pipeline:                                                                  │
+│   ┌──────────────┐    ┌──────────────┐    ┌──────────────┐                 │
+│   │   Source DB  │───►│  Transform   │───►│   Target DB  │                 │
+│   │   (Read)     │    │  (Process)   │    │   (Write)    │                 │
+│   └──────────────┘    └──────────────┘    └──────────────┘                 │
+│                                                                              │
+│   Requirements:                                                              │
+│   ├── Process in batches to avoid memory issues                            │
+│   ├── Track exactly which records were migrated                            │
+│   ├── Resume from failure without duplicates                               │
+│   └── Generate migration report                                             │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Implementation
+
+```{r}
+# Simulated migration function
+migrate_record <- function(record) {
+  # Simulate read from source
+  Sys.sleep(0.005)
+  
+  # Simulate occasional failures
+  if (runif(1) < 0.02) {
+    stop("Database connection error")
+  }
+  
+  # Transform
+  transformed <- list(
+    id = record$id,
+    new_field = paste(record$name, record$category, sep = "_"),
+    migrated_at = Sys.time(),
+    source_hash = digest::digest(record)
+  )
+  
+  # Simulate write to target
+  Sys.sleep(0.005)
+  
+  list(
+    original_id = record$id,
+    new_id = transformed$id,
+    status = "migrated"
+  )
+}
+
+# Create sample records
+records <- lapply(1:200, function(i) {
+  list(
+    id = i,
+    name = paste0("Record_", i),
+    category = sample(c("A", "B", "C"), 1),
+    value = rnorm(1)
+  )
+})
+
+# Configure for database operations
+s_configure(
+  batch_size = 50,      # Reasonable transaction size
+  retry_attempts = 5    # Database errors often transient
+)
+
+# Migrate with fault tolerance
+safe_migrate <- s_safely(migrate_record)
+
+migration_results <- s_map(
+  records,
+  safe_migrate,
+  .session_id = "db_migration_v1"
+)
+
+# Generate migration report
+successful <- sum(sapply(migration_results, function(x) is.null(x$error)))
+failed <- sum(sapply(migration_results, function(x) !is.null(x$error)))
+
+cat("Migration Report\n")
+cat("================\n")
+cat("Total records:", length(records), "\n")
+cat("Migrated:", successful, "\n")
+cat("Failed:", failed, "\n")
+cat("Success rate:", round(successful / length(records) * 100, 2), "%\n")
+
+# Export failed record IDs for investigation
+failed_ids <- sapply(seq_along(migration_results), function(i) {
+  if (!is.null(migration_results[[i]]$error)) records[[i]]$id else NA
+})
+failed_ids <- failed_ids[!is.na(failed_ids)]
+if (length(failed_ids) > 0) {
+  cat("\nFailed record IDs:", paste(head(failed_ids, 10), collapse = ", "))
+  if (length(failed_ids) > 10) cat("...")
+  cat("\n")
+}
+```
+
+## Quick Reference: Configuration by Use Case
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    Configuration Quick Reference                             │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│   Use Case              │ batch_size │ retry_attempts │ Notes               │
+│   ──────────────────────┼────────────┼────────────────┼──────────────────── │
+│   API calls             │ 20-50      │ 3-5            │ Respect rate limits │
+│   File processing       │ 10-20      │ 1-2            │ Errors persistent   │
+│   ML training           │ 5-10       │ 2              │ Long per-item time  │
+│   Web scraping          │ 25-50      │ 3              │ Be respectful       │
+│   Database migration    │ 50-100     │ 5              │ Transaction size    │
+│   Parallel computation  │ 100-200    │ 2              │ Reduce overhead     │
+│   Quick local ops       │ 500-1000   │ 1              │ Minimize I/O        │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+## Next Steps
+
+- 🏆 [Best Practices](best-practices.html) - Production-ready patterns
+- 🛡️ [Error Handling](error-handling.html) - Advanced error strategies
+- 📋 [Session Management](session-management.html) - Checkpoint management
