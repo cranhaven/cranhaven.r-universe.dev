@@ -1,0 +1,830 @@
+# S3 Methods Tests (Phase 4)
+
+# Document Extraction Methods -------------------------------------------------
+
+test_that("[[ and $ extract from document root", {
+  doc <- am_create()
+  am_put(doc, AM_ROOT, "name", "Alice")
+  am_put(doc, AM_ROOT, "age", 30L)
+  am_put(doc, AM_ROOT, "active", TRUE)
+
+  # [[ operator
+  expect_equal(doc[["name"]], "Alice")
+  expect_equal(doc[["age"]], 30L)
+  expect_equal(doc[["active"]], TRUE)
+
+  # $ operator
+  expect_equal(doc$name, "Alice")
+  expect_equal(doc$age, 30L)
+  expect_equal(doc$active, TRUE)
+})
+
+test_that("[[ and $ return NULL for missing keys", {
+  doc <- am_create()
+  am_put(doc, AM_ROOT, "exists", "value")
+
+  expect_null(doc[["missing"]])
+  expect_null(doc$missing)
+})
+
+test_that("[[ and $ extract nested objects", {
+  doc <- am_create()
+  am_put(doc, AM_ROOT, "user", list(name = "Bob", age = 25L))
+
+  user <- doc[["user"]]
+  expect_s3_class(user, "am_object")
+
+  user2 <- doc$user
+  expect_s3_class(user2, "am_object")
+
+  # Can access nested values
+  expect_equal(user$name, "Bob")
+  expect_equal(user$age, 25L)
+})
+
+# Document Replacement Methods ------------------------------------------------
+
+test_that("[[<- and $<- assign to document root", {
+  doc <- am_create()
+
+  # [[<- operator
+  doc[["name"]] <- "Charlie"
+  expect_equal(doc[["name"]], "Charlie")
+
+  # $<- operator
+  doc$age <- 35L
+  expect_equal(doc$age, 35L)
+})
+
+test_that("[[<- and $<- update existing keys", {
+  doc <- am_create()
+  doc$value <- "original"
+  expect_equal(doc$value, "original")
+
+  doc$value <- "updated"
+  expect_equal(doc$value, "updated")
+
+  doc[["value"]] <- "final"
+  expect_equal(doc[["value"]], "final")
+})
+
+test_that("[[<- and $<- work with nested structures", {
+  doc <- am_create()
+  doc$config <- list(debug = TRUE, level = 3L)
+
+  config <- doc$config
+  expect_s3_class(config, "am_object")
+  expect_equal(config$debug, TRUE)
+  expect_equal(config$level, 3L)
+})
+
+test_that("[[<- and $<- work with all value types", {
+  doc <- am_create()
+
+  doc$null_val <- NULL
+  doc$bool_val <- FALSE
+  doc$int_val <- 42L
+  doc$double_val <- 3.14
+  doc$string_val <- "test"
+  doc$raw_val <- as.raw(c(1, 2, 3))
+
+  expect_null(doc$null_val)
+  expect_equal(doc$bool_val, FALSE)
+  expect_equal(doc$int_val, 42L)
+  expect_equal(doc$double_val, 3.14)
+  expect_equal(doc$string_val, "test")
+  expect_equal(doc$raw_val, as.raw(c(1, 2, 3)))
+})
+
+# Document Utility Methods ----------------------------------------------------
+
+test_that("length() returns number of root keys", {
+  doc <- am_create()
+  expect_equal(length(doc), 0L)
+
+  doc$a <- 1
+  expect_equal(length(doc), 1L)
+
+  doc$b <- 2
+  doc$c <- 3
+  expect_equal(length(doc), 3L)
+})
+
+test_that("names() returns root keys", {
+  doc <- am_create()
+  expect_equal(names(doc), character(0))
+
+  doc$name <- "Alice"
+  doc$age <- 30L
+  doc$active <- TRUE
+
+  doc_names <- names(doc)
+  expect_type(doc_names, "character")
+  expect_length(doc_names, 3)
+  expect_true(all(c("name", "age", "active") %in% doc_names))
+})
+
+test_that("print() displays document info", {
+  doc <- am_create()
+  doc$name <- "Test"
+  doc$value <- 123L
+
+  expect_snapshot(print(doc), transform = function(x) {
+    sub("Actor: [a-f0-9]+", "Actor: <ACTOR_ID>", x)
+  })
+})
+
+test_that("as.list() converts document to R list", {
+  doc <- am_create()
+  doc$name <- "Alice"
+  doc$age <- 30L
+  doc$active <- TRUE
+
+  result <- as.list(doc)
+  expect_type(result, "list")
+  # Don't check order as automerge may return keys in different order
+  expect_setequal(names(result), c("name", "age", "active"))
+  expect_equal(result$name, "Alice")
+  expect_equal(result$age, 30L)
+  expect_equal(result$active, TRUE)
+})
+
+test_that("as.list() recursively converts nested structures", {
+  doc <- am_create()
+  doc$user <- list(
+    name = "Bob",
+    profile = list(
+      city = "Boston",
+      zip = 02101L
+    )
+  )
+
+  result <- as.list(doc)
+  expect_type(result$user, "list")
+  expect_equal(result$user$name, "Bob")
+  expect_type(result$user$profile, "list")
+  expect_equal(result$user$profile$city, "Boston")
+  expect_equal(result$user$profile$zip, 02101L)
+})
+
+test_that("str() displays document structure", {
+  doc <- am_create()
+  doc$name <- "Alice"
+  doc$age <- 30L
+  doc$active <- TRUE
+
+  expect_snapshot(str(doc))
+})
+
+test_that("str() displays nested structures", {
+  doc <- am_create()
+  doc$user <- list(name = "Bob", age = 25L)
+
+  expect_snapshot(str(doc))
+})
+
+test_that("str() respects max.level parameter", {
+  doc <- am_create()
+  doc$level1 <- list(level2 = list(level3 = "deep"))
+
+  expect_snapshot({
+    str(doc, max.level = 3)
+    str(doc, max.level = 1)
+  })
+})
+
+test_that("str() shows truncation indicator at max.level", {
+  doc <- am_create()
+  doc$nested <- list(child = list(grandchild = 1L))
+
+  expect_snapshot(str(doc, max.level = 0))
+})
+
+test_that("str() handles empty document", {
+  doc <- am_create()
+
+  expect_snapshot(str(doc))
+})
+
+test_that("str() handles lists with many items", {
+  doc <- am_create()
+  doc$items <- as.list(1:10)
+
+  expect_snapshot(str(doc))
+})
+
+test_that("str() truncates long strings", {
+  doc <- am_create()
+  doc$long <- paste(rep("x", 100), collapse = "")
+
+  expect_snapshot(str(doc))
+})
+
+test_that("str() handles list with character items", {
+  doc <- am_create()
+  doc$tags <- am_list("alpha", "beta", "gamma")
+
+  expect_snapshot(str(doc))
+})
+
+test_that("str() truncates long character items in lists", {
+  doc <- am_create()
+  long_string <- paste(rep("x", 50), collapse = "")
+  doc$items <- am_list(long_string)
+
+  expect_snapshot(str(doc))
+})
+
+test_that("str() handles list with nested am_object items", {
+  doc <- am_create()
+  doc$users <- am_list(
+    list(name = "Alice", age = 30L),
+    list(name = "Bob", age = 25L)
+  )
+
+  expect_snapshot(str(doc))
+})
+
+test_that("str() handles list with non-character, non-object items", {
+  doc <- am_create()
+  doc$numbers <- am_list(1L, 2L, 3L)
+
+  expect_snapshot(str(doc))
+})
+
+test_that("str() respects max.level for nested objects in lists", {
+  doc <- am_create()
+  doc$items <- am_list(
+    list(nested = list(deep = "value"))
+  )
+
+  expect_snapshot({
+    str(doc, max.level = 4)
+    str(doc, max.level = 1)
+  })
+})
+
+test_that("str() shows ellipsis for am_list at max.level", {
+  doc <- am_create()
+  doc$data <- list(items = am_list("a", "b", "c"))
+
+  expect_snapshot(str(doc, max.level = 1))
+})
+
+test_that("str() displays raw bytes with class name", {
+  doc <- am_create()
+  doc$data <- as.raw(c(0x01, 0x02, 0x03))
+
+  expect_snapshot(str(doc))
+})
+
+test_that("str() handles NULL values", {
+  doc <- am_create()
+  doc$empty <- NULL
+
+  expect_snapshot(str(doc))
+})
+
+# Object Extraction Methods ---------------------------------------------------
+
+test_that("[[ and $ extract from am_object (maps)", {
+  doc <- am_create()
+  am_put(doc, AM_ROOT, "user", list(name = "David", age = 40L))
+  user <- am_get(doc, AM_ROOT, "user")
+
+  # [[ operator
+  expect_equal(user[["name"]], "David")
+  expect_equal(user[["age"]], 40L)
+
+  # $ operator
+  expect_equal(user$name, "David")
+  expect_equal(user$age, 40L)
+})
+
+test_that("[[ extracts from am_object (lists)", {
+  doc <- am_create()
+  am_put(doc, AM_ROOT, "items", am_list("a", "b", "c"))
+  items <- am_get(doc, AM_ROOT, "items")
+
+  # [[ operator with integer index (1-based)
+  expect_equal(items[[1]], "a")
+  expect_equal(items[[2]], "b")
+  expect_equal(items[[3]], "c")
+})
+
+test_that("[[ and $ return NULL for missing keys in am_object", {
+  doc <- am_create()
+  am_put(doc, AM_ROOT, "obj", list(key = "value"))
+  obj <- am_get(doc, AM_ROOT, "obj")
+
+  expect_null(obj[["missing"]])
+  expect_null(obj$missing)
+})
+
+# Object Replacement Methods --------------------------------------------------
+
+test_that("[[<- and $<- assign to am_object (maps)", {
+  doc <- am_create()
+  config <- am_put(doc, AM_ROOT, "config", am_map())
+
+  # [[<- operator
+  config[["option1"]] <- "value1"
+  expect_equal(config[["option1"]], "value1")
+
+  # $<- operator
+  config$option2 <- "value2"
+  expect_equal(config$option2, "value2")
+})
+
+test_that("[[<- assigns to am_object (lists)", {
+  doc <- am_create()
+  am_put(doc, AM_ROOT, "items", am_list("a", "b", "c"))
+  items <- am_get(doc, AM_ROOT, "items")
+
+  # Replace element
+  items[[2]] <- "modified"
+  expect_equal(items[[2]], "modified")
+  expect_equal(length(items), 3L)
+})
+
+test_that("[[<- and $<- modify the underlying document", {
+  doc <- am_create()
+  am_put(doc, AM_ROOT, "user", list(name = "Original"))
+  user <- am_get(doc, AM_ROOT, "user")
+
+  user$name <- "Updated"
+
+  # Check via object
+  expect_equal(user$name, "Updated")
+
+  # Check via document
+  user_retrieved <- doc$user
+  expect_equal(user_retrieved$name, "Updated")
+})
+
+# Object Utility Methods ------------------------------------------------------
+
+test_that("length() works on am_object (maps)", {
+  doc <- am_create()
+  am_put(doc, AM_ROOT, "obj", list(a = 1, b = 2, c = 3))
+  obj <- am_get(doc, AM_ROOT, "obj")
+
+  expect_equal(length(obj), 3L)
+
+  obj$d <- 4
+  expect_equal(length(obj), 4L)
+})
+
+test_that("length() works on am_object (lists)", {
+  doc <- am_create()
+  am_put(doc, AM_ROOT, "items", am_list("x", "y", "z"))
+  items <- am_get(doc, AM_ROOT, "items")
+
+  expect_equal(length(items), 3L)
+})
+
+test_that("names() returns keys for am_object (maps)", {
+  doc <- am_create()
+  am_put(doc, AM_ROOT, "obj", list(alpha = 1, beta = 2, gamma = 3))
+  obj <- am_get(doc, AM_ROOT, "obj")
+
+  obj_names <- names(obj)
+  expect_type(obj_names, "character")
+  expect_length(obj_names, 3)
+  expect_true(all(c("alpha", "beta", "gamma") %in% obj_names))
+})
+
+test_that("names() returns NULL or element IDs for am_object (lists)", {
+  doc <- am_create()
+  am_put(doc, AM_ROOT, "items", am_list("a", "b", "c"))
+  items <- am_get(doc, AM_ROOT, "items")
+
+  # Lists may return element IDs or NULL
+  # This is implementation-specific
+  result <- names(items)
+  expect_true(is.null(result) || is.character(result))
+})
+
+test_that("print() displays am_object info (map)", {
+  doc <- am_create()
+  am_put(doc, AM_ROOT, "user", list(name = "Test", age = 25L))
+  user <- am_get(doc, AM_ROOT, "user")
+
+  expect_snapshot(print(user))
+})
+
+test_that("print() displays am_object info (list)", {
+  doc <- am_create()
+  am_put(doc, AM_ROOT, "items", am_list("a", "b", "c"))
+  items <- am_get(doc, AM_ROOT, "items")
+
+  expect_snapshot(print(items))
+})
+
+test_that("print() displays am_object info (text)", {
+  doc <- am_create()
+  am_put(doc, AM_ROOT, "text", am_text("Hello, world!"))
+  text_obj <- am_get(doc, AM_ROOT, "text")
+
+  expect_snapshot(print(text_obj))
+})
+
+test_that("print() handles very long text with truncation", {
+  doc <- am_create()
+  long_text <- paste(rep("a", 100), collapse = "")
+  am_put(doc, AM_ROOT, "text", am_text(long_text))
+  text_obj <- am_get(doc, AM_ROOT, "text")
+
+  expect_snapshot(print(text_obj))
+})
+
+test_that("print() displays map with many keys truncated", {
+  doc <- am_create()
+  map_data <- list(a = 1, b = 2, c = 3, d = 4, e = 5, f = 6, g = 7)
+  am_put(doc, AM_ROOT, "map", map_data)
+  map_obj <- am_get(doc, AM_ROOT, "map")
+
+  expect_snapshot(print(map_obj))
+})
+
+test_that("as.list() converts am_object to R list", {
+  doc <- am_create()
+  am_put(
+    doc,
+    AM_ROOT,
+    "user",
+    list(
+      name = "Emma",
+      age = 28L,
+      tags = am_list("dev", "ops")
+    )
+  )
+  user <- am_get(doc, AM_ROOT, "user")
+
+  result <- as.list(user)
+  expect_type(result, "list")
+  expect_equal(result$name, "Emma")
+  expect_equal(result$age, 28L)
+  expect_type(result$tags, "list")
+  expect_equal(result$tags[[1]], "dev")
+  expect_equal(result$tags[[2]], "ops")
+})
+
+# Integration Tests -----------------------------------------------------------
+
+test_that("S3 methods work seamlessly together", {
+  doc <- am_create()
+
+  # Use $<- to build structure
+  doc$project <- list(name = "MyApp")
+  doc$version <- "1.0.0"
+
+  # Use $ to retrieve and modify nested
+  project <- doc$project
+  project$description <- "A test application"
+
+  # Use length and names
+  expect_equal(length(doc), 2L)
+  expect_true("project" %in% names(doc))
+  expect_true("version" %in% names(doc))
+
+  expect_equal(length(project), 2L)
+  expect_true(all(c("name", "description") %in% names(project)))
+})
+
+test_that("S3 methods work with deeply nested structures", {
+  doc <- am_create()
+
+  # Build deep structure with operators
+  doc$company <- list(
+    name = "Acme",
+    office = list(
+      location = "NYC",
+      floor = 5L
+    )
+  )
+
+  # Navigate and modify using operators
+  office <- doc$company$office
+  office$floor <- 10L
+
+  # Verify
+  expect_equal(doc$company$office$floor, 10L)
+})
+
+test_that("S3 methods work after save/load", {
+  doc1 <- am_create()
+  doc1$data <- list(x = 1, y = 2)
+  doc1$status <- "active"
+
+  bytes <- am_save(doc1)
+  doc2 <- am_load(bytes)
+
+  # S3 methods should work on loaded document
+  expect_equal(doc2$status, "active")
+  expect_equal(length(doc2), 2L)
+  expect_true(all(c("data", "status") %in% names(doc2)))
+
+  data <- doc2$data
+  expect_equal(data$x, 1)
+  expect_equal(data$y, 2)
+})
+
+test_that("as.list() handles complex nested structures", {
+  doc <- am_create()
+  doc$data <- list(
+    users = am_list(
+      list(name = "Alice", age = 30L),
+      list(name = "Bob", age = 25L)
+    ),
+    metadata = list(
+      created = Sys.time(),
+      version = "2.0"
+    )
+  )
+
+  result <- as.list(doc)
+  expect_type(result$data, "list")
+  expect_type(result$data$users, "list")
+  expect_length(result$data$users, 2)
+  expect_equal(result$data$users[[1]]$name, "Alice")
+  expect_equal(result$data$users[[2]]$name, "Bob")
+  expect_equal(result$data$metadata$version, "2.0")
+})
+
+test_that("S3 methods respect CRDT semantics", {
+  doc1 <- am_create()
+  doc2 <- am_fork(doc1)
+
+  # Make concurrent changes using S3 methods
+  doc1$value <- "from_doc1"
+  doc2$value <- "from_doc2"
+
+  # Merge
+  am_merge(doc1, doc2)
+
+  # One value should win (last-write-wins for scalars)
+  result <- doc1$value
+  expect_true(result %in% c("from_doc1", "from_doc2"))
+})
+
+# Edge Cases ------------------------------------------------------------------
+
+test_that("print() handles empty document", {
+  doc <- am_create()
+
+  expect_snapshot(print(doc), transform = function(x) {
+    sub("Actor: [a-f0-9]+", "Actor: <ACTOR_ID>", x)
+  })
+})
+
+test_that("print() handles document with many keys", {
+  doc <- am_create()
+  for (i in 1:100) {
+    doc[[paste0("key", i)]] <- i
+  }
+
+  expect_snapshot(print(doc), transform = function(x) {
+    sub("Actor: [a-f0-9]+", "Actor: <ACTOR_ID>", x)
+  })
+})
+
+test_that("print() handles very long key names", {
+  doc <- am_create()
+  long_key <- paste(rep("key", 100), collapse = "_")
+  doc[[long_key]] <- "value"
+
+  expect_snapshot(print(doc), transform = function(x) {
+    sub("Actor: [a-f0-9]+", "Actor: <ACTOR_ID>", x)
+  })
+})
+
+test_that("as.list() handles empty document", {
+  doc <- am_create()
+  result <- as.list(doc)
+  expect_type(result, "list")
+  expect_length(result, 0)
+})
+
+test_that("as.list() handles empty am_object map", {
+  doc <- am_create()
+  am_put(doc, AM_ROOT, "map", am_map())
+  empty_map <- am_get(doc, AM_ROOT, "map")
+
+  result <- as.list(empty_map)
+  expect_type(result, "list")
+  expect_length(result, 0)
+})
+
+test_that("as.list() handles empty am_object list", {
+  doc <- am_create()
+  am_put(doc, AM_ROOT, "list", am_list())
+  empty_list <- am_get(doc, AM_ROOT, "list")
+
+  result <- as.list(empty_list)
+  expect_type(result, "list")
+  expect_length(result, 0)
+})
+
+test_that("as.list() handles very deeply nested structures", {
+  doc <- am_create()
+  doc$level1 <- list(
+    level2 = list(
+      level3 = list(
+        level4 = list(
+          level5 = "deep"
+        )
+      )
+    )
+  )
+
+  result <- as.list(doc)
+  expect_equal(result$level1$level2$level3$level4$level5, "deep")
+})
+
+test_that("[[ handles out-of-bounds list index", {
+  doc <- am_create()
+  am_put(doc, AM_ROOT, "items", am_list("a", "b"))
+  items <- am_get(doc, AM_ROOT, "items")
+
+  expect_null(items[[0]])
+  expect_null(items[[99]])
+  expect_null(items[[-1]])
+})
+
+test_that("$ operator with non-character name", {
+  doc <- am_create()
+  doc$`123` <- "numeric_name"
+  expect_equal(doc$`123`, "numeric_name")
+})
+
+test_that("$ operator with special characters in name", {
+  doc <- am_create()
+  doc$`my-key` <- "value1"
+  doc$`my.key` <- "value2"
+  doc$`my key` <- "value3"
+
+  expect_equal(doc$`my-key`, "value1")
+  expect_equal(doc$`my.key`, "value2")
+  expect_equal(doc$`my key`, "value3")
+})
+
+test_that("names() preserves key order or returns consistent order", {
+  doc <- am_create()
+  doc$a <- 1
+  doc$b <- 2
+  doc$c <- 3
+
+  names1 <- names(doc)
+  names2 <- names(doc)
+
+  expect_equal(names1, names2)
+})
+
+test_that("[[<- with NULL deletes key", {
+  doc <- am_create()
+  doc[["key"]] <- "value"
+  expect_equal(doc[["key"]], "value")
+
+  doc[["key"]] <- NULL
+  expect_null(doc[["key"]])
+})
+
+test_that("$<- with NULL deletes key", {
+  doc <- am_create()
+  doc$key <- "value"
+  expect_equal(doc$key, "value")
+
+  doc$key <- NULL
+  expect_null(doc$key)
+})
+
+test_that("methods work with POSIXct timestamps", {
+  doc <- am_create()
+  timestamp <- Sys.time()
+  doc$created <- timestamp
+
+  expect_s3_class(doc$created, "POSIXct")
+  expect_equal(as.numeric(doc$created), as.numeric(timestamp))
+
+  result <- as.list(doc)
+  expect_s3_class(result$created, "POSIXct")
+})
+
+test_that("methods work with raw bytes", {
+  doc <- am_create()
+  raw_data <- as.raw(c(0, 127, 255))
+  doc$bytes <- raw_data
+
+  expect_equal(doc$bytes, raw_data)
+
+  result <- as.list(doc)
+  expect_equal(result$bytes, raw_data)
+})
+
+test_that("print.am_counter displays counter value", {
+  doc <- am_create()
+  counter <- am_counter(10)
+  doc$count <- counter
+
+  expect_snapshot(print(counter))
+})
+
+test_that("print.am_object displays generic object message", {
+  doc <- am_create()
+  am_put(doc, AM_ROOT, "obj", AM_OBJ_TYPE_MAP)
+  obj <- am_get(doc, AM_ROOT, "obj")
+
+  # Remove specific class to trigger generic print
+  class_backup <- class(obj)
+  class(obj) <- "am_object"
+
+  expect_snapshot(print(obj))
+
+  # Restore class
+  class(obj) <- class_backup
+})
+
+test_that("as.list.am_text returns text content as string", {
+  doc <- am_create()
+  am_put(doc, AM_ROOT, "text", am_text("Hello world"))
+  text_obj <- am_get(doc, AM_ROOT, "text")
+
+  result <- as.list(text_obj)
+  expect_type(result, "character")
+  expect_equal(result, "Hello world")
+})
+
+test_that("as.character.am_text converts text object to string", {
+  doc <- am_create()
+  am_put(doc, AM_ROOT, "notes", am_text("Hello World"))
+  text_obj <- am_get(doc, AM_ROOT, "notes")
+
+  # Use R-idiomatic as.character()
+  result <- as.character(text_obj)
+  expect_type(result, "character")
+  expect_equal(result, "Hello World")
+})
+
+test_that("as.character.am_text equivalent to am_text_content()", {
+  doc <- am_create()
+  am_put(doc, AM_ROOT, "content", am_text("Test content"))
+  text_obj <- am_get(doc, AM_ROOT, "content")
+
+  # Both should return identical results
+  char_result <- as.character(text_obj)
+  get_result <- am_text_content(text_obj)
+
+  expect_identical(char_result, get_result)
+})
+
+test_that("as.character.am_text works with empty text", {
+  doc <- am_create()
+  am_put(doc, AM_ROOT, "empty", am_text(""))
+  text_obj <- am_get(doc, AM_ROOT, "empty")
+
+  result <- as.character(text_obj)
+  expect_type(result, "character")
+  expect_equal(result, "")
+  expect_equal(nchar(result), 0)
+})
+
+test_that("as.character.am_text works with multibyte characters", {
+  doc <- am_create()
+  am_put(doc, AM_ROOT, "emoji", am_text("Hello 😀 World"))
+  text_obj <- am_get(doc, AM_ROOT, "emoji")
+
+  result <- as.character(text_obj)
+  expect_type(result, "character")
+  expect_equal(result, "Hello 😀 World")
+  # Verify multibyte handling
+  expect_true(grepl("😀", result))
+})
+
+test_that("as.character.am_text works after text modifications", {
+  doc <- am_create()
+  am_put(doc, AM_ROOT, "doc", am_text("Original"))
+  text_obj <- am_get(doc, AM_ROOT, "doc")
+
+  # Modify text
+  am_text_splice(text_obj, 8, 0, " Text")
+
+  # Convert to string
+  result <- as.character(text_obj)
+  expect_equal(result, "Original Text")
+})
+
+test_that("print.am_cursor displays cursor info", {
+  doc <- am_create()
+  am_put(doc, AM_ROOT, "text", am_text("Hello World"))
+  text_obj <- am_get(doc, AM_ROOT, "text")
+  cursor <- am_cursor(text_obj, 5)
+
+  expect_snapshot(print(cursor))
+})
+
+test_that("print.am_syncstate displays sync state info", {
+  sync_state <- am_sync_state()
+
+  expect_snapshot(print(sync_state))
+})
