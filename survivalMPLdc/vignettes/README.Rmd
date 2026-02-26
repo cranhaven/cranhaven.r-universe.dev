@@ -1,0 +1,317 @@
+---
+title: "survivalMPLdc"
+author: "Jing Xu, Thomas Fung and Jun Ma"
+date: "`r Sys.Date()`"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{survivalMPLdc}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE, cache = TRUE,
+  comment = "#>",
+  fig.path = "README-"
+)
+```
+
+## Overview
+Cox proportional hazard model estimation under dependent right censoring using copula and penalized likelihood.
+
+## Installation
+```{r eval = FALSE}
+# Install from CRAN (when available)
+install.packages("survivalMPLdc")
+```
+
+## Usage
+`library(survivalMPLdc)` will load the following functions: 
+
+* **surv_data_dc**, for generating a sample of time to event dataset with dependent right censoring under an Archimedean copula.
+* **coxph_mpl_dc.control**, for setting various numeric parameters controlling a Cox model fit using coxph_mpl_dc.
+* **coxph_mpl_dc**, for fitting a Cox proportional hazard model under dependent right censoring via maximum penalized likelihood and Archimedean copula.
+
+See `?coxph_mpl_dc` for a complete example of how to use this package.
+
+```{r setup}
+library(survivalMPLdc)
+```
+
+## A Dementia Dataset
+A dataset from Prospective Research in Memory Clinics (PRIME) study (Brodaty et al (2014)) was used to demonstrate the application of the proposed penalized likelihood and copula method (Xu et al 2018). The PRIME study was a 3-year longitudinal study. The primary analysis is to identify predictors of institutionalization in patients with dementia. The dataset included 585 patients with dementia. Of these, 156 patients (26.8%) were institutionalized, 146 (25.0%) withdrew and 281 (48.2%) were followed for the full 3-year period but not institutionalized. 
+
+Institutionalization was the event. Withdrawal from the study was considered as dependent censoring with Kendall's $\tau>0$ while the end of 3 years follow-up was considered as independent censoring. The predictors are age, gender, high education, Alzheimer disease, taking benzodiazepine, taking antipsychotic, living alone, baseline scores of Clinical Dementia Rating (CDR), Mini-Mental State
+Examination (MMSE), Functional Autonomy Measurement System (SMAF), Zarit Burden Interview (ZBI) and Neuropsychiatric Inventory (NPI), three-month change scores of MMSE, SMAF and NPI.
+   
+```{r}     
+data(PRIME)
+names(PRIME)<-c(
+  "Time", "Institutionalized", "Drop Out",
+  "Age", "Gender", "High Education", "Alzheimer Disease", 
+  "Baseline CDR", "Baseline MMSE", "Baseline SMAF", "Baseline ZBI", "Baseline NPI",
+  "Benzodiazepine", "Antipsychotic", "Living Alone", "3-month Change MMSE", "3-month Change SMAF", "3-month Change NPI"
+)
+surv<-as.matrix(PRIME[,1:3]) #time observed, the event and dependent censoring indicators
+cova<-as.matrix(PRIME[, -c(1:3)]) #covariates
+colMeans(surv[,2:3])  #the proportions of the event and dependent censoring
+
+n<-dim(PRIME)[1];print(n)  # the same size
+p<-dim(PRIME)[2]-3;print(p) # the number covariates
+```
+
+## Select the Optimal Number of Knots
+The baseline hazard functions for both institionalization and withdrawal are approximated by the cubic m-spline functions. The number of knots or the number of subintervals divided by the knots or the number of observations in each subinterval is selected by minimzing the AIC criteria. Based on the number of observations of 50, 100, 150, 200 and 250 in each subintervals, the minimum AIC is at 200.
+
+```{r}
+ binCounts <- c(50, 100, 150, 200, 250)
+ bn <- length(binCounts)
+ aics<-rep(0, bn)
+ for (j in 1:bn)
+  { control<-coxph_mpl_dc.control(ordSp = 4,
+                              binCount = binCounts[j], tie = 'Yes',
+                              tau = 0, copula = 'independent',
+                              pent = 'penalty_mspl', smpart = 0, penc = 'penalty_mspl', smparc = 0,
+                              mid = 1, asy = 0, ac = 1, cv = 0,
+                              cat.smpar = 'No' )
+ aics[j]<-coxph_mpl_dc(surv, cova, control)$mpl_aic
+ }
+binCount <- binCounts[which.min( aics )] 
+plot(binCounts, aics)
+```
+
+## Maximum Penalized Likelihood Estimation
+The proposed MPL method is used to estimate the proportional hazard model for institutionalization. The cubic m-spline functions are used to approximate the baseline hazard functions, and the number of knots is selected based on each subinterval contains 200 observations. The smoothing parameters of the penalty functions are estimated by restricted maximum likelihood method.
+A sensitivity analysis assumes both independent censoring and dependent censoring under a Frank copula with Kendall's $\tau$ values of 0.2, 0.5 and 0.8, is used to report the estimates of both baseline hazard and regression coefficient. The estimated results are plotted below. Note that the results are slightly different from Xu et al (2018), where used the piecewise constants to approximate the baseline hazard functions. 
+
+```{r}
+##--MPL estimate Cox proportional hazard model for institutionalization under independent censoring
+control <- coxph_mpl_dc.control(ordSp = 4,
+                                binCount = binCount, tie = 'Yes',
+                                tau = 0, copula = 'independent',
+                                pent = 'penalty_mspl', smpart = 'REML', penc = 'penalty_mspl', smparc = 'REML',
+                                mid = 1, asy = 1, ac = 1, cv = 1,
+                                cat.smpar = 'No' )
+
+coxMPLests_tau0 <- coxph_mpl_dc(surv=surv, cova=cova, control=control, )
+MPL_beta_tau0<-coef(object = coxMPLests_tau0, parameter = "beta")
+MPL_phi_tau0<-coef(object = coxMPLests_tau0, parameter = "phi")
+mpl_h0t_tau0 <- coxMPLests_tau0$mpl_h0t
+mpl_h0Ti_tau0 <- approx( surv[,1], mpl_h0t_tau0, xout = seq(0, max(surv[,1]), 0.01), method="constant", rule = 2, ties = mean)$y
+```
+
+```{r}
+##--MPL estimate Cox proportional hazard model for institutionalization under positive weak dependent censoring, 
+#e.g., tau=0.2
+control <- coxph_mpl_dc.control(ordSp = 4,
+                                binCount = binCount, tie = 'Yes',
+                                tau = 0.2, copula = 'frank',
+                                pent = 'penalty_mspl', smpart = 'REML', penc = 'penalty_mspl', smparc = 'REML',
+                                mid = 1, asy = 1, ac = 1, cv = 1,
+                                cat.smpar = 'No' )
+
+coxMPLests_tau0.2 <- coxph_mpl_dc(surv=surv, cova=cova, control=control, )
+MPL_beta_tau0.2<-coef(object = coxMPLests_tau0.2, parameter = "beta")
+MPL_phi_tau0.2<-coef(object = coxMPLests_tau0.2, parameter = "phi")
+mpl_h0t_tau0.2 <- coxMPLests_tau0.2$mpl_h0t
+mpl_h0Ti_tau0.2 <- approx( surv[,1], mpl_h0t_tau0.2, xout = seq(0, max(surv[,1]), 0.01), method="constant", rule = 2, ties = mean)$y
+```
+
+```{r}
+##--MPL estimate Cox proportional hazard model for institutionalization under positive median dependent censoring, 
+#e.g., tau=0.5
+control <- coxph_mpl_dc.control(ordSp = 4,
+                                binCount = binCount, tie = 'Yes',
+                                tau = 0.5, copula = 'frank',
+                                pent = 'penalty_mspl', smpart = 'REML',penc = 'penalty_mspl', smparc = 'REML',
+                                mid = 1, asy = 1, ac = 1, cv = 1,
+                                cat.smpar = 'No' )
+
+coxMPLests_tau0.5 <- coxph_mpl_dc(surv=surv, cova=cova, control=control, )
+mpl_beta_phi_zp_tau0.5 <- coxMPLests_tau0.5$mpl_beta_phi_zp
+MPL_beta_tau0.5<-coef(object = coxMPLests_tau0.5, parameter = "beta")
+MPL_phi_tau0.5<-coef(object = coxMPLests_tau0.5, parameter = "phi")
+mpl_h0t_tau0.5 <- coxMPLests_tau0.5$mpl_h0t
+mpl_h0Ti_tau0.5 <- approx( surv[,1], mpl_h0t_tau0.5, xout = seq(0, max(surv[,1]), 0.01), method="constant", rule = 2, ties = mean)$y
+```
+
+```{r}
+##--MPL estimate Cox proportional hazard model for institutionalization under positive strong dependent censoring, 
+#e.g., tau=0.8
+control <- coxph_mpl_dc.control(ordSp = 4,
+                                binCount = binCount, tie = 'Yes',
+                                tau = 0.8, copula = 'frank',
+                                pent = 'penalty_mspl', smpart = 'REML', penc = 'penalty_mspl', smparc = 'REML',
+                                mid = 1, asy = 1, ac = 1, cv = 1,
+                                cat.smpar = 'No' )
+
+coxMPLests_tau0.8 <- coxph_mpl_dc(surv=surv, cova=cova, control=control, )
+mpl_beta_phi_zp_tau0.8 <- coxMPLests_tau0.8$mpl_beta_phi_zp
+MPL_beta_tau0.8<-coef(object = coxMPLests_tau0.8, parameter = "beta")
+MPL_phi_tau0.8<-coef(object = coxMPLests_tau0.8, parameter = "phi")
+mpl_h0t_tau0.8 <- coxMPLests_tau0.8$mpl_h0t
+mpl_h0Ti_tau0.8 <- approx( surv[,1], mpl_h0t_tau0.8, xout = seq(0, max(surv[,1]), 0.01), method="constant", rule = 2, ties = mean)$y
+```
+
+### Baseline Hazard Estimates
+For the plot below, at each of the $\tau$ values, the baseline hazard function of institutionalization increases linearly over the three-year study period.
+```{r}
+#The plots for the sensitivity analysis of the baseline hazard estimates at different tau values
+t_up <- max(surv[,1])
+y_uplim <- max(mpl_h0Ti_tau0)
+Ti<-seq(0, max(surv[,1]), 0.01)[seq(0, max(surv[,1]), 0.01)<=t_up]
+h0Ti0<-mpl_h0Ti_tau0[seq(0, max(surv[,1]), 0.01)<=t_up]
+h0Ti0.2<-mpl_h0Ti_tau0.2[seq(0, max(surv[,1]), 0.01)<=t_up]
+h0Ti0.5<-mpl_h0Ti_tau0.5[seq(0, max(surv[,1]), 0.01)<=t_up]
+h0Ti0.8<-mpl_h0Ti_tau0.8[seq(0, max(surv[,1]), 0.01)<=t_up]
+
+plot(x = Ti, y = h0Ti0,
+     type="l", col="black", lty=1, lwd=1, cex.axis=1, cex.lab=1, ylim=c(0, y_uplim),
+     xlab='Time (Month)', ylab='Hazard')
+lines(x = Ti, y = h0Ti0.2,
+      col="grey", lty=2, lwd=1, cex.axis=1, cex.lab=1, ylim=c(0, y_uplim)
+)    
+lines(x = Ti, y = h0Ti0.5,
+     col="green", lty=3, lwd=1, cex.axis=1, cex.lab=1, ylim=c(0, y_uplim)
+)    
+lines(x = Ti, y = h0Ti0.8,
+     col="blue", lty=4, lwd=1, cex.axis=1, cex.lab=1, ylim=c(0, y_uplim)
+)
+
+title("MPL Hazard", cex.main=1)
+legend( 'topleft',
+        legend = c( expression(tau==0), expression(tau==0.2), expression(tau==0.5), expression(tau==0.8) ),
+        col = c( "black", "grey", "green", "blue" ),
+        lty = c( 1,2,3,4 ),
+        cex = 0.5
+)
+```
+
+### Regression Coefficient Estimates
+The MPL estimates with the corresponding $95\%$ confident intervals of the regression coefficient, at each of the $\tau$ values, for each of the predictors, are plotted below.The significant predictors of institutionalization regardless of the $\tau$ values are baseline MMSE, 3-month change in MMSE, baseline SMAF, 3-month change in SMAF (marginally significant), baseline NPI and 3-month change in NPI. Age becomes marginally significant at $\tau=0.8$. Benzodiazepines medication is marginally significant only when  $\tau<0.2$ while antipsychotic medication is significant only when $\tau<0.2$. Living alone is a significant predictor of institutionalization when $\tau>0.2$.
+```{r}
+#The plots of sensitivity analysis of the regression coefficient estimates at different tau values
+ta<-c(0, 0.2, 0.5, 0.8)
+
+for( j in 1:length( colnames( cova ) ) )
+{
+plot(ta, c(MPL_beta_tau0[j,1],
+           MPL_beta_tau0.2[j,1],
+           MPL_beta_tau0.5[j,1],
+           MPL_beta_tau0.8[j,1]
+           ), type="l", cex=1, cex.axis=1, cex.lab=1, 
+     xlim=c(-0.1, 0.9), ylim=c(min(MPL_beta_tau0[j,1] - 1.96*MPL_beta_tau0[j,2],
+                                   MPL_beta_tau0.2[j,1] - 1.96*MPL_beta_tau0.2[j,2],
+                                   MPL_beta_tau0.5[j,1] - 1.96*MPL_beta_tau0.5[j,2],
+                                   MPL_beta_tau0.8[j,1] - 1.96*MPL_beta_tau0.8[j,2]
+                                   ) - 0.1, 
+                               max(MPL_beta_tau0[j,1] + 1.96*MPL_beta_tau0[j,2],
+                                   MPL_beta_tau0.2[j,1] + 1.96*MPL_beta_tau0.2[j,2],
+                                   MPL_beta_tau0.5[j,1] + 1.96*MPL_beta_tau0.5[j,2],
+                                   MPL_beta_tau0.8[j,1] + 1.96*MPL_beta_tau0.8[j,2]
+                                   ) + 0.1 ), 
+     xlab='Tau', ylab='Estimate and 95% CI')
+points(ta, c(MPL_beta_tau0[j,1],
+           MPL_beta_tau0.2[j,1],
+           MPL_beta_tau0.5[j,1],
+           MPL_beta_tau0.8[j,1]
+          ), pch=19, cex=1, cex.axis=1, cex.lab=1, 
+     xlim=c(-0.1, 0.9), ylim=c( min(MPL_beta_tau0[j,1] - 1.96*MPL_beta_tau0[j,2],
+                                    MPL_beta_tau0.2[j,1] - 1.96*MPL_beta_tau0.2[j,2],
+                                    MPL_beta_tau0.5[j,1] - 1.96*MPL_beta_tau0.5[j,2],
+                                    MPL_beta_tau0.8[j,1] - 1.96*MPL_beta_tau0.8[j,2]
+                                    ) - 0.1, 
+                                max(MPL_beta_tau0[j,1] + 1.96*MPL_beta_tau0[j,2],
+                                    MPL_beta_tau0.2[j,1] + 1.96*MPL_beta_tau0.2[j,2],
+                                    MPL_beta_tau0.5[j,1] + 1.96*MPL_beta_tau0.5[j,2],
+                                    MPL_beta_tau0.8[j,1] + 1.96*MPL_beta_tau0.8[j,2]
+                                    ) + 0.1 )
+     )
+points(ta, c(MPL_beta_tau0[j,1] - 1.96*MPL_beta_tau0[j,2],
+           MPL_beta_tau0.2[j,1] - 1.96*MPL_beta_tau0.2[j,2],
+           MPL_beta_tau0.5[j,1] - 1.96*MPL_beta_tau0.5[j,2],
+           MPL_beta_tau0.8[j,1] - 1.96*MPL_beta_tau0.8[j,2]
+          ), 
+     pch=4, cex=1, cex.axis=1, cex.lab=1, 
+     xlim=c(-0.1, 0.9), ylim=c(min(MPL_beta_tau0[j,1] - 1.96*MPL_beta_tau0[j,2],
+                                   MPL_beta_tau0.2[j,1] - 1.96*MPL_beta_tau0.2[j,2],
+                                   MPL_beta_tau0.5[j,1] - 1.96*MPL_beta_tau0.5[j,2],
+                                   MPL_beta_tau0.8[j,1] - 1.96*MPL_beta_tau0.8[j,2]
+                                   ) - 0.1, 
+                               max(MPL_beta_tau0[j,1] + 1.96*MPL_beta_tau0[j,2],
+                                   MPL_beta_tau0.2[j,1] + 1.96*MPL_beta_tau0.2[j,2],
+                                   MPL_beta_tau0.5[j,1] + 1.96*MPL_beta_tau0.5[j,2],
+                                   MPL_beta_tau0.8[j,1] + 1.96*MPL_beta_tau0.8[j,2]
+                                   ) + 0.1 )
+     )
+points(ta, c(MPL_beta_tau0[j,1] + 1.96*MPL_beta_tau0[j,2],
+           MPL_beta_tau0.2[j,1] + 1.96*MPL_beta_tau0.2[j,2],
+           MPL_beta_tau0.5[j,1] + 1.96*MPL_beta_tau0.5[j,2],
+           MPL_beta_tau0.8[j,1] + 1.96*MPL_beta_tau0.8[j,2]
+          ), 
+     pch=4, cex=1, cex.axis=1, cex.lab=1, 
+     xlim=c(-0.1, 0.9), ylim=c(min(MPL_beta_tau0[j,1] - 1.96*MPL_beta_tau0[j,2],
+                                   MPL_beta_tau0.2[j,1] - 1.96*MPL_beta_tau0.2[j,2],
+                                   MPL_beta_tau0.5[j,1] - 1.96*MPL_beta_tau0.5[j,2],
+                                   MPL_beta_tau0.8[j,1] - 1.96*MPL_beta_tau0.8[j,2]
+                                   ) - 0.1, 
+                               max(MPL_beta_tau0[j,1] + 1.96*MPL_beta_tau0[j,2],
+                                   MPL_beta_tau0.2[j,1] + 1.96*MPL_beta_tau0.2[j,2],
+                                   MPL_beta_tau0.5[j,1] + 1.96*MPL_beta_tau0.5[j,2],
+                                   MPL_beta_tau0.8[j,1] + 1.96*MPL_beta_tau0.8[j,2]
+                                   ) + 0.1 )
+     )
+lines(c(ta[1], ta[1]), c( MPL_beta_tau0[j,1] - 1.96*MPL_beta_tau0[j,2], 
+                          MPL_beta_tau0[j,1] + 1.96*MPL_beta_tau0[j,2] ), 
+      lty=3)
+lines(c(ta[2], ta[2]), c( MPL_beta_tau0.2[j,1] - 1.96*MPL_beta_tau0.2[j,2], 
+                          MPL_beta_tau0.2[j,1] + 1.96*MPL_beta_tau0.2[j,2] ), 
+      lty=3)
+lines(c(ta[3], ta[3]), c( MPL_beta_tau0.5[j,1] - 1.96*MPL_beta_tau0.5[j,2], 
+                          MPL_beta_tau0.5[j,1] + 1.96*MPL_beta_tau0.5[j,2] ), 
+      lty=3)
+lines(c(ta[4], ta[4]), c( MPL_beta_tau0.8[j,1] - 1.96*MPL_beta_tau0.8[j,2], 
+                          MPL_beta_tau0.8[j,1] + 1.96*MPL_beta_tau0.8[j,2] ), 
+      lty=3)
+
+text(ta, c(MPL_beta_tau0[j,1] - 1.96*MPL_beta_tau0[j,2] - 0.05,
+           MPL_beta_tau0.2[j,1] - 1.96*MPL_beta_tau0.2[j,2] - 0.05,
+           MPL_beta_tau0.5[j,1] - 1.96*MPL_beta_tau0.5[j,2] - 0.05,
+           MPL_beta_tau0.8[j,1] - 1.96*MPL_beta_tau0.8[j,2] - 0.05
+             ), 
+     c(paste( "p=", round( MPL_beta_tau0[j, 4], digits=2 ) ), 
+       paste( "p=", round( MPL_beta_tau0.2[j, 4], digits=2 ) ),
+       paste( "p=", round( MPL_beta_tau0.5[j, 4], digits=2 ) ),
+       paste( "p=", round( MPL_beta_tau0.8[j, 4], digits=2 ) )
+       ), cex=0.5)
+title(names(PRIME)[j+3], cex.main=1)
+
+}
+```
+
+## References
+
+**Xu, J.**, Ma, J., Connors, M.H. and Brodaty, H. (2018) Proportional hazard model estimation under dependent censoring using copulas and penalized likelihood. Statistics in Medicine, 37(14), 2238-2251.
+
+Brodaty, H., Connors, M.H., **Xu, J.**, Woodwards, M., Ames, D. (2014) Predictors of Institutionalization in Dementia: A three Year Longitudinal Study. Journal of Alzheimer’s Disease, Vol. 40(1), 221-226.
+
+
+## Contact
+Jing Xu, PhD: kenny.xu@duke-nus.edu.sg
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
