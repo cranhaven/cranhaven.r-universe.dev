@@ -1,0 +1,74 @@
+#' @name CppLcpFinder-class
+#' @aliases CppLcpFinder
+#' @title \code{CppLcpFinder}: C++ LCP finder
+#' @description \code{CppLcpFinder} is a C++ class for finding least-cost paths
+#'   (LCPs) using a \code{\link{Quadtree}} as a resistance surface. The average
+#'   user should not need to interact with this class at all - all of the LCP
+#'   functionality is made available through the \code{\link{LcpFinder}} S4
+#'   class.
+#' @details This class is defined in 'src/LcpFinderWrapper.h' and
+#'   'src/LcpFinderWrapper.cpp'. When made available to R, it is
+#'   exposed as \code{CppLcpFinder} rather than
+#'   \code{LcpFinderWrapper}. \code{LcpFinderWrapper} contains
+#'   a pointer to a \code{LcpFinder} C++ object (defined in
+#'   'src/LcpFinder.h' and 'src/LcpFinder.cpp'). All of the
+#'   core functionality is in the \code{LcpFinder} C++ class.
+#'   \code{LcpFinderWrapper} is a wrapper class that adds the 'Rcpp' code
+#'   required for it to be accessible from R.
+#'
+#'   Note that there is no constructor made accessible to R - a
+#'   \code{CppLcpFinder} is created by using the
+#'   \code{getLcpFinder} method of the \code{\link{CppQuadtree}} class.
+#' @field getAllPathsSummary \itemize{
+#'   \item \strong{Description}: Returns a matrix summarizing all the LCPs
+#'   calculated so far. \code{\link{summarize_lcps}()} is a wrapper for this
+#'   function - see documentation of that function for more details.
+#'   \item \strong{Parameters}: none
+#'   \item \strong{Returns}: a matrix with one row per LCP. See documentation of
+#'   \code{\link{summarize_lcps}()} for details.
+#' }
+#' @field getLcp \itemize{
+#'   \item \strong{Description}: Finds the LCP from the starting point to
+#'   another point. \code{\link{find_lcp}} is a wrapper for this function - see
+#'   its documentation for more details.
+#'   \item \strong{Parameters}: \itemize{
+#'     \item \code{endPoint}: two-element numeric vector (x,y) - the point to
+#'     find a shortest path to
+#'   }
+#'   \item \strong{Returns}: A matrix representing the least-cost path. See
+#'   \code{\link{find_lcp}()} for details on the return matrix.
+#' }
+#' @field getSearchLimits \itemize{
+#'   \item \strong{Description}: Returns the x and y limits of the search area.
+#'   \item \strong{Parameters}: none
+#'   \item \strong{Returns}:  four-element numeric vector, in this order: xmin,
+#'   xmax, ymin, ymax
+#' }
+#' @field getStartPoint \itemize{
+#'   \item \strong{Description}: Returns the start point
+#'   \item \strong{Parameters}: none
+#'   \item \strong{Returns}: two-element numeric vector (x,y)
+#' }
+#' @field makeNetworkAll \itemize{
+#'   \item \strong{Description}: Calculates LCPs to all cells in the search
+#'   area. This is used by \code{\link{find_lcps}} when \code{limit} is
+#'   \code{NULL}. See documentation of that function for more details.
+#'   \item \strong{Parameters}: none
+#'   \item \strong{Returns}: void - no return value. Specific paths can be
+#'   retrieved using \code{getLcp}, and \code{getAllPathsSummary} can
+#'   be used to summarize all paths that have been found.
+#' }
+#' @field makeNetworkCostDist \itemize{
+#'   \item \strong{Description}: Calculates all LCPs whose cost-distance is less
+#'   than a given threshold. This is used in \code{\link{find_lcps}} when
+#'   \code{limit} is not \code{NULL}. See documentation of that function for
+#'   more details.
+#'   \item \strong{Parameters}: \itemize{
+#'     \item \code{constraint}: double; the maximum cost-distance allowed for a
+#'     LCP
+#'   }
+#'   \item \strong{Returns}: void - no return value. Specific paths can be
+#'   retrieved using \code{getLcp}, and \code{getAllPathsSummary} can
+#'   be used to summarize all paths that have been found.
+#' }
+NULL
