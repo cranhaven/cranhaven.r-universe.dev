@@ -1,0 +1,149 @@
+
+
+#' @name SingleVoxelFFBS
+#' @title SingleVoxelFFBS
+#' @description
+#' \loadmathjax
+#' This function is used to perform an activation analysis for single voxels based on the FFBS algorithm.
+#' @references
+#' \insertRef{CARDONAJIMENEZ2021107297}{BayesDLMfMRI}
+#' 
+#' \insertRef{cardona2021bayesdlmfmri}{BayesDLMfMRI}
+#' @details
+#' This function allows the development of an activation analysis for single voxels. A multivariate dynamic linear model is fitted to a cluster of voxels, with its center at location (i,j,k), in the way it is presented in \insertCite{CARDONAJIMENEZ2021107297}{BayesDLMfMRI}.
+#' @param posi.ffd  the position of the voxel in the brain image.
+#' @param covariates a data frame or matrix whose columns contain the covariates related to the expected BOLD response obtained from the experimental setup.
+#' @param ffdc a 4D array (\code{ffdc[i,j,k,t]}) that contains the sequence of MRI images that are meant to be analyzed. \code{(i,j,k)} define the position of the observed voxel at time t.
+#' @param m0 the constant prior mean value for the covariates parameters and common to all voxels within every neighborhood at \code{t=0} (\code{m=0} is the default value when no prior information is available). For the case of available prior information, \code{m0} can be defined as a \mjseqn{p\times q} matrix, where \mjseqn{p} is the number of columns in the covariates object and \mjseqn{q} is the cluster size.
+#' @param Cova a positive constant that defines the prior variances for the covariates parameters at \code{t=0} (\code{Cova=100} is the default value when no prior information is available). For the case of available prior information, \code{Cova} can be defined as a \mjseqn{p\times p} matrix, where \mjseqn{p} is the number of columns in the covariates object.
+#' @param delta a discount factor related to the evolution variances. Recommended values between \code{0.85<delta<1}. delta=1 will yield results similar to the classical general linear model.
+#' @param S0 prior covariance structure among voxels within every cluster at \code{t=0}. \code{S0=1} is the default value when no prior information is available and defines an \mjseqn{q\times q} identity matrix. For the case of available prior information, \code{S0} can be defined as an \mjseqn{q\times q} matrix, where \mjseqn{q} is the common number of voxels in every cluster.
+#' @param n0 a positive hyperparameter of the prior distribution for the covariance matrix \code{S0} at \code{t=0} (\code{n1=1} is the default value when no prior information is available). For the case of available prior information, \code{n0} can be set as \code{n0=np}, where \code{np} is the number of MRI images in the pilot sample.
+#' @param N1 is the number of images (\code{2<N1<T}) from the \code{ffdc} array employed in the model fitting. \code{N1=NULL} (or equivalently \code{N1=T}) is its default value, taking all the images in the \code{ffdc} array for the fitting process.
+#' @param Nsimu1 is the number of simulated on-line trajectories related to the state parameters. These simulated curves are later employed to compute the posterior probability of voxel activation.
+#' @param Cutpos1 a cutpoint time from where the on-line trajectories begin. This parameter value is related to an approximation from a t-student distribution to a normal distribution. Values equal to or greater than 30 are recommended (\code{30<Cutpos1<T}).  
+#' @param Min.vol helps to define a threshold for the voxels considered in
+#' the analysis. For example, \code{Min.vol = 0.10} means that all the voxels with values
+#' below to \code{max(ffdc)*Min.vol} can be considered irrelevant and discarded from the analysis.
+#' @param r1 a positive integer number that defines the distance from every voxel with its most distant neighbor. This value determines the size of the cluster. The users can set a range of different \code{r1} values: \mjseqn{r1 = 0, 1, 2, 3, 4}, which leads to \mjseqn{q = 1, 7, 19, 27, 33}, where \mjseqn{q} is the size of the cluster.
+#' @return a list containing a vector (Evidence) with the evidence measure of 
+#' activation for each of the \code{p} covariates considered in the model, the simulated 
+#' online trajectories related to the state parameter, the simulated BOLD responses,
+#'  and a measure to examine the goodness of fit of the model \mjseqn{(100 \ast |Y[i,j,k]_t - \hat{Y}[i,j,k]_t |/ \hat{Y}[i,j,k]_t )} for that particular voxel (\code{FitnessV}).
+#' @examples 
+#'\dontrun{
+#' # This example can take a long time to run.
+#' fMRI.data  <- get_example_fMRI_data()
+#' data("covariates", package="BayesDLMfMRI")
+#' res.indi <- SingleVoxelFFBS(posi.ffd = c(14, 56, 40), 
+#'                             covariates = Covariates,
+#'                             ffdc =  fMRI.data, 
+#'                             m0 = 0, Cova = 100, delta = 0.95, S0 = 1, 
+#'                             n0 = 1, Nsimu1 = 100, N1 = FALSE, Cutpos1 = 30, 
+#'                             Min.vol = 0.10, r1 = 1)
+#' 
+#' }
+#' @export
+SingleVoxelFFBS <- function(posi.ffd, covariates, ffdc, m0, Cova, delta, 
+                            S0, n0, N1, Nsimu1, Cutpos1, Min.vol, r1){
+  
+   if(is.logical(N1)) {
+    if(N1==FALSE){N1 = dim(covariates)[1]}
+   }
+
+   .validate_input(
+    covariates=covariates,
+    ffdc = ffdc,
+    delta=delta,
+    n0=n0,
+    N1=N1,
+    Nsimu1=Nsimu1,
+    Cutpos1=Cutpos1,
+    Min.vol=Min.vol,
+    r1=r1
+  )
+  
+  if(r1 == 0){
+    
+    posi <- .distanceNeighbors (posi.refer = as.vector(posi.ffd), r1)
+    
+    #BOLD RESPONSE SERIES IN THE CLUSTER RELATED TO posi
+    series.def <- sapply(1:(dim(posi)[1]), function(k){ffdc[posi[k,1], posi[k,2], posi[k,3], ]})
+    #CHEKING THE THRESHOLD Min.vol FOR THE MAIN TS: JUST TEMPORAL SERIES ABOVE THE THRESHOLD, DISCARD TEMPORAL SERIES WITH NON-SIGNIFICANT SIGNAL
+    if(min(series.def[,1]) < Min.vol){
+      return(list(EvidenceJoint = rep(NA, dim(covariates)[2]), EvidenceMargin = rep(NA, dim(covariates)[2]), EvidenLTT = rep(NA, dim(covariates)[2])))}else{
+        series.def <- matrix((series.def - mean(series.def))/sd(series.def), ncol=1)
+        #PRIOR HYPERPARAMETERS FOR q1=1
+        m01   <- matrix(rep(m0, dim(covariates)[2]*dim(series.def)[2]), ncol=1)
+        Cova1 <- diag(rep(Cova, dim(covariates)[2]))
+        S01 <- diag(rep(S0,dim(series.def)[2]))
+        #DISCOUNT FACTORS MATRIX
+        delta1 <- sqrt(delta)
+        Beta1 <-  diag(1/c(rep(delta1, dim(covariates)[2])))
+        
+        res <- .Individual_Backwards_Sampling(ffd1 = as.matrix(series.def), Cova = as.matrix(covariates), m0In = m01, c0In = Cova1, 
+                                              S0In = S01, beta0In = Beta1, nt0In = n0, NIn = N1, Nsimu = Nsimu1, CUTpos = Cutpos1)
+        res  <- list(EvidenceJoint = as.vector(res$Eviden_joint), EvidenceMargin = as.vector(res$Eviden_margin), EvidenLTT=as.vector(res$eviden_lt))
+        attr(res, "class") <- "fMRI_single_voxel"
+        return(res)
+        
+      }
+  }else{
+    #THIS LINE RETURN THE POSITIONS OF EACH VOXEL INSIDE THE CLUSTER GIVEN THE DISTANCE r1
+    posi1 <- .distanceNeighbors (posi.refer = as.vector(posi.ffd), r1)
+    
+    
+    aux.pos <- dim(ffdc)[1:3]
+    #GOING THROUGH EACH ROW AND CHECKING IF ANY POSITION IS OUTSIDE THE BOUNDS
+    row_sub1 <- apply(posi1, 1, function(row, x1){0 < row & row<=x1}, x1=aux.pos)
+    posi <- posi1[apply(t(row_sub1), 1, sum)==3, ]
+    #BOLD RESPONSE SERIES FOR THE CLUSTER RELATED TO posi
+    series <- sapply(1:(dim(posi)[1]), function(k){ffdc[posi[k,1], posi[k,2], posi[k,3], ]})
+    #CHEKING THE THRESHOLD Min.vol FOR THE MAIN TS: JUST TEMPORAL SERIES ABOVE THE THRESHOLD, DISCARD TEMPORAL SERIES WITH NON-SIGNIFICANT SIGNAL
+    if(min(series[,1]) < Min.vol){return(list(EvidenceJoint = rep(NA, dim(covariates)[2]), EvidenceMargin = rep(NA, dim(covariates)[2]), EvidenLTT = rep(NA, dim(covariates)[2])))}else{
+      # IDENTIFYING AND REMOVING TEMPORAL SERIES INSIDE THE CLUSTER WITH ZERO VALUES
+      zero.series <- unique(which(series==0, arr.ind = TRUE)[,2]) 
+      if(length(zero.series)==0){series.def <- series}else{series.def <- series[,-(zero.series)]}
+      #CHECKING THE SIZE OF THE CLUSTER: q=1 or q>1
+      #is.vector(series.def)==TRUE THEN q=1 OTHERWISE q>1
+      if(is.vector(series.def)){ 
+        series.def <- matrix((series.def - mean(series.def))/sd(series.def), ncol=1)
+        #PRIOR HYPERPARAMETERS FOR q1=1
+        m01   <- matrix(rep(m0, dim(covariates)[2]*dim(series.def)[2]), ncol=1)
+        Cova1 <- diag(rep(Cova, dim(covariates)[2]))
+        S01 <- diag(rep(S0,dim(series.def)[2]))
+        #DISCOUNT FACTORS MATRIX
+        delta1 <- sqrt(delta)
+        Beta1 <-  diag(1/c(rep(delta1, dim(covariates)[2])))}else{
+          series.def <- apply(series.def, 2, function(x){(x-mean(x))/sd(x)})
+          #PRIOR HYPERPARAMETERS FOR q1>1
+          m01   <- matrix(rep(m0, dim(covariates)[2]*dim(series.def)[2]), ncol=dim(series.def)[2])
+          Cova1 <- diag(rep(Cova, dim(covariates)[2]))
+          S01 <- diag(rep(S0,dim(series.def)[2]))
+          delta1 <- sqrt(delta)
+          #DISCOUNT FACTORS MATRIX
+          Beta1 <-  diag(1/c(rep(delta1, dim(covariates)[2])))
+          
+        }
+      
+      
+      
+      res <- .Individual_Backwards_Sampling(ffd1 = as.matrix(series.def), Cova = as.matrix(covariates), m0In = m01, c0In = Cova1, 
+                                            S0In = S01, beta0In = Beta1, nt0In = n0, NIn = N1, Nsimu = Nsimu1, CUTpos = Cutpos1)
+      attr(res, "class") <- "fMRI_single_voxel"
+      #EVIDENCE OF ACTIVATION FOR A SINGLE VOXEL TAKING INTO ACCOUNT THE INFORMATION OF THE ENTIRE CLUSTER OF SIZE q
+      return(res)
+      
+      
+      
+      
+      
+    }
+    
+  }
+  
+  
+  
+}
+#END FUNCTION
+
