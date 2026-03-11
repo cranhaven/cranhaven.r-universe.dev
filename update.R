@@ -1,5 +1,19 @@
 dryrun <- FALSE
 
+check_url_exists <- function(url) {
+  # Create a handle for the request
+  h <- curl::new_handle(nobody = TRUE) # nobody = TRUE makes it a HEAD request
+  
+  tryCatch({
+    res <- curl::curl_fetch_memory(url, handle = h)
+    # Status code 200 is "OK", though anything in the 200-399 range 
+    # generally means the URL is reachable or redirecting.
+    return(res$status_code == 200)
+  }, error = function(e) {
+    return(FALSE) # URL is invalid or server is down
+  })
+} ## check_url_exists()
+
 #' @export
 capitalize <- function(x) {
   vapply(x, FUN.VALUE = NA_character_, FUN = function(s) {
@@ -308,7 +322,11 @@ main <- function() {
   
     message(" - Clone package")
     url <- paste0("https://github.com/cran/", pkg)
-    res <- call_git("clone", "--depth=1", url, pkg)
+    if (check_url_exists(url)) {
+      res <- call_git("clone", "--depth=1", url, pkg)
+    } else {
+      res <- -1L
+    }
     if (res != 0) {
       failed <- c(failed, pkg)
       next
