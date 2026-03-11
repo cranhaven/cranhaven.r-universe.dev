@@ -322,11 +322,11 @@ main <- function() {
   
     message(" - Clone package")
     url <- paste0("https://github.com/cran/", pkg)
-    if (check_url_exists(url)) {
-      res <- call_git("clone", "--depth=1", url, pkg)
-    } else {
-      res <- -1L
+    if (!check_url_exists(url)) {
+      message(" - Package appears not to be in the CRAN archives. Skipping")
+      next
     }
+    res <- call_git("clone", "--depth=1", url, pkg)
     if (res != 0) {
       failed <- c(failed, pkg)
       next
