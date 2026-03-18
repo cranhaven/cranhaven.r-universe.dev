@@ -1,0 +1,23 @@
+print.pencopula <- function(x,...) {
+  d <- get("d",x)
+  D <- get("D",x)
+  p <- get("p",x)
+  ddb <- get("ddb",x)
+  base <- get("base",x)
+  q <- get("q",x)
+  cat("\nNumber of marginal observations: ",get("n",x),"\n",sep="")
+  cat("\nNumber of covariates: ",p,"\n",sep="")
+  cat("\nNumber of estimated coefficients: ",get("DD",x),"\n",sep="")
+  cat("\nConditional copula density: ",get("cond",x),"\n",sep="")
+  cat("\nHierarchy level of marginal hierarchical B-Spline d: ",d,"\n",sep="")
+  cat("\nMaximum hierarchy level of hierarchical B-Spline basis D: ",D,"\n",sep="")
+  if(base=="B-spline") cat("\nUsed basis: ",base," of degree ",q,"\n",sep="")
+  names <- c()
+  for(i in 1:p) names <- c(names,paste("lambda.",i,"=",get("lambda",x)[i]," ",sep=""))
+  cat("\nlambda: ",names,"\n",sep="")
+  cat("\nlog-likelihood: ",get("log.like",x),"\n",sep="")
+  cat("\nAIC: ",get("AIC",x),"\n",sep="")
+  cat("\ncAIC: ",get("cAIC",x),"\n",sep="")
+  cat("\nBIC: ",get("BIC",x),"\n",sep="")
+}
+
