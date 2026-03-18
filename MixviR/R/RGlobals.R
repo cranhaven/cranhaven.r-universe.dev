@@ -1,0 +1,13 @@
+utils::globalVariables(c("CHR", "POS", "ALT", "REF", "ALT_COUNT", "DP", "AF", "ALT_ID", "Lineage", "Gene", "Mutation", "SAMP_NAME", "Chr", "Pos", "REF_BASE", "GENE",
+"del_length", "aa_del_length", "GENE_AA_POS", "STRAND", "REF_CODON", "REF_AA", "REF_IDENT", "ALT2", "samp_codon", "samp_AA",
+"samp_identity", "aa_count", "ins_length", "aa_ins_length", "chr_pos", "STRAND", "translation", "ALLELE_COUNTS", "REF_COUNT",
+"end", "start", "r", "chrm", "ASSOCIATED LINEAGES", "CODON_POSITION", "DATE", "DP_n", "Date", "Estimated Freq", "FREQ",
+"GENE_BASE_NUM", "Group", "ID", "LOCATION", "Location", "MUTATION", "Mean Coverage", "Mean_Depth",
+"Mean_Freq", "Num_Target_Muts", "PropHighDepth", "Proportion High Depth", "Proportion Present", "Proportion_Present",
+"SEQ DEPTH", "Sample", "Targets_Absent", "Targets_Present", "Total Lineage-Characteristic Muts", "score", "strand", "ref1",
+"samp_mutations", "characteristic", "desc", "muts_list", "lab", "mean_cov_scaled", "days", "over1", "Sublineage", "test", "Estimated_Freq", 
+"Proportion_Targets_Present", "Target_Muts_Present", "Target_Muts_Absent", "sub_characteristic", "sub_prop_present", "sub_freqs",
+"Sub_estimated_freqs", "Group_sub", "sub_muts", "get_sub_freqs", 
+"get_sub_muts", "get_sub_props", "get_sublins", "sub_Estimated_Freq", 
+"sub_Proportion_Present", "sub_muts_present", "EstimatedFreq", 
+"Sublineages_present", "sub_muts", "ASSOCIATED SUBLINEAGES"))
