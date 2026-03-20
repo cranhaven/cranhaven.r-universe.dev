@@ -1,0 +1,48 @@
+\name{mipStatusGLPK}
+\alias{mipStatusGLPK}
+\alias{glp_mip_status}
+
+\title{
+  Determine Status of MIP Solution
+}
+
+\description{
+  Low level interface function to the GLPK function \code{glp_mip_status}.
+  Consult the GLPK documentation for more detailed information.
+}
+
+\usage{
+  mipStatusGLPK(lp)
+}
+
+\arguments{
+  \item{lp}{
+    An object of class \code{"\linkS4class{glpkPtr}"} as returned by
+    \code{\link{initProbGLPK}}. This is basically a pointer to a GLPK problem
+    object.
+  }
+}
+
+\details{
+  Interface to the C function \code{mipStatus} which calls the GLPK
+  function \code{glp_mip_status}.
+}
+
+\value{
+  Status of MIP Solution.
+}
+
+\references{
+  Based on the package \pkg{glpk} by Lopaka Lee.
+    
+  The GNU GLPK home page at \url{http://www.gnu.org/software/glpk/glpk.html}.
+}
+
+\author{
+  Gabriel Gelius-Dietrich <geliudie@uni-duesseldorf.de>
+
+  Maintainer: Mayo Roettger <mayo.roettger@hhu.de>
+}
+
+
+\keyword{ optimize }
