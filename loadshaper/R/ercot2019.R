@@ -1,0 +1,26 @@
+#' @title  ERCOT Hourly Load Data
+#'
+#' @description Hourly load data of different operational areas
+#' of Electric Reliability Council of Texas (ERCOT) for
+#' year 2019 - 2021. The extra day (2/29/2020) from 2020
+#' was intentionally omitted to have 8760 data for each year.
+#'
+#'
+#'
+#' @format A data frame with 26280 rows and 15 variables.
+#'
+#' @source https://www.ercot.com/gridinfo/load/load_hist/
+#'
+#' @examples
+#' loads <- ercot[ercot$Year == 2019, ]$COAST
+#' plot(loads, type = "l")
+#' linear_loadshape <- lslin(loads, target_lf = 0.50)
+#' summary(linear_loadshape)
+#' #-------------------------------------
+#' loads2 <- ercot[ercot$Year == 2020, ]$ERCOT
+#' plot(loads2, type = "l")
+#' linear_loadshape2 <- lslin(loads2, target_lf = 0.7)
+#' summary(linear_loadshape2)
+#'
+"ercot"
+
