@@ -1,0 +1,531 @@
+---
+title: "The *Repo* R Data Manager"
+date:
+author: "Francesco Napolitano"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Getting started with Repo}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r include=FALSE}
+library(knitr)
+knitr::opts_chunk$set(fig.width=7, fig.height=7, comment="")
+```
+
+## Introduction
+
+This is a getting-started guide for the **Repo** R package, which
+implements an R objects repository manager.  It is a **data-centered
+data flow manager**.
+
+The Repo package builds one (or more) centralized local repository
+where R objects are stored together with corresponding annotations,
+tags, dependency notes, provenance traces, source code. Once a
+repository has been populated, stored objects can be easily searched,
+navigated, edited, imported/exported. Annotations can be exploited to
+reconstruct data flows and perform typical pipeline management
+operations.
+
+Additional information can be found in the paper: Napolitano,
+F. [*repo: an R package for data-centered management of bioinformatic
+pipelines*](https://bmcbioinformatics.biomedcentral.com/articles/10.1186/s12859-017-1510-6). **BMC
+Bioinformatics** 18, 112 (2017).
+
+Repo latest version can be found at: https://github.com/franapoli/repo
+
+Repo is also on CRAN at: https://cran.r-project.org/package=repo
+
+## Preparation
+
+The following command creates a new repository in a temporary path
+(the default would be "~/.R_repo"). The same function opens existing
+repositories. The variable `rp` will be used as the main interface to
+the repository throughout this guide.
+
+```{r}
+library(repo)
+rp <- repo_open(tempdir(), force=T)
+```
+
+This document is produced by a script named `index.Rmd`. The script
+itself can be added to the repository and newly created resources
+annotated as being produced by it. The annotation is made automatic
+using the `options` command.
+
+
+```{r}
+rp$attach("index.Rmd", "Source code for Repo vignette")
+rp$options(src="index.Rmd")
+```
+
+
+## Populating the repository
+
+Here is a normalized version of the *Iris* dataset to be stored in the
+repository:
+
+```{r, eval=F}
+myiris <- scale(as.matrix(iris[,1:4]))
+```
+
+The shortest way to permanently store the `myiris` object in the
+repository is simply:
+
+```{r, eval=F}
+rp$put(myiris)
+```
+
+However, richer annotation is possible, for example:
+
+```{r}
+## chunk "myiris" {
+myiris <- scale(as.matrix(iris[,1:4]))
+
+rp$put(
+    obj = myiris,
+    name = "myiris", 
+    description = paste(
+        "A normalized version of the iris dataset coming with R.",
+        "Normalization is made with the scale function",
+        "with default parameters."
+    ),
+    tags = c("dataset", "iris", "repodemo")
+)
+## }
+```
+
+The call provides the data to be stored (`obj`), an identifier
+(`name`), a longer `description`, a list of `tags`.
+
+The comment lines (`## chunk "myiris" {` and `## }`) have a special
+meaning: they associate the corresponding code to the resource. The
+code can be showed as follows:
+
+```{r}
+rp$chunk("myiris")
+```
+
+The code associated with an item should take care of building and
+storing it. The *build* command executes the code in the current
+environment. It can automatically build dependencies, too.
+
+```{r}
+rp$rm("myiris")
+rp$build("myiris", "index.Rmd")
+```
+
+
+In this example, the Iris class annotation will be stored
+separately:
+
+```{r}
+rp$put(iris$Species, "irisLabels",
+		     tags = c("labels", "iris", "repodemo"))
+```
+
+### Attaching figures
+
+The following code produces a 2D visualization of the Iris data
+and shows it:
+
+```{r}
+irispca <- princomp(myiris)
+iris2d <- irispca$scores[,c(1,2)]
+plot(iris2d, main="2D visualization of the Iris dataset",
+     col=rp$get("irisLabels"))
+```
+
+Note that `irisLabels` is loaded on the fly from the repository.
+
+It would be nice to store the figure itself in the repo together with
+the Iris data. This is done using the `attach` method, which stores
+any file in the repo as is (as opposed to R objects), plus
+annotations. Two parameters differ from `put`:
+
+* **filepath** Instead of an identifier, `attach` takes a file name
+(with path). The file name will be also the item identifier.
+
+* **to** This optional parameter tells Repo which item the new one is
+attached to. Can be empty.
+
+
+```{r}
+fpath <- file.path(rp$root(), "iris2D.pdf")
+pdf(fpath)
+plot(iris2d, main="2D visualization of the Iris dataset",
+     col=rp$get("irisLabels"))
+invisible(dev.off())
+rp$attach(fpath, "Iris 2D visualization obtained with PCA.",
+            c("visualization", "iris", "repodemo"),
+              to="myiris")
+```
+
+The attached PDF can be accessed using an external PDF viewer directly
+from within Repo through the `sys` command. On a Linux system, this
+command runs the Evince document viewer and shows `iris2D.pdf`:
+
+```{r, eval=FALSE}
+rp$sys("iris2D.pdf", "evince")
+```
+
+The following code makes a clustering of the Iris data and stores it
+in the repository. There is one parameter to note:
+
+* **depends** Tells Repo that, in order to compute the `kiris`
+variable, `myiris` is necessary. (This information is used by `build`
+to build dependencies and by `dependencies` to show them).
+
+```{r}
+kiris <- kmeans(myiris, 5)$cluster
+rp$put(kiris, "iris_5clu", "Kmeans clustering of the Iris data, k=5.",
+         c("metadata", "iris", "kmeans", "clustering", "repodemo"),
+           depends="myiris")
+```
+
+The following shows what the clustering looks like. The figure
+will be attached to the repository as well.
+
+```{r}
+plot(iris2d, main="Iris dataset kmeans clustering", col=kiris)
+```
+
+```{r}
+fpath <- file.path(rp$root(), "iris2Dclu.pdf")
+pdf(fpath)
+plot(iris2d, main="Iris dataset kmeans clustering", col=kiris)
+invisible(dev.off())
+rp$attach(fpath, "Iris K-means clustering.",
+	c("visualization", "iris", "clustering", "kmeans", "repodemo"),
+	 		   to="iris_5clu")
+```
+
+Finally, a contingency table of the Iris classes versus clusters is
+computed below. The special tag *hide* prevents an item from being
+shown unless explicitly requested.
+
+
+```{r}
+res <- table(rp$get("irisLabels"), kiris)
+rp$put(res, "iris_cluVsSpecies",
+         paste("Contingency table of the kmeans clustering versus the",
+               "original labels of the Iris dataset."),
+         c("result", "iris","validation", "clustering", "repodemo", "hide"),
+         src="index.Rmd", depends=c("myiris", "irisLabels", "iris_5clu"))
+```
+
+## Looking at the repository
+
+The `info` command summarizes some information about a repository:
+
+
+```{r}
+rp$info()
+```
+
+The Repo library supports an S3 `print` method that shows the contents
+of the repository. All non-hidden items will be shown, together with
+some details, which by defaults are: name, dimensions, size.
+
+
+```{r}
+rp ## resolves to print(rp)
+```
+
+Hidden items are... hidden. The following will show them too:
+
+
+```{r}
+print(rp, all=T)
+```
+
+Items can also be filtered. With the following call, only
+items tagged with "clustering" will be shown:
+
+
+```{r}
+print(rp, tags="clustering", all=T)
+```
+
+`print` can show information selectively. This command shows tags and
+size on disk:
+
+
+```{r}
+rp$print(show="st")
+```
+
+The `find` command will match a search string against all item fields
+in the repository:
+
+```{r}
+rp$find("clu", all=T)
+```
+
+
+It is also possible to obtain a visual synthetic summary of the
+repository by using the `pies` command:
+
+```{r}
+rp$pies()
+```
+
+Finally, the `check` command runs an integrity check verifying that
+the stored data has not been modified/corrupted. The command will also
+check the presence of extraneous (not indexed) files. Since the `rp`
+repository was created in a temporary directory, a few extraneous
+files will pop up.
+
+```{r}
+rp$check()
+```
+
+
+### Showing dependencies
+
+In Repo, the relations "generated by", "attached to" and "dependent
+on" are summarized in a *dependency graph*. The formal representation
+of the graph is a matrix, in which the entry (i,j) represent a
+relation from i to j of type 1, 2 or 3 (*dependency*, *attachment* or
+*generation*). Here's how it looks like:
+
+
+```{r}
+depgraph <- rp$dependencies(plot=F)
+library(knitr)
+kable(depgraph)
+```
+
+Omitting the `plot=F` parameter, the *dependencies* method will
+plot the dependency graph. This plot requires the *igraph* library.
+
+
+```{r}
+if(require("igraph", NULL, T, F))
+     rp$dependencies()
+```
+
+The three types of edges can be shown selectively, so here's how the
+graph looks like without the "generated" edges:
+
+
+```{r}
+if(require("igraph"))
+    rp$dependencies(generated=F)
+```
+
+## Accessing items in the repo
+
+The `get` command is used to retrieve items from a repository. In the
+following the variable `myiris` is loaded into the variable `x` in the
+current environment.
+
+
+```{r}
+x <- rp$get("myiris")
+```
+
+An even simpler command is `load`, which uses the item name also as
+variable name:
+
+```{r}
+rm("myiris")
+rp$load("myiris")
+"myiris" %in% ls()
+```
+
+The `info` command can provide additional information about an entry:
+
+
+```{r}
+rp$info("myiris")
+```
+
+## Item versions, temporary items, remote contents
+
+There are actually 3 different ways of adding an object to a
+repository:
+
+* Add a new object (`rp$put`)
+* Overwrite an existing object (`rp$put(replace=T)`)
+* Add a new version of an existing object (`rp$put(replace="addversion")`)
+
+Plus, item contents for an existing entry can be downloaded if an URL
+is provided with it (`rp$pull`).
+
+### Versioning
+
+The K-means algorithm will likely provide different solutions over
+multiple runs. Alternative solutions can be stored as new versions of
+the `iris_5clu` item as follows:
+
+
+```{r}
+kiris2 <- kmeans(myiris, 5)$cluster
+rp$put(kiris2, "iris_5clu",
+         "Kmeans clustering of the Iris data, k=5. Today's version!",
+           depends="myiris", replace="addversion")
+```
+
+* **addversion** when replace is set to "addversion", Repo will add a
+new version of an existing object. The new object will replace the old
+one and the old one will be renamed adding the suffix "#N", with N
+being an incremental integer.
+
+The new repository looks like the old one:
+
+
+```{r}
+rp
+```
+
+Except that `iris_5clu` is actually the one just put (look at the
+description):
+
+
+```{r}
+rp$info("iris_5clu")
+```
+
+The old one has been renamed and hidden:
+
+```{r}
+rp$info("iris_5clu#1")
+```
+
+### Caching
+
+It is also possible to use the repository for caching purposes by
+using the `lazydo` command. It will run an expression and store the
+results. When the same expression is run again, the results will be
+loaded from the repository instead of being built again.
+
+```{r}
+
+## First run
+system.time(rp$lazydo(
+    {
+	Sys.sleep(.5)
+	result <- "This took half a second to compute"
+    }
+))
+
+## Second run
+system.time(rp$lazydo(
+    {
+	Sys.sleep(.5)
+	result <- "This took half a second to compute"
+    }
+))
+	
+
+```
+
+### Pulling
+
+Existing items can feature an *URL* property. The `pull` function is
+meant to update item contents by downloading them from the
+Internet. This allows for the distribution of "stub" repositories
+containing all items information without the actual data. The
+following code creates an item provided with a remote URL. A call to
+`pull` overwrites the stub local content with the remote content.
+
+```{r}
+rp$put("Local content", "item1",
+	"This points to big data you may want to download",
+	"tag", URL="http://exampleURL/repo")
+print(rp$get("item1"))
+```
+
+```{r, eval=F}
+rp$pull("item1", replace=T)
+```
+
+```{r, include=F}
+rp$set("item1", obj="Remote content")
+```
+
+```{r}
+print(rp$get("item1"))
+```
+
+
+## Handlers
+
+The `handlers` method returns a list of functions by the same names of
+the items in the repo. Each of these functions can call Repo methods
+(`get` by default) on the corresponding items. In this way all item
+names are loaded, which may be useful for example to exploit
+auto-completion features of the editor.
+
+
+```{r}
+h <- rp$handlers()
+names(h)
+```
+
+Handlers call `get` by default:
+
+
+```{r}
+print(h$iris_cluVsSpecies())
+```
+
+The `tag` command (not yet described)  adds a tag to an item:
+
+
+```{r}
+h$iris_cluVsSpecies("tag", "onenewtag")
+h$iris_cluVsSpecies("info")
+```
+
+One may want to open a repo directly with:
+
+
+```{r}
+h <- repo_open(rp$root())$handlers()
+```
+
+
+In that case, the handler to the repo itself will come handy:
+
+
+```{r}
+h$repo
+```
+
+If items are removed or added, handlers may need a refresh:
+
+
+```{r}
+h <- h$repo$handlers()
+```
+
+
+## Further documentation
+
+The repo manual starts at:
+
+
+```{r, eval=FALSE}
+help(repo)
+```
+
+In order to get help on the function "func", try the following:
+
+
+```{r, eval=FALSE}
+help(repo_func)
+```
+
+
+```{r, include=F}
+## cleaning the tempdir causes CRAN checks to fail on some platforms,
+## so it is now left behind
+##
+## unlink(rp$root(), recursive=T)
+```
+
+<hr/><small><i>Based on Repo build  `r packageVersion("repo")`</i></small>
+
