@@ -1,0 +1,42 @@
+#' SDEFSR: A package for Subgroup Discovery with Evolutionary Fuzzy Systems in R
+#'
+#' @description The SDEFSR package provide a tool for read KEEL datasets and four evolutionary fuzzy rule-based 
+#' algorithms for subgroup discovery. 
+#' 
+#' @details The algorithms provided works with datasets in KEEL, ARFF or CSV format and also with \code{data.frame} objects.
+#'    
+#'    The package also provide a Shiny app for making the same tasks that the package can do
+#'    and can display some additional information about data for making an exploratory analysis.
+#'    
+#'    The algorithms provided are Evolutionary Fuzzy Systems (EFS) which take advantages of evolutionary algorithms 
+#'    for maximize more than one quality measure and fuzzy logic, which makes a representation of numerical variables that are
+#'    more understandable for humans and more robust to noise. 
+#'    
+#'    The algorithms in the SDEFSR package support target variable with more than two values. However, this target variables
+#'    must be categorical. Thus, if you have a numeric target variable, a discretization must be perfomed before executing the
+#'    method.
+#' 
+#'   
+#' @section SDEFSR functions:
+#' \itemize{
+#'   \item{\code{\link{MESDIF}}                 Multiobjective Evolutionary Subgroup DIscovery Fuzzy rules (MESDIF) Algorithm.}
+#'   \item{\code{\link{NMEEF_SD}}               Non-dominated Multi-objective Evolutionary algorithm for Extracting Fuzzy rules in Subgroup Discovery (NMEEF-SD).}
+#'   \item{\code{\link{read.dataset}}           reads a KEEL, ARFF or CSV format file.}
+#'   \item{\code{\link{SDIGA}}                  Subgroup Discovery Iterative Genetic Algorithm (SDIGA).}
+#'   \item{\code{\link{SDEFSR_GUI}}}               Launch the Shiny app in your browser.
+#'   \item{\code{\link{FUGEPSD}}                Fuzzy Genetic Programming-based learning for Subgroup Discovery (FuGePSD) Algorithm.}
+#'   \item{\code{\link{plot.SDEFSR_Rules}}            Plot the discovered rules by a SDEFSR algorithm.}
+#'   \item{\code{\link{sort.SDEFSR_Rules}}             Sort the discovered rules by a given quality measure.}
+#'   \item{\code{\link{SDEFSR_DatasetFromDataFrame}}   Reads a data.frame and create a \code{SDEFSR_Dataset} object to be execute by an algorithm of this package.}
+#' }
+#'
+#' @author Angel M. Garcia-Vico <agvico@@ujaen.es>
+#' @import methods
+#' @import parallel
+#' @import stats
+#' @import utils
+#' @docType package
+#' @name SDEFSR
+NULL
+
+
