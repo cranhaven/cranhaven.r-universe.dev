@@ -1,0 +1,127 @@
+---
+title: "MSCA"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{MSCA}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+library(RcppParallel)
+RcppParallel::setThreadOptions(numThreads = 1)
+```
+
+## Background
+
+This library implements basic tools to conduct unsupervised learning or clustering of instances - such as patients - that are described by multiple censored time-to-event endpoints. It has been developed to be adapted to situations where events are not associated with a radical change in state like in the field of the social sciences where events such as \textit{wedding} or \textit{first job} mark a change in an individual status from one state to another, but have an additive impact, such as multiple long-term conditions on patients. This vignette (on progress) will shrtly describe how to conduct a clustring analysis using a toy dataset.
+
+Unsupervised analyses workflow are conducted through the following steps when based on distances / dissimilarity between analysed instances:
+
+- compute some distances between instances
+- use a procedure to construct a hierarchy
+- use any criteria to decide the number of clusters obtain from the hierarchy
+- use appropriate statistics and graphs to describe the defined typology
+
+The main purpose of the proposed tools is to be able to compute the Jaccard distance between patients on multiple censored time-to-event indicators. As a results patients having similar trajectories are expected to get clustered together, whereas patients with divergent health trajectories are likely to be assigned to different clusters.  
+
+In the fist section we will show how to construct censored state matrices from time stamped records (electonic health records) using simulated electronic health records. In section 2, we will show how to compute patients dissimilarity and derive a simple typology. In section 3 will will illustrate the use of the CLARA procedure in this setting when having to analyse larger set of patient (> 15000).
+
+## From electronic health records to state matrices
+
+### Load data and compute individual patient state matrices
+
+```{r setup}
+library(MSCA)
+library(dplyr)
+
+data(EHR)
+head(EHR)
+EHR %>%
+  nrow()
+```
+
+Our toy dataset is composed of 4856 records 35 long term conditions and two absorbing states (death of censoring).
+
+```{r}
+EHR %>%
+  group_by( reg ) %>%
+  tally
+
+```
+
+The function \sript( make_state_matrix ) is needed to obtain the individual patients state matrices:
+
+
+```{r}
+s_mat <- make_state_matrices(
+  data = EHR,
+  id = "link_id",
+  ltc = "reg",
+  aos = "aos",
+  l = 111,
+  fail_code = "death",
+  cens_code = "cens"
+)
+dim( s_mat )
+```
+
+## Compute the Jaccard distance between patients
+
+The use of \script{fast_jaccard_dist} allow to speed the computation of Jaccard distance between patients.
+
+```{r}
+library( cluster )
+library( fastcluster )
+# Compute the jaccard distance
+d_mat <- fast_jaccard_dist( s_mat , as.dist = TRUE )
+
+# Get a hierachical clustering using the built in hclust function
+h_mat <- hclust(d = d_mat , method = 'ward.D2' )
+h_mat
+
+# Get a typology
+
+ct_mat_8 <- cutree( h_mat , k = 8 )
+table( ct_mat_8 )
+
+```
+
+## Analyse clusters and get sequences statistics
+
+
+
+Once a typology has been defined it become interesting to obtain basic sequence statistics by clusters. To do so few data manipulation is needed:
+
+```{r}
+# Get a data frame with patient id and cluster assignation 
+df1 <- data.frame( link_id = names(ct_mat_8) , cl = paste0('cl_',ct_mat_8)) 
+head(df1)  
+
+# Merge with primary data
+EHR_cl <- EHR %>%
+  left_join( df1 )
+
+# Get cluster sequences by cluster
+dt_seq <- get_cluster_sequences(
+  dt =  EHR_cl ,
+  cl_col = "cl",
+  id_col = "link_id",
+  event_col = "reg",
+  k = 2
+)
+
+# Get basic stats by cluster
+sequence_stats(
+  seq_data = dt_seq ,
+  min_seq_freq = 0.03,
+  min_conditional_prob = 0,
+  min_relative_risk = 0
+)
+```
+
+
