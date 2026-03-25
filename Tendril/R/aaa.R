@@ -1,0 +1,33 @@
+utils::globalVariables(
+  c("StartDay",
+    "Treat",
+    "Unique.Subject.Identifier",
+    "net",
+    "Terms",
+    "y",
+    "label",
+    "x",
+    "TermsCount",
+    "AEstartDay",
+    "Net",
+    "OR",
+    "RR",
+    "ang",
+    "angsum",
+    "cc",
+    "cc.10",
+    "color",
+    "cx",
+    "dir.x",
+    "dir.y",
+    "fish",
+    "k",
+    "mod" ,
+    "old.day",
+    "p",
+    "p.adj",
+    "rdiff",
+    "type"))
+
+# List of options that are to be consireder for a logp coloring scale style
+LOG_COLORING_OPTIONS <- c("p","p.adj","fish", "FDR.tot")
