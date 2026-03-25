@@ -1,0 +1,339 @@
+\docType{package}
+\name{rexpokit-package}
+\alias{rexpokit}
+\alias{rexpokit-package}
+\title{Matrix exponentiation with EXPOKIT in R}
+\description{
+  Matrix exponentiation with EXPOKIT in R
+}
+\details{
+  \tabular{ll}{ Package: \tab rexpokit\cr Type: \tab
+  Package\cr Version: \tab 0.26.6.13\cr Date: \tab
+  2023-10-31
+  }
+
+  This package wraps some of the matrix exponentiation
+  utilities from EXPOKIT
+  (\url{http://www.maths.uq.edu.au/expokit/}), a FORTRAN
+  library that is widely recommended for fast matrix
+  exponentiation (Sidje RB, 1998. "Expokit: A Software
+  Package for Computing Matrix Exponentials." \emph{ACM
+  Trans. Math. Softw.} 24(1): 130-156).
+
+  The FORTRAN package was developed by Roger B. Sidje, see
+  \url{http://www.maths.uq.edu.au/expokit/}. Nicholas J.
+  Matzke adapted the package for use with R and wrote the R
+  interface. Permission to distribute the EXPOKIT source
+  under GPL was obtained from Roger B. Sidje.
+
+  EXPOKIT includes functions for exponentiating both small,
+  dense matrices, and large, sparse matrices (in sparse
+  matrices, most of the cells have value 0).  Rapid matrix
+  exponentiation is useful in phylogenetics when we have a
+  large number of states (as we do when we are inferring
+  the history of transitions between the possible
+  geographic ranges of a species), but is probably useful
+  in other ways as well.
+
+  \bold{Help}
+  
+  For help with rexpokit or BioGeoBEARS, see (1) the 
+  PhyloWiki websites for rexpokit and BioGeoBEARS 
+  (\url{http://phylo.wikidot.com/rexpokit}, 
+  \url{http://phylo.wikidot.com/biogeobears}) and 
+  (2) the BioGeoBEARS Google Group 
+  (\url{https://groups.google.com/forum/#!forum/biogeobears}). 
+  Minor updates may get posted first to the rexpokit 
+  GitHub repository (\url{https://github.com/nmatzke/rexpokit})
+
+
+  \bold{Background}
+
+  Various messages on discussion boards have asked whether
+  or not there is an R package that uses EXPOKIT.  There
+  are only two as of this writing (January 2013) --
+  \code{diversitree} and
+  \code{ctarma}. However, diversitree's usage is nested
+  deeply in a series of dynamic functions and integrated
+  with additional libraries (e.g. deSolve) and so is very
+  difficult to extract for general usage, and \code{ctarma}
+  implements only ZEXPM via \code{ctarma}::\code{zexpm}.
+  Niels Richard Hansen \email{Niels.R.Hansen@math.ku.dk} is
+  also working on an implementation of certain EXPOKIT
+  functions.
+
+  (See the additional notes file in the package "inst"
+  directory, 
+  EXPOKIT_For_Dummies_notes_v1.txt for additional notes on
+  wrappers for EXPOKIT in Python etc.)
+
+  As it turns out, the EXPOKIT documentation and code is
+  far from trivial to figure out, since the code as
+  published does not run "out of the box" -- in particular,
+  the Q transition matrix ("matvec"), which is the major
+  input into an exponentiation algorithm, is not input
+  directly, but rather via another function, which requires
+  the user to put together some FORTRAN code to do this and
+  make a wrapper for the core function.  I couldn't figure
+  it out in a short amount of time, but Stephen Smith did
+  for his "LAGRANGE" biogeography package, so I copied and
+  modified this chunk of his code to get started. \cr \cr
+  \bold{Installation hints}\cr \cr Installing
+  \code{rexpokit} from source will require a gfortran
+  compiler to convert the FORTRAN code files in /src (*.f)
+  to object files (*.o), and g++ to compile and link the
+  C++ wrapper. \code{rexpokit} was developed on an Intel
+  Mac running OS X 10.7.  I (NJM, 2013) successfully compiled it
+  using g++ and gfortran from (gcc version 4.2.1). (Update
+  2017-08-13: repeated with gccgfortran version 7.1.0.) \cr
+
+  \bold{Citation}
+
+  This code was developed for the following publications.
+  Please cite if used: 
+  
+  Matzke, Nicholas J. (2014). "Model Selection in 
+  Historical Biogeography Reveals that Founder-event 
+  Speciation is a Crucial Process in Island Clades." 
+  \emph{Systematic Biology}, 63(6), 951-970. 
+  \doi{10.1093/sysbio/syu056}
+
+  Matzke, Nicholas J. (2013). "Probabilistic historical 
+  biogeography: new models for founder-event speciation, 
+  imperfect detection, and fossils allow improved 
+  accuracy and model-testing." \emph{Frontiers of 
+  Biogeography}, 5(4), 242-248. 
+  \url{https://escholarship.org/uc/item/44j7n141}
+
+  Matzke, Nicholas J. (2012).
+  "Founder-event speciation in BioGeoBEARS package
+  dramatically improves likelihoods and alters parameter
+  inference in Dispersal-Extinction-Cladogenesis (DEC)
+  analyses." \emph{Frontiers of Biogeography} 4(suppl. 1):
+  210.  Link to abstract and PDF of poster:
+  \url{http://phylo.wikidot.com/matzke-2013-international-biogeography-society-poster}.
+  (Poster abstract published in the Conference Program and
+  Abstracts of the International Biogeography Society 6th
+  Biannual Meeting, Miami, Florida. Poster Session P10:
+  Historical and Paleo-Biogeography. Poster 129B. January
+  11, 2013.)
+
+  Please also cite Sidje (1998). \cr \cr
+  \bold{Acknowledgements/sources}\cr \cr \bold{1.} Niels
+  Richard Hansen \email{Niels.R.Hansen@math.ku.dk} helped
+  greatly with the initial setup of the package.  See his
+  \code{expoRkit} for another R
+  implementation of EXPOKIT routines.\cr \cr \bold{2.}
+  EXPOKIT, original FORTRAN package, by Roger B. Sidje
+  \email{rbs@maths.uq.edu.au}, Department of Mathematics,
+  University of Queensland, Brisbane, QLD-4072, Australia,
+  (c) 1996-2013 All Rights Reserved\cr \cr Sidje has given
+  permission to include EXPOKIT code in this R package
+  under the usual GPL license for CRAN R packages. For the
+  full EXPOKIT copyright and license, see
+  \code{expokit_copyright.txt} under
+  \code{inst/notes}. \cr \cr 
+  EXPOKIT was published by Sidje in: Sidje RB (1998).
+  "Expokit. A Software Package for Computing Matrix
+  Exponentials." \emph{ACM-Transactions on Mathematical
+  Software}, 24(1):130-156.
+  \url{http://tinyurl.com/bwa87rq}\cr \cr 
+  
+  \bold{3.} Revisions
+  for version 0.26, which fixed many issues with 
+  warnings about obsolescence in F77 code, were
+  aided by email help/discussions with: Kurt Hornik, 
+  Doug Nychka, Marcello Chiodi, Meabh McCurdy.  Also,
+  thanks to these incredibly helpful websites: 
+  "On-Line Fortran F77 - F90 Converter" 
+  (www.fortran.uk/plusfortonline.php), 
+  "Building and checking R source packages for Windows" 
+  (\url{https://win-builder.r-project.org/}), 
+  "Modernizing Old Fortran" 
+  (fortranwiki.org/fortran/show/Modernizing+Old+Fortran), 
+  "Registering the C++ and FORTRAN calls" 
+  (stat.ethz.ch/pipermail/r-devel/2017-February/073755.html)
+  \cr \cr
+  
+  \bold{4.} A small
+  amount of C++ code wrapping EXPOKIT was modified from a
+  file in LAGRANGE, C++ version by Stephen Smith:\cr
+  \url{https://code.google.com/archive/p/lagrange/}\cr
+  \url{https://github.com/blackrim/lagrange}\cr \cr
+  Specifically:\cr \cr \code{ * RateMatrix.cpp}\cr \code{ *
+  }\cr \code{ * Created on: Aug 14, 2009}\cr \code{ *
+  Author: smitty}\cr \code{ *}\cr \cr ...and the my_*.f
+  wrappers for the EXPOKIT *.f code files.\cr \cr 
+  
+  \bold{5.} Also copied in part (to get the .h file) from:\cr \cr
+  Python package "Pyprop":\cr
+  \url{https://code.google.com/archive/p/archive}\cr
+  (old URL) pyprop.googlecode.com/svn/trunk/core/krylov/expokit/expokitpropagator.cpp\cr
+  (old URL) www.koders.com/python/fidCA95B5A4B2FB77455A72B8A361CF684FFE48F4DC.aspx?s=fourier+transform\cr
+  \cr Specifically:\cr
+  pyprop/core/krylov/expokit/f2c/expokit.h \cr \cr
+  \bold{6.} The EXPOKIT FORTRAN package is available at:\cr
+  \url{http://www.maths.uq.edu.au/expokit/}\cr \cr
+  Copyright:\cr
+  \url{http://www.maths.uq.edu.au/expokit/copyright}\cr
+  ...or...\cr expokit_copyright.txt in this install 
+  (see package "inst" directory)\cr
+
+  \bold{7.} EXPOKIT included some LAPACK and BLAS code for 
+  portability. This has been slightly modified to pass 
+  new CRAN checks and compilers. The original copyright is
+  at: /inst/LAPACK_LICENSE.txt\cr
+  \cr
+
+  \bold{8.} itscale.f was copied from the R package "FD" in
+  order to avoid an unnecessary dependency
+  (and associated issues with compilation, 
+  updates, etc.). See R function "maxent" for more details,
+  citations for package "FD":\cr
+  \cr
+  Laliberte, E., and P. Legendre (2010) A distance-based 
+  framework for measuring functional diversity from 
+  multiple traits. \emph{Ecology} 91:299-305.\cr
+  \cr
+  Laliberte, E., Legendre, P., and B. Shipley. (2014). 
+  FD: measuring functional diversity from multiple traits, 
+  and other tools for functional ecology. R package 
+  version 1.0-12. \url{https://CRAN.R-project.org/package=FD}\cr
+  \cr
+}
+\examples{
+# Example code
+# For background and basic principles, see rexpokit/notes/EXPOKIT_For_Dummies_notes_v1.txt
+
+library(rexpokit)
+
+# Make a square instantaneous rate matrix (Q matrix)
+# This matrix is taken from Peter Foster's (2001) "The Idiot's Guide
+# to the Zen of Likelihood in a Nutshell in Seven Days for Dummies,
+# Unleashed" at:
+# https://joelvelasco.net/teaching/129/foster01-idiotslikelihood.pdf
+#
+# The Q matrix includes the stationary base freqencies, which Pmat
+# converges to as t becomes large.
+Qmat = matrix(c(-1.218, 0.504, 0.336, 0.378, 0.126, -0.882, 0.252, 0.504,
+0.168, 0.504, -1.05, 0.378, 0.126, 0.672, 0.252, -1.05), nrow=4, byrow=TRUE)
+
+# Make a series of t values
+tvals = c(0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1, 2, 5, 14)
+
+# Exponentiate each with EXPOKIT's dgpadm (good for small dense matrices)
+for (t in tvals)
+	{
+	Pmat = expokit_dgpadm_Qmat(Qmat=Qmat, t=t, transpose_needed=TRUE)
+	cat("\\n\\nTime=", t, "\\n", sep="")
+	print(Pmat)
+	}
+
+# Exponentiate each with EXPOKIT's dmexpv (should be fast for large sparse matrices)
+for (t in tvals)
+	{
+	Pmat = expokit_dmexpv_Qmat(Qmat=Qmat, t=t, transpose_needed=TRUE)
+	cat("\\n\\nTime=", t, "\\n", sep="")
+	print(Pmat)
+	}
+
+# DMEXPV and DGEXPV are designed for large, sparse Q matrices (sparse = lots of zeros).
+# DMEXPV is specifically designed for Markov chains and so may be slower, but more accurate.
+
+# DMEXPV, single t-value
+expokit_wrapalldmexpv_tvals(Qmat=Qmat, tvals=tvals[1], transpose_needed=TRUE)
+expokit_wrapalldmexpv_tvals(Qmat=Qmat, tvals=2)
+
+# DGEXPV, single t-value
+expokit_wrapalldgexpv_tvals(Qmat=Qmat, tvals=tvals[1], transpose_needed=TRUE)
+expokit_wrapalldgexpv_tvals(Qmat=Qmat, tvals=2)
+
+# These functions runs the for-loop itself (sadly, we could not get mapply() to work
+# on a function that calls dmexpv/dgexpv), returning a list of probability matrices.
+
+# DMEXPV functions
+list_of_P_matrices_dmexpv = expokit_wrapalldmexpv_tvals(Qmat=Qmat,
+tvals=tvals, transpose_needed=TRUE)
+list_of_P_matrices_dmexpv
+
+# DGEXPV functions
+list_of_P_matrices_dgexpv = expokit_wrapalldgexpv_tvals(Qmat=Qmat,
+tvals=tvals, transpose_needed=TRUE)
+list_of_P_matrices_dgexpv
+
+# Check if there are differences in the results (might only happen for large problems)
+cat("\\n")
+cat("Differences between dmexpv and dgexpv\\n")
+
+for (i in 1:length(list_of_P_matrices_dmexpv))
+	{
+	diffs = list_of_P_matrices_dmexpv[[i]] - list_of_P_matrices_dgexpv[[i]]
+	print(diffs)
+	cat("\\n")
+	}
+}
+\author{
+  Nicholas J. Matzke \email{nickmatzke.ncse@gmail.com}, Roger B.
+  Sidje \email{roger.b.sidje@ua.edu}, Drew Schmidt
+  \email{schmidt@math.utk.edu}
+}
+\references{
+  \url{http://www.maths.uq.edu.au/expokit/} \cr
+  \url{http://www.maths.uq.edu.au/expokit/copyright}
+
+  Matzke, Nicholas J. (2014). "Model Selection in 
+  Historical Biogeography Reveals that Founder-event 
+  Speciation is a Crucial Process in Island Clades." 
+  \emph{Systematic Biology}, 63(6), 951-970. 
+  \doi{10.1093/sysbio/syu056}
+
+  Matzke, Nicholas J. (2013). "Probabilistic historical 
+  biogeography: new models for founder-event speciation, 
+  imperfect detection, and fossils allow improved 
+  accuracy and model-testing." \emph{Frontiers of 
+  Biogeography}, 5(4), 242-248. 
+  \url{https://escholarship.org/uc/item/44j7n141}
+
+  Matzke N (2012). "Founder-event speciation in BioGeoBEARS
+  package dramatically improves likelihoods and alters
+  parameter inference in Dispersal-Extinction-Cladogenesis
+  (DEC) analyses." _Frontiers of Biogeography_, *4*(suppl.
+  1), pp. 210. ISSN 1948-6596, Poster abstract published in
+  the Conference Program and Abstracts of the International
+  Biogeography Society 6th Biannual Meeting, Miami,
+  Florida. Poster Session P10: Historical and
+  Paleo-Biogeography. Poster 129B. January 11, 2013, <URL:
+  \url{http://phylo.wikidot.com/matzke-2013-international-biogeography-society-poster}>.
+
+  Sidje RB (1998). "Expokit. A Software Package for
+  Computing Matrix Exponentials." _ACM Trans. Math.
+  Softw._, *24*(1), pp. 130-156. <URL:
+  http://dx.doi.org/10.1145/285861.285868>, <URL:
+  \url{https://dl.acm.org/doi/10.1145/285861.285868}>.
+
+  Eddelbuettel D and Francois R (2011). "Rcpp: Seamless R
+  and C++ Integration." _Journal of Statistical Software_,
+  *40*(8), pp. 1-18. ISSN 1548-7660, See also: <URL:
+  http://cran.r-project.org/web/packages/Rcpp/vignettes/Rcpp-introduction.pdf>,
+  <URL:
+  http://cran.r-project.org/web/packages/Rcpp/index.html>.
+  , <URL: \url{https://www.jstatsoft.org/v40/i08}>.
+
+  Moler C and Loan CV (2003). "Nineteen dubious ways to
+  compute the exponential of a matrix, twenty-five years
+  later." _SIAM review_, *45*(1), pp. 3-49. doi: 10.1137/S00361445024180.
+
+  Foster PG (2001). "The Idiot's Guide to the Zen of
+  Likelihood in a Nutshell in Seven Days for Dummies,
+  Unleashed." Online PDF, widely copied, <URL:
+  https://joelvelasco.net/teaching/129/foster01-idiotslikelihood.pdf>.
+}
+\seealso{
+  \code{expoRkit}
+  \code{\link{expokit_wrapalldmexpv_tvals}}
+}
+\concept{exponentiation}
+\concept{matrix}
+\concept{phylogenetics}
+\concept{transition}
+
