@@ -1,0 +1,96 @@
+#' Search VIAF records
+#'
+#' Search VIAF records where the authority includes the given terms.
+#'
+#' @param query The search query (or queries) to get data for.
+#' @param ... Optional VIAF API query parameters.
+#' @return A named list of tibbles with data items.
+#'
+#' @note An internet connection is required. The MARC 21 field
+#' definitions are used.
+#'
+#' @examples
+#' \donttest{viaf_search(c("Rembrandt", "Jane Austen"))}
+#'
+#' @importFrom purrr map set_names
+#' @importFrom magrittr "%>%"
+#'
+#' @rdname search
+#' @export
+viaf_search <- function(query = NULL, ...) {
+  if (is.null(query)) {
+    stop("VIAF query could not be parsed.")
+  }
+
+  if (is.list(query)) query <- unlist(query)
+  assertthat::assert_that(is.vector(query))
+
+  if (any(sapply(query, nchar) == 0)) {
+    warning("At least one VIAF query is empty.")
+  }
+
+  endpoint <- "search"
+
+  items <- map(
+      query,
+      viaf_retrieve_query,
+      endpoint = endpoint,
+      ...
+    ) %>%
+    map(get_search) %>%
+    set_names(query)
+
+  return(items)
+}
+
+#' @importFrom dplyr rename select
+#' @importFrom magrittr "%>%"
+#' @importFrom purrr map_chr
+#' @importFrom rlang .data
+get_search <- function(x) {
+  response <- x$searchRetrieveResponse
+
+  n_records <- if (!is.null(response$numberOfRecords)) {
+    as.integer(response$numberOfRecords)
+  } else {
+    0
+  }
+
+  if (n_records == 0) {
+    return(
+      tibble::tibble(
+        viaf_id = NA,
+        source_ids = list(),
+        name_type = NA,
+        text = list()
+      )
+    )
+  }
+
+  x <- response$records$record$recordData
+  source_ids <- x$sources$source
+
+  if (is.data.frame(source_ids)) {
+    source_ids <- purrr::transpose(source_ids)
+  }
+
+  metadata <- tibble::as_tibble(x) %>%
+    rename(
+      viaf_id = "viafID",
+      name_type = "nameType"
+    ) %>%
+    mutate(
+      source_ids = map(!!source_ids, get_source_ids),
+      text = map(split(x, seq_len(nrow(x)), get_text))
+    )
+
+  metadata <- get_name_type(metadata) %>%
+    select(
+      "viaf_id",
+      "source_ids",
+      "name_type",
+      "text"
+    )
+
+  return(metadata)
+}
