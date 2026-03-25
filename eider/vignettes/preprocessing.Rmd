@@ -1,0 +1,191 @@
+---
+title: "Preprocessing"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Preprocessing}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+```{r setup}
+library(eider)
+library(magrittr)
+```
+
+Inside each feature JSON, an optional `preprocess` object can be included, which causes the input table to be modified in a particular way before the feature is calculated.
+
+This is primarily useful for data where each row represents some subdivision of a larger entity, and the user wants to calculate features based on the information from those larger entity.
+In particular, this is useful for *episodic data*, where each row represents an *episode* within a continuous hospital *stay*.
+
+## Motivation
+
+We begin by making the case for why preprocessing can be required for certain features.
+
+Consider the following data frame.
+(This is a heavily simplified version of the example [SMR04](https://publichealthscotland.scot/services/national-data-catalogue/data-dictionary/a-to-z-of-data-dictionary-terms/smr04-summary-of-rules/?Search=S&ID=999&Title=SMR04%20-%20Summary%20of%20Rules) data bundled with the package, which you can obtain using `eider_example('random_smr04_data.csv')`.)
+
+```{r}
+input_table <- data.frame(
+  id = c(1, 1, 1, 1),
+  admission_date = as.Date(c(
+    "2015-01-01", "2016-01-01", "2016-01-04", "2017-01-01"
+  )),
+  discharge_date = as.Date(c(
+    "2015-01-05", "2016-01-04", "2016-01-08", "2017-01-08"
+  )),
+  cis_marker = c(1, 2, 2, 3),
+  episode_within_cis = c(1, 1, 2, 1),
+  diagnosis = c("A", "B", "C", "B")
+)
+
+input_table
+```
+
+Here, each row is an episode; multiple episodes make up a *continuous inpatient stay* (hence the abbreviation "cis").
+The `cis_marker` field is used to label stays, and can thus be used to identify episodes belonging to the same stay.
+In this case, the `episode_within_cis` tells us the order of the episodes within a stay; such information is not always present, though.
+
+In this table snippet, there is only one patient: they have had 3 distinct stays; the second of these comprises 2 episodes.
+
+Such information can be tricky to perform filtering on, because the `admission_date` and `discharge_date` pertain to each episode, but we are often interested in stay-level data: for example, when the patient was first admitted to hospital.
+
+Consider the following question: *how many stays has a patient had since 5 January 2016 in which they had a diagnosis of "B"?*
+For the patient in this table, the answer is 2: both the 2016 and 2017 stays had a diagnosis of "B", and both _stays_ ended after 5 January 2016.
+
+If we were to naively try to perform this calculation without accounting for the dates, we could write something like [`json_examples/preprocessing1.json`](https://github.com/alan-turing-institute/eider/blob/main/vignettes/json_examples/preprocessing1.json):
+
+```{r comment='', echo=FALSE}
+writeLines(readLines("json_examples/preprocessing1.json"))
+```
+
+Running this would give:
+
+```{r}
+results <- run_pipeline(
+  data_sources = list(input_table = input_table),
+  feature_filenames = "json_examples/preprocessing1.json"
+)
+
+results$features
+```
+
+We got a value of 1, which is incorrect!
+What gives?
+As it happens, the filter was applied to each episode, and because the first episode of the 2016 stay ended before 5 January, it was not counted in the data.
+The second episode of the 2016 stay was also removed because its diagnosis was not "B".
+So only the third stay, in 2017, was counted.
+
+
+## Preprocessing specification
+
+The way `eider` approaches this issue is to allow users to preprocess their data.
+This is accomplished by specifying a `preprocess` object in the feature JSON.
+In our case, to merge episode dates into stays, we can say that we would like:
+
+* for each unique pair of `id` and `cis_marker`,
+* replace the value of the admission date with the earliest of all episodes,
+* and replace the discharge date replaced with the latest of all episodes.
+
+In `dplyr` terms, one would write a pipeline like this:
+
+```{r}
+processed_table <- input_table %>%
+  dplyr::group_by(id, cis_marker) %>%
+  dplyr::mutate(
+    admission_date = min(admission_date),
+    discharge_date = max(discharge_date)
+  ) %>%
+  dplyr::ungroup()
+
+processed_table
+```
+
+Notice how the dates for both episodes in stay 2 are now the same, and reflect the overall dates for the stay.
+
+Returning to the `eider` library, this information is (unsurprisingly) specified in JSON.
+Including a `preprocess` object in the feature will cause the input table to be modified as above:
+
+```json
+{
+  "preprocess": {
+    "on": ["id", "cis_marker"],
+    "retain_min": ["admission_date"],
+    "retain_max": ["discharge_date"]
+  },
+}
+```
+
+The `preprocess` object contains one mandatory key:
+
+* **(array of strings) `"on"`**: the names of the columns by which the data should be grouped for preprocessing
+
+and several optional keys can be provided, corresponding to the operations which should be performed.
+All of these keys refer to column names:
+
+* **(array of strings) `"retain_min"`**: retain the minimum value within each group
+* **(array of strings) `"retain_max"`**: retain the maximum value within each group
+* **(array of strings) `"replace_with_sum"`**: sum the values within each group and replace the original values with the sum
+
+Columns may not be specified in more than one of the above keys (i.e., you cannot preprocess the same column twice).
+
+
+## Returning to the example
+
+We can now rewrite the feature JSON to include the preprocessing step ([`json_examples/preprocessing2.json`](https://github.com/alan-turing-institute/eider/blob/main/vignettes/json_examples/preprocessing2.json)):
+
+```{r comment='', echo=FALSE}
+writeLines(readLines("json_examples/preprocessing2.json"))
+```
+
+and rerunning the pipeline gives us the correct value of 2.
+Note that although the `preprocess` object is placed after the `filter` object in the JSON, the preprocessing is always done _prior_ to filtering.
+The order of the keys in the JSON has no effect whatsoever on the result.
+
+```{r}
+results <- run_pipeline(
+  data_sources = list(input_table = input_table),
+  feature_filenames = "json_examples/preprocessing2.json"
+)
+
+results$features
+```
+
+
+## An example for `replace_with_sum`
+
+To motivate the use of `replace_with_sum`, we can add a column to our previous data frame to denote the length of each episode:
+
+```{r}
+input_table_with_sum <- input_table %>%
+  dplyr::mutate(days = as.numeric(discharge_date - admission_date))
+
+input_table_with_sum
+```
+
+Now consider a different question, which is: *how many stays has a patient had which lasted for a week or more?*
+To answer this, we need to first sum up the `days` for each stay, and we can then filter based on this sum.
+This is accomplished with [`json_examples/preprocessing3.json`](https://github.com/alan-turing-institute/eider/blob/main/vignettes/json_examples/preprocessing3.json):
+
+```{r comment='', echo=FALSE}
+writeLines(readLines("json_examples/preprocessing3.json"))
+```
+
+```{r}
+results <- run_pipeline(
+  data_sources = list(input_table = input_table_with_sum),
+  feature_filenames = "json_examples/preprocessing3.json"
+)
+
+results$features
+```
+
+## See also
+
+The _Gallery_ section contains two examples of preprocessing in action: both [PIS feature 4](examples_pis.html#feature-4-maximum-number-of-items-prescribed-in-a-single-day) and [SMR04 feature 4](examples_smr04.html#feature-4-longest-single-stay-in-hospital) use the `replace_with_sum` preprocessing function.

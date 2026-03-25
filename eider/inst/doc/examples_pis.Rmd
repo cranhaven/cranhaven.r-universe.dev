@@ -1,0 +1,152 @@
+---
+title: "Examples: PIS data"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Examples: PIS data}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+```{r setup}
+library(eider)
+library(magrittr)
+```
+
+This series of vignettes in the _Gallery_ section aim to demonstrate the functionality of `eider` through examples that are similar to real-life usage.
+To do this, we have created a series of randomly generated datasets that are stored with the package.
+You can access these datasets using the `eider_example()` function, which will return the path to where the dataset is stored in your installation of R.
+
+```{r}
+pis_data_filepath <- eider_example("random_pis_data.csv")
+
+pis_data_filepath
+```
+
+## The data
+
+In this specific vignette, we are using simulated [Prescribing Information System (PIS)](https://publichealthscotland.scot/services/national-data-catalogue/national-datasets/a-to-z-of-datasets/prescribing-information-system-pis/).
+Our dataset does not contain every column specified in here, but serves as a useful example of how real-life data may be treated using `eider`.
+
+```{r}
+pis_data <- utils::read.csv(pis_data_filepath) %>%
+  dplyr::mutate(paid_date = lubridate::ymd(paid_date))
+
+dplyr::glimpse(pis_data)
+```
+
+(Note that when the data is loaded by `eider`, the date columns are automatically converted to the date type for you: you do not need to do the manual processing above.)
+
+This simplified table has 4 columns:
+
+* `id`, which is a numeric patient ID;
+* `paid_date`, which is the date the prescription was paid for;
+* `bnf_section`, which is a code for the type of drug prescribed;
+* `num_items`, which is the number of items prescribed.
+
+## Feature 1: Number of unique prescription types
+
+A simple example of a feature here is the number of unique prescription type each patient has received, which corresponds to the number of distinct values of `bnf_section` per `id`.
+
+The JSON required uses the `nunique` transformation type, and we must specify the column over which we want to take the distinct values using `"aggregation_column": "bnf_section"`.
+
+```{r}
+unique_bnf_filepath <- eider_example("distinct_bnf_prescriptions.json")
+writeLines(readLines(unique_bnf_filepath))
+```
+
+```{r}
+res <- run_pipeline(
+  data_sources = list(pis = pis_data_filepath),
+  feature_filenames = unique_bnf_filepath
+)
+
+dplyr::glimpse(res$features)
+```
+
+## Feature 2: Number of drugs prescribed since 2016
+
+A slightly more complicated example involves summing up the total number of items prescribed, but only counting those transactions since 2016—in other words, those where the `paid_date` is on or after 1 January 2016.
+
+To do this, we perform a `sum` over the `num_items` column, and use a filter to remove any rows that are prior to this date.
+The filter has the type `"date_gt_eq"`, which means greater than or equal to.
+
+```{r}
+drugs_since_2016_filepath <- eider_example("num_prescriptions_since_2016.json")
+writeLines(readLines(drugs_since_2016_filepath))
+```
+
+```{r}
+res <- run_pipeline(
+  data_sources = list(pis = pis_data_filepath),
+  feature_filenames = drugs_since_2016_filepath
+)
+
+dplyr::glimpse(res$features)
+```
+
+## Feature 3: Maximum number of items prescribed in a single transaction
+
+As a warm-up to feature 4, we will write a small feature that looks up the maximum value of `num_items` for each patient in the table.
+This is a `max` transformation type, which is very similar to the `nunique` and `sum` that we have seen above, except that we run a different aggregation function on the `num_items` column: instead of counting the unique values or summing them, we pick out the maximum value.
+
+```{r}
+max_items_filepath <- eider_example("max_drugs_in_transaction.json")
+writeLines(readLines(max_items_filepath))
+```
+
+```{r}
+res <- run_pipeline(
+  data_sources = list(pis = pis_data_filepath),
+  feature_filenames = max_items_filepath
+)
+
+dplyr::glimpse(res$features)
+```
+
+## Feature 4: Maximum number of items prescribed in a single day
+
+Now, consider a slightly more complicated request: what is the largest number of items that were prescribed to a patient _in a single day_?
+Clearly, this is also a `max` transformation type, but we need to now somehow group together any rows that belong to the same patient and the same date, and add up those values.
+
+To do this, we can use `eider`'s preprocessing functionality, which is described more thoroughly in [the preprocessing vignette](preprocessing.html).
+Specifically, we can:
+
+- group by the `id` and `paid_date` columns;
+- then replace the values in the `num_items` column with the sum of those values.
+
+In JSON, these instructions can be specified using the `"preprocessing"` key:
+
+```json
+{
+    ...,
+    "preprocessing": {
+        "on": ["id", "paid_date"],
+        "replace_with_sum": "num_items"
+    }
+}
+```
+
+The full JSON file is the same as in [Feature 3](#feature-3-maximum-number-of-items-prescribed-in-a-single-transaction), but just with this preprocessing block added in:
+
+```{r}
+max_items_day_filepath <- eider_example("max_drugs_in_day.json")
+writeLines(readLines(max_items_day_filepath))
+```
+
+```{r}
+res <- run_pipeline(
+  data_sources = list(pis = pis_data_filepath),
+  feature_filenames = c(max_items_filepath, max_items_day_filepath)
+)
+
+dplyr::glimpse(res$features)
+```
+
+Notice the differences between the two feature columns above: in the second (`max_drugs_in_day`) we have successfully aggregated transactions which happened on the same day, and thus the values (where they differ) are larger.

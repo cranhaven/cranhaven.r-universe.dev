@@ -1,0 +1,234 @@
+---
+title: "Filtering"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Filtering}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+Filtering relies on a `filter` key in the feature JSON, for which the corresponding value is an object:
+
+```json
+{
+    "output_feature_name": "..."
+    ...,
+    "filter": {
+       ...
+    },
+    ...
+}
+```
+
+This vignette will describe the types of filters available and how they can be expressed in this JSON object.
+
+## Basic filters
+
+The most basic filter would be to accept all rows where the value in a given column meets a certain criterion.
+For example, we may only want to look at rows for which the value in the `age` column is greater than 18.
+There are three pieces of information here which must be encoded:
+
+- **(string) `column`:** the name of the column to filter on
+- **(string) `type`:** the type of filter to apply
+- **`value`:** the value to compare against. The type of this must match the type of the column specified.
+
+The `type` key can take one of the following values:
+
+- `"in"`
+
+   In this case, the `value` key can either be a single value or an array of multiple values. This filers for rows where the value in the column matches one of the provided values.
+
+- `"gt"` / `"lt"` / `"gt_eq"` / `"lt_eq"`
+
+  The value in the column must be greater than, less than, greater than or equal to, or less than or equal to the `value` respectively.
+  For these filters, only one `value` can be passed.
+
+- `"date_gt"` / `"date_lt"` / `"date_gt_eq"` / `"date_lt_eq"`
+
+  The same as above, but to be used for dates.
+  This distinction is mandatory because JSON does not have a native date type, so the `value` must be passed as a string in the format `YYYY-MM-DD`.
+
+Thus, for example, if we assume that the column `age` contains integers, then
+
+```json
+{
+    "filter": {
+        "column": "age",
+        "type": "in",
+        "value": [18, 19, 20]
+    }
+}
+```
+
+selects for people who are 18, 19, or 20 years old; and likewise if the `date_of_birth` column contains dates, then
+
+```json
+{
+    "filter": {
+        "column": "date_of_birth",
+        "type": "date_gt_eq",
+        "value": "2000-01-01"
+    }
+}
+```
+
+selects for people born on or after January 1, 2000.
+
+As a reminder, the table to be filtered is passed as the `source_table` key in the feature JSON.
+This is described in the [introductory vignette](eider.html).
+
+
+## Compound filters
+
+Filters may also be combined using the Boolean logic operators AND, OR, and NOT.
+Instead of providing the three keys `column`, `type`, and `value`, only `type` is specified, together with `subfilter`, which is itself an object which maps filter names to filter objects.
+
+An example is probably the easiest way to explain this.
+If we wanted to select for people who are *not* 18, 19, or 20 years old, we could write:
+
+```json
+{
+    "filter": {
+        "type": "not",
+        "subfilter": {
+            "age_filter": {
+                "column": "age",
+                "type": "in",
+                "value": [18, 19, 20]
+            }
+        }
+    }
+}
+```
+
+The filter name, `age_filter`, can be any string you want: it is used only for logging purposes.
+Notice how the object that `age_filter` refers to, i.e.,
+
+```json
+{
+    "column": "age",
+    "type": "in",
+    "value": [18, 19, 20]
+}
+```
+
+is itself just a basic filter as has already been described above.
+
+`or` and `and` filters work in exactly the same way, with the sole difference being that to accomplish any meaningful results you would generally want the `subfilter` object to contain two or more filters that work in tandem.
+For example, the below filters for 18-year-olds who have a height of over 180 (presumably centimetres; although this depends on the input table!):
+
+```json
+{
+    "filter": {
+        "type": "and",
+        "subfilter": {
+            "age_filter": {
+                "column": "age",
+                "type": "in",
+                "value": [18]
+            },
+            "height_filter": {
+                "column": "height",
+                "type": "gt",
+                "value": 180
+            }
+        }
+    }
+}
+```
+
+Again, `age_filter` and `height_filter` are just names for logging purposes, and themselves refer to basic filters.
+
+Finally, note that the subfilters need not _necessarily_ be basic filters, though: they can be compound filters themselves.
+So it is possible to nest filters as deeply as you like to accomplish the desired result.
+
+## Examples
+
+```{r setup}
+library(eider)
+```
+
+Consider the following input table with five rows:
+
+```{r}
+input_table <- data.frame(
+  id = c(1, 1, 1, 2, 3),
+  date = as.Date(c(
+    "2024-01-01", "2024-01-02", "2024-01-03",
+    "2023-01-01", "2023-01-01"
+  )),
+  diagnosis = c("A", "B", "C", "B", "C")
+)
+input_table
+```
+
+and suppose we would like to count the number of times each person has had a diagnosis of "B".
+This is a `transformation_type` of `"count"`; but if we do not perform any filtering, `"count"` will simply return the number of times each person appears in this dataframe.
+
+The following JSON is provided as [`json_examples/filter1.json`](https://github.com/alan-turing-institute/eider/blob/main/vignettes/json_examples/filter1.json):
+
+```{r comment='', echo=FALSE}
+writeLines(readLines("json_examples/filter1.json"))
+```
+
+Passing this into `run_pipeline()` will give us the following result:
+
+```{r}
+results <- run_pipeline(
+  data_sources = list(input_table = input_table),
+  feature_filenames = "json_examples/filter1.json"
+)
+
+results$features
+```
+
+Instead of this, if we specify a filter for the `diagnosis` column (in [`json_examples/filter2.json`](https://github.com/alan-turing-institute/eider/blob/main/vignettes/json_examples/filter2.json)), we can achieve the desired result:
+
+```{r comment='', echo=FALSE}
+writeLines(readLines("json_examples/filter2.json"))
+```
+
+```{r}
+results <- run_pipeline(
+  data_sources = list(input_table = input_table),
+  feature_filenames = "json_examples/filter2.json"
+)
+
+results$features
+```
+
+Note how patient 3 has a count of 0, because they have never been diagnosed with "B".
+This is specified by the `absent_default_value` key in the JSON.
+
+If we would like to find diagnoses of "B" only in 2024, then we can add a date filter to the mix, and combine it with the diagnosis filter with an AND filter ([`json_examples/filter3.json`](https://github.com/alan-turing-institute/eider/blob/main/vignettes/json_examples/filter3.json)):
+
+```{r comment='', echo=FALSE}
+writeLines(readLines("json_examples/filter3.json"))
+```
+
+```{r}
+results <- run_pipeline(
+  data_sources = list(input_table = input_table),
+  feature_filenames = "json_examples/filter3.json"
+)
+
+results$features
+```
+
+Patient 2's diagnosis has been excluded this time because the corresponding entry came in 2023.
+
+## See also
+
+Filtering is used widely in the _Gallery_ examples.
+See, for example:
+
+* [PIS feature 2](examples_pis.html#feature-2-number-of-drugs-prescribed-since-2016) and [SMR04 features 1 and 2](examples_smr04.html#feature-1-number-of-episodes-associated-with-a-psychotherapy-specialty) both use basic filters;
+* [The LTC examples](examples_ltc.html) use filters to remove rows with missing data (`NA` values);
+* [A&E feature 2](examples_ae.html#feature-2-total-number-of-neurology-attendances-in-2017) has a doubly nested compound filter.

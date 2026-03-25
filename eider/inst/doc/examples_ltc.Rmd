@@ -1,0 +1,129 @@
+---
+title: "Examples: LTC data"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Examples: LTC data}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+```{r setup}
+library(eider)
+library(magrittr)
+```
+
+This series of vignettes in the _Gallery_ section aim to demonstrate the functionality of `eider` through examples that are similar to real-life usage.
+To do this, we have created a series of randomly generated datasets that are stored with the package.
+You can access these datasets using the `eider_example()` function, which will return the path to where the dataset is stored in your installation of R.
+
+```{r}
+ltc_data_filepath <- eider_example("random_ltc_data.csv")
+
+ltc_data_filepath
+```
+
+## The data
+
+In this specific vignette, we are using simulated long-term condition (LTC) data.
+Our dataset does not contain every column specified in here, but serves as a useful example of how real-life data may be treated using `eider`.
+
+```{r}
+ltc_data <- utils::read.csv(ltc_data_filepath) %>%
+  dplyr::mutate(asthma = lubridate::ymd(asthma),
+                diabetes = lubridate::ymd(diabetes),
+                parkinsons = lubridate::ymd(parkinsons))
+
+dplyr::glimpse(ltc_data)
+```
+
+(Note that when the data is loaded by `eider`, the date columns are automatically converted to the date type for you: you do not need to do the manual processing above.)
+
+This simplified table has 4 columns:
+
+* `id`, which is a numeric patient ID;
+* `asthma`, `diabetes`, and `parkinsons`, which are columns with dates indicating when a patient was first diagnosed with the corresponding condition.
+  If the patient has never been diagnosed with this condition, the value is `NA`.
+
+## Feature 1: Number of years with asthma
+
+In this example, we will calculate the number of years since each patient was first diagnosed with asthma.
+
+```{r}
+years_asthma_filepath <- eider_example("years_with_asthma.json")
+writeLines(readLines(years_asthma_filepath))
+```
+
+This is very similar to [one of the examples in the A&E data vignette](examples_ae.html#feature-4-the-number-of-days-since-the-last-ae-attendance).
+Here, we use a `"time_since"` transformation type, and additionally specify `"time_units"` as `"years"` to obtain the result as a number of years (formally, the number of days divided by 365.25).
+
+In this particular example, the `"from_first"` parameter is set to `true`.
+Because each patient only has one row in the table, there is no 'first' row, and thus this parameter could equally well be set to `false`.
+(However, it cannot be omitted, as it is a required parameter for the `"time_since"` transformation type.)
+
+```{r}
+res <- run_pipeline(
+  data_sources = list(ltc = ltc_data_filepath),
+  feature_filenames = years_asthma_filepath
+)
+
+dplyr::glimpse(res$features)
+```
+
+## Feature 2: Whether a patient has asthma or not
+
+This example is slightly more interesting because it involves a more ingenious filter operation.
+We would like a binary feature here which has value 1 if the patient has asthma, and 0 otherwise.
+However, we cannot simply use a `"present"` or `"count"` transformation type without filtering, because every patient appears in this table.
+
+We need to first filter the table such that all the rows where an `NA` value appears in the asthma column are removed.
+However, `eider`'s filter operation does not support filtering based on `NA` values!
+To work around this, what we can do is to filter based on the dates: if we choose only the rows where the date is greater than some _sentinel value_ which is a long time in the past, any genuine dates in the table will pass this test, but NA values will not.
+
+Thus, what we need is a `"date_gt"` filter with a value that is suitably far in the past such that any real date in the table will come after it.
+
+```{r}
+has_asthma_filepath <- eider_example("has_asthma.json")
+writeLines(readLines(has_asthma_filepath))
+```
+
+```{r}
+res <- run_pipeline(
+  data_sources = list(ltc = ltc_data_filepath),
+  feature_filenames = has_asthma_filepath
+)
+
+dplyr::glimpse(res$features)
+```
+
+## Feature 3: Number of conditions
+
+As a final example, we will calculate the number of long-term conditions each patient has a diagnosis for.
+This essentially involves calculating one binary 0/1 feature for each condition (much like [Feature 2](#feature-2-whether-a-patient-has-asthma-or-not), and then summing them up.
+Thus, we need to use a `"combine_linear"` transformation type, with the weights of each individual feature set to 1 (see the [combination feature vignette](combination.html) for more information).
+
+The full JSON looks like this:
+
+```{r}
+num_ltcs_filepath <- eider_example("number_of_ltcs.json")
+writeLines(readLines(num_ltcs_filepath))
+```
+
+The `subfeature` object contains a named list of the individual features that we want to combine: each of these have exactly the same structure as before, except that the filtering is performed on a different column each time.
+Each individual subfeature is also given a `"weight": 1`, as described previously.
+Finally, the `"output_feature_name"` field is lifted to the top level of the JSON instead of in each individual subfeature.
+
+```{r}
+res <- run_pipeline(
+  data_sources = list(ltc = ltc_data_filepath),
+  feature_filenames = num_ltcs_filepath
+)
+
+dplyr::glimpse(res$features)
+```
