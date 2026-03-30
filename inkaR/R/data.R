@@ -1,0 +1,27 @@
+#' INKAR Indicators Metadata
+#'
+#' A comprehensive list of available indicators from the INKAR database.
+#' This dataset is used to lookup indicator IDs, names, and descriptions.
+#'
+#' @format A data frame with the following columns:
+#' \describe{
+#'   \item{ID}{Short identifier (e.g., "001")}
+#'   \item{M_ID}{Numeric internal ID used by API}
+#'   \item{Name_DE}{German name of the indicator}
+#'   \item{Name_EN}{English name (translated or placeholder)}
+#'   \item{Description_DE}{Detailed German description}
+#'   \item{Theme}{Group/Domain of the indicator}
+#'   \item{Active}{Logical. TRUE if verified as active in the API}
+#'   \item{Algorithmus}{Algorithm used (if any)}
+#'   \item{Anmerkungen}{Notes in German}
+#'   \item{Anmerkungen_EN}{Notes in English}
+#'   \item{Gemeinden}{Availability for Municipalities}
+#'   \item{Kreise}{Availability for Districts}
+#'   \item{Statistische Grundlagen}{Statistical basis (DE)}
+#'   \item{Stat_Grund_EN}{Statistical basis (EN)}
+#'   \item{Unit_DE}{Unit of measurement (DE)}
+#'   \item{Unit_EN}{Unit of measurement (EN)}
+
+#' }
+#' @source \url{https://www.inkar.de/}
+"indicators"
