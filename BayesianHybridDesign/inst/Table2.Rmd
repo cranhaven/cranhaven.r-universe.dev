@@ -1,0 +1,1143 @@
+---
+title: "Table 2"
+author: "Zhaohua Lu"
+date: "2024-04-16"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Load package
+
+## Install BayesianHybridDesign
+
+After install the package, load the functions in the package.
+```{r}
+#(1) Install devtools if not installed. Remove # below to install the package
+
+#install.packages("devtools")
+
+#(2) Install BayesianHybridDesign. Remove # below to install the package
+
+#devtools::install_github("phe9480/BayesianHybridDesign")
+
+library(BayesianHybridDesign)
+```
+
+## Load other packages
+
+```{r}
+
+library(knitr)
+library(xtable)
+
+
+library(foreach)
+library(doParallel)
+library(RBesT)
+
+```
+
+
+# Generate Data
+
+```{r}
+set.seed(123)
+NCore = 7
+#get_OC.betaMix
+
+nc = c(45,45,45,45,45,45,45)
+nt = nc
+pc = c(0.15,0.2,0.25,0.30,0.35,0.4,0.45)
+pt = pc + 0.2
+
+nc.c = nc
+nt.c = nc.c
+pc.c = c(0.3,0.3,0.3,0.3,0.3,0.3,0.3)
+
+nche = c(45,45,45,45,45,45,45)
+pch=0.30
+nch=180
+ns = length(nc)
+
+nsim = 100000#
+
+Calibration.Idx = c(4,4,4,4,4,4,4)
+
+theta = 0.5
+eta = 1
+a0c = 0.001
+b0c = 0.001
+a0t = 0.001
+b0t = 0.001
+delta_threshold = 0.1
+alpha = 0.1
+
+xt_list = list()
+xt_typeI_list = list()
+xc_list = list()
+
+for(s in 1:ns){
+  set.seed(2000)
+  
+  xt_typeI_list[[s]] = rbinom(nsim,size = nt[s],prob = pc[s])
+  xc_list[[s]] = rbinom(nsim,size = nc[s], prob = pc[s])
+  xt_list[[s]] = rbinom(nsim,size = nt[s],prob = pt[s])
+  
+}
+
+```
+
+# DPP simulation
+
+## Demonstrate Dynamic Power Prior with 4 methods for $w_d$ 
+
+```{r}
+
+DPPMethodNames = c("Empirical Bayes",
+                   "Bayesian p",
+                   "Generalized BC",
+                   "JSD")
+nm = length(DPPMethodNames)
+
+dn = list(paste("Setting",1:ns,sep=" "),DPPMethodNames)
+dn3 = dn
+dn3[[3]] = 1:nsim
+
+TypeI_DPP = matrix(NA,ns,nm,dimnames=dn) 
+Power_DPP = matrix(NA,ns,nm,dimnames=dn) 
+DynamicBoundary_DPP = matrix(NA,ns,nm,dimnames=dn) 
+pc.mi_DPP = matrix(NA,ns,nm,dimnames=dn) 
+pc.sdi_DPP = matrix(NA,ns,nm,dimnames=dn) 
+phat_pt_larger_pc_DPP = array(NA,dim=c(ns,nm,nsim),dimnames = dn3)
+tau_DPP = matrix(NA,ns,nm,dimnames=dn) 
+
+TypeITime_DPP = matrix(NA,ns,nm,dimnames=dn) 
+PowerTime_DPP = matrix(NA,ns,nm,dimnames=dn) 
+
+for(m in 1:length(DPPMethodNames)){
+  
+  for(s in 1:ns){
+    
+    set.seed(2000)
+    
+    cs = Calibration.Idx[s]
+    xt_typeI = xt_typeI_list[[cs]] 
+    xc =  xc_list[[cs]]
+    datamat_cal = cbind(xt_typeI,xc) 
+    
+    # Calibrate
+    tau = calibration (nt=nt.c[s], pc.calib=pc.c[s], nc=nc.c[s], 
+                       pch=pch, nche=nche[s], nch=nch,
+                       alpha = alpha, 
+                       a0c=a0c, b0c=b0c, a0t=a0t, b0t=b0t,
+                       delta_threshold=delta_threshold, 
+                       method=DPPMethodNames[m], theta=theta, eta=eta,
+                       datamat = datamat_cal, 
+                       nsim = nsim, seed=2000)
+    
+    tau_DPP[s,m] = tau
+    
+    # Get data for type I and power
+    
+    xt = xt_list[[s]]
+    xt_typeI = xt_typeI_list[[s]] 
+    xc =  xc_list[[s]]
+    # Type I error
+    
+    datamat_typeI = cbind(xt_typeI,xc) 
+    datamat_Power = cbind(xt,xc) 
+    
+    
+    # Calcualte Type I error rates
+    start.time <- proc.time()
+    TypeI = power.DPP(pt = pc[s], nt = nt[s], 
+                      pc = pc[s], nc = nc[s], pc.calib=pc.c[s],
+                      pch = pch, nche = nche[s],nch = nch, 
+                      tau = tau, 
+                      a0c=a0c, b0c=b0c, a0t=a0t, b0t=b0t,
+                      delta_threshold = delta_threshold,
+                      method=DPPMethodNames[m], theta=theta, eta=eta,
+                      datamat = datamat_typeI, 
+                      nsim =nsim, seed = 2000)
+    
+    end.time <- proc.time()
+    TypeITime_DPP[s,m] <- (end.time - start.time)[3]
+    
+    TypeI_DPP[s,m] = TypeI$power
+    
+    DynamicBoundary_DPP[s,m] = TypeI$delta.bound
+    pc.mi_DPP[s,m] = TypeI$pc.PMD
+    pc.sdi_DPP[s,m] = TypeI$pc.sd.PMD
+    phat_pt_larger_pc_DPP[s,m,] = TypeI$phat_pt_larger_pc_all
+    
+    # Power
+    set.seed(2000)
+    
+    start.time <- proc.time()
+    Power = power.DPP(pt = pt[s], nt = nt[s], 
+                      pc = pc[s], nc = nc[s], pc.calib=pc.c[s],
+                      pch = pch, nche = nche[s],nch = nch, 
+                      tau = tau, 
+                      a0c=a0c, b0c=b0c, a0t=a0t, b0t=b0t,
+                      delta_threshold = delta_threshold,
+                      method=DPPMethodNames[m], theta=theta, eta=eta,
+                      datamat = datamat_Power, 
+                      nsim =nsim, seed = 2000)
+    
+    end.time <- proc.time()
+    TypeITime_DPP[s,m] <- (end.time - start.time)[3]
+    
+    Power_DPP[s,m] = Power$power
+    
+  }
+}
+```
+
+
+
+
+
+## Table, Type I error, Comparing different methods
+```{r}
+cns = c("Study Treatment Sample Size", 
+        "Study Control Sample Size", 
+        "Historical Control Sample Size",
+        "Study Treatment ORR",
+        "Study Control ORR",
+        "Historical Control ORR",
+        DPPMethodNames)
+
+Table_TypeI = matrix(NA,ns,length(cns))
+colnames(Table_TypeI) = cns
+
+Table_TypeI[,1] = nt
+Table_TypeI[,2] = nc
+Table_TypeI[,3] = nche
+Table_TypeI[,4] = pt
+Table_TypeI[,5] = pc
+Table_TypeI[,6] = pch
+Table_TypeI[,6+1:length(DPPMethodNames)] = TypeI_DPP
+
+
+Table_Power = matrix(NA,ns,length(cns))
+colnames(Table_Power) = cns
+
+Table_Power[,1] = nt
+Table_Power[,2] = nc
+Table_Power[,3] = nche
+Table_Power[,4] = pt
+Table_Power[,5] = pc
+Table_Power[,6] = pch
+Table_Power[,6+1:length(DPPMethodNames)] = Power_DPP
+
+
+
+Table_mi = matrix(NA,ns,length(cns))
+colnames(Table_mi) = cns
+
+Table_mi[,1] = nt
+Table_mi[,2] = nc
+Table_mi[,3] = nche
+Table_mi[,4] = pt
+Table_mi[,5] = pc
+Table_mi[,6] = pch
+Table_mi[,6+1:length(DPPMethodNames)] = pc.mi_DPP
+
+
+
+Table_sdi = matrix(NA,ns,length(cns))
+colnames(Table_sdi) = cns
+
+Table_sdi[,1] = nt
+Table_sdi[,2] = nc
+Table_sdi[,3] = nche
+Table_sdi[,4] = pt
+Table_sdi[,5] = pc
+Table_sdi[,6] = pch
+Table_sdi[,6+1:length(DPPMethodNames)] = pc.sdi_DPP
+
+Table1 = rbind(Table_TypeI,Table_Power,Table_mi,Table_sdi)
+
+#write.table(Table1,"sdi.csv",sep=",",row=F,col=T)
+
+kable(Table1)
+
+```
+
+
+
+## Simulation: Demonstrate each part of the Dynamic power prior
+
+
+```{r Settings}
+nt = c(45,45,45,45,45,45,45)
+nc = nt
+pc = c(0.15,0.2,0.25,0.3,0.35,0.4,0.45)
+pt = pc + 0.2
+
+setting_for_calibration = c(4,4,4,4,4,4,4)
+
+nche = c(45,90,135,180)
+pch=c(0.3,0.3,0.3,0.3,0.3,0.3,0.3)
+nch=180
+ns = length(nt)
+
+nsim = 100000#
+
+theta = 0.5
+eta = 1
+a0c = 0.001
+b0c = 0.001
+a0t = 0.001
+b0t = 0.001
+
+xt_list = list()
+xt_typeI_list = list()
+xc_list = list()
+
+for(s in 1:ns){
+  
+  set.seed(2000)
+  
+  xt_typeI_list[[s]] = rbinom(nsim,size = nt[s],prob = pc[s])
+  xc_list[[s]] = rbinom(nsim,size = nc[s], prob = pc[s])
+  xt_list[[s]] = rbinom(nsim,size = nt[s],prob = pt[s])
+}
+
+```
+
+## Dynamic Power Prior 
+
+
+```{r}
+
+
+nm = length(nche)
+
+dn = list(paste("Setting",1:ns,sep=" "),nche)
+dn3 = dn
+dn3[[3]] = 1:nsim
+
+TypeI_DPP1 = matrix(NA,ns,nm,dimnames=dn) 
+Power_DPP1 = matrix(NA,ns,nm,dimnames=dn) 
+DynamicBoundary_DPP1 = matrix(NA,ns,nm,dimnames=dn) 
+pc.mi_DPP1 = matrix(NA,ns,nm,dimnames=dn) 
+pc.sdi_DPP1 = matrix(NA,ns,nm,dimnames=dn) 
+phat_pt_larger_pc_DPP1 = array(NA,dim=c(ns,nm,nsim),dimnames = dn3)
+
+wmean_DPP1 = array(NA,dim=c(ns,nm,nsim),dimnames = dn3)
+
+TypeITime_DPP1 = matrix(NA,ns,nm,dimnames=dn) 
+PowerTime_DPP1 = matrix(NA,ns,nm,dimnames=dn) 
+
+for(s in 1:ns){
+  
+  for(m in 1:nm){
+    
+    set.seed(2000)
+    
+    # Calibrate
+    cs = setting_for_calibration[s]
+    
+    datamat_typeI = cbind(xt_typeI_list[[cs]],xc_list[[cs]]) 
+    
+    tau = calibration (nt=nt[cs], pc.calib=pc[cs], nc=nc[cs], 
+                       pch=pch[cs], nche=nche[m], nch=nch,
+                       alpha = alpha, 
+                       a0c=a0c, b0c=b0c, a0t=a0t, b0t=b0t,
+                       delta_threshold=delta_threshold, 
+                       method="Empirical Bayes", theta=theta, eta=eta,
+                       datamat = datamat_typeI, 
+                       nsim = nsim, seed=2000)
+    
+    # Get data for type I and power
+    
+    
+    xt = xt_list[[s]]
+    xt_typeI = xt_typeI_list[[s]] 
+    xc =  xc_list[[s]]
+    
+    # Type I error
+    
+    datamat_typeI = cbind(xt_typeI,xc) 
+    datamat_Power = cbind(xt,xc) 
+    
+    start.time <- proc.time()
+    TypeI = power.DPP(pt = pc[s], nt = nt[s], 
+                      pc = pc[s], nc = nc[s], pc.calib=pc.c[s],
+                      pch = pch[s], nche = nche[m], nch = nch, 
+                      tau = tau, 
+                      a0c=a0c, b0c=b0c, a0t=a0t, b0t=b0t,
+                      delta_threshold = delta_threshold, 
+                      method="Empirical Bayes", theta=theta, eta=eta,
+                      datamat = datamat_typeI, 
+                      nsim =nsim, seed = 2000)
+    
+    
+    end.time <- proc.time()
+    TypeITime_DPP1[s,m] <- (end.time - start.time)[3]
+    
+    TypeI_DPP1[s,m] = TypeI$power
+    
+    DynamicBoundary_DPP1[s,m] = TypeI$delta.bound
+    pc.mi_DPP1[s,m] = TypeI$pc.PMD
+    pc.sdi_DPP1[s,m] = TypeI$pc.sd.PMD
+    phat_pt_larger_pc_DPP1[s,m,] = TypeI$phat_pt_larger_pc_all
+    
+    wmean_DPP1[s,m,] = TypeI$w
+    
+    # Power
+    set.seed(2000)
+    
+    start.time <- proc.time()
+    Power = power.DPP(pt = pt[s],nt = nt[s], 
+                      pc = pc[s], nc = nc[s], pc.calib=pc.c[s],
+                      pch = pch[s], nche = nche[m],nch = nch, 
+                      tau = tau, 
+                      a0c=a0c, b0c=b0c, a0t=a0t, b0t=b0t,
+                      delta_threshold = delta_threshold, 
+                      method="Empirical Bayes", theta=theta, eta=eta,
+                      datamat = datamat_Power, 
+                      nsim =nsim, seed = 2000)
+    
+    end.time <- proc.time()
+    PowerTime_DPP1[s,m] <- (end.time - start.time)[3]
+    
+    Power_DPP1[s,m] = Power$power
+    
+    
+  }
+}
+```
+
+## Dynamic Power Prior w = a = nche / nch
+
+```{r}
+
+nm = length(nche)
+
+dn = list(paste("Setting",1:ns,sep=" "),nche)
+dn3 = dn
+dn3[[3]] = 1:nsim
+
+TypeI_DPP2 = matrix(NA,ns,nm,dimnames=dn) 
+Power_DPP2 = matrix(NA,ns,nm,dimnames=dn) 
+DynamicBoundary_DPP2 = matrix(NA,ns,nm,dimnames=dn) 
+pc.mi_DPP2 = matrix(NA,ns,nm,dimnames=dn) 
+pc.sdi_DPP2 = matrix(NA,ns,nm,dimnames=dn) 
+phat_pt_larger_pc_DPP2 = array(NA,dim=c(ns,nm,nsim),dimnames = dn3)
+
+
+wmean_DPP2 = array(NA,dim=c(ns,nm,nsim),dimnames = dn3)
+
+TypeITime_DPP2 = matrix(NA,ns,nm,dimnames=dn) 
+PowerTime_DPP2 = matrix(NA,ns,nm,dimnames=dn) 
+
+for(s in 1:ns){
+  
+  for(m in 1:nm){
+    
+    
+    set.seed(2000)
+    
+    
+    # Calibrate
+    cs = setting_for_calibration[s]
+    
+    datamat_typeI = cbind(xt_typeI_list[[cs]],xc_list[[cs]]) 
+    
+    tau = calibration (nt=nt[cs], pc.calib=pc[cs], nc=nc[cs], 
+                       pch=pch[cs], nche=nche[cs], nch=nch,
+                       alpha = alpha, 
+                       a0c=a0c, b0c=b0c, a0t=a0t, b0t=b0t,
+                       delta_threshold=100, 
+                       method="Empirical Bayes", theta=theta, eta=eta,
+                       datamat = datamat_typeI, w = nche[m]/nch, 
+                       nsim = nsim, seed=2000)
+    
+    # Get data for type I and power
+    
+    
+    
+    xt = xt_list[[s]]
+    xt_typeI = xt_typeI_list[[s]] 
+    xc =  xc_list[[s]]
+    
+    # Type I error
+    
+    datamat_typeI = cbind(xt_typeI,xc) 
+    datamat_Power = cbind(xt,xc) 
+    
+    
+    start.time <- proc.time()
+    TypeI = power.DPP(pt = pc[s],nt = nt[s], 
+                      pc = pc[s], nc = nc[s], pc.calib=pc.c[s],
+                      pch = pch[s], nche = nche[m], nch = nch, 
+                      tau = tau, 
+                      a0c=a0c, b0c=b0c, a0t=a0t, b0t=b0t,
+                      delta_threshold = 100,
+                      method="Empirical Bayes", theta=theta, eta=eta,
+                      datamat = datamat_typeI, w = nche[m]/nch, 
+                      nsim =nsim, seed = 2000)
+    
+    
+    end.time <- proc.time()
+    TypeITime_DPP2[s,m] <- (end.time - start.time)[3]
+    
+    TypeI_DPP2[s,m] = TypeI$power
+    
+    DynamicBoundary_DPP2[s,m] = TypeI$delta.bound
+    pc.mi_DPP2[s,m] = TypeI$pc.PMD
+    pc.sdi_DPP2[s,m] = TypeI$pc.sd.PMD
+    phat_pt_larger_pc_DPP2[s,m,] = TypeI$phat_pt_larger_pc_all
+
+    
+    wmean_DPP2[s,m,] = TypeI$w
+    
+    # Power
+    set.seed(2000)
+    
+    start.time <- proc.time()
+    Power =  power.DPP(pt = pt[s],nt = nc[s], 
+                       pc = pc[s], nc = nc[s], pc.calib=pc.c[s],
+                       pch = pch[s], nche = nche[m], nch = nch, 
+                       tau = tau, 
+                       a0c=a0c, b0c=b0c, a0t=a0t, b0t=b0t,
+                       delta_threshold = 100,
+                       method="Empirical Bayes", theta=theta, eta=eta,
+                       datamat = datamat_Power, w = nche[m]/nch, 
+                       nsim =nsim, seed = 2000)
+    
+    end.time <- proc.time()
+    TypeITime_DPP2[s,m] <- (end.time - start.time)[3]
+    
+    Power_DPP2[s,m] = Power$power
+    
+    
+    
+  }
+}
+```
+
+
+## Dynamic Power Prior w = a * wd = nche / nch * wd
+
+```{r}
+
+nm = length(nche)
+
+dn = list(paste("Setting",1:ns,sep=" "),nche)
+dn3 = dn
+dn3[[3]] = 1:nsim
+
+TypeI_DPP3 = matrix(NA,ns,nm,dimnames=dn) 
+Power_DPP3 = matrix(NA,ns,nm,dimnames=dn) 
+DynamicBoundary_DPP3 = matrix(NA,ns,nm,dimnames=dn) 
+pc.mi_DPP3 = matrix(NA,ns,nm,dimnames=dn) 
+pc.sdi_DPP3 = matrix(NA,ns,nm,dimnames=dn) 
+phat_pt_larger_pc_DPP3 = array(NA,dim=c(ns,nm,nsim),dimnames = dn3)
+
+wmean_DPP3 = array(NA,dim=c(ns,nm,nsim),dimnames = dn3)
+
+TypeITime_DPP3 = matrix(NA,ns,nm,dimnames=dn) 
+PowerTime_DPP3 = matrix(NA,ns,nm,dimnames=dn) 
+
+for(s in 1:ns){
+  
+  for(m in 1:nm){
+    
+    set.seed(2000)
+    
+    # Calibrate
+    cs = setting_for_calibration[s]
+    
+    datamat_typeI = cbind(xt_typeI_list[[cs]],xc_list[[cs]]) 
+    
+    tau = calibration (nt=nt[cs], pc.calib=pc[cs], nc=nc[cs], 
+                       pch=pch[cs], nche=nche[cs], nch=nch,
+                       alpha = alpha, 
+                       a0c=a0c, b0c=b0c, a0t=a0t, b0t=b0t,
+                       delta_threshold=100, 
+                       method="Empirical Bayes", theta=theta, eta=eta,
+                       datamat = datamat_typeI,  
+                       nsim = nsim, seed=2000)
+    
+    # Get data for type I and power
+    
+    xt = xt_list[[s]]
+    xt_typeI = xt_typeI_list[[s]] 
+    xc =  xc_list[[s]]
+    
+    # Type I error
+    
+    datamat_typeI = cbind(xt_typeI,xc) 
+    datamat_Power = cbind(xt,xc) 
+    
+    start.time <- proc.time()
+    TypeI = power.DPP(pt = pc[s], nt = nt[s], 
+                      pc = pc[s], nc = nc[s], pc.calib=pc.c[s],
+                      pch = pch[s], nche = nche[m], nch = nch, 
+                      tau = tau, 
+                      a0c=a0c, b0c=b0c, a0t=a0t, b0t=b0t,
+                      delta_threshold = 100,
+                      method="Empirical Bayes", theta=theta, eta=eta,
+                      datamat = datamat_typeI, 
+                      nsim =nsim, seed = 2000)
+    
+    
+    end.time <- proc.time()
+    TypeITime_DPP3[s,m] <- (end.time - start.time)[3]
+    
+    TypeI_DPP3[s,m] = TypeI$power
+    
+    DynamicBoundary_DPP3[s,m] = TypeI$delta.bound
+    pc.mi_DPP3[s,m] = TypeI$pc.PMD
+    pc.sdi_DPP3[s,m] = TypeI$pc.sd.PMD
+    phat_pt_larger_pc_DPP3[s,m,] = TypeI$phat_pt_larger_pc_all
+    
+    wmean_DPP3[s,m,] = TypeI$w
+    
+    # Power
+    set.seed(2000)
+    
+    start.time <- proc.time()
+    Power = power.DPP(pt = pt[s], nt = nc[s], 
+                      pc = pc[s], nc = nc[s], pc.calib=pc.c[s],
+                      pch = pch[s], nche = nche[m], nch = nch, 
+                      tau = tau, 
+                      a0c=a0c, b0c=b0c, a0t=a0t, b0t=b0t,
+                      delta_threshold = 100,
+                      method="Empirical Bayes", theta=theta, eta=eta,
+                      datamat = datamat_Power, 
+                      nsim =nsim, seed = 2000)
+    
+    
+    end.time <- proc.time()
+    TypeITime_DPP3[s,m] <- (end.time - start.time)[3]
+    
+    Power_DPP3[s,m] = Power$power
+    
+    
+    
+  }
+}
+
+save.image("DPPDone.RData")
+```
+
+
+## Table , Type I error + Power+ mean PMD + SD PMD
+```{r}
+cns = c("$p_{c}$", 
+        nche,
+        nche,
+        nche)
+
+Table_TypeI = matrix(NA,ns,length(cns))
+colnames(Table_TypeI) = cns
+
+Table_TypeI[,1] = pc
+Table_TypeI[,1+1:4] = TypeI_DPP1
+Table_TypeI[,5+1:4] = TypeI_DPP3
+Table_TypeI[,9+1:4] = TypeI_DPP2
+
+Table_Power = matrix(NA,ns,length(cns))
+colnames(Table_Power) = cns
+
+Table_Power[,1] = pc
+Table_Power[,1+1:4] = Power_DPP1
+Table_Power[,5+1:4] = Power_DPP3
+Table_Power[,9+1:4] = Power_DPP2
+
+
+Table_mi = matrix(NA,ns,length(cns))
+colnames(Table_mi) = cns
+
+Table_mi[,1] = pc
+Table_mi[,1+1:4] = pc.mi_DPP1
+Table_mi[,5+1:4] = pc.mi_DPP3
+Table_mi[,9+1:4] = pc.mi_DPP2
+
+Table_sdi = matrix(NA,ns,length(cns))
+colnames(Table_sdi) = cns
+
+Table_sdi[,1] = pc
+Table_sdi[,1+1:4] = (pc.sdi_DPP1)
+Table_sdi[,5+1:4] = (pc.sdi_DPP3)
+Table_sdi[,9+1:4] = (pc.sdi_DPP2)
+
+
+Table2 = rbind(Table_TypeI,Table_Power,Table_mi,Table_sdi)
+
+#write.table(Table2,"Table2.csv",sep=",",row=F,col=T)
+
+kable(Table2)
+
+print(xtable(Table2,digits=3), include.rownames = FALSE, include.colnames = TRUE, sanitize.text.function = I, hline.after = c(0,nrow(Table_mi),nrow(Table_mi)*2,nrow(Table_mi)*3,nrow(Table2)))
+
+```
+
+
+
+# SAMprior and rMAP
+
+
+## Generate Data
+
+```{r}
+set.seed(123)
+NCore = 7
+#get_OC.betaMix
+
+nc = c(45,45,45,45,45,45,45)
+nt = nc
+pc = c(0.15,0.2,0.25,0.30,0.35,0.4,0.45)
+pt = pc + 0.2
+
+# nc.c = nc
+# nt.c = nc.c
+# pc.c = c(0.3,0.3,0.3)+c(0,0,0)
+
+nche = c(180,180,180,180,180,180,180)
+pch=0.30
+nch=180
+ns = length(nc)
+
+nsim = 100000#
+Simulation.Calibration.Match = c(1,1,1,1,1,1,1)
+
+# calibartion for SAM 
+nc.sam.c = c(45)
+nt.sam.c = nc.sam.c
+pc.sam.c = c(0.3)
+nche.c = c(180)
+
+ncal = length(nc.sam.c)
+
+theta = 0.5
+eta = 1
+a0c = 0.001
+b0c = 0.001
+a0t = 0.001
+b0t = 0.001
+delta_threshold = 0.1
+alpha = 0.1
+
+xt_list = list()
+xt_typeI_list = list()
+xc_list = list()
+
+
+
+for(s in 1:ns){
+  set.seed(2000)
+  
+  xt_typeI_list[[s]] = rbinom(nsim,size = nt[s],prob = pc[s])
+  xc_list[[s]] = rbinom(nsim,size = nc[s], prob = pc[s]) 
+  xt_list[[s]] = rbinom(nsim,size = nt[s],prob = pt[s])
+  
+}
+
+xt_typeI_cal_list = list()
+xc_cal_list = list()
+
+# Data for calibration
+for(s in 1:ncal){
+  set.seed(2000)
+  
+  xt_typeI_cal_list[[s]] = rbinom(nsim,size = nt.sam.c[s], prob = pc.sam.c[s])
+  xc_cal_list[[s]] = rbinom(nsim,size = nc.sam.c[s], prob = pc.sam.c[s]) 
+  
+  
+}
+
+```
+
+
+### Calibaration
+
+```{r}
+
+## Calibaration
+cl <- makeCluster(NCore)
+registerDoParallel(cl)
+
+
+cal.tau = foreach(s = 1:length(nc.sam.c),.packages = c("BayesianHybridDesign","RBesT"),.combine = rbind) %dopar%{ 
+  
+  set.seed(2000)
+  HistData = data.frame(study = "TL01",r = round(nche.c[s]*pch),n = nche.c[s])
+  
+  set.seed(2000)
+  map_HistData <- gMAP(cbind(r, n-r) ~ 1 | study,
+                       family = binomial,
+                       data = HistData, 
+                       tau.dist = "HalfNormal", 
+                       tau.prior = 1,
+                       beta.prior = 2)
+  
+  map_automix <- automixfit(map_HistData)
+  map_automix
+  
+  xt = xt_typeI_cal_list[[s]]
+  xc = xc_cal_list[[s]]
+  
+  
+  datamat_cal = cbind(xt,xc) 
+  
+  
+  set.seed(2000)
+  start.time <- proc.time()
+  CalRes <- runSAM(if.prior = map_automix,       ## MAP prior from historical data
+                   nf.prior = mixbeta(c(1,0.001,0.001)), #mixbeta(c(1,1,1)), ## Non-informative prior for treatment arm
+                   delta    = delta_threshold,               ## CSD for SAM prior
+                   ## Method to determine the mixture weight for the SAM prior
+                   method.w = 'LRT',             
+                   n   = nc.sam.c[s], ## Sample size for control and treatment arms
+                   n.t = nt.sam.c[s], ## Sample size for treatment and treatment arms
+                   ## Decisions
+                   decision = decision2S(0.90, 0, lower.tail=FALSE), 
+                   ntrial   = nsim,              ## Number of trials simulated
+                   if.MAP   = TRUE,              ## Output robust MAP prior for comparison
+                   weight   = 0.5,               ## Weight for robust MAP prior
+                   ## Response rates for control and treatment arms
+                   theta    = pc.sam.c[s],
+                   theta.t  = pc.sam.c[s],
+                   datamat = datamat_cal,
+                   dist = TRUE
+  )
+  sam.tau = quantile(CalRes$res_SAM_dist,0.9,type = 3)
+  rMAP.tau =  quantile(CalRes$res_rMAP_dist,0.9,type = 3)
+  non.tau = quantile(CalRes$res_Non_dist,0.9,type = 3)
+  sam.tau = matrix(c(sam.tau,rMAP.tau,non.tau),nrow=1)
+}
+stopCluster(cl)
+
+
+sam.tau = cal.tau[Simulation.Calibration.Match,1]
+rMAP.tau = cal.tau[Simulation.Calibration.Match,2]
+non.tau = cal.tau[Simulation.Calibration.Match,3]
+```
+
+### Simulation after calibration
+
+```{r}
+
+SAMMethodNames = c("SAMprior",
+                   "MAP",
+                   "Noninfo")
+nm = length(SAMMethodNames)
+
+dn = list(paste("Setting",1:ns,sep=" "),SAMMethodNames)
+dn3 = dn
+dn3[[3]] = 1:nsim
+
+TypeI_SAM = matrix(NA,ns,nm,dimnames=dn) 
+Power_SAM = matrix(NA,ns,nm,dimnames=dn) 
+pc.mi_SAM = matrix(NA,ns,nm,dimnames=dn) 
+pc.sdi_SAM = matrix(NA,ns,nm,dimnames=dn) 
+mean_SAM = array(NA,dim=c(ns,nm,nsim),dimnames = dn3) 
+
+
+TypeITime_SAM = numeric(ns)
+PowerTime_SAM = numeric(ns)
+TypeITime_MAP = numeric(ns)
+
+
+cl <- makeCluster(NCore)
+registerDoParallel(cl)
+
+ResultSAM = foreach(s = 1:ns,.packages = c("BayesianHybridDesign","RBesT")) %dopar%{ 
+  
+  TypeI_SAM1 = rep(NA,nm) 
+  Power_SAM1 = rep(NA,nm) 
+  pc.mi_SAM1 =rep(NA,nm)  
+  pc.sdi_SAM1 = rep(NA,nm) 
+  mean_SAM1 = array(NA,dim=c(nm,nsim)) 
+  
+  set.seed(2000)
+  
+  HistData = data.frame(study = "TL01",r = round(nche[s]*pch),n = nche[s])
+  
+  set.seed(2000)
+  map_HistData <- gMAP(cbind(r, n-r) ~ 1 | study,
+                       family = binomial,
+                       data = HistData, 
+                       tau.dist = "HalfNormal", 
+                       tau.prior = 1,
+                       beta.prior = 2)
+  
+  map_automix <- automixfit(map_HistData)
+  map_automix
+  
+  xt = xt_list[[s]]
+  xt_typeI = xt_typeI_list[[s]] 
+  xc =  xc_list[[s]]
+  
+  
+  datamat_typeI = cbind(xt_typeI,xc) 
+  datamat_Power = cbind(xt,xc) 
+  
+  set.seed(2000)
+  
+  start.time <- proc.time()
+  TypeI <- runSAM(if.prior = map_automix,       ## MAP prior from historical data
+                  nf.prior = mixbeta(c(1,0.001,0.001)), #mixbeta(c(1,1,1)), ## Non-informative prior for treatment arm
+                  delta    = delta_threshold,               ## CSD for SAM prior
+                  ## Method to determine the mixture weight for the SAM prior
+                  method.w = 'LRT',
+                  n   = nc[s], ## Sample size for control and treatment arms
+                  n.t = nt[s], ## Sample size for treatment and treatment arms
+                  ## Decisions
+                  decision = decision2S(0.90, 0, lower.tail=FALSE),
+                  ntrial   = nsim,              ## Number of trials simulated
+                  if.MAP   = FALSE,              ## Output robust MAP prior for comparison
+                  weight   = 0.5,               ## Weight for robust MAP prior
+                  ## Response rates for control and treatment arms
+                  theta    = pc[s],
+                  theta.t  = pc[s],
+                  datamat = datamat_typeI
+  )
+  end.time <- proc.time()
+  TypeITime_SAM1 = (end.time - start.time)[3]
+  
+  set.seed(2000)
+  
+  start.time <- proc.time()
+  TypeI <- runSAM(if.prior = map_automix,       ## MAP prior from historical data
+                  nf.prior = mixbeta(c(1,0.001,0.001)), #mixbeta(c(1,1,1)), ## Non-informative prior for treatment arm
+                  delta    = delta_threshold,               ## CSD for SAM prior
+                  ## Method to determine the mixture weight for the SAM prior
+                  method.w = 'LRT',             
+                  n   = nc[s], ## Sample size for control and treatment arms
+                  n.t = nt[s], ## Sample size for treatment and treatment arms
+                  ## Decisions
+                  decision = decision2S(0.90, 0, lower.tail=FALSE), 
+                  ntrial   = nsim,              ## Number of trials simulated
+                  if.MAP   = TRUE,              ## Output robust MAP prior for comparison
+                  weight   = 0.5,               ## Weight for robust MAP prior
+                  ## Response rates for control and treatment arms
+                  theta    = pc[s],
+                  theta.t  = pc[s],
+                  datamat = datamat_typeI
+  )
+  
+  
+  end.time <- proc.time()
+  TypeITime_Both = (end.time - start.time)[3]
+  
+  TypeITime_MAP1 = TypeITime_Both - TypeITime_SAM1
+  
+  TypeI_SAM1[1] = mean(TypeI$res_SAM_dist > sam.tau[s]) 
+  TypeI_SAM1[2] = mean(TypeI$res_rMAP_dist > rMAP.tau[s]) 
+  TypeI_SAM1[3] = mean(TypeI$res_Non_dist > non.tau[s]) 
+  
+  for(i in 1:nsim){
+    mean_SAM1[1,i] = summary(TypeI$post_theta_c_SAM_list[[i]])["mean"]
+    mean_SAM1[2,i] = summary(TypeI$post_theta_c_MAP_list[[i]])["mean"]
+    mean_SAM1[3,i] = summary(TypeI$post_theta_c_list[[i]])["mean"]
+  }
+  
+  
+  pc.mi_SAM1[1] = mean(mean_SAM1[1,] - mean_SAM1[3,])
+  pc.mi_SAM1[2] = mean(mean_SAM1[2,] - mean_SAM1[3,])
+  pc.mi_SAM1[3] = mean(mean_SAM1[3,] - mean_SAM1[3,])
+  
+  pc.sdi_SAM1[1] = sd(mean_SAM1[1,] - mean_SAM1[3,])
+  pc.sdi_SAM1[2] = sd(mean_SAM1[2,] - mean_SAM1[3,])
+  pc.sdi_SAM1[3] = sd(mean_SAM1[3,] - mean_SAM1[3,])
+  
+  
+  
+  start.time <- proc.time()
+  Power <- runSAM(if.prior = map_automix,       ## MAP prior from historical data
+                  nf.prior = mixbeta(c(1,0.001,0.001)), #mixbeta(c(1,1,1)), ## Non-informative prior for treatment arm
+                  delta    = delta_threshold,               ## CSD for SAM prior
+                  ## Method to determine the mixture weight for the SAM prior
+                  method.w = 'LRT',             
+                  n   = nc[s], ## Sample size for control and treatment arms
+                  n.t = nt[s], ## Sample size for treatment and treatment arms
+                  ## Decisions
+                  decision = decision2S(0.90, 0, lower.tail=FALSE), 
+                  ntrial   = nsim,              ## Number of trials simulated
+                  if.MAP   = TRUE,              ## Output robust MAP prior for comparison
+                  weight   = 0.5,               ## Weight for robust MAP prior
+                  ## Response rates for control and treatment arms
+                  theta    = pc[s],
+                  theta.t  = pt[s],
+                  datamat = datamat_Power
+  )
+  end.time <- proc.time()
+  PowerTime_SAM1 = (end.time - start.time)[3]
+  
+  Power_SAM1[1] = mean(Power$res_SAM_dist > sam.tau[s]) 
+  Power_SAM1[2] = mean(Power$res_rMAP_dist > rMAP.tau[s]) 
+  Power_SAM1[3] = mean(Power$res_Non_dist > non.tau[s])
+  
+  list(TypeITime_SAM1 = TypeITime_SAM1,
+       PowerTime_SAM1 = PowerTime_SAM1,
+       TypeI_SAM1 = TypeI_SAM1, 
+       Power_SAM1 = Power_SAM1, 
+       pc.mi_SAM1 = pc.mi_SAM1, 
+       pc.sdi_SAM1 = pc.sdi_SAM1, 
+       mean_SAM1 = mean_SAM1,
+       TypeITime_MAP = TypeITime_MAP1
+  )
+  
+}
+
+stopCluster(cl)
+save.image("SAMDone.RData")
+```
+
+
+
+
+
+### Summarize the results for SAMprior and MAP prior
+```{r}
+
+
+
+for(s in 1:ns){
+  
+  TypeITime_SAM[s] = ResultSAM[[s]]$TypeITime_SAM
+  TypeITime_MAP[s] = ResultSAM[[s]]$TypeITime_MAP
+  PowerTime_SAM[s] = ResultSAM[[s]]$PowerTime_SAM
+  TypeI_SAM[s,] = ResultSAM[[s]]$TypeI_SAM1 
+  Power_SAM[s,] = ResultSAM[[s]]$Power_SAM1 
+  pc.mi_SAM[s,] =ResultSAM[[s]]$pc.mi_SAM1 
+  pc.sdi_SAM[s,] = ResultSAM[[s]]$pc.sdi_SAM1 
+  mean_SAM[s,,] =ResultSAM[[s]]$mean_SAM1
+  
+}
+
+```
+
+
+```{r}
+cns = c("Study Treatment Sample Size", 
+        "Study Control Sample Size", 
+        "Historical Control Sample Size",
+        "Study Treatment ORR",
+        "Study Control ORR",
+        "Historical Control ORR",
+        SAMMethodNames[1:2])
+
+Table_TypeI = matrix(NA,ns,length(cns))
+colnames(Table_TypeI) = cns
+
+Table_TypeI[,1] = nt
+Table_TypeI[,2] = nc
+Table_TypeI[,3] = nche
+Table_TypeI[,4] = pt
+Table_TypeI[,5] = pc
+Table_TypeI[,6] = pch
+Table_TypeI[,6+1:2] = TypeI_SAM[,1:2]
+
+
+Table_Power = matrix(NA,ns,length(cns))
+colnames(Table_Power) = cns
+
+Table_Power[,1] = nt
+Table_Power[,2] = nc
+Table_Power[,3] = nche
+Table_Power[,4] = pt
+Table_Power[,5] = pc
+Table_Power[,6] = pch
+Table_Power[,6+1:2] = Power_SAM[,1:2]
+
+
+Table_mi = matrix(NA,ns,length(cns))
+colnames(Table_mi) = cns
+
+Table_mi[,1] = nt
+Table_mi[,2] = nc
+Table_mi[,3] = nche
+Table_mi[,4] = pt
+Table_mi[,5] = pc
+Table_mi[,6] = pch
+Table_mi[,6+1:2] = pc.mi_SAM[,1:2]
+
+
+Table_sdi = matrix(NA,ns,length(cns))
+colnames(Table_sdi) = cns
+
+Table_sdi[,1] = nt
+Table_sdi[,2] = nc
+Table_sdi[,3] = nche
+Table_sdi[,4] = pt
+Table_sdi[,5] = pc
+Table_sdi[,6] = pch
+Table_sdi[,6+1:2] = pc.sdi_SAM[,1:2]
+
+Table3 = rbind(Table_TypeI,Table_Power,Table_mi,Table_sdi)
+
+#write.table(Table3,"SAM.csv",sep=",",row=F,col=T)
+
+kable(Table3)
+
+```
+
+# Generate Table 2 in the manuscript
+
+```{r}
+Table = cbind(Table2,Table1[,c("Bayesian p", "Generalized BC","JSD")],Table3[,c("SAMprior", "MAP")])
+```
+
+
+
+## To latex tables
+
+```{r}
+require(xtable)
+
+print(xtable(Table,digits=3), include.rownames = FALSE, include.colnames = TRUE, sanitize.text.function = I, hline.after = c(0,nrow(Table_TypeI),nrow(Table_TypeI)*2,nrow(Table_TypeI)*3,nrow(Table_TypeI)*4))
+
+
+```
+
+
+
+
+## Table, Computational Time 
+```{r}
+cns = c("Study Treatment Sample Size", 
+        "Study Control Sample Size", 
+        "Historical Control Sample Size",
+        "Study Treatment ORR",
+        "Study Control ORR",
+        "Historical Control ORR",
+        DPPMethodNames,
+        "SAM","MAP")
+
+Table_Time = matrix(NA,ns,length(cns))
+colnames(Table_Time) = cns
+
+Table_Time[,1] = nt
+Table_Time[,2] = nc
+Table_Time[,3] = nche
+Table_Time[,4] = pt
+Table_Time[,5] = pc
+Table_Time[,6] = pch
+Table_Time[,6+1:length(DPPMethodNames)] = TypeITime_DPP
+Table_Time[,6+length(DPPMethodNames)+1] = TypeITime_SAM
+Table_Time[,6+length(DPPMethodNames)+2] = TypeITime_MAP
+#write.table(Table_Time,"Time.csv",sep=",",row=F,col=T)
+
+kable(Table_Time)
+
+```
+```{r}
+save.image(paste("Table2.RData",sep=""))
+```
+
+```{r}
+sessionInfo()
+```
+
+
+
