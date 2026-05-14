@@ -1,0 +1,1894 @@
+---
+title: "mosquito"
+output: html_document
+---
+```{r}
+
+#install.packages("pracma")
+#install.packages("matlib")
+#install.packages("NlcOptim")
+#library("pracma")
+#library("matlib")
+
+
+#sample data
+#mosquito count from data
+y_in = c(15, 40, 45, 88, 99, 145, 111, 132, 177, 97, 94, 145, 123, 111,
+    125, 115, 155, 160, 143, 132, 126, 125, 105, 98, 87, 54, 55, 8)
+
+#day of year in which measurments making up yin occur, Jan 1st = day 1
+t_in_user = c(93, 100, 107, 114, 121, 128, 135, 142, 149, 163, 170, 177,
+    184, 191, 198, 205, 212, 219, 226, 233, 240, 247, 254, 261,
+    267, 274, 281, 288)
+
+
+if (length(y_in) != length(t_in_user)){
+  stop("input data mismatch")
+}
+    
+```
+
+
+
+```{r}
+# User inputs (aside from trap data inputs)
+
+#mu = natural mosquito death rate 
+mu = 1/14 #program should set mu = 1 / tau_mosq, where tau_mosq is the mosquito lifetime input by user in units of days 
+          # tau_mosq should be bounded between 1 and 30 
+
+#m = number of mosquito lifetimes for population decay between seasons..
+m = 3 #this will be input by the user, and must be an integer greater than 2, upperbound 100, default value 3
+
+# N_lam = max fourier mode order to calculate
+N_lam = 25; #user input between 1 and 200, default value 25 (I referred to this as jmax over Skype - JD)
+
+```
+
+
+```{r}
+#setting up time and trap count vectors to fit the model to 
+
+
+#first round user time inputs to integer values
+t_in = round(t_in_user)
+
+
+#defining N0 = number of input data points (not a user input)
+N0 = length(y_in)
+
+#defining vector of time differences to be used later (not a user input)
+delta_t_in = numeric(N0-1) 
+for (i in 1:(N0-1)){
+  delta_t_in[i] = t_in[i+1]-t_in[i]
+  if (delta_t_in[i] < 0)
+      stop("non-increasing measurement times")
+}
+
+
+
+#N_pts = number of points in extended data set, N_pts = N0 + 3 always (not a user input)
+N_pts = N0 + 3
+
+#defining extended trap count and time data vectors
+t_dat = numeric(N_pts)
+
+if (t_in[1] - m / mu > 0){
+ y_dat = c(0,0, y_in,0)
+ 
+ t_dat[1] = 0
+ t_dat[2] = (m -1) / mu
+ for (i in 3 : (N_pts - 1)){
+  t_dat[i] = t_in[i - 2] - t_in[1] + m / mu
+ }
+ t_dat[N_pts] = t_dat[N_pts - 1] + (m) / mu
+
+ t_dat=matrix(t_dat, ncol=1)
+ 
+} else {
+  y_dat = c(0, y_in, 0, 0)
+  
+  t_dat[1] = 0
+  for (i in 2: (N_pts - 2)){
+    t_dat[i] = t_in[i - 1]
+  }
+  t_dat[N_pts - 1] = t_dat[N_pts - 2] + (2*(m - 1)) / mu - t_dat[2]
+  t_dat[N_pts] = t_dat[N_pts - 1] + 1 / mu
+}
+  
+
+#extended vector of time differences
+delta_t_dat = numeric(N_pts)
+for (i in 1 : (N_pts - 1)){
+  delta_t_dat[i] = t_dat[i + 1] - t_dat[i]
+}
+    
+delta_t_dat[N_pts] = 0
+
+delta_t_dat= matrix(delta_t_dat,ncol=1)
+
+#tau = length of 'season' in days
+tau = t_dat[N_pts];
+
+```
+
+
+```{r}
+#Defining matrices 'J' and 'M'
+                  
+#J matrix and inverse
+J = matrix(0, nrow= N_pts, ncol=N_pts)
+
+for (i in 1 : (N_pts - 1)){
+  J[i, i] = 1
+  J[i + 1, i] = -exp(-mu*delta_t_dat[i])
+}
+
+J[N_pts, N_pts] = 1;
+J[1, N_pts] = -exp(-mu * delta_t_dat[N_pts])
+
+
+#M matrix and inverse
+M = matrix(0, nrow= N_pts, ncol=N_pts)
+
+for (i in 2 : (N_pts - 1)){
+  M[i, i] = (1 - exp( -mu * delta_t_dat[i - 1] ) ) /(mu * delta_t_dat[i - 1] ) - exp( -mu * delta_t_dat[i - 1])
+  M[i + 1, i] =1- ( 1 - exp(-mu * delta_t_dat[i]) )/(mu * delta_t_dat[i])
+}
+
+M[N_pts, N_pts] = (1 - exp( (-1)*mu * delta_t_dat[N_pts - 1] ) ) /(mu * delta_t_dat[(N_pts - 1)] ) -exp( -mu * delta_t_dat[(N_pts - 1)])
+M[1, N_pts] = 0
+M[1, 1] = 0
+M[2, 1] = 1- ( 1 - exp(-mu * delta_t_dat[1]) )/(mu * delta_t_dat[(1)]) 
+
+
+
+###### weighting code code
+#Weight matrix: diagonal entries to be filled with sqrt(number of counts on day) except for the artifical 0 measurments on end of data
+W = matrix(0, nrow= N_pts, ncol=N_pts)
+
+if( t_in[(1)] - m / mu > 0){
+  
+  W[1,1] = 1
+  W[2,2] = 1
+  W[N_pts,N_pts] = 1 
+      
+  for(i in 3 : N_pts-1){
+    W[i,i] = sqrt(1) #fill sqrt(number of counts) here
+  }
+} else {
+  
+  W[1,1] = 1
+  W[N_pts-1,N_pts-1] = 1
+  W[N_pts,N_pts] = 1 
+      
+  for(i in 2 : N_pts-2){
+    W[i,i] = sqrt(1) #fill sqrt(number of counts) here 
+  }
+}
+
+
+
+```
+
+
+```{r}
+
+#Obtaining emergence rate vector lambda_dat by contrained optimization
+
+Aeq = matrix(numeric(N_pts), nrow=1)
+Aeq[(1)] = 1
+Aeq[(N_pts)] = -1
+beq = 0
+bineq = numeric(N_pts)
+lb = numeric(N_pts)
+###################  
+
+
+
+objective_fun = function(x) {t( W %*% ( (1 / mu) * (mldivide(J, (M %*% x), pinv = TRUE)) - y_dat) )%*%( W %*% ((1 / mu) * (mldivide(J, (M %*% x), pinv = TRUE)) - y_dat))}
+
+
+lambda_dat = fmincon(numeric(N_pts), objective_fun, gr= NULL, method="SQP", A= (-(1 / mu) *( inv(J) %*%  (M))), b=bineq, Aeq = Aeq, beq = beq, lb = lb, ub = NULL)
+
+#########
+
+```
+
+
+
+```{r}
+ #Calculating emergence rate fourier modes lam_fourier
+
+lam_fourier = numeric(N_lam + 1);
+
+
+
+for (j in 1 : (N_pts-1)){
+  lam_fourier[1] =  lam_fourier[1] + (1 / tau)*( lambda_dat$par[j] + lambda_dat$par[j + 1] ) * delta_t_dat[j] / 2
+} #zero mode
+    
+
+for (k in 2 : (N_lam + 1)) #non-zero postive modes (negative modes given by complex conjugates of positve modes) 
+{
+  for (j in 1 : (N_pts - 1)){
+    lam_fourier[(k)] = lam_fourier[(k)] +( ( lambda_dat$par[(j + 1)] - lambda_dat$par[(j)] )  / delta_t_dat[(j)] ) *( tau / (2 * pi * (k-1) ) )* ( ( exp(- 2 * pi * complex(real = 0, imaginary = 1) * (k-1) * t_dat[(j + 1)] / tau ) -exp(- 2 * pi * complex(real = 0, imaginary = 1) * (k-1) * t_dat[(j)]/ tau) ) / (2 * pi * (k-1)) )+ complex(real = 0, imaginary = 1) * ( lambda_dat$par[(j + 1)] * exp(- 2 * pi * complex(real = 0, imaginary = 1) * (k-1) * t_dat[(j + 1)] / tau ) -lambda_dat$par[(j)] * exp(- 2 * pi * complex(real = 0, imaginary = 1) * (k-1) * t_dat[(j)] /tau ) ) / (2 * pi * (k-1) )
+  }
+}
+```
+
+
+
+```{r}
+
+#defing functions for optimization code
+#goto line 1670 or so to skip past all of these definitons
+
+#Permutaion function: For a given list of numbers, this function outputs a matrix, where each row is a unique permutation of the list
+uperm = function(d) {
+  dat <- factor(d)
+  N <- length(dat)
+  n <- tabulate(dat)
+  ng <- length(n)
+  if(ng==1) return(d)
+  a <- N-c(0,cumsum(n))[-(ng+1)]
+  foo <- lapply(1:ng, function(i) matrix(combn(a[i],n[i]),nrow=n[i]))
+  out <- matrix(NA, nrow=N, ncol=prod(sapply(foo, ncol)))
+  xxx <- c(0,cumsum(sapply(foo, nrow)))
+  xxx <- cbind(xxx[-length(xxx)]+1, xxx[-1])
+  miss <- matrix(1:N,ncol=1)
+  for(i in seq_len(length(foo)-1)) {
+    l1 <- foo[[i]]
+    nn <- ncol(miss)
+    miss <- matrix(rep(miss, ncol(l1)), nrow=nrow(miss))
+    k <- (rep(0:(ncol(miss)-1), each=nrow(l1)))*nrow(miss) + 
+               l1[,rep(1:ncol(l1), each=nn)]
+    out[xxx[i,1]:xxx[i,2],] <- matrix(miss[k], ncol=ncol(miss))
+    miss <- matrix(miss[-k], ncol=ncol(miss))
+  }
+  k <- length(foo)
+  out[xxx[k,1]:xxx[k,2],] <- miss
+  out <- out[rank(as.numeric(dat), ties="first"),]
+  foo <- cbind(as.vector(out), as.vector(col(out)))
+  out[foo] <- d
+  t(out)
+
+}
+
+
+
+#this function computes the "P" product and exponentials for a given k
+P_vals = function(z, rho, Npulse, tau, k){
+  P_func = function(x){ rho * 1 /(log(1/(1-rho)) - 2 * pi * complex(real = 0, imaginary = 1) * x)}
+       
+  z_vec = matrix(0, nrow = Npulse, ncol = 1);
+  
+  for(i in 1:Npulse){
+    z_vec[i, 1] = z[i]
+  }
+
+      #determine number of integer vectors to permute (will be smaller for
+      #only two and three pulses). number of combos = N_terms 
+  
+     if (k == 0){
+        if (Npulse == 2){
+          N_terms = 5
+        }else if(Npulse == 3){
+          N_terms = 7
+        }else {
+          N_terms = 8
+        }
+       
+       
+        #create a matrix to hold the integer vectors to permute, and
+        #initialize to zero. Each column will give an integer vector
+        int_vecs = matrix(0, nrow=Npulse, ncol=N_terms);
+
+        #the first 5 integer vectors have at most two non-zero elements.
+        #This loop replaces the first two zeros in the first 5 columns of int_vecs
+        #with the appropriate integers.        
+        for (i in 1:5){
+            int_vecs[1:2, i] = c((i - 1), -(i -1))
+        }
+        
+        #if there are are three or more pulses, we need to include
+        #integer vectors with three non-zero terms
+        if (Npulse >= 3){
+            int_vecs[1:3, 6] = c(2, -1,-1)
+            int_vecs[1:3, 7] = c(-2, 1, 1)
+        }
+        
+        #if there are four or more pulses, then we need to include an
+        #integer vector with four non-zero terms
+        if (Npulse >= 4){
+          int_vecs[1:4, 8] = c(1, 1, -1,-1)
+        }
+                
+        
+        #calculates the "P" functions for each column of integer combos in
+        #int_vec.  "P" function values are independet of integer
+        #permutations. pre_factors is a list which holds the "P"-function
+        #values for each integer combo 
+        pre_factors = matrix(1, ncol=N_terms, nrow=1)
+        for (i in 1:N_terms){
+            for (m in 1:Npulse){
+                pre_factors[1,i] = pre_factors[1,i] * P_func(int_vecs[m,i]); 
+            }
+        }
+       
+        
+        #Now calculate the exponential terms which will multiply the "P"functions in the pre_factors list
+        #post_factors = list of the exponential terms to multiply the
+        #               corresponding "P" functions in the pre_factors list
+        post_factors = numeric(N_terms) #initialize to zero
+        
+        for (i in 1: N_terms){ #for each integer combo given by the columns of int_vecs... 
+           
+           #calculates the unique permutations of the ith integer combo
+           #int_vecs(:, i) = ith column of int_vecs matrix
+           #perm_list = Nperms x Npulse matrix, where Nperms is the number
+           #           of unique permutations of the ith integer combo
+           # Each row of perm_list gives a unique permutaion of the ith integer combo 
+           perm_list = uperm(int_vecs[,i])
+           
+           if( i == 1){
+             Nperms = 1
+           }else{
+             Nperms = length(perm_list[,1]) #number of unique permutations of the ith integer combo
+           }
+           
+           
+           for (m in 1:Nperms){ #for each uniqe permutation of the ith integer combo, add the corresponding      exponential to the running total of the corresponding post_factor value
+             
+             if(i == 1){
+                post_factors[i] = post_factors[i] + exp(-2 * pi * complex(real = 0, imaginary = 1)  *   (perm_list %*% z) / tau) 
+             } else {
+                post_factors[i] = post_factors[i] + exp(-2 * pi * complex(real = 0, imaginary = 1)  * (perm_list[m,] %*% z) / tau)
+             }
+            }#perm_list[m, ] = mth row of perm_list = mth unique permutaton of ith integer combo
+              
+              
+           }
+      
+        
+        
+        val = 0
+        for (i in 1:N_terms){ #add together the (pre_factor * post_factor) for each integer combo
+           val = val + pre_factors[1,i] * post_factors[i] 
+        }
+        
+        return(val)          
+  
+     }else if(abs(k) == 1){
+        kk = abs(k)
+        
+        if (Npulse == 2){
+            N_terms = 5
+        }else{
+          N_terms = 8
+        }
+        
+        
+        int_vecs = matrix(0,nrow=Npulse, ncol=N_terms)
+        for (i in 1:5){
+            int_vecs[1:2, i] = sign(k) * c(kk + (i - 1), -(i -1))
+        }
+        
+        if (Npulse >= 3){
+            int_vecs[1:3, 6] = sign(k) * c(1 , 1 , -1)
+            int_vecs[1:3, 7] = sign(k) * c(3 , -1 , -1) 
+            int_vecs[1:3, 8] = sign(k) * c(2 , -2 , 1)
+        }
+                      
+        pre_factors = matrix(1, ncol=N_terms, nrow=1)
+        for (i in 1:N_terms){
+            for (m in 1:Npulse){
+                pre_factors[1,i] = pre_factors[1,i] * P_func(int_vecs[m,i]) 
+            }
+        }        
+        
+        post_factors = numeric(N_terms)  
+        for (i in 1: N_terms){
+           perm_list = uperm(int_vecs[,i])
+           Nperms = dim(perm_list)[1]
+           
+           for (m in 1:Nperms){
+              post_factors[i] = post_factors[i] +exp(-2 * pi * complex(real = 0, imaginary = 1)  * perm_list[m, ] %*% z / tau)
+        }
+        }
+  
+        
+        val = 0
+        for (i in 1:N_terms){
+           val = val + pre_factors[1,i] * post_factors[i] 
+        }
+        
+        return(val)                      
+       
+   }
+   else if(abs(k) == 2){
+        kk = abs(k)
+       
+        if (Npulse == 2){
+            N_terms = 5
+        }else if (Npulse == 3){
+            N_terms = 6
+        }else{
+            N_terms = 7
+        }
+        int_vecs = matrix(0,Npulse, N_terms)
+       
+        int_vecs[1:2, 1] = sign(k) * c(kk + 0, 0)
+        int_vecs[1:2, 2] = sign(k) * c(kk - 1, 1)
+        int_vecs[1:2, 3] = sign(k) * c(kk + 1, -1)
+        int_vecs[1:2, 4] = sign(k) * c(kk + 2, -2)
+        int_vecs[1:2, 5] = sign(k) * c(kk + 3, -3)
+       
+        if (Npulse >= 3){
+            int_vecs[1:3, 6] = sign(k) *c(2, -1,1)
+        }
+        if (Npulse >= 4){
+            int_vecs[1:4, 7] = sign(k) *c(1, 1, 1,-1)
+        }
+        
+        
+        pre_factors = matrix(1, ncol=N_terms, nrow=1)
+        for (i in 1:N_terms){
+            for (m in 1:Npulse){
+                pre_factors[1,i] = pre_factors[1,i] * P_func(int_vecs[m,i]) 
+            }
+        }        
+        
+        post_factors = numeric(N_terms)
+        for (i in 1: N_terms){
+           perm_list = uperm(int_vecs[,i])
+           
+           if(Npulse == 2 && i == 2){
+             Nperms = 1;
+             post_factors[i] = post_factors[i] + exp(-2 * pi * complex(real = 0, imaginary = 1) * perm_list %*% z / tau)
+           }else{
+             
+             Nperms = dim(perm_list)[1]
+           
+             for (m in 1:Nperms){
+                post_factors[i] = post_factors[i] + exp(-2 * pi * complex(real = 0, imaginary = 1) * perm_list[m, ] %*% z / tau)
+             }
+           }
+    }
+  
+        
+        val = 0
+        for (i in 1:N_terms){
+           val = val + pre_factors[1,i] * post_factors[i] 
+        }
+        
+        return(val) 
+        
+        
+  }else if(abs(k) == 3){
+        kk = abs(k)
+       
+        if (Npulse == 2){
+          N_terms = 5
+        }else{
+          N_terms = 8
+        }
+        
+        int_vecs = matrix(0,Npulse, N_terms)
+       
+        int_vecs[1:2, 1] = sign(k) * c(kk + 0, 0)
+        int_vecs[1:2, 2] = sign(k) * c(kk - 1, 1)
+        int_vecs[1:2, 3] = sign(k) * c(kk + 1, -1)
+        int_vecs[1:2, 4] = sign(k) * c(kk + 2, -2)
+        int_vecs[1:2, 5] = sign(k) * c(kk + 3, -3)
+        
+
+        if (Npulse >= 3){
+            int_vecs[1:3, 6] = sign(k) *c(1, 1, 1)
+            int_vecs[1:3, 7] = sign(k) *c(3, 1, -1)
+            int_vecs[1:3, 8] = sign(k) *c(2, 2, -1)            
+        }       
+        
+        pre_factors = matrix(1, ncol=N_terms, nrow=1)
+        for (i in 1:N_terms){
+            for (m in 1:Npulse){
+                pre_factors[1,i] = pre_factors[1,i] * P_func(int_vecs[m,i])  
+            }
+        }       
+        post_factors = numeric(N_terms)
+        for (i in 1: N_terms){
+           perm_list = uperm(int_vecs[,i])
+           
+           if(Npulse == 3 && i == 6){
+             Nperms = 1
+             post_factors[i] = post_factors[i] + exp(-2 * pi * complex(real = 0, imaginary = 1) * perm_list %*% z / tau)
+           }else{
+             Nperms = dim(perm_list)[1]
+  
+             for (m in 1:Nperms){
+              post_factors[i] = post_factors[i] + exp(-2 * pi * complex(real = 0, imaginary = 1) * perm_list[m, ] %*% z / tau)
+             }
+           }
+    }
+  
+        
+      val = 0
+           
+      for (i in 1:N_terms){
+           val = val + pre_factors[1,i] * post_factors[i] 
+      }
+        
+      return(val)
+        
+        
+     }else if(abs(k) == 4){
+        kk = abs(k)
+       
+        if (Npulse == 2){
+            N_terms = 5
+        }else if(Npulse == 3){
+            N_terms = 7
+        }else{
+          N_terms = 8
+        }
+        
+        
+        int_vecs = matrix(0,Npulse, N_terms)
+        
+        int_vecs[1:2, 1] = sign(k) * c(kk + 0, 0)
+        int_vecs[1:2, 2] = sign(k) * c(kk - 1, 1)
+        int_vecs[1:2, 3] = sign(k) * c(kk -2, 2)
+        int_vecs[1:2, 4] = sign(k) * c(kk +1, -1)
+        int_vecs[1:2, 5] = sign(k) * c(kk + 2, -2)
+
+        if (Npulse >= 3){
+            int_vecs[1:3, 6] = sign(k) *c(4, -1, 1)
+            int_vecs[1:3, 7] = sign(k)*c(2, 1, 1)            
+        }
+        if (Npulse >= 4){
+            int_vecs[1:4, 8] = sign(k) *c(1, 1, 1, 1)
+        }         
+        
+        pre_factors = matrix(1, ncol=N_terms, nrow=1)
+       
+       for (i in 1:N_terms){
+            for (m in 1:Npulse){
+                pre_factors[1,i] = pre_factors[1,i] * P_func(int_vecs[m,i])  
+            }
+        }       
+        post_factors = numeric(N_terms)
+        for (i in 1: N_terms){
+           perm_list = uperm(int_vecs[,i])
+           
+           if(Npulse == 4 && i == 8){
+             Nperms = 1
+             post_factors[i] = post_factors[i] + exp(-2 * pi * complex(real = 0, imaginary = 1) * perm_list %*% z / tau)
+           }else if(Npulse == 2 && i == 3){
+             Nperms = 1
+             post_factors[i] = post_factors[i] + exp(-2 * pi * complex(real = 0, imaginary = 1) * perm_list %*% z / tau)
+           } else{
+            
+           Nperms = dim(perm_list)[1]
+           
+           
+             for (m in 1:Nperms){
+                post_factors[i] = post_factors[i] + exp(-2 * pi * complex(real = 0, imaginary = 1) * perm_list[m, ] %*% z / tau)
+             }
+           }
+        }
+        val=0
+        for (i in 1:N_terms){
+           val = val + pre_factors[1,i] * post_factors[i] 
+        }
+        
+        return(val)
+        
+     }else if(abs(k) == 5){
+        kk = abs(k)
+       
+        if (Npulse == 2){
+            N_terms = 5
+        }else{
+            N_terms = 7
+        }
+        
+        int_vecs = matrix(0,Npulse, N_terms)
+       
+        int_vecs[1:2, 1] = sign(k) * c(kk + 0, 0)
+        int_vecs[1:2, 2] = sign(k) * c(kk - 1, 1)
+        int_vecs[1:2, 3] = sign(k) * c(kk -2, 2)
+        int_vecs[1:2, 4] = sign(k) * c(kk + 1, -1)
+        int_vecs[1:2, 5] = sign(k) * c(kk + 2, -2)
+       
+        
+        if (Npulse >= 3){
+            int_vecs[1:3, 6] = sign(k) *c(2, 2, 1);
+            int_vecs[1:3, 7] = sign(k) *c(3, 1, 1);           
+        }
+       
+        pre_factors = matrix(1, ncol=N_terms, nrow=1)
+       
+        for (i in 1:N_terms){
+            for (m in 1:Npulse){
+                pre_factors[1,i] = pre_factors[1,i] * P_func(int_vecs[m,i])  
+            }
+        }       
+        post_factors = numeric(N_terms)
+        for (i in 1: N_terms){
+           perm_list = uperm(int_vecs[,i])
+           Nperms = dim(perm_list)[1]
+           
+             
+       for (m in 1:Nperms){
+              post_factors[i] = post_factors[i] + exp(-2 * pi * complex(real = 0, imaginary = 1) * perm_list[m, ] %*% z / tau)
+        }
+    }
+ 
+        val=0
+        for (i in 1:N_terms){
+           val = val + pre_factors[1,i] * post_factors[i] 
+        }
+        
+        return(val)
+        
+    }else if(abs(k) == 6){
+        kk = abs(k)
+       
+        if (Npulse == 2){
+            N_terms = 6
+        }else{
+           N_terms = 7
+        }
+        
+        int_vecs = matrix(0,Npulse, N_terms)
+       
+        int_vecs[1:2, 1] = sign(k) * c(kk + 0, 0)
+        int_vecs[1:2, 2] = sign(k) * c(kk - 1, 1)
+        int_vecs[1:2, 3] = sign(k) * c(kk -2, 2)
+        int_vecs[1:2, 4] = sign(k) * c(kk - 3, 3)
+        int_vecs[1:2, 5] = sign(k) * c(kk + 1, -1)
+        int_vecs[1:2, 6] = sign(k) * c(kk + 2, -2)
+        
+       
+        if (Npulse >= 3){
+            int_vecs[1:3, 7] = sign(k) *c(4, 1, 1)           
+        }
+        
+        pre_factors = matrix(1, ncol=N_terms, nrow=1)
+        
+        for (i in 1:N_terms){
+            for (m in 1:Npulse){
+                pre_factors[1,i] = pre_factors[1,i] * P_func(int_vecs[m,i])  
+            }
+        }       
+        post_factors = numeric(N_terms)
+        for (i in 1: N_terms){
+           perm_list = uperm(int_vecs[,i])
+           
+           if(Npulse == 2 && i == 4){
+             Nperms = 1
+             post_factors[i] = post_factors[i] + exp(-2 * pi * complex(real = 0, imaginary = 1) * perm_list %*% z / tau)
+           }else{
+             
+              Nperms = dim(perm_list)[1]
+           
+             
+              for (m in 1:Nperms){
+                 post_factors[i] = post_factors[i] + exp(-2 * pi * complex(real = 0, imaginary = 1) * perm_list[m, ] %*% z / tau)
+              }
+           }
+        }
+    
+        
+        val=0
+        for (i in 1:N_terms){
+           val = val + pre_factors[1,i] * post_factors[i] 
+        }
+        
+        return(val)
+        
+    }else if(abs(k) == 7){
+        kk = abs(k)
+       
+        N_terms = 6
+        int_vecs = matrix(0,Npulse, N_terms)
+        
+        int_vecs[1:2, 1] = sign(k) * c(kk + 0, 0)
+        int_vecs[1:2, 2] = sign(k) * c(kk - 1, 1)
+        int_vecs[1:2, 3] = sign(k) * c(kk -2, 2)
+        int_vecs[1:2, 4] = sign(k) * c(kk - 3, 3)
+        int_vecs[1:2, 5] = sign(k) * c(kk + 1, -1)
+        int_vecs[1:2, 6] = sign(k) * c(kk + 2, -2)
+        
+       
+        pre_factors = matrix(1, ncol=N_terms, nrow=1)
+        
+        for (i in 1:N_terms){
+            for (m in 1:Npulse){
+                pre_factors[1,i] = pre_factors[1,i] * P_func(int_vecs[m,i])  
+            }
+        }       
+        post_factors = numeric(N_terms)
+        for (i in 1: N_terms){
+           perm_list = uperm(int_vecs[,i])
+           Nperms = dim(perm_list)[1]
+           
+             
+           for (m in 1:Nperms){
+              post_factors[i] = post_factors[i] + exp(-2 * pi * complex(real = 0, imaginary = 1) * perm_list[m, ] %*% z / tau)
+            }
+        }
+ 
+        val=0
+        for (i in 1:N_terms){
+           val = val + pre_factors[1,i] * post_factors[i] 
+        }
+        
+        return(val)
+        
+    }else if(abs(k) == 8){
+        kk = abs(k)
+       
+        N_terms = 6
+        int_vecs = matrix(0,Npulse, N_terms)
+        
+        int_vecs[1:2, 1] = sign(k) * c(kk + 0, 0)
+        int_vecs[1:2, 2] = sign(k) * c(kk - 1, 1)
+        int_vecs[1:2, 3] = sign(k) * c(kk -2, 2)
+        int_vecs[1:2, 4] = sign(k) * c(kk + 1, -1)
+        int_vecs[1:2, 5] = sign(k) * c(kk -3, +3)
+        int_vecs[1:2, 6] = sign(k) * c(kk -4, +4)
+        
+        
+        
+        pre_factors = matrix(1, ncol=N_terms, nrow=1)
+        
+        for (i in 1:N_terms){
+            for (m in 1:Npulse){
+                pre_factors[1,i] = pre_factors[1,i] * P_func(int_vecs[m,i])  
+            }
+        }       
+        post_factors = numeric(N_terms)
+        for (i in 1: N_terms){
+           perm_list = uperm(int_vecs[,i])
+           
+           if(Npulse == 2 && i == 6){
+               Nperm = 1
+               post_factors[i] = post_factors[i] + exp(-2 * pi * complex(real = 0, imaginary = 1) * perm_list %*% z / tau)
+           }else{
+           
+              Nperms = dim(perm_list)[1]
+           
+             
+              for (m in 1:Nperms){
+                  post_factors[i] = post_factors[i] + exp(-2 * pi * complex(real = 0, imaginary = 1) * perm_list[m, ] %*% z / tau)
+              }
+          }
+        }
+        
+        val=0
+        for (i in 1:N_terms){
+           val = val + pre_factors[1,i] * post_factors[i] 
+        }
+        
+        return(val)
+        
+     }else if(abs(k) == 9){
+        kk = abs(k)
+       
+        N_terms = 5
+        int_vecs = matrix(0,Npulse, N_terms)
+       
+        int_vecs[1:2, 1] = sign(k) * c(kk + 0, 0)
+        int_vecs[1:2, 2] = sign(k) * c(kk - 1, 1)
+        int_vecs[1:2, 3] = sign(k) * c(kk + 1, -1)
+        int_vecs[1:2, 4] = sign(k) * c(kk -2, 2)
+        int_vecs[1:2, 5] = sign(k) * c(kk -3, +3)
+      
+      
+       pre_factors = matrix(1, ncol=N_terms, nrow=1)
+        
+        for (i in 1:N_terms){
+            for (m in 1:Npulse){
+                pre_factors[1,i] = pre_factors[1,i] * P_func(int_vecs[m,i])  
+            }
+        }       
+        post_factors = numeric(N_terms)
+        for (i in 1: N_terms){
+           perm_list = uperm(int_vecs[,i])
+           Nperms = dim(perm_list)[1]
+           
+             
+       for (m in 1:Nperms){
+              post_factors[i] = post_factors[i] + exp(-2 * pi * complex(real = 0, imaginary = 1) * perm_list[m, ] %*% z / tau)
+        }
+    }
+ 
+        val=0
+        for (i in 1:N_terms){
+           val = val + pre_factors[i] * post_factors[i] 
+        }
+        
+       return(val)
+        
+  }else if(abs(k) == 10){
+        kk = abs(k)
+       
+        N_terms = 4
+        int_vecs = matrix(0,Npulse, N_terms)
+       
+        int_vecs[1:2, 1] = sign(k) * c(kk + 0, 0)
+        int_vecs[1:2, 2] = sign(k) * c(kk - 1, 1)
+        int_vecs[1:2, 3] = sign(k) * c(kk + 1, -1)
+        int_vecs[1:2, 4] = sign(k) * c(kk -2, 2)
+       
+        
+        pre_factors = matrix(1, ncol=N_terms, nrow=1)
+        
+        for (i in 1:N_terms){
+            for (m in 1:Npulse){
+                pre_factors[1,i] = pre_factors[1,i] * P_func(int_vecs[m,i])  
+            }
+        }       
+        post_factors = numeric(N_terms)
+        for (i in 1: N_terms){
+           perm_list = uperm(int_vecs[,i])
+           Nperms = dim(perm_list)[1]
+           
+             
+       for (m in 1:Nperms){
+              post_factors[i] = post_factors[i] + exp(-2 * pi * complex(real = 0, imaginary = 1) * perm_list[m, ] %*% z / tau)
+        }
+    }
+ 
+        val=0
+        for (i in 1:N_terms){
+           val = val + pre_factors[1,i] * post_factors[i] 
+        }
+        
+        return(val)
+        
+  }else if(abs(k) == 11){
+        kk = abs(k)
+       
+        N_terms = 4
+        
+        int_vecs = matrix(0,Npulse, N_terms)
+       
+        int_vecs[1:2, 1] = sign(k) * c(kk + 0, 0)
+        int_vecs[1:2, 2] = sign(k) * c(kk - 1, 1)
+        int_vecs[1:2, 3] = sign(k) * c(kk + 1, -1)
+        int_vecs[1:2, 4] = sign(k) * c(kk -2, 2)
+       
+        
+       pre_factors = matrix(1, ncol=N_terms, nrow=1)
+        
+        for (i in 1:N_terms){
+            for (m in 1:Npulse){
+                pre_factors[1,i] = pre_factors[1,i] * P_func(int_vecs[m,i])  
+            }
+        }       
+        post_factors = numeric(N_terms)
+        for (i in 1: N_terms){
+           perm_list = uperm(int_vecs[,i])
+           Nperms = dim(perm_list)[1]
+           
+             
+       for (m in 1:Nperms){
+              post_factors[i] = post_factors[i] + exp(-2 * pi * complex(real = 0, imaginary = 1) * perm_list[m, ] %*% z / tau)
+        }
+    }
+ 
+        val=0
+        for (i in 1:N_terms){
+           val = val + pre_factors[1,i] * post_factors[i] 
+        }
+        
+        out = val
+        
+  } else{
+        kk = abs(k)
+       
+        N_terms = 3
+        int_vecs = matrix(0,Npulse, N_terms)
+       
+        int_vecs[1:2, 1] = sign(k) * c(kk + 0, 0)
+        int_vecs[1:2, 2] = sign(k) * c(kk - 1, 1)
+        int_vecs[1:2, 3] = sign(k) * c(kk + 1, -1)
+       
+        
+        pre_factors = matrix(1, ncol=N_terms, nrow=1)
+        
+        for (i in 1:N_terms){
+            for (m in 1:Npulse){
+                pre_factors[1,i] = pre_factors[1,i] * P_func(int_vecs[m,i])  
+            }
+        }       
+        post_factors = numeric(N_terms)
+        for (i in 1: N_terms){
+           perm_list = uperm(int_vecs[,i])
+           Nperms = dim(perm_list)[1]
+           
+             
+       for (m in 1:Nperms){
+              post_factors[i] = post_factors[i] + exp(-2 * pi * complex(real = 0, imaginary = 1) * perm_list[m, ] %*% z / tau)
+        }
+    }
+ 
+        val=0
+        for (i in 1:N_terms){
+           val = val + pre_factors[i] * post_factors[i] 
+        }
+        
+        return(val)
+        
+  }
+}
+
+
+
+
+#this function computes the "Q" product and exponentials with the fourier modes for a given k
+Q_vals = function(z, rho, Npulse, tau, j, jj){
+  Q_func = function(x){ (rho / (1 - rho)) * 1 /(log(1/(1-rho)) + 2 * pi * complex(real = 0, imaginary = 1) * x)}
+    
+   k = -(j + jj)  
+
+      #determine number of integer vectors to permute (will be smaller for
+      #only two and three pulses). number of combos = N_terms
+     if (k == 0){
+        if (Npulse == 2){
+          N_terms = 5
+        }else if(Npulse == 3){
+          N_terms = 7
+        }else {
+          N_terms = 8
+        }
+       
+       
+        #create a matrix to hold the integer vectors to permute, and
+        #initialize to zero. Each column will give an integer vector
+        int_vecs = matrix(0, nrow=Npulse, ncol=N_terms);
+
+        #the first 5 integer vectors have at most two non-zero elements.
+        #This loop replaces the first two zeros in the first 5 columns of int_vecs
+        #with the appropriate integers.        
+        for (i in 1:5){
+            int_vecs[1:2, i] = c((i - 1), -(i -1))
+        }
+        
+        #if there are are three or more pulses, we need to include
+        #integer vectors with three non-zero terms
+        if (Npulse >= 3){
+            int_vecs[1:3, 6] = c(2, -1,-1)
+            int_vecs[1:3, 7] = c(-2, 1, 1)
+        }
+        
+        #if there are four or more pulses, then we need to include an
+        #integer vector with four non-zero terms
+        if (Npulse >= 4){
+          int_vecs[1:4, 8] = c(1, 1, -1,-1)
+        }
+                
+        
+        #calculates the "P" functions for each column of integer combos in
+        #int_vec.  "P" function values are independet of integer
+        #permutations. pre_factors is a list which holds the "P"-function
+        #values for each integer combo 
+        pre_factors = matrix(1, ncol=N_terms, nrow=1)
+        for (i in 1:N_terms){
+            for (m in 1:Npulse){
+                pre_factors[1,i] = pre_factors[1,i] * Q_func(int_vecs[m,i]); 
+            }
+        }
+       
+        
+        #Now calculate the exponential terms which will multiply the "P"functions in the pre_factors list
+        #post_factors = list of the exponential terms to multiply the
+        #               corresponding "P" functions in the pre_factors list
+        post_factors = numeric(N_terms) #initialize to zero
+        
+        for (i in 1: N_terms){ #for each integer combo given by the columns of int_vecs... 
+           
+           #calculates the unique permutations of the ith integer combo
+           #int_vecs(:, i) = ith column of int_vecs matrix
+           #perm_list = Nperms x Npulse matrix, where Nperms is the number
+           #           of unique permutations of the ith integer combo
+           # Each row of perm_list gives a unique permutaion of the ith integer combo 
+           perm_list = uperm(int_vecs[,i])
+           
+           if( i == 1){
+             Nperms = 1
+           }else{
+             Nperms = length(perm_list[,1]) #number of unique permutations of the ith integer combo
+           }
+           
+           
+           for (m in 1:Nperms){ #for each uniqe permutation of the ith integer combo, add the corresponding      exponential to the running total of the corresponding post_factor value
+             
+             if(i == 1){
+                post_factors[i] = post_factors[i] + exp(-2 * pi * complex(real = 0, imaginary = 1)  *   (perm_list %*% z) / tau) 
+             } else {
+                post_factors[i] = post_factors[i] + exp(-2 * pi * complex(real = 0, imaginary = 1)  * (perm_list[m,] %*% z) / tau)
+             }
+            }#perm_list[m, ] = mth row of perm_list = mth unique permutaton of ith integer combo
+              
+              
+           }
+      
+        
+        
+        val = 0
+        for (i in 1:N_terms){ #add together the (pre_factor * post_factor) for each integer combo
+           val = val + pre_factors[1,i] * post_factors[i] 
+        }
+        
+        return(val)          
+  
+     }else if(abs(k) == 1){
+        kk = abs(k)
+        
+        if (Npulse == 2){
+            N_terms = 5
+        }else{
+          N_terms = 8
+        }
+        
+        
+        int_vecs = matrix(0,nrow=Npulse, ncol=N_terms)
+        for (i in 1:5){
+            int_vecs[1:2, i] = sign(k) * c(kk + (i - 1), -(i -1))
+        }
+        
+        if (Npulse >= 3){
+            int_vecs[1:3, 6] = sign(k) * c(1 , 1 , -1)
+            int_vecs[1:3, 7] = sign(k) * c(3 , -1 , -1) 
+            int_vecs[1:3, 8] = sign(k) * c(2 , -2 , 1)
+        }
+                      
+        pre_factors = matrix(1, ncol=N_terms, nrow=1)
+        for (i in 1:N_terms){
+            for (m in 1:Npulse){
+                pre_factors[1,i] = pre_factors[1,i] * Q_func(int_vecs[m,i]) 
+            }
+        }        
+        
+        post_factors = numeric(N_terms)  
+        for (i in 1: N_terms){
+           perm_list = uperm(int_vecs[,i])
+           Nperms = dim(perm_list)[1]
+           
+           for (m in 1:Nperms){
+              post_factors[i] = post_factors[i] +exp(-2 * pi * complex(real = 0, imaginary = 1)  * perm_list[m, ] %*% z / tau)
+        }
+        }
+  
+        
+        val = 0
+        for (i in 1:N_terms){
+           val = val + pre_factors[1,i] * post_factors[i] 
+        }
+        
+        return(val)                      
+       
+   }
+   else if(abs(k) == 2){
+        kk = abs(k)
+       
+        if (Npulse == 2){
+            N_terms = 5
+        }else if (Npulse == 3){
+            N_terms = 6
+        }else{
+            N_terms = 7
+        }
+        int_vecs = matrix(0,Npulse, N_terms)
+       
+        int_vecs[1:2, 1] = sign(k) * c(kk + 0, 0)
+        int_vecs[1:2, 2] = sign(k) * c(kk - 1, 1)
+        int_vecs[1:2, 3] = sign(k) * c(kk + 1, -1)
+        int_vecs[1:2, 4] = sign(k) * c(kk + 2, -2)
+        int_vecs[1:2, 5] = sign(k) * c(kk + 3, -3)
+       
+        if (Npulse >= 3){
+            int_vecs[1:3, 6] = sign(k) *c(2, -1,1)
+        }
+        if (Npulse >= 4){
+            int_vecs[1:4, 7] = sign(k) *c(1, 1, 1,-1)
+        }
+        
+        
+        pre_factors = matrix(1, ncol=N_terms, nrow=1)
+        for (i in 1:N_terms){
+            for (m in 1:Npulse){
+                pre_factors[1,i] = pre_factors[1,i] * Q_func(int_vecs[m,i]) 
+            }
+        }        
+        
+        post_factors = numeric(N_terms)
+        for (i in 1: N_terms){
+           perm_list = uperm(int_vecs[,i])
+           
+           if(Npulse == 2 && i == 2){
+             Nperms = 1;
+             post_factors[i] = post_factors[i] + exp(-2 * pi * complex(real = 0, imaginary = 1) * perm_list %*% z / tau)
+           }else{
+             
+             Nperms = dim(perm_list)[1]
+           
+             for (m in 1:Nperms){
+                post_factors[i] = post_factors[i] + exp(-2 * pi * complex(real = 0, imaginary = 1) * perm_list[m, ] %*% z / tau)
+             }
+           }
+    }
+  
+        
+        val = 0
+        for (i in 1:N_terms){
+           val = val + pre_factors[1,i] * post_factors[i] 
+        }
+        
+        return(val) 
+        
+        
+  }else if(abs(k) == 3){
+        kk = abs(k)
+       
+        if (Npulse == 2){
+          N_terms = 5
+        }else{
+          N_terms = 8
+        }
+        
+        int_vecs = matrix(0,Npulse, N_terms)
+       
+        int_vecs[1:2, 1] = sign(k) * c(kk + 0, 0)
+        int_vecs[1:2, 2] = sign(k) * c(kk - 1, 1)
+        int_vecs[1:2, 3] = sign(k) * c(kk + 1, -1)
+        int_vecs[1:2, 4] = sign(k) * c(kk + 2, -2)
+        int_vecs[1:2, 5] = sign(k) * c(kk + 3, -3)
+        
+
+        if (Npulse >= 3){
+            int_vecs[1:3, 6] = sign(k) *c(1, 1, 1)
+            int_vecs[1:3, 7] = sign(k) *c(3, 1, -1)
+            int_vecs[1:3, 8] = sign(k) *c(2, 2, -1)            
+        }       
+        
+        pre_factors = matrix(1, ncol=N_terms, nrow=1)
+        for (i in 1:N_terms){
+            for (m in 1:Npulse){
+                pre_factors[1,i] = pre_factors[1,i] * Q_func(int_vecs[m,i])  
+            }
+        }       
+        post_factors = numeric(N_terms)
+        for (i in 1: N_terms){
+           perm_list = uperm(int_vecs[,i])
+           
+           if(Npulse == 3 && i == 6){
+             Nperms = 1
+             post_factors[i] = post_factors[i] + exp(-2 * pi * complex(real = 0, imaginary = 1) * perm_list %*% z / tau)
+           }else{
+             Nperms = dim(perm_list)[1]
+  
+             for (m in 1:Nperms){
+              post_factors[i] = post_factors[i] + exp(-2 * pi * complex(real = 0, imaginary = 1) * perm_list[m, ] %*% z / tau)
+             }
+           }
+    }
+  
+        
+      val = 0
+           
+      for (i in 1:N_terms){
+           val = val + pre_factors[1,i] * post_factors[i] 
+      }
+        
+      return(val)
+        
+        
+     }else if(abs(k) == 4){
+        kk = abs(k)
+       
+        if (Npulse == 2){
+            N_terms = 5
+        }else if(Npulse == 3){
+            N_terms = 7
+        }else{
+          N_terms = 8
+        }
+        
+        
+        int_vecs = matrix(0,Npulse, N_terms)
+        
+        int_vecs[1:2, 1] = sign(k) * c(kk + 0, 0)
+        int_vecs[1:2, 2] = sign(k) * c(kk - 1, 1)
+        int_vecs[1:2, 3] = sign(k) * c(kk -2, 2)
+        int_vecs[1:2, 4] = sign(k) * c(kk +1, -1)
+        int_vecs[1:2, 5] = sign(k) * c(kk + 2, -2)
+
+        if (Npulse >= 3){
+            int_vecs[1:3, 6] = sign(k) *c(4, -1, 1)
+            int_vecs[1:3, 7] = sign(k)*c(2, 1, 1)            
+        }
+        if (Npulse >= 4){
+            int_vecs[1:4, 8] = sign(k) *c(1, 1, 1, 1)
+        }         
+        
+        pre_factors = matrix(1, ncol=N_terms, nrow=1)
+       
+       for (i in 1:N_terms){
+            for (m in 1:Npulse){
+                pre_factors[1,i] = pre_factors[1,i] * Q_func(int_vecs[m,i])  
+            }
+        }       
+        post_factors = numeric(N_terms)
+        for (i in 1: N_terms){
+           perm_list = uperm(int_vecs[,i])
+           
+           if(Npulse == 4 && i == 8){
+             Nperms = 1
+             post_factors[i] = post_factors[i] + exp(-2 * pi * complex(real = 0, imaginary = 1) * perm_list %*% z / tau)
+           }else if(Npulse == 2 && i == 3){
+             Nperms = 1
+             post_factors[i] = post_factors[i] + exp(-2 * pi * complex(real = 0, imaginary = 1) * perm_list %*% z / tau)
+           } else{
+            
+           Nperms = dim(perm_list)[1]
+           
+           
+             for (m in 1:Nperms){
+                post_factors[i] = post_factors[i] + exp(-2 * pi * complex(real = 0, imaginary = 1) * perm_list[m, ] %*% z / tau)
+             }
+           }
+        }
+        val=0
+        for (i in 1:N_terms){
+           val = val + pre_factors[1,i] * post_factors[i] 
+        }
+        
+        return(val)
+        
+     }else if(abs(k) == 5){
+        kk = abs(k)
+       
+        if (Npulse == 2){
+            N_terms = 5
+        }else{
+            N_terms = 7
+        }
+        
+        int_vecs = matrix(0,Npulse, N_terms)
+       
+        int_vecs[1:2, 1] = sign(k) * c(kk + 0, 0)
+        int_vecs[1:2, 2] = sign(k) * c(kk - 1, 1)
+        int_vecs[1:2, 3] = sign(k) * c(kk -2, 2)
+        int_vecs[1:2, 4] = sign(k) * c(kk + 1, -1)
+        int_vecs[1:2, 5] = sign(k) * c(kk + 2, -2)
+       
+        
+        if (Npulse >= 3){
+            int_vecs[1:3, 6] = sign(k) *c(2, 2, 1);
+            int_vecs[1:3, 7] = sign(k) *c(3, 1, 1);           
+        }
+       
+        pre_factors = matrix(1, ncol=N_terms, nrow=1)
+       
+        for (i in 1:N_terms){
+            for (m in 1:Npulse){
+                pre_factors[1,i] = pre_factors[1,i] * Q_func(int_vecs[m,i])  
+            }
+        }       
+        post_factors = numeric(N_terms)
+        for (i in 1: N_terms){
+           perm_list = uperm(int_vecs[,i])
+           Nperms = dim(perm_list)[1]
+           
+             
+       for (m in 1:Nperms){
+              post_factors[i] = post_factors[i] + exp(-2 * pi * complex(real = 0, imaginary = 1) * perm_list[m, ] %*% z / tau)
+        }
+    }
+ 
+        val=0
+        for (i in 1:N_terms){
+           val = val + pre_factors[1,i] * post_factors[i] 
+        }
+        
+        return(val)
+        
+    }else if(abs(k) == 6){
+        kk = abs(k)
+       
+        if (Npulse == 2){
+            N_terms = 6
+        }else{
+           N_terms = 7
+        }
+        
+        int_vecs = matrix(0,Npulse, N_terms)
+       
+        int_vecs[1:2, 1] = sign(k) * c(kk + 0, 0)
+        int_vecs[1:2, 2] = sign(k) * c(kk - 1, 1)
+        int_vecs[1:2, 3] = sign(k) * c(kk -2, 2)
+        int_vecs[1:2, 4] = sign(k) * c(kk - 3, 3)
+        int_vecs[1:2, 5] = sign(k) * c(kk + 1, -1)
+        int_vecs[1:2, 6] = sign(k) * c(kk + 2, -2)
+        
+       
+        if (Npulse >= 3){
+            int_vecs[1:3, 7] = sign(k) *c(4, 1, 1)           
+        }
+        
+        pre_factors = matrix(1, ncol=N_terms, nrow=1)
+        
+        for (i in 1:N_terms){
+            for (m in 1:Npulse){
+                pre_factors[1,i] = pre_factors[1,i] * Q_func(int_vecs[m,i])  
+            }
+        }       
+        post_factors = numeric(N_terms)
+        for (i in 1: N_terms){
+           perm_list = uperm(int_vecs[,i])
+           
+           if(Npulse == 2 && i == 4){
+             Nperms = 1
+             post_factors[i] = post_factors[i] + exp(-2 * pi * complex(real = 0, imaginary = 1) * perm_list %*% z / tau)
+           }else{
+             
+              Nperms = dim(perm_list)[1]
+           
+             
+              for (m in 1:Nperms){
+                 post_factors[i] = post_factors[i] + exp(-2 * pi * complex(real = 0, imaginary = 1) * perm_list[m, ] %*% z / tau)
+              }
+           }
+        }
+    
+        
+        val=0
+        for (i in 1:N_terms){
+           val = val + pre_factors[1,i] * post_factors[i] 
+        }
+        
+        return(val)
+        
+    }else if(abs(k) == 7){
+        kk = abs(k)
+       
+        N_terms = 6
+        int_vecs = matrix(0,Npulse, N_terms)
+        
+        int_vecs[1:2, 1] = sign(k) * c(kk + 0, 0)
+        int_vecs[1:2, 2] = sign(k) * c(kk - 1, 1)
+        int_vecs[1:2, 3] = sign(k) * c(kk -2, 2)
+        int_vecs[1:2, 4] = sign(k) * c(kk - 3, 3)
+        int_vecs[1:2, 5] = sign(k) * c(kk + 1, -1)
+        int_vecs[1:2, 6] = sign(k) * c(kk + 2, -2)
+        
+       
+        pre_factors = matrix(1, ncol=N_terms, nrow=1)
+        
+        for (i in 1:N_terms){
+            for (m in 1:Npulse){
+                pre_factors[1,i] = pre_factors[1,i] * Q_func(int_vecs[m,i])  
+            }
+        }       
+        post_factors = numeric(N_terms)
+        for (i in 1: N_terms){
+           perm_list = uperm(int_vecs[,i])
+           Nperms = dim(perm_list)[1]
+           
+             
+           for (m in 1:Nperms){
+              post_factors[i] = post_factors[i] + exp(-2 * pi * complex(real = 0, imaginary = 1) * perm_list[m, ] %*% z / tau)
+            }
+        }
+ 
+        val=0
+        for (i in 1:N_terms){
+           val = val + pre_factors[1,i] * post_factors[i] 
+        }
+        
+        return(val)
+        
+    }else if(abs(k) == 8){
+        kk = abs(k)
+       
+        N_terms = 6
+        int_vecs = matrix(0,Npulse, N_terms)
+        
+        int_vecs[1:2, 1] = sign(k) * c(kk + 0, 0)
+        int_vecs[1:2, 2] = sign(k) * c(kk - 1, 1)
+        int_vecs[1:2, 3] = sign(k) * c(kk -2, 2)
+        int_vecs[1:2, 4] = sign(k) * c(kk + 1, -1)
+        int_vecs[1:2, 5] = sign(k) * c(kk -3, +3)
+        int_vecs[1:2, 6] = sign(k) * c(kk -4, +4)
+        
+        
+        
+        pre_factors = matrix(1, ncol=N_terms, nrow=1)
+        
+        for (i in 1:N_terms){
+            for (m in 1:Npulse){
+                pre_factors[1,i] = pre_factors[1,i] * Q_func(int_vecs[m,i])  
+            }
+        }       
+        post_factors = numeric(N_terms)
+        for (i in 1: N_terms){
+           perm_list = uperm(int_vecs[,i])
+           
+           if(Npulse == 2 && i == 6){
+               Nperm = 1
+               post_factors[i] = post_factors[i] + exp(-2 * pi * complex(real = 0, imaginary = 1) * perm_list %*% z / tau)
+           }else{
+           
+              Nperms = dim(perm_list)[1]
+           
+             
+              for (m in 1:Nperms){
+                  post_factors[i] = post_factors[i] + exp(-2 * pi * complex(real = 0, imaginary = 1) * perm_list[m, ] %*% z / tau)
+              }
+          }
+        }
+        
+        val=0
+        for (i in 1:N_terms){
+           val = val + pre_factors[1,i] * post_factors[i] 
+        }
+        
+        return(val)
+        
+     }else if(abs(k) == 9){
+        kk = abs(k)
+       
+        N_terms = 5
+        int_vecs = matrix(0,Npulse, N_terms)
+       
+        int_vecs[1:2, 1] = sign(k) * c(kk + 0, 0)
+        int_vecs[1:2, 2] = sign(k) * c(kk - 1, 1)
+        int_vecs[1:2, 3] = sign(k) * c(kk + 1, -1)
+        int_vecs[1:2, 4] = sign(k) * c(kk -2, 2)
+        int_vecs[1:2, 5] = sign(k) * c(kk -3, +3)
+      
+      
+       pre_factors = matrix(1, ncol=N_terms, nrow=1)
+        
+        for (i in 1:N_terms){
+            for (m in 1:Npulse){
+                pre_factors[1,i] = pre_factors[1,i] * Q_func(int_vecs[m,i])  
+            }
+        }       
+        post_factors = numeric(N_terms)
+        for (i in 1: N_terms){
+           perm_list = uperm(int_vecs[,i])
+           Nperms = dim(perm_list)[1]
+           
+             
+       for (m in 1:Nperms){
+              post_factors[i] = post_factors[i] + exp(-2 * pi * complex(real = 0, imaginary = 1) * perm_list[m, ] %*% z / tau)
+        }
+    }
+ 
+        val=0
+        for (i in 1:N_terms){
+           val = val + pre_factors[i] * post_factors[i] 
+        }
+        
+       return(val)
+        
+  }else if(abs(k) == 10){
+        kk = abs(k)
+       
+        N_terms = 4
+        int_vecs = matrix(0,Npulse, N_terms)
+       
+        int_vecs[1:2, 1] = sign(k) * c(kk + 0, 0)
+        int_vecs[1:2, 2] = sign(k) * c(kk - 1, 1)
+        int_vecs[1:2, 3] = sign(k) * c(kk + 1, -1)
+        int_vecs[1:2, 4] = sign(k) * c(kk -2, 2)
+       
+        
+        pre_factors = matrix(1, ncol=N_terms, nrow=1)
+        
+        for (i in 1:N_terms){
+            for (m in 1:Npulse){
+                pre_factors[1,i] = pre_factors[1,i] * Q_func(int_vecs[m,i])  
+            }
+        }       
+        post_factors = numeric(N_terms)
+        for (i in 1: N_terms){
+           perm_list = uperm(int_vecs[,i])
+           Nperms = dim(perm_list)[1]
+           
+             
+       for (m in 1:Nperms){
+              post_factors[i] = post_factors[i] + exp(-2 * pi * complex(real = 0, imaginary = 1) * perm_list[m, ] %*% z / tau)
+        }
+    }
+ 
+        val=0
+        for (i in 1:N_terms){
+           val = val + pre_factors[1,i] * post_factors[i] 
+        }
+        
+        return(val)
+        
+  }else if(abs(k) == 11){
+        kk = abs(k)
+       
+        N_terms = 4
+        
+        int_vecs = matrix(0,Npulse, N_terms)
+       
+        int_vecs[1:2, 1] = sign(k) * c(kk + 0, 0)
+        int_vecs[1:2, 2] = sign(k) * c(kk - 1, 1)
+        int_vecs[1:2, 3] = sign(k) * c(kk + 1, -1)
+        int_vecs[1:2, 4] = sign(k) * c(kk -2, 2)
+       
+        
+       pre_factors = matrix(1, ncol=N_terms, nrow=1)
+        
+        for (i in 1:N_terms){
+            for (m in 1:Npulse){
+                pre_factors[1,i] = pre_factors[1,i] * Q_func(int_vecs[m,i])  
+            }
+        }       
+        post_factors = numeric(N_terms)
+        for (i in 1: N_terms){
+           perm_list = uperm(int_vecs[,i])
+           Nperms = dim(perm_list)[1]
+           
+             
+       for (m in 1:Nperms){
+              post_factors[i] = post_factors[i] + exp(-2 * pi * complex(real = 0, imaginary = 1) * perm_list[m, ] %*% z / tau)
+        }
+    }
+ 
+        val=0
+        for (i in 1:N_terms){
+           val = val + pre_factors[1,i] * post_factors[i] 
+        }
+        
+        out = val
+        
+  } else{
+        kk = abs(k)
+       
+        N_terms = 3
+        int_vecs = matrix(0,Npulse, N_terms)
+       
+        int_vecs[1:2, 1] = sign(k) * c(kk + 0, 0)
+        int_vecs[1:2, 2] = sign(k) * c(kk - 1, 1)
+        int_vecs[1:2, 3] = sign(k) * c(kk + 1, -1)
+       
+        
+        pre_factors = matrix(1, ncol=N_terms, nrow=1)
+        
+        for (i in 1:N_terms){
+            for (m in 1:Npulse){
+                pre_factors[1,i] = pre_factors[1,i] * Q_func(int_vecs[m,i])  
+            }
+        }       
+        post_factors = numeric(N_terms)
+        for (i in 1: N_terms){
+           perm_list = uperm(int_vecs[,i])
+           Nperms = dim(perm_list)[1]
+           
+             
+       for (m in 1:Nperms){
+              post_factors[i] = post_factors[i] + exp(-2 * pi * complex(real = 0, imaginary = 1) * perm_list[m, ] %*% z / tau)
+        }
+    }
+ 
+        val=0
+        for (i in 1:N_terms){
+           val = val + pre_factors[i] * post_factors[i] 
+        }
+        
+        return(val)
+        
+  }
+}
+   
+  
+#this function computes the fourier sum for 1 pulse 
+sum_1_pulse = function(z, rho, mu, tau, kmax, modes){
+
+jmax = length(modes) #modes is the list of fourier modes, jmax = number of list elements
+out_val = 0 #running total for output value
+
+P_func = function(x) {rho * 1 /(log(1/(1-rho)) - 2 * pi * complex(real = 0, imaginary = 1) * x)}
+Q_func = function(x) {(rho / (1 - rho)) * 1 /(log(1/(1-rho)) + 2 * pi * complex(real = 0, imaginary = 1) * x)}
+
+
+for (k in -kmax:kmax){
+    
+    pre_factor = P_func(k)
+    
+    post_factor = exp( -2 * pi * complex(real = 0, imaginary = 1) * k * z / tau) 
+    P_val = pre_factor * post_factor
+    
+    Q_val = 0
+  
+    for (j in (-jmax+1):(jmax-1)){ 
+        pre_factor = Q_func(-k-j)
+        post_factor = exp( -2 * pi * complex(real = 0, imaginary = 1) * (-k -j)  * z / tau)
+        
+       if (j ==0){
+           Q_val =Q_val +  pre_factor * post_factor * modes[1] / mu
+       }else if (j <0){
+           Q_val =Q_val + pre_factor * post_factor * Conj(modes[-(j-1)]) / mu 
+       }else if (j>0){
+           Q_val =Q_val + pre_factor * post_factor * modes[j+1] / mu
+       } 
+      }
+    
+  
+    out_val = out_val + (P_val)*(Q_val) /( 1 -  log(1-rho) / (mu * tau) - 2 * pi * complex(real = 0, imaginary = 1) * k /(mu * tau));   
+    
+} 
+
+return(Re(out_val))
+
+}
+
+# this function computes the Fourier sum for N pulses, where the "P" and "Q" products and exponentials are computeded by the "P_vals" and "Q_vals" functions  
+sum_N_pulse = function(z, rho, Npulse, mu, tau, kmax, modes){
+jmax = length(modes)
+out_val = 0 #running total for output
+
+
+for (k in -kmax:kmax){
+    
+    P_val = P_vals(z, rho, Npulse, tau, k) #compute "P" product and exponentials at this k value
+   
+    Q_val = 0 #running total for "Q" product and exponentials
+    #add together "Q" products and exponentials at (k + j) value for all j emergence fourier modes
+    for (j in (-jmax+1):(jmax-1)){ 
+       
+       #if (abs(k+j) < kmax){
+        
+       if (j ==0){
+           Q_val =Q_val +  Q_vals(z, rho, Npulse, tau, k, j)* modes[1] / mu #zero fourier mode 
+       }else if(j <0){
+           Q_val = Q_val + Q_vals(z, rho, Npulse, tau, k, j) * Conj(modes[-(j-1)]) / mu #negative fourier modes
+       }else if(j>0){
+           Q_val =Q_val + Q_vals(z, rho, Npulse, tau, k, j) * modes[j+1] / mu #positive fourier modes
+       } 
+       #}
+    }
+    
+    #add contribution from this k value to running output total
+    out_val = out_val + (P_val)*(Q_val) /( 1 - Npulse * log(1-rho) / (mu * tau) - 2 * pi * complex(real= 0, imaginary = 1) * k /(mu * tau))
+}
+out = Re(out_val)
+return(out)
+
+}
+
+
+```
+
+
+
+
+
+```{r}
+##optimization parameters set by user
+
+
+kmax = 20 #max number of dynamics fourier modes to use in calculating fourier sum (different than N_lam = max emergence fourier mode set by user for curve fitting portion of the code.  I've often refered to N_lam as jmax when we've talked.  Hopefully not too confusing). kmax should be an integer between 2 and 200, defualt at 20
+
+global_opt = 0 #set to 0 if user chooses local optimum, 1 if user chooses golbal GN_DIRECT_L_RAND method, 2 if user chooses global GN_ISRES mthod
+
+Npulse = 4 #number of pulses, set by user, integer between 1 and 10
+rho = .30 #percent knockdown (user set between .01 and .30, e.g. 1% to 30% knockdown)
+days_between = 3 #minimum number of days allowed between pulses set by user (integer bewtween 0 and 30 days) 
+
+
+```
+
+
+
+```{r}
+
+#code to execute optimization algorithms
+
+#install.packages("nloptr")
+library("nloptr") #used for local cobyla optimum function and global optimum functions
+
+if(Npulse == 1){ # 1 pulse
+  fun1 = function(x)sum_1_pulse(x,rho, mu, tau, kmax, lam_fourier)
+  guess = tau /2
+  
+    
+  if(global_opt == 0){ #local optimum 
+    opt_out = cobyla(guess, fun1, lower = 0, upper = tau)
+    
+    times = opt_out$par
+    ave_pop_fourier = opt_out$value
+  
+  }else if(global_opt == 1){ #global optimum directL
+    
+    opt_out = directL(fun1, lower = 0, upper = tau, randomized = TRUE)
+    
+    times = opt_out$par
+    ave_pop_fourier = opt_out$value
+    
+  }else if(global_opt == 2){ #global optimum isres
+    
+  
+     opt_out = nloptr(x0=guess, eval_f=fun1, lb = 0, ub = tau, eval_g_ineq = NULL, eval_g_eq = NULL,                 opts = list(algorithm="NLOPT_GN_ISRES",maxeval=10000))
+     
+    times = opt_out$solution
+    ave_pop_fourier = opt_out$objective
+    
+  }
+  
+  
+} else{ #2 or more pulses
+  funN = function(x)sum_N_pulse(x,rho, Npulse, mu, tau, kmax, lam_fourier) 
+  
+  #matrix and vector for inequality constraints to enforce minimum days between
+  A_mat = matrix(0,nrow=Npulse - 1, ncol=Npulse)
+  b_vec = (-1) * days_between * matrix(1, Npulse-1, 1)
+
+  for (i in 1:(Npulse -1)){
+      A_mat[i,i] = 1
+      A_mat[i, i+ 1] = -1
+  }
+    
+    
+  l_bound = numeric(Npulse) #column vector of zeros for pulse lower bound
+  u_bound = tau * matrix(1,Npulse, 1) #column vector of taus for pulse upper bound
+    
+  guess = numeric(Npulse); #vector for initial guesses for fmincon
+    
+  for(i in 1:Npulse){
+       if(t_in[1] - m / mu > 0 ){
+          
+         guess[i] = i * (t_dat[N_pts - 1] - t_dat[3]) / (Npulse + 1) + t_dat[3]
+      }else{
+          
+         guess[i] = i * (t_dat[N_pts - 2] - t_dat[2]) / (Npulse + 1) + t_dat[2]
+      }
+   } 
+
+    if(global_opt == 0){#local optimum  
+    
+      opt_out = fmincon(guess, funN, gr= NULL, method="SQP", A = A_mat, b=b_vec, Aeq = NULL, beq = NULL, lb = l_bound, ub = u_bound)
+    
+    
+    times = opt_out$par
+    ave_pop_fourier = opt_out$value
+    
+    }else if(global_opt == 1){ #global optimum directL
+      
+      opt_out = directL(funN, lower = l_bound, upper = u_bound, randomized = TRUE)
+      
+      times = opt_out$par
+      ave_pop_fourier = opt_out$value
+      
+    }else if(global_opt == 2){ #global optimum isres
+      
+      ineq = function(x){(-1)*A_mat %*%x - b_vec}
+      
+      opt_out = nloptr(x0=guess, eval_f=funN, lb = l_bound, ub = u_bound, eval_g_ineq = ineq, eval_g_eq = NULL,                 opts = list(algorithm="NLOPT_GN_ISRES",maxeval=10000))
+      
+      times = opt_out$solution
+      ave_pop_fourier = opt_out$objective
+      
+    }
+}
+   
+ 
+```
+
+
+
+```{r}
+#code to shift times and generate plot data
+
+#shift pulse times back to original times input by user
+if (t_in[1]- (m/mu)>0){ 
+  pulse_times_output = times - t_dat[3] + t_in[1]
+}else {
+  pulse_times_output = times - t_dat[2] + t_in[1]
+  }
+
+
+
+
+#code to plot results:  
+t_steps = 6 * tau*10 + 1 # ten time steps per day, six total seasons (need to integrate over many seasons to reach periodic population curves)
+t_vec = linspace(0, 6*tau, n = t_steps); #list between 0 and 6*tau, t_steps long
+
+
+y_fourier_controlled = numeric(t_steps) #list (row vector) for controlled population values at each time step
+y_fourier_uncontrolled = numeric(t_steps) #list (row vector) for uncontrolled population values at each time step
+
+
+#simple integrator to calculate population values
+for (i in 2:t_steps){
+  for (j in 1: N_pts - 1){
+    if (mod(t_vec[i-1], tau) >= t_dat[j] && mod(t_vec[i-1],tau) < t_dat[j + 1]){
+       y_fourier_controlled[i] = y_fourier_controlled[i-1] +(-mu * y_fourier_controlled[i-1] +lambda_dat$par[j+1] * (mod(t_vec[i-1], tau) -t_dat[j])/ delta_t_dat[j] +lambda_dat$par[j] * (t_dat[j+1] -mod(t_vec[i-1], tau)) / delta_t_dat[j])*(t_vec[i] - t_vec[i-1]);
+                
+      y_fourier_uncontrolled[i] = y_fourier_uncontrolled[i-1] +(-mu * y_fourier_uncontrolled[i-1] +lambda_dat$par[j+1] * (mod(t_vec[i-1], tau) -t_dat[j])/ delta_t_dat[j] +lambda_dat$par[j] * (t_dat[j+1] -mod(t_vec[i-1], tau)) / delta_t_dat[j])*(t_vec[i] - t_vec[i-1])
+    }
+               
+    }
+      
+ #impulses for the controlled population
+    for (j in 1:Npulse){
+      if (mod(t_vec[i], tau) >= times[j] && mod(t_vec[i-1], tau) < times[j]){
+           y_fourier_controlled[i] = (1-rho) * y_fourier_controlled[i];
+    }
+  }
+   
+}
+
+pop_cont = numeric(10*tau+1) #list for controlled population vlaues, one season long
+pop_un_cont = numeric(10*tau+1) #list for uncontrolled population vlaues, one season long 
+t_vec_plot = numeric(10*tau+1) #list for time values, one season long
+
+for (i in 1:(10*tau+1)){
+    pop_cont[i] = y_fourier_controlled[i + 10*tau*5] #take controlled population values from the integration for the final season
+    pop_un_cont[i] = y_fourier_uncontrolled[i+ 10*tau*5] #take uncontrolled population values from the integration for the final season
+ 
+    #shift plot times for population curves back to original times input by user
+    if (t_in[1] - m / mu > 0) {
+        t_vec_plot[i] = t_vec[i]-t_dat[(3)] +t_in[(1)]
+        
+    } else{
+       t_vec_plot[i] = t_vec[i] -t_dat[(2)] + t_in[(1)]
+    }
+    
+
+}
+
+
+#shift data times back to orginal times input by user
+if (t_in[(1)] - (m / mu) > 0){ 
+  t_dat_plot = t_dat  - t_dat[(3)] + t_in[(1)]
+}else {
+  t_dat_plot = t_dat  - t_dat[2] + t_in[1]
+}
+
+```
+
+
+
+```{r}
+#code to generate outputs to user
+
+#install.packages("sfsmisc")
+library("sfsmisc") #for the integrate.xy function
+
+
+ave_pop_un_cont = integrate.xy(t_vec_plot, pop_un_cont)/(tau)
+ave_pop_cont = integrate.xy(t_vec_plot, pop_cont)/(tau)
+ 
+percent_reduction = (ave_pop_un_cont - ave_pop_cont) / ave_pop_un_cont
+accuracy_measure = (ave_pop_fourier - ave_pop_cont) / ave_pop_cont
+
+
+#outputs to display to user
+print(pulse_times_output) #times of optimal pulses in units of day of year
+print(ave_pop_un_cont) #average population over interval (0, tau) under uncontrolledfourier dynamics
+print(ave_pop_cont) #average population over interval (0, tau) under controlled fourier dynamics
+print(percent_reduction) #fractional reduction in average controlled population relative to uncontrolled 
+print(accuracy_measure) #reliability measuere - if the magnitude of this quantity is larger than .05 or .1 or so, then the fourier sum may be of unrelaiable accuracy, and the user should try increasing kmax
+
+#plots to display to user
+plot(t_dat_plot, y_dat, ylim = c(0,1.5 * max(y_dat)), xlim=c(t_dat_plot[1],t_dat_plot[1]+tau), col="blue",
+     main="Fitted Population Model",
+ylab="Mosquito population count",
+xlab="Day of year")
+lines(t_vec_plot, pop_un_cont, col="red")
+lines(t_vec_plot, pop_cont, col = "orange")
+legend("topleft",c("Data","Uncontrolled Fourier Approximation", "Controlled Fourier Approximation"),fill=c("blue","red","orange"))
+
+
+```
