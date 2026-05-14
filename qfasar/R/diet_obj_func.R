@@ -1,0 +1,66 @@
+#' Diet estimation objective function
+#'
+#' The utility function \code{diet_obj_func} computes the distance between an
+#' observed fatty acid signature and a modeled signature computed as a mixture
+#' of mean prey signatures.
+#'
+#' @param diet A numeric vector of diet composition.
+#' @param obs_sig A numeric vector containing an observed fatty acid signature.
+#' @param mean_sigs A numeric matrix of the mean fatty acid signature for each
+#'   prey type in the prey library, in column-major format.
+#' @param dist_meas An integer indicator of the distance measure to compute.
+#'   Default value 1.
+#' @param gamma The power parameter of the chi-square distance measure. Default
+#'   value 1.
+#'
+#' @return The distance between the observed and modeled signatures.
+#'
+#' @section Details:
+#' This is an internal utility function.  Consequently, to increase execution
+#' speed, no numeric error checking is performed within \code{diet_obj_func}.
+#' Rather, error checking is presumed to have occurred at a higher level in the
+#' calling sequence.
+#'
+#' The argument \code{obs_sig} is presumed to be a fatty acid signature that has
+#' been prepared for analysis, which is best accomplished by a call to the
+#' function \code{\link{prep_sig}} with the predator data  frame.  Similarly,
+#' the contents of \code{mean_sig} should be mean signatures computed from
+#' signatures that were prepared for analysis by call to the function
+#' \code{\link{prep_sig}}.
+#'
+#' The argument \code{diet} is presumed to contain non-negative proportions that
+#' sum to 1.0.
+#'
+#' The arguments \code{dist_meas} and \code{gamma} must be compatible with the
+#' function \code{\link{dist_between_2_sigs}}.
+#'
+#' Please refer to the vignette and documentation for the functions
+#' \code{\link{prep_sig}}, \code{\link{sig_scale}}, and
+#' \code{\link{dist_between_2_sigs}} for additional details.
+#'
+#' \code{diet_obj_func} models a predator signature as a mixture of the mean
+#' prey-type signatures, with the diet proportions as the mixture proportions,
+#' returning the distance between the observed and modeled signatures.  The
+#' diet composition of a predator is estimated by minimizing this function with
+#' respect to the \code{diet} using the function Rsolnp::solnp.
+#'
+################################################################################
+
+
+diet_obj_func <- function(diet, obs_sig, mean_sigs, dist_meas=1, gamma=1){
+
+  # Compute the modeled signature.
+  diet_mat <- matrix(data = diet, nrow = nrow(mean_sigs),
+                     ncol = ncol(mean_sigs), byrow = TRUE)
+  mod_sig <- apply(diet_mat*mean_sigs, 1, sum)
+
+
+  # Compute the distance.
+  dist <- dist_between_2_sigs(sig_1 = obs_sig,
+                              sig_2 = mod_sig,
+                              dist_meas = dist_meas,
+                              gamma = gamma)
+
+  # Return.
+  return(dist)
+}
