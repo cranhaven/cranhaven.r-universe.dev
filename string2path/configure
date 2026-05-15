@@ -1,0 +1,93 @@
+# Variables used for tweaking Makevars
+BEFORE_CARGO_BUILD=''
+
+# Even when `cargo` is on `PATH`, `rustc` might not. We need to source
+# ~/.cargo/env to ensure PATH is configured correctly in some cases
+# (c.f. yutannihilation/string2path#4). However, this file is not always
+# available (e.g. when Rust is installed via apt on Ubuntu), so it might be
+# more straightforward to add `PATH` directly.
+if [ -e "${HOME}/.cargo/env" ]; then
+  . "${HOME}/.cargo/env"
+  BEFORE_CARGO_BUILD="${BEFORE_CARGO_BUILD} . \"${HOME}/.cargo/env\" \\&\\&"
+fi
+
+# Check the Rust installation, and abort if not available
+"${R_HOME}/bin/Rscript" "./tools/configure.R"
+
+ret=$?
+
+if [ $ret -ne 0 ]; then
+  exit $ret
+fi
+
+# Report the version of Rustc to comply with the CRAN policy
+echo "using Rust package manager: '$(cargo --version)'"
+echo "using Rust compiler: '$(rustc --version)'"
+
+# Detect fontconfig on non-Windows, non-webR platforms
+ADDITIONAL_PKG_LIBS=''
+if [ "$(uname)" != "Emscripten" ]; then
+  if command -v pkg-config > /dev/null 2>&1 && pkg-config --exists fontconfig; then
+    ADDITIONAL_PKG_LIBS="$(pkg-config --libs fontconfig)"
+    echo "using fontconfig: ${ADDITIONAL_PKG_LIBS}"
+  else
+    echo "*** pkg-config or fontconfig not found, trying -lfontconfig"
+    ADDITIONAL_PKG_LIBS="-lfontconfig"
+  fi
+fi
+
+# Handle webR
+if [ "$(uname)" = "Emscripten" ]; then
+  TARGET="wasm32-unknown-emscripten"
+# If it's on CRAN, a package is not allowed to write in any other place than the
+# temporary directory on installation. So, we need to tweak Makevars to make the
+# compilation happen only within the package directory (i.e. `$(PWD)`).
+elif [ "${DEBUG}" != "true" ]; then
+  BEFORE_CARGO_BUILD="${BEFORE_CARGO_BUILD}"' export CARGO_HOME="$(PWD)/.cargo" \&\&'
+  VENDORING="yes"
+  OFFLINE_OPTION="--offline"
+else
+  echo "*** Detected DEBUG=true, do not override CARGO_HOME"
+fi
+
+# Set macOS deployment target for the Rust cc crate.
+#
+# The cc crate (used by savvy's build.rs to compile unwind_protect_wrapper.c)
+# does not derive the deployment target from CC/CFLAGS. Instead, it looks up
+# MACOSX_DEPLOYMENT_TARGET, falling back to `xcrun --show-sdk-version`, and
+# passes the result as -mmacosx-version-min=<value>. When the env var is unset,
+# the fallback SDK version (e.g. 26.2) can be newer than the version R's
+# compiler targets, producing an ld warning about version mismatch.
+#
+# We default to 11.0, the minimum deployment target for arm64 macOS. This
+# should be safe because unwind_protect_wrapper.c is a fairly simple C code
+# and uses no version-specific APIs.
+#
+# Note: this works for savvy, but may not hold if other crates use the cc
+# crate to build more complex C/C++ code that requires newer macOS APIs.
+# In that case, this value should be raised, or detected from R's compiler.
+if [ "$(uname)" = "Darwin" ]; then
+  MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-11.0}"
+  echo "using macOS deployment target: ${MACOSX_DEPLOYMENT_TARGET}"
+  BEFORE_CARGO_BUILD="${BEFORE_CARGO_BUILD}"' export MACOSX_DEPLOYMENT_TARGET="'"${MACOSX_DEPLOYMENT_TARGET}"'" \&\&'
+
+  # Link Apple frameworks used transitively by the font-kit / core-text Rust
+  # crates. The `#[link(..., kind = "framework")]` attributes inside those
+  # crates are dropped when the crate is consumed as a staticlib, so the
+  # final R link step must request the frameworks explicitly. Otherwise
+  # symbols like `_kCTFontURLAttribute` end up unresolved in the flat
+  # namespace and fail at dyld load time (notably on x86_64 macOS builders).
+  ADDITIONAL_PKG_LIBS="${ADDITIONAL_PKG_LIBS} -framework Foundation -framework CoreText -framework CoreFoundation -framework CoreGraphics -framework AppKit"
+fi
+
+sed \
+  -e "s|@BEFORE_CARGO_BUILD@|${BEFORE_CARGO_BUILD}|" \
+  -e "s|@VENDORING@|${VENDORING}|" \
+  -e "s|@OFFLINE_OPTION@|${OFFLINE_OPTION}|" \
+  -e "s|@TARGET@|${TARGET}|" \
+  -e "s|@ADDITIONAL_PKG_LIBS@|${ADDITIONAL_PKG_LIBS}|" \
+  src/Makevars.in > src/Makevars
+
+# Uncomment this to debug
+#
+# cat src/Makevars

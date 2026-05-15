@@ -1,0 +1,44 @@
+TARGET = @TARGET@
+
+VENDORING = @VENDORING@
+OFFLINE_OPTION = @OFFLINE_OPTION@
+
+LIBDIR = ./rust/target/$(TARGET)/release
+PKG_LIBS = -L$(LIBDIR) -lstring2path @ADDITIONAL_PKG_LIBS@
+STATLIB = $(LIBDIR)/libstring2path.a
+
+all: $(SHLIB) clean_intermediate
+
+$(SHLIB): $(STATLIB)
+
+$(STATLIB):
+	# vendoring (Note: to avoid NOTE of "Found the following hidden files and
+	# directories", .cargo needs to be created here)
+	if [ "$(VENDORING)" = "yes" ]; then \
+	  $(TAR) --extract --xz -f ./rust/vendor.tar.xz -C ./rust && \
+	    mkdir -p ./rust/.cargo && \
+	    cp ./cargo_vendor_config.toml ./rust/.cargo/config.toml; \
+	fi
+
+# Note: -fno-lto is appended to CFLAGS to override any -flto* injected by R
+# (e.g. the gcc-SAN builder uses -flto=10). The cc crate compiles savvy's
+# unwind_protect_wrapper.c with these CFLAGS and archives the result with
+# plain `ar`, which doesn't record GCC LTO symbols, leaving
+# unwind_protect_impl undefined at dyn.load time.
+	export CC="$(CC)" && \
+	export CFLAGS="$(CFLAGS) -fno-lto" && \
+	if [ "$(TARGET)" != "wasm32-unknown-emscripten" ]; then \
+	  @BEFORE_CARGO_BUILD@ cd ./rust && cargo build --jobs 1 --lib --release $(OFFLINE_OPTION); \
+	else \
+	  export CARGO_PROFILE_RELEASE_PANIC="abort" && \
+	  export RUSTFLAGS="$(RUSTFLAGS) -Zdefault-visibility=hidden" && \
+	  @BEFORE_CARGO_BUILD@ cd ./rust && cargo +nightly build --lib --release --target $(TARGET) -Zbuild-std=panic_abort,std $(OFFLINE_OPTION); \
+	fi
+
+clean_intermediate: $(SHLIB)
+	rm -Rf $(STATLIB) ./rust/.cargo
+
+clean:
+	rm -Rf $(SHLIB) $(OBJECTS) $(STATLIB) ./rust/.cargo ./rust/vendor ./rust/target
+
+.PHONY: all clean_intermediate clean

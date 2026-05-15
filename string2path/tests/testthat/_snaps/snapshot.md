@@ -1,0 +1,129 @@
+# the data extracted from font file are as expected
+
+    Code
+      string2path("A", "./font/test.ttf")
+    Output
+      # A tibble: 4 x 4
+            x     y glyph_id path_id
+        <dbl> <dbl>    <int>   <int>
+      1 0.800 0.800        1       1
+      2 0.800 0            1       1
+      3 1.60  0.800        1       1
+      4 0.800 0.800        1       1
+
+---
+
+    Code
+      string2stroke("A", "./font/test.ttf")
+    Output
+      # A tibble: 18 x 4
+             x       y glyph_id triangle_id
+         <dbl>   <dbl>    <int>       <int>
+       1 1.64   0.815         1           0
+       2 1.56   0.785         1           0
+       3 0.815  0.785         1           0
+       4 1.64   0.815         1           1
+       5 0.815  0.785         1           1
+       6 0.785  0.815         1           1
+       7 0.785  0.815         1           2
+       8 0.815  0.785         1           2
+       9 0.815  0.0362        1           2
+      10 0.785  0.815         1           3
+      11 0.815  0.0362        1           3
+      12 0.785 -0.0362        1           3
+      13 0.785 -0.0362        1           4
+      14 0.815  0.0362        1           4
+      15 1.56   0.785         1           4
+      16 0.785 -0.0362        1           5
+      17 1.56   0.785         1           5
+      18 1.64   0.815         1           5
+
+---
+
+    Code
+      string2fill("A", "./font/test.ttf")
+    Output
+      # A tibble: 3 x 4
+            x     y glyph_id triangle_id
+        <dbl> <dbl>    <int>       <int>
+      1 0.800 0            1           0
+      2 0.800 0.800        1           0
+      3 1.60  0.800        1           0
+
+# handle white spaces
+
+    Code
+      string2path("A A", "./font/test.ttf")
+    Output
+      # A tibble: 8 x 4
+            x     y glyph_id path_id
+        <dbl> <dbl>    <int>   <int>
+      1 0.800 0.800        1       1
+      2 0.800 0            1       1
+      3 1.60  0.800        1       1
+      4 0.800 0.800        1       1
+      5 2.40  0.800        3       2
+      6 2.40  0            3       2
+      7 3.20  0.800        3       2
+      8 2.40  0.800        3       2
+
+# the data extracted from installed font are as expected
+
+    Code
+      string2path("A", "Arial")
+    Output
+      # A tibble: 27 x 4
+                x     y glyph_id path_id
+            <dbl> <dbl>    <int>   <int>
+       1  0.245   0.641        1       1
+       2 -0.00131 0            1       1
+       3  0.0887  0            1       1
+       4  0.159   0.194        1       1
+       5  0.427   0.194        1       1
+       6  0.502   0            1       1
+       7  0.598   0            1       1
+       8  0.336   0.641        1       1
+       9  0.245   0.641        1       1
+      10  0.184   0.263        1       2
+      # i 17 more rows
+
+---
+
+    Code
+      string2stroke("A", "Arial")
+    Output
+      # A tibble: 150 x 4
+             x       y glyph_id triangle_id
+         <dbl>   <dbl>    <int>       <int>
+       1 0.255  0.626         1           0
+       2 0.234  0.656         1           0
+       3 0.346  0.656         1           0
+       4 0.255  0.626         1           1
+       5 0.346  0.656         1           1
+       6 0.326  0.626         1           1
+       7 0.326  0.626         1           2
+       8 0.346  0.656         1           2
+       9 0.621 -0.0150        1           2
+      10 0.326  0.626         1           3
+      # i 140 more rows
+
+---
+
+    Code
+      string2fill("A", "Arial")
+    Output
+      # A tibble: 75 x 4
+                x     y glyph_id triangle_id
+            <dbl> <dbl>    <int>       <int>
+       1  0.0887  0            1           0
+       2 -0.00131 0            1           0
+       3  0.159   0.194        1           0
+       4  0.427   0.194        1           1
+       5  0.159   0.194        1           1
+       6  0.184   0.263        1           1
+       7  0.159   0.194        1           2
+       8 -0.00131 0            1           2
+       9  0.184   0.263        1           2
+      10  0.184   0.263        1           3
+      # i 65 more rows
+

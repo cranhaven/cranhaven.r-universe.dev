@@ -1,0 +1,389 @@
+use std::sync::Mutex;
+
+use crate::builder::{BuildPath, LyonPathBuilder, RgbaColor};
+
+use skrifa::color::{Brush, ColorPainter, CompositeMode};
+use skrifa::instance::Location;
+use skrifa::outline::DrawSettings;
+use skrifa::prelude::{LocationRef, Size, Tag};
+use skrifa::raw::TableProvider;
+use skrifa::raw::tables::kern::SubtableKind;
+use skrifa::raw::types::BoundingBox;
+use skrifa::{FontRef, GlyphId, MetadataProvider};
+use std::sync::LazyLock;
+
+pub(crate) static FONT_COLLECTION: LazyLock<Mutex<fontique::Collection>> = LazyLock::new(|| {
+    Mutex::new(fontique::Collection::new(
+        fontique::CollectionOptions::default(),
+    ))
+});
+
+#[derive(Debug)]
+pub enum FontLoadingError {
+    ParseError(String),
+    LoadError(String),
+    IOError(std::io::Error),
+    NoAvailableFonts,
+}
+
+impl From<std::io::Error> for FontLoadingError {
+    fn from(err: std::io::Error) -> Self {
+        Self::IOError(err)
+    }
+}
+
+impl From<FontLoadingError> for savvy::Error {
+    fn from(value: FontLoadingError) -> Self {
+        let msg = match value {
+            FontLoadingError::ParseError(s) => s,
+            FontLoadingError::LoadError(s) => s,
+            FontLoadingError::IOError(err) => err.to_string(),
+            FontLoadingError::NoAvailableFonts => {
+                "No available fonts is found on the machine".to_string()
+            }
+        };
+        savvy::Error::new(&msg)
+    }
+}
+
+impl<T: BuildPath> LyonPathBuilder<T> {
+    pub fn outline(
+        &mut self,
+        text: &str,
+        font_family: &str,
+        font_weight: f64,
+        font_style: &str,
+    ) -> savvy::Result<()> {
+        let weight_value = font_weight as f32;
+
+        #[rustfmt::skip]
+        let style = match font_style {
+            "italic"  => fontique::FontStyle::Italic,
+            "oblique" => fontique::FontStyle::Oblique(None),
+            _         => fontique::FontStyle::Normal,
+        };
+
+        // 1. Try the user-supplied family name first.
+        let named_result = {
+            let mut collection = FONT_COLLECTION.lock().unwrap();
+            let mut result = None;
+            if let Some(family) = collection.family_by_name(font_family) {
+                let font_info = family.match_font(
+                    fontique::FontWidth::from_ratio(1.0),
+                    style,
+                    fontique::FontWeight::new(weight_value),
+                    false,
+                );
+
+                // fontique's match_font() compares only the OS/2 default weight
+                // and may pick a static face over a variable one. When the matched
+                // font is static, prefer a variable font from the same family so
+                // that weight/style can be applied via variation axes.
+                let font_info = match font_info {
+                    Some(fi) if !fi.has_weight_axis() => family
+                        .fonts()
+                        .iter()
+                        .find(|f| f.has_weight_axis())
+                        .or(Some(fi)),
+                    other => other,
+                };
+
+                if let Some(fi) = font_info {
+                    if let Some(data) = fi.load(None) {
+                        result = Some((data, fi.index()));
+                    }
+                }
+            }
+            result
+        };
+
+        if let Some((font_data, index)) = named_result {
+            return self.outline_inner(text, font_data.as_ref(), index, weight_value, font_style);
+        }
+
+        savvy::r_eprint!(
+            "No font face matched with the specified conditions. Falling back to the default font..."
+        );
+
+        // 2. Fallback: use any available system font.
+        // fontique does not expose generic family names (SansSerif/Serif), so we
+        // use the first family found in the collection.
+        let fallback_result = {
+            let mut collection = FONT_COLLECTION.lock().unwrap();
+            let first_name = collection.family_names().next().map(|s| s.to_string());
+            let mut result = None;
+            if let Some(name) = first_name {
+                if let Some(family) = collection.family_by_name(&name) {
+                    if let Some(font_info) = family.fonts().first() {
+                        if let Some(data) = font_info.load(None) {
+                            result = Some((data, font_info.index()));
+                        }
+                    }
+                }
+            }
+            result
+        };
+
+        if let Some((font_data, index)) = fallback_result {
+            return self.outline_inner(text, font_data.as_ref(), index, weight_value, font_style);
+        }
+
+        // 3. When no fonts are available, return an error.
+        savvy::r_eprint!("No font is available!");
+
+        Err(FontLoadingError::NoAvailableFonts.into())
+    }
+
+    pub fn outline_from_file(&mut self, text: &str, font_file: &str) -> savvy::Result<()> {
+        let font_data_raw =
+            std::fs::read(font_file).map_err(|e| savvy::Error::new(e.to_string()))?;
+        // Weight/style are unknown for file-loaded fonts; use defaults so variable
+        // fonts render at their default design position.
+        self.outline_inner(text, font_data_raw.as_slice(), 0, 400.0, "normal")?;
+        Ok(())
+    }
+
+    /// Detects whether `font_data` is a static or variable font and dispatches
+    /// to the appropriate rendering path.
+    fn outline_inner(
+        &mut self,
+        text: &str,
+        font_data: &[u8],
+        face_index: u32,
+        weight: f32,
+        style: &str,
+    ) -> savvy::Result<()> {
+        let font = FontRef::from_index(font_data, face_index)
+            .map_err(|e| savvy::Error::new(e.to_string()))?;
+
+        if font.axes().is_empty() {
+            self.outline_static(&font, text)
+        } else {
+            self.outline_variable(&font, text, weight, style)
+        }
+    }
+
+    /// Renders `text` using a static (non-variable) font.
+    ///
+    /// The font face was already selected by fontique, so no variation axes
+    /// need to be set; we render at the default location.
+    fn outline_static(&mut self, font: &FontRef<'_>, text: &str) -> savvy::Result<()> {
+        self.draw_glyphs(font, text, LocationRef::default())
+    }
+
+    /// Renders `text` using a variable font.
+    ///
+    /// Builds a [`Location`] from the requested `weight` (`wght` axis) and
+    /// `style` (`ital` or `slnt` axis), then draws each glyph at that location.
+    fn outline_variable(
+        &mut self,
+        font: &FontRef<'_>,
+        text: &str,
+        weight: f32,
+        style: &str,
+    ) -> savvy::Result<()> {
+        let axes = font.axes();
+
+        // Collect user-space axis settings. Tags that don't exist in the font
+        // are silently ignored by axes.location().
+        let mut settings: Vec<(&str, f32)> = vec![("wght", weight)];
+        match style {
+            "italic" => settings.push(("ital", 1.0)),
+            "oblique" => {
+                // Prefer a continuous slant axis; fall back to binary italic.
+                if axes.get_by_tag(Tag::new(b"slnt")).is_some() {
+                    settings.push(("slnt", -12.0));
+                } else {
+                    settings.push(("ital", 1.0));
+                }
+            }
+            _ => {}
+        }
+
+        let location: Location = axes.location(settings);
+        self.draw_glyphs(font, text, LocationRef::from(&location))
+    }
+
+    /// Core glyph rendering loop shared by both static and variable paths.
+    fn draw_glyphs(
+        &mut self,
+        font: &FontRef<'_>,
+        text: &str,
+        location: LocationRef<'_>,
+    ) -> savvy::Result<()> {
+        let metrics = font.metrics(Size::unscaled(), location);
+        // In TrueType, descent is negative, so height = ascent - descent gives total cell height.
+        let height = (metrics.ascent - metrics.descent) as f32;
+        self.set_scale_factor(1. / height);
+        let line_height = height + metrics.leading as f32;
+
+        let outlines = font.outline_glyphs();
+        let color_glyphs = font.color_glyphs();
+        let charmap = font.charmap();
+        let glyph_metrics = font.glyph_metrics(Size::unscaled(), location);
+
+        // Extract the default CPAL palette for COLR color glyphs.
+        let palette: Vec<RgbaColor> = font
+            .color_palettes()
+            .get(0)
+            .map(|p| {
+                p.colors()
+                    .iter()
+                    .map(|c| RgbaColor {
+                        red: c.red,
+                        green: c.green,
+                        blue: c.blue,
+                        alpha: c.alpha,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let mut prev_glyph: Option<GlyphId> = None;
+        for c in text.chars() {
+            // Skip control characters.
+            if c.is_control() {
+                if c == '\n' {
+                    self.sub_offset_y(line_height);
+                    self.reset_offset_x();
+                }
+                prev_glyph = None;
+                continue;
+            }
+
+            // Increment glyph ID for consistency.
+            self.cur_glyph_id += 1;
+
+            // Even when we cannot find a glyph, fall back to .notdef (GlyphId 0).
+            let cur_glyph = charmap.map(c).unwrap_or(GlyphId::new(0));
+
+            if let Some(prev) = prev_glyph {
+                self.add_offset_x(find_kerning(font, prev, cur_glyph));
+            }
+
+            if !c.is_whitespace() {
+                if let Some(color_glyph) = color_glyphs.get(cur_glyph) {
+                    // COLR color glyph: paint produces one finish_glyph_with_color
+                    // call per layer via the ColrPainter callbacks.
+                    let mut painter = ColrPainter {
+                        builder: self,
+                        outlines: &outlines,
+                        location,
+                        palette: &palette,
+                    };
+                    color_glyph
+                        .paint(location, &mut painter)
+                        .map_err(|e| savvy::Error::new(format!("{e:?}")))?;
+                } else if let Some(glyph) = outlines.get(cur_glyph) {
+                    glyph
+                        .draw(DrawSettings::unhinted(Size::unscaled(), location), self)
+                        .map_err(|e| savvy::Error::new(e.to_string()))?;
+                    self.finish_glyph();
+                }
+            }
+
+            if let Some(advance) = glyph_metrics.advance_width(cur_glyph) {
+                self.add_offset_x(advance);
+            }
+
+            prev_glyph = Some(cur_glyph);
+        }
+
+        Ok(())
+    }
+}
+
+/// Returns the kerning adjustment (in font design units) for the given glyph pair.
+/// Iterates `kern` table subtables and returns the first matching horizontal kern value.
+/// Returns 0.0 if no kerning information is available.
+fn find_kerning(font: &FontRef<'_>, left: GlyphId, right: GlyphId) -> f32 {
+    let Ok(kern) = font.kern() else { return 0.0 };
+    for subtable in kern.subtables() {
+        let Ok(subtable) = subtable else { continue };
+        if !subtable.is_horizontal() {
+            continue;
+        }
+        let Ok(kind) = subtable.kind() else { continue };
+        let value = match kind {
+            SubtableKind::Format0(f) => f.kerning(left, right),
+            SubtableKind::Format2(f) => f.kerning(left, right),
+            SubtableKind::Format3(f) => f.kerning(left, right),
+            SubtableKind::Format1(_) => None, // state machine format, not supported
+        };
+        if let Some(v) = value {
+            return v as f32;
+        }
+    }
+    0.0
+}
+
+/// Implements skrifa's [`ColorPainter`] to render COLR color glyphs.
+///
+/// For each layer the COLR traversal visits, the outline is drawn into the
+/// builder and finalized with the layer's palette color.  This supports both
+/// COLRv0 (via the `fill_glyph` fast-path) and basic COLRv1 (via the
+/// `push_clip_glyph` + `fill` sequence).
+struct ColrPainter<'a, 'f, T: BuildPath> {
+    builder: &'a mut LyonPathBuilder<T>,
+    outlines: &'a skrifa::outline::OutlineGlyphCollection<'f>,
+    location: LocationRef<'a>,
+    palette: &'a [RgbaColor],
+}
+
+impl<T: BuildPath> ColrPainter<'_, '_, T> {
+    fn resolve_color(&self, brush: &Brush<'_>) -> Option<RgbaColor> {
+        match brush {
+            Brush::Solid {
+                palette_index,
+                alpha,
+            } => self
+                .palette
+                .get(*palette_index as usize)
+                .map(|&c| RgbaColor {
+                    alpha: (c.alpha as f32 * alpha) as u8,
+                    ..c
+                }),
+            _ => None,
+        }
+    }
+
+    fn draw_outline(&mut self, glyph_id: GlyphId) {
+        if let Some(glyph) = self.outlines.get(glyph_id) {
+            let _ = glyph.draw(
+                DrawSettings::unhinted(Size::unscaled(), self.location),
+                self.builder,
+            );
+        }
+    }
+}
+
+impl<T: BuildPath> ColorPainter for ColrPainter<'_, '_, T> {
+    fn push_transform(&mut self, _transform: skrifa::color::Transform) {}
+    fn pop_transform(&mut self) {}
+
+    fn push_clip_glyph(&mut self, glyph_id: GlyphId) {
+        self.draw_outline(glyph_id);
+    }
+
+    fn push_clip_box(&mut self, _clip_box: BoundingBox<f32>) {}
+    fn pop_clip(&mut self) {}
+
+    fn fill(&mut self, brush: Brush<'_>) {
+        let color = self.resolve_color(&brush);
+        self.builder.finish_glyph_with_color(color);
+    }
+
+    fn push_layer(&mut self, _composite_mode: CompositeMode) {}
+
+    /// Fast-path for COLRv0: each layer is a single glyph with a solid color.
+    fn fill_glyph(
+        &mut self,
+        glyph_id: GlyphId,
+        _brush_transform: Option<skrifa::color::Transform>,
+        brush: Brush<'_>,
+    ) {
+        let color = self.resolve_color(&brush);
+        self.draw_outline(glyph_id);
+        self.builder.finish_glyph_with_color(color);
+    }
+}
