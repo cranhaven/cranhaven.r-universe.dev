@@ -1,0 +1,17 @@
+testthat::skip_if_not_installed("scRNAseq", minimum_version = NULL)
+testthat::skip_if_not_installed("SummarizedExperiment", minimum_version = NULL)
+test_that("Clusters were made correctly", {
+  sce <- scRNAseq::ZeiselBrainData()
+  counts_matrix <- SummarizedExperiment::assay(sce, "counts")
+  rownames(counts_matrix) <- gsub("_", "-", rownames(counts_matrix))
+  seurat_obj <- Seurat::CreateSeuratObject(counts_matrix)
+  cell_names <- colnames(seurat_obj@assays$RNA)[1:150]
+  seurat_obj <- subset(seurat_obj, cells = cell_names)
+  seurat_obj <- Seurat::NormalizeData(seurat_obj)
+  seurat_obj <- Seurat::FindVariableFeatures(seurat_obj)
+  seurat_obj <- Seurat::ScaleData(seurat_obj)
+  seurat_obj <- Seurat::RunPCA(seurat_obj)
+  result <- scStability::clustStable(n_runs = 10, seurat_obj, n_cores = 8)
+  expect_equal(length(result$cluster_labels), 10)
+  expect_equal(length(result$cluster_labels[[1]]), 150)
+})
