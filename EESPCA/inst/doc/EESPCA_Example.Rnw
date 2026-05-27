@@ -1,0 +1,315 @@
+%\VignetteIndexEntry{EESPCA example}
+\documentclass[12pt, nogin]{article}
+\usepackage[hmargin=1in, vmargin=1in]{geometry} 
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{amsthm}
+\usepackage{bbm}
+\usepackage{hyperref}
+\usepackage{enumitem}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage{cite}
+\usepackage{caption}
+\usepackage{calc}
+\SweaveOpts{keep.source=T}
+\usepackage[multiple]{footmisc}
+\begin{document}
+
+\date{}
+\title{Eigenvectors from Eigenvalues Sparse Principal Component Analysis (EESPCA)\\
+R logic for simple example results}
+\author{H. Robert Frost
+\footnote{rob.frost@dartmouth.edu, Department of Biomedical Data Science, Geisel School of Medicine, Dartmouth College, Hanover, NH 03755}}
+\setkeys{Gin}{width=1\textwidth} 
+
+\maketitle
+
+
+The following R logic was used to generate the results associated with the running example in the EESPCA manuscript and is included as a vignette in the EESPCA R package. This example is based on a data set simulated according to a 10-dimensional multivariate normal (MVN) distribution.
+
+\subsection{Load required R packages}
+
+The MASS package is used to simulate the MVN data, the PMA package contains the implementation of the Witten et al. LASSO-based sparse principal components method \cite{Witten:2009tg} (NOTE: PMA-related logic has been commented out since PMA has been archived on CRAN), the rifle package contains the implementation the rifle method by Tan et al. \cite{https://doi.org/10.1111/rssb.12291}, and the EESPCA package %(included as Supporting Information with updates available at http://www.dartmouth.edu/\textasciitilde hrfrost/EESPCA) 
+contains the implementation of the EESPCA method and TPower method by Yuan and Zhang \cite{10.5555/2567709.2502610} as well as logic to support sparsity parameter selection for both TPower and rifle via cross-validation.
+<<fig=F, echo=T>>=
+library(MASS)
+#library(PMA)
+library(rifle)
+library(EESPCA)
+@
+
+\subsection{Set random seed}
+
+Set the random seed so that simulation is reproducible.
+<<fig=F, echo=T>>=
+set.seed(2)
+@
+
+\subsection{Set parameters that control the simulation}
+
+<<fig=F, echo=T>>=
+p =10 # number of variables
+prop.info = 0.4 # proportion of variables that have non-zero loadings on the 1st PC
+rho = 0.5 # covariance between informative variables
+n = 100 # simulated sample size
+@
+
+\subsection{Define MVN distribution}
+
+The population mean for data is set to the zero vector and the population covariance matrix is given a block covariance structure with one block including the first 4 variables and one block including the last two variables. To simplify the example, we set the population variance for all variables to 1, which aligns with the common practice of performing PCA after standardization. 
+
+<<fig=F, echo=T>>=
+S = matrix(0, nrow=p, ncol=p)
+num.info = p*prop.info
+S[1:num.info, 1:num.info] = rho
+S[p,p-1] = S[p-1,p] = rho
+diag(S) = 1 
+S
+@
+
+\subsection{Compute population PCs}
+
+For this population covariance matrix, the first population PC has equal non-zero loadings (-0.5) for just the first four variables and the second population PC has equal non-zero loadings (0.7071068) for just the last two variables. The variances of these population PCs are 2.5 and 1.5.
+
+<<fig=F, echo=T>>=
+(eigen.out = eigen(S))
+@
+
+\subsection{Compute approximate normed squared loadings for the first population PC.}
+
+The approximate normed squared loadings for the first population PC according the formula used by the EESPCA method are:
+
+<<fig=F, echo=T>>=
+v1 = eigen.out$vectors[,1]
+lambda1 = eigen.out$values[1]
+(approx.v1.sq = computeApproxNormSquaredEigenvector(S, v1, lambda1, trace=T))
+@
+
+\subsection{Simulated MVN data}
+
+Simulate one set of 100 independent samples are drawn from this MVN distribution and compute the sample covariance matrix.
+
+<<fig=F, echo=T>>=
+X = mvrnorm(n=n, mu=rep(0,p), Sigma=S)
+S.hat = cov(X)
+@
+
+\subsection{Perform standard PCA}
+
+<<fig=F, echo=T>>=
+prcomp.out = prcomp(X)
+(V.2 = prcomp.out$rotation[,1:2])
+prcomp(X)$sdev[1:2]^2
+@
+
+\subsection{Compute PCA reconstruction error}
+
+Compute the rank 2 reconstruction based on the first two PCs (computed as the squared Frobenius norm of the residual matrix). By definition, this is the minimum rank 2 reconstruction error. It is important to note that this reconstruction error is distinct from the out-of-sample reconstruction error used for comparative analysis in the EESPCA paper and used as the objective function for cross-validation based selection of sparsity parameters.
+
+<<fig=F, echo=T>>=
+(pca.error = reconstructionError(X, V.2))
+@
+
+\noindent Calculate the Euclidean distance between the true PC loadings and the estimated loadings for the first PC.  
+
+<<fig=F, echo=T>>=
+computeEuclideanDistance = function(x1, x2) {
+   # To account for the arbitrary sign of eigenvectors, taking absolute value first.
+  return (sqrt(sum((abs(x1) - abs(x2))^2)))
+}
+(pca.L2 = computeEuclideanDistance(v1, prcomp.out$rotation[,1]))
+@
+
+\subsection{Compute approximate normed squared loadings for the first sample PC.}
+
+<<fig=F, echo=T>>=
+v1 = prcomp.out$rotation[,1]
+v1^2
+lambda1 = prcomp.out$sdev[1]^2
+(approx.v1.sq = computeApproxNormSquaredEigenvector(S.hat, v1, lambda1, trace=F))
+(ratio = sqrt(approx.v1.sq)/abs(v1))
+@
+
+\subsection{Compute the first two sparse PCs using EESPCA method}
+
+<<fig=F, echo=T>>=
+eespca.out = eespcaForK(X, k=2, trace=F, compute.sparse.lambda=T)
+eespca.out
+@
+
+\noindent Compute the rank 2 reconstruction error using the EESPCA sparse PCs:
+
+<<fig=F, echo=T>>=
+(eespca.error = reconstructionError(X, eespca.out$V))
+@
+
+\noindent Calculate the L2 distance between the true PC loadings and the estimated sparse loadings for the first PC.
+
+<<fig=F, echo=T>>=
+(eespca.L2 = computeEuclideanDistance(v1, eespca.out$V[,1]))
+@
+
+\subsection{Compute the first two sparse PCs using EESPCA.cv method}
+
+Find optimal penalty via 5-fold cross-validation for first PC:
+<<fig=F, echo=T>>=
+p = ncol(X)
+default.thresh = 1/sqrt(p)  
+sparse.threshold.values=seq(from=0.75*default.thresh, to=1.25*default.thresh, 
+	length.out=21)  
+cv.out = eespcaCV(X, sparse.threshold.values=sparse.threshold.values)
+@
+
+Compute sparse PC 1 using penalty that generated minimum error on fist PC 
+<<fig=F, echo=T>>=
+eespca.cv.v1 = eespca(X, sparse.threshold=cv.out$best.sparsity, compute.sparse.lambda=T)$v1.sparse
+@
+
+Find optimal penalty for second PC using cross-validation on residual matrix. Use that to compute sparse PC 2.
+<<fig=F, echo=T>>=
+X.resid = computeResidualMatrix(X, eespca.cv.v1)
+cv.out = eespcaCV(X.resid, sparse.threshold.values=sparse.threshold.values)
+eespca.cv.v2 =  eespca(X.resid, sparse.threshold=cv.out$best.sparsity, compute.sparse.lambda=T)$v1.sparse
+(V = cbind(eespca.cv.v1,eespca.cv.v2))
+@
+
+\noindent Compute the rank 2 reconstruction error using the EESPCA.cv sparse PCs:
+
+<<fig=F, echo=T>>=
+(eespca.cv.error = reconstructionError(X, V))
+@
+
+\noindent Calculate the L2 distance between the true PC loadings and the estimated sparse loadings for the first PC.
+
+<<fig=F, echo=T>>=
+(eespca.cv.L2 = computeEuclideanDistance(v1, eespca.cv.v1))
+@
+
+\subsection{Use the Witten et al. method \cite{Witten:2009tg} to compute the first two sparse PCs}
+
+Find optimal penalty via 5-fold cross-validation for first PC:
+<<fig=F, echo=T>>=
+#cv.out =  SPC.cv(X, sumabsv=seq(1, sqrt(p), len=20), niter=10, trace=F)
+@
+
+Look at solution at penalty that generated minimum error on fist PC (this applies the same penalty to both the first and second PCs and does not enforce orthogonality):
+<<fig=F, echo=T>>=
+#spc.out=SPC(X, sumabsv=cv.out$bestsumabsv, K=2, trace=F)
+#spc.out$v
+#(spc.error = reconstructionError(X, spc.out$v))
+@
+
+Look at solution at penalty 1 SE from value that generated minimum error:
+<<fig=F, echo=T>>=
+#spc.1se.out =SPC(X, sumabsv=cv.out$bestsumabsv1se, K=2, trace=F)
+#spc.1se.out$v
+#(spc.1se.error = reconstructionError(X, spc.1se.out$v))
+@
+
+\noindent Calculate the L2 distance between the true PC loadings and the estimated sparse loadings for the first PC.
+
+<<fig=F, echo=T>>=
+#(spc.L2 = computeEuclideanDistance(v1, spc.out$v[,1]))
+#(spc.1se.L2 = computeEuclideanDistance(v1, spc.1se.out$v[,1]))
+@
+
+\subsection{Use the Yuan and Zhang TPower method \cite{10.5555/2567709.2502610} to compute the first two sparse PCs}
+
+Find optimal k-value via 5-fold cross-validation for first PC:
+<<fig=F, echo=T>>=
+k.values = round(seq(1, p, len=20))
+(optimal.k = tpowerPCACV(X=X, k.values=k.values, nfolds=5))
+@
+
+\noindent Generate initial PC loadings using non-truncated powerIteration:
+<<fig=F, echo=T>>=
+v.init = powerIteration(X=S.hat)$v1
+@
+
+\noindent Generate first and second sparse PC loadings using TPower method (second sparse PC is generated on residual matrix using new optimal sparsity value):
+<<fig=F, echo=T>>=
+tpower.v1 = tpower(X=S.hat, max.iter=100, k=optimal.k, v1.init=v.init)
+X.resid = computeResidualMatrix(X, tpower.v1)
+(optimal.k2 = tpowerPCACV(X=X.resid, k.values=k.values, nfolds=5))
+X.resid.cov = cov(X.resid)
+v2.init = powerIteration(X=X.resid.cov)$v1
+tpower.v2 = tpower(X=X.resid.cov, max.iter=100, k=optimal.k2, v1.init=v2.init)
+(v = cbind(tpower.v1, tpower.v2))
+(tpower.error = reconstructionError(X, v))
+@
+
+\noindent Calculate the L2 distance between the true PC loadings and the estimated sparse loadings for the first PC.
+
+<<fig=F, echo=T>>=
+(tpower.L2 = computeEuclideanDistance(v1, tpower.v1))
+@
+
+\subsection{Use the Tan et al. rifle method \cite{https://doi.org/10.1111/rssb.12291} to compute the first two sparse PCs}
+
+Find optimal k-value via 5-fold cross-validation for first PC:
+<<fig=F, echo=T>>=
+k.values = round(seq(1, p, len=20))
+(optimal.k = riflePCACV(X=X, k.values=k.values, nfolds=5))
+@
+
+\noindent Generate initial PC loadings using recommended rifle approach (as implemented in rifle.init() method):
+<<fig=F, echo=T>>=
+v.init = rifleInit(X)
+@
+
+\noindent Generate first and second sparse PC loadings using rifle method (second sparse PC is generated on residual matrix using new optimal sparsity value):
+<<fig=F, echo=T>>=
+rifle.v1 = rifle(A=S.hat, B=diag(p), init=v.init, k=optimal.k)
+X.resid = computeResidualMatrix(X, rifle.v1)
+(optimal.k2 = riflePCACV(X=X.resid, k.values=k.values, nfolds=5))
+X.resid.cov = cov(X.resid)
+v2.init = rifleInit(X.resid)
+rifle.v2 = rifle(A=X.resid.cov, B=diag(p), init=v2.init, k=optimal.k2)
+(v = cbind(rifle.v1, rifle.v2))
+(rifle.error = reconstructionError(X, v))
+@
+\noindent Calculate the L2 distance between the true PC loadings and the estimated sparse loadings for the first PC.
+
+<<fig=F, echo=T>>=
+(rifle.L2 = computeEuclideanDistance(v1, -rifle.v1))
+@
+
+\subsection{Summary of reconstruction errors and estimation distances}
+
+<<fig=F, echo=T>>=
+estimation.summary = data.frame(pca=c(pca.error, pca.L2),
+	#spc=c(spc.error, spc.L2),
+	#spc.1se=c(spc.1se.error, spc.1se.L2),
+	eespca=c(eespca.error, eespca.L2),
+	tpower=c(tpower.error, tpower.L2),
+	rifle=c(rifle.error, rifle.L2))
+rownames(estimation.summary) = c("Reconstruction Error", "Loadings distance")
+estimation.summary
+@
+
+\bibliographystyle{plain}
+%\bibliography{../../../../../bib/bibtex}    
+\begin{thebibliography}{1}
+
+\bibitem{https://doi.org/10.1111/rssb.12291}
+Kean~Ming Tan, Zhaoran Wang, Han Liu, and Tong Zhang.
+\newblock Sparse generalized eigenvalue problem: optimal statistical rates via
+  truncated rayleigh flow.
+\newblock {\em Journal of the Royal Statistical Society: Series B (Statistical
+  Methodology)}, 80(5):1057--1086, 2018.
+
+\bibitem{Witten:2009tg}
+Daniela~M. Witten, Robert Tibshirani, and Trevor Hastie.
+\newblock A penalized matrix decomposition, with applications to sparse
+  principal components and canonical correlation analysis.
+\newblock {\em Biostatistics}, 10(3):515--534, July 2009.
+
+\bibitem{10.5555/2567709.2502610}
+Xiao-Tong Yuan and Tong Zhang.
+\newblock Truncated power method for sparse eigenvalue problems.
+\newblock {\em J. Mach. Learn. Res.}, 14(1):899--925, April 2013.
+
+\end{thebibliography}
+
+\end{document}
