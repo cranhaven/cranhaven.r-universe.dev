@@ -1,0 +1,5 @@
+fs2 <-
+function(word){
+  if(length(word) >4){
+    if(paste(word[(length(word)-1):length(word)],collapse="") == '\u0627\u0646'){
+      word <- word[1:(length(word)-2)]}}; return(word)}
