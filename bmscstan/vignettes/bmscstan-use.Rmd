@@ -1,0 +1,646 @@
+---
+title: Fitting Bayesian Multilevel Single Case models using bmscstan
+author: "Michele Scandola"
+date: "`r Sys.Date()`"
+output: rmarkdown::html_vignette
+bibliography: references.bib
+vignette: >
+  %\VignetteIndexEntry{Fitting Bayesian Multilevel Single Case models using bmscstan}
+  %\VignetteEncoding{UTF-8}
+  %\VignetteEngine{knitr::rmarkdown}
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  eval = nzchar(Sys.getenv("bmscstan_eval"))
+)
+```
+
+The package **bmscstan** provides useful functions to fit
+Bayesian Multilevel Single Case models (BMSC) using as
+backend *Stan* [@Carpenter2017].
+
+This approach is based on the seminal approach of the Crawford's tests
+[@Crawford1998; @Crawford2005; @Crawford2010], using a small control
+sample of individuals, 
+to see whether the performance of the single case deviates from them.
+Unfortunately, Crawford's tests are limited to a number of specific
+experimental designs that do not allow researchers to use complex
+experimental designs.
+
+The BMSC approach is born mainly to deal with this problem: its purpose is,
+in fact, to allow the fitting of models with the same flexibility
+of a Multilevel Model, with single case and controls data.
+
+The core function of the **bmscstan** package is `BMSC`,
+whose theoretical assumptions, and its validation are
+reported in [@scandola_romano_2021].
+
+The syntax used by the `BMSC` function is extremely similar to the syntax
+used in the `lme4` package. However, the specification of random effects
+is limited, but it can cover the greatest part of cases
+(for further details, please see `?bmscstan::randomeffects`).
+
+## Example on real data
+
+In order to show an example on the use of the **bmscstan** package,
+the datasets in this package will be used.
+
+In these datasets we have data coming from a Body Sidedness Effect paradigm
+[@Ottoboni2005; @Tessari2012], that is a Simon-like paradigm useful to
+measure body representation.
+
+In this experimental paradigm, participants have to answer to a circle 
+showed in the centre of the computer screen, superimposed to
+an irrelevant image of a left or right hand, or to a left or right foot.
+
+The circle can be of two colors (e.g. red or blue), and participants have
+to press one button with the left when the circle is of a specific colour,
+and with the right hand when the circle is of the another colour.
+
+When the irrelevant background image (foot or hand) is incongruent with
+the hand used to answer, the reaction times and frequency of errors are higher.
+
+The two irrelevant backgrounds are administered in different experimental blocks.
+
+This is considered an effect of the body representation.
+
+In the package there are two datasets, one composed by 16 healthy control
+participants, and the other one by an individual affected by right unilateral
+brachial plexus lesion (however, s/he could independently press the
+keyboard buttons).
+
+## Explore the data
+
+The datasets are called `data.pt` for the single case, and `data.ctrl` for the
+control group, and they can be loaded using `data(BSE)`.
+
+In these datasets there are the Reaction Times `RT`, a `Body.District` factor
+with levels FOOT and HAND, a `Congruency` factor (levels: Congruent,
+Incongruent), and a `Side` factor (levels: Left, Right). In the `data.ctrl`
+dataset there also is an `ID` factor, representing the different 16 control
+participants.
+
+```{r, fig.height= 6, fig.width= 6}
+library(ggplot2)
+library(bmscstan)
+
+data(BSE)
+
+str(data.pt)
+
+str(data.ctrl)
+
+ggplot(data.pt, aes(y = RT, x = Body.District:Side , fill = Congruency))+
+  geom_boxplot()
+
+ggplot(data.ctrl, aes(y = RT, x = Body.District:Side , fill = Congruency))+
+  geom_boxplot()+
+  facet_wrap( ~ ID , ncol = 4)
+```
+
+These data seem to have some outliers. Let see if they are normally distributed.
+
+```{r , fig.show='hold'}
+qqnorm(data.ctrl$RT, main = "Controls")
+qqline(data.ctrl$RT)
+
+qqnorm(data.pt$RT, main = "Single Case")
+qqline(data.pt$RT)
+```
+
+They are not normally distributed. Outliers will be removed by using the
+`boxplot.stats` function.
+
+```{r , fig.show='hold'}
+out <- boxplot.stats( data.ctrl$RT )$out
+data.ctrl <- droplevels( data.ctrl[ !data.ctrl$RT %in% out , ] )
+
+out <- boxplot.stats( data.pt$RT )$out
+data.pt <- droplevels( data.pt[ !data.pt$RT %in% out , ] )
+
+qqnorm(data.ctrl$RT, main = "Controls")
+qqline(data.ctrl$RT)
+
+qqnorm(data.pt$RT, main = "Single Case")
+qqline(data.pt$RT)
+```
+
+They are not perfect, but definitively better.
+
+## Deciding the contrasts and the random effects part
+
+First of all, there is the necessity to think to our hypotheses, and setting
+the contrast matrices consequently.
+
+In all cases, our factors have only two levels. Therefore, we set
+the factors with a Treatment Contrasts matrix, with baseline level
+for `Side` the _Left_ level, for `Congruency` the _Congruent_ level, and for
+`Body.District` the _FOOT_ level.
+
+In this way, each coefficient will represent the difference between the
+two levels.
+
+```{r}
+contrasts( data.ctrl$Side )          <- contr.treatment( n = 2 )
+contrasts( data.ctrl$Congruency )    <- contr.treatment( n = 2 )
+contrasts( data.ctrl$Body.District ) <- contr.treatment( n = 2 )
+
+contrasts( data.pt$Side )            <- contr.treatment( n = 2 )
+contrasts( data.pt$Congruency )      <- contr.treatment( n = 2 )
+contrasts( data.pt$Body.District )   <- contr.treatment( n = 2 )
+```
+
+
+The use of the `BMSC` function, for those who are used to `lme4` or `brms`
+syntax should be straightforward.
+
+In this case, we want to fit the following model:
+
+`RT ~ Body.District * Congruency * Side + (Congruency * Side | ID : Body.District)`
+
+Unfortunately, `BMSC` does not directly allow the syntax `ID : Body.District`
+in the specification of the random effects.
+
+Therefore, it is necessary to create a new variable for `ID : Body.District`
+
+```{r}
+data.ctrl$BD_ID <- interaction( data.ctrl$Body.District , data.ctrl$ID )
+```
+
+and the model would be:
+
+`RT ~ Body.District * Congruency * Side + (Congruency * Side | BD_ID)`
+
+For further details concerning the random effects available in 
+`bmscstan`, please type `?bmscstan::randomeffect`.
+
+## Fitting the BMSC model
+
+At this point, fitting the model is easy, and it can be done with the use of
+a single function.
+
+```{r, warning = FALSE, message = FALSE}
+mdl <- BMSC(formula = RT ~ Body.District * Congruency * Side +
+             (Congruency * Side | BD_ID),
+             data_ctrl = data.ctrl,
+             data_sc = data.pt,
+             chains = 2,
+             cores = 1,
+             seed = 2020)
+```
+
+After fitting the model, we should check its quality by means of
+Posterior Predictive P-Values [@Gelman2013] with the `bmscstan::pp_check`
+function.
+
+Thanks to this graphical function, we will see if the observed data and the
+data sampled from the posterior distributions of our BMSC model are similar.
+
+If we observe strong deviations, it means that your BMSC model is not adequately
+describing your data. In this case, you might want to change the priors
+distribution (see the `help` page), change the random effects structure,
+or transform your dependent variable (using the logarithm or other math
+functions).
+
+```{r, fig.width=6, fig.height=6}
+pp_check( mdl )
+```
+
+In both the controls and the single case data, the Posterior Predictive P-Values
+check seems to adequately resemble the observed data.
+
+A further control on our model is given by checking the Effective Sample Size
+(ESS)
+for each coefficient and the $\hat{R}$ diagnostic index [@Gelman1992].
+
+The ESS is the "effective number of simulation draws" for any coefficient,
+namely the approximate number of independent draws, taking into account
+that the various simulations in a Monte Carlo Markov Chain (MCMC) are not 
+independent each other. For further details, see an introductory book in
+Bayesian Statistics. A good ESS estimates should be $ESS > 100$ or $ESS > 10\%$
+of the total draws (remembering that you should remove the burn-in simulations
+from the total iterations counting).
+
+The $\hat{R}$ is an index of the convergence of the MCMCs. In `BMSC` the default
+is 4. Usually, MCMCs are considered convergent when $\hat{R} < 1.1$ (*Stan*
+default).
+
+In order to check these values, the `summary.BMSC` function is needed
+(see next section).
+
+## The `summary.BMSC` output
+
+The output of the `brmscstan::summary.BMSC` function is divided in four main
+parts:
+
+1. In the first part, the model and the selected priors are recalled.
+2. In the second part, the coefficients of the fixed effects for the control
+  group are shown.
+3. In the third part, the coefficients of the fixed effects for the single
+  case are shown.
+4. In the fourth and last part, the fixed effects coefficients for the
+  difference between the single case and the control group are shown.
+
+```{r}
+print( sum_mdl <- summary( mdl ) , digits = 3 )
+```
+
+In the second and fourth part of the output, we can observe a descriptive
+summary reporting the mean, the standard error, the standard deviation,
+the $2.5\%$, $25%$, $50\%$, $75\%$ and $97.5\%$ of the posterior distributions
+of each coefficient. If we want the $95\%$ Credible Interval, we can consider
+only the $2.5\%$ and $97.5\%$ extremes. Then, two diagnostic indexes are
+reported: the `n_eff` parameter, that is the *ESS*, and the `Rhat` ($\hat{R}$).
+Finally, the Savage-Dickey Bayes Factor is reported (*BF10*).
+
+In the third part the diagnostic indexes are not reported because these
+coefficients are computed as marginal probabilities from the
+probabilities summarized in the second and fourth part.
+
+## Understanding the `summary.BMSC` output
+
+### Checking the diagnostic indexes
+
+The first step should be controlling the diagnostic indexes.
+
+In this model, all `n_eff` are greater than the $10\%$ of the total iterations 
+(default iterations: 4000, default warmup iterations: 2000, default chains: 4 =
+`r (4000 - 2000) * 4 / 10`). Also, all $\hat{R}s < 1.1$. Finally, we already
+saw that the Posterior Predictive P-values are showing that the model is
+representative of the data.
+
+### The Control Group results
+
+Then, observing what the fixed effects of the Control group are showing
+is important before of seeing the differences with the single case.
+
+In this analysis, there are 5 fixed effects which $BF_{10}$ is greater than
+3 [@Raftery1995].
+
+```{r}
+tmp <- sum_mdl[[1]][sum_mdl[[1]]$BF10 > 3,c("BF10","mean","2.5%","97.5%")]
+
+colnames(tmp) <- c("$BF_{10}$", "$\\mu$", "low $95\\%~CI$", "up $95\\%~CI$")
+
+knitr::kable(
+  tmp,
+  digits = 3
+)
+```
+
+We can have a general overview of the coefficients of the model with the
+`plot.BMSC` function.
+
+```{r, fig.height=6, fig.width=6}
+plot( mdl , who = "control" )
+```
+
+The interaction between Body District and Congruency needs a further
+analysis to better understand the phenomenon. It comes useful the function
+`pairwise.BMSC`.
+
+```{r}
+pp <- pairwise.BMSC(mdl = mdl , contrast = "Body.District2:Congruency2" ,
+                    who = "control")
+
+print( pp , digits = 3 )
+```
+
+The output of this function is divided in two parts:
+
+- a first part, called "Marginal distributions", where the marginal
+  distributions of 
+  each level of the coefficients are reported with a $BF_{10}$ against zero.
+- a second part, called "Table of contrasts", with all possible pairwise
+  comparisons and their $BF_{10}$.
+
+It is also possible to plot the results of this function with the use of
+`plot.pairwise.BMSC`.
+
+```{r, fig.height=6, fig.width=6}
+plot( pp )
+```
+
+Finally, it is possible to plot marginal posterior distributions for each
+effects with $BF_{10} > 3$.
+
+```{r, fig.show = "hold"}
+p1 <- pairwise.BMSC(mdl , contrast = "Body.District2" ,  who = "control" )
+
+plot( p1 )[[1]] +
+  ggtitle("Body District" , subtitle = "Marginal effects") 
+
+plot( p1 )[[2]] +
+  ggtitle("Body District" , subtitle = "Contrasts") 
+
+p2 <- pairwise.BMSC(mdl , contrast = "Congruency2" ,  who = "control" )
+
+plot( p2 )[[1]] +
+  ggtitle("Congruency" , subtitle = "Marginal effects")
+
+plot( p2 )[[2]] +
+  ggtitle("Congruency" , subtitle = "Contrasts")
+
+p3 <- pairwise.BMSC(mdl , contrast = "Side2" ,  who = "control" )
+
+plot( p3 )[[1]] +
+  ggtitle("Side" , subtitle = "Marginal effects")
+
+plot( p3 )[[2]] +
+  ggtitle("Side" , subtitle = "Contrasts")
+```
+
+### The differences between the Control Group and the Single Case
+
+Finally, the difference between the Control Group and the Single Case
+is of interest.
+
+A general plot can be obtained in the following way, plotting both
+the Control Group and the Single Case:
+
+```{r, fig.width=6, fig.height=6}
+plot( mdl ) +
+  theme_bw( base_size = 18 )+
+  theme( legend.position = "bottom",
+         legend.direction = "horizontal")
+```
+
+or plotting only the difference
+
+```{r, fig.width=6, fig.height=6}
+plot( mdl ,who = "delta" ) +
+  theme_bw( base_size = 18 )
+```
+
+The relevant coefficients are:
+
+```{r}
+tmp <- sum_mdl[[3]][sum_mdl[[3]]$BF10 > 3,c("BF10","mean","2.5%","97.5%")]
+
+colnames(tmp) <- c("$BF_{10}$", "$\\mu$", "low $95\\%~CI$", "up $95\\%~CI$")
+
+knitr::kable(
+  tmp,
+  digits = 3
+)
+```
+  
+The Intercept coefficient is showing us that the single case is generally
+slower than the Control Sample (generally speaking, when you analyse healthy
+controls
+against a single case with a specific disease, the single case is slower).
+
+All the main effects can be further analysed by simply looking at their
+estimates (knowing the contrast matrix and the direction of the estimate
+you can understand which level is greater than the other), or by means
+of the `pairwise.BMSC` function, if you also want marginal effects
+and automatic plots.
+
+The interactions require the use of the `pairwise.BMSC` function.
+
+#### The Body District : Congruency interaction:
+
+```{r}
+p4 <- pairwise.BMSC(mdl , contrast = "Body.District2:Congruency2" ,
+                    who = "delta")
+
+print( p4 , digits = 3 )
+```
+
+The `pairwise.BMSC` function shows that in all cases the marginal effects of the
+RTs where greater than zero, but the differences where present only in
+the comparison between FOOT Congruent and the other cases.
+
+```{r, fig.show="hold"}
+plot( p4 , type = "interval")
+
+plot( p4 , type = "area")
+
+plot( p4 , type = "hist")
+```
+
+In this case we can observe that the single case was more facilitated
+by the FOOT Congruent condition than the Control Group.
+
+If the interpretation of the results is difficult, it can be useful look
+what happens in the Single Case marginal effects.
+
+```{r, fig.height=6, fig.width=6}
+p5 <- pairwise.BMSC(mdl , contrast = "Body.District2:Congruency2" ,
+                    who = "singlecase")
+
+plot( p5 , type = "hist")[[1]]
+```
+
+#### The Body District : Congruency interaction:
+
+```{r, fig.height=6, fig.width=6}
+p6 <- pairwise.BMSC(mdl , contrast = "Body.District2:Side2" , who = "delta")
+
+print( p6 , digits = 3 )
+
+plot( p6 , type = "hist")[[1]] +
+  theme_bw( base_size = 18)+
+  theme( strip.text.y = element_text( angle = 0 ) )
+```
+
+In this case, we can see that the left - right difference in the single
+case is always present, with faster RTs in the left foot than in the other
+cases.
+
+#### The Body District : Congruency : Side interaction:
+
+```{r, fig.height=6, fig.width=6}
+p7 <- pairwise.BMSC(mdl ,
+                    contrast = "Body.District2:Congruency2:Side2" ,
+                    who = "delta")
+
+print( p7 , digits = 3 )
+
+plot( p7 , type = "hist")[[1]] +
+  theme_bw( base_size = 18)+
+  theme( strip.text.y = element_text( angle = 0 ) )
+```
+
+Here we can see that the effect was pushed by the facilitation
+that the single case had in the Left Congruent Foot condition
+compared to the Control Group.
+
+## Efficient approximate leave-one-out cross-validation for fitted BMSC models
+   
+The **bmscstan** package has wrapper functions to interface with the `loo`
+package, to diagnostic and compare BMSC models.
+
+Leaving-One-Out scores, diagnostics and comparisons are separately
+computed for the 
+Control group and the Single Case data.
+
+In order to see the Leaving-One-Out and the Pareto smoothed importance sampling
+(PSIS), it is possible to use the function `loo.BMSC`:
+
+```{r}
+print( loo1 <- BMSC_loo( mdl ) )
+
+plot( loo1 )
+```
+
+Model comparison can be done by means of the `BMSC_loo_compare`
+function:
+
+```{r}
+mdl.null <- BMSC(formula = RT ~ 1 +
+             (Congruency * Side | BD_ID),
+             data_ctrl = data.ctrl,
+             data_sc = data.pt,
+             cores = 1,
+             chains = 2,
+             seed = 2021)
+
+print( loo2 <- BMSC_loo( mdl.null ) )
+
+plot( loo2 )
+
+BMSC_loo_compare( list( loo1, loo2 ) )
+```
+
+Further details on LOO, PSIS and their use can be found in the **loo**
+package and in @Vehtari2016 and @Vehtari2015.
+
+## A binomial case
+
+In this section, a brief example on how to use the package for binomial data.
+
+We start simulating the data.
+
+```{r}
+######################################
+# simulation of controls' group data
+######################################
+
+# Number of levels for each condition and trials
+NCond  <- 2
+Ntrials <- 20
+NSubjs  <- 40
+
+betas <- c( 0.5 , 0 )
+
+data.sim <- expand.grid(
+  trial      = 1:Ntrials,
+  ID         = factor(1:NSubjs),
+  Cond      = factor(1:NCond)
+)
+
+### d.v. generation
+y <- rep( times = nrow(data.sim) , NA )
+
+# cheap simulation of individual random intercepts
+set.seed(1)
+rsubj <- rnorm(NSubjs , sd = 0.1)
+
+for( i in 1:length( levels( data.sim$ID ) ) ){
+  
+  sel <- which( data.sim$ID == as.character(i) )
+  
+  mm  <- model.matrix(~ 1 + Cond , data = data.sim[ sel , ] )
+  
+  set.seed(1 + i)
+  y[sel] <- mm %*% as.matrix(betas + rsubj[i]) +
+    rnorm( n = Ntrials * NCond )
+  
+}
+
+data.sim$y <- y
+data.sim$bin <- sapply(
+  LaplacesDemon::invlogit(data.sim$y),
+  function(x) rbinom( 1, 1, x)
+  )
+
+data.sim.bin <- aggregate( bin ~ Cond * ID, data = data.sim, FUN = sum)
+data.sim.bin$n <- aggregate( bin ~ Cond * ID,
+                             data = data.sim, FUN = length)$bin
+
+######################################
+# simulation of patient data
+######################################
+
+betas.pt <- c( 0 , 2  )
+
+data.pt <- expand.grid(
+  trial      = 1:Ntrials,
+  Cond      = factor(1:NCond)
+)
+
+### d.v. generation
+mm  <- model.matrix(~ 1 + Cond , data = data.pt )
+
+set.seed(5)
+data.pt$y <- (mm %*% as.matrix(betas.pt + betas) +
+  rnorm( n = Ntrials * NCond ))[,1]
+data.pt$bin <- sapply(
+  LaplacesDemon::invlogit(data.pt$y),
+  function(x) rbinom( 1, 1, x)
+  )
+
+data.pt.bin <- aggregate( bin ~ Cond, data = data.pt, FUN = sum)
+data.pt.bin$n <- aggregate( bin ~ Cond,
+                             data = data.pt, FUN = length)$bin
+
+
+plot(x = data.sim.bin$Cond, y = data.sim.bin$bin, ylim = c(0,20))
+points(x = data.pt.bin$Cond, y = data.pt.bin$bin, col = "red")
+```
+
+The boxplot represents the control participants, the red dot the single case.
+
+Now, we can specify the model:
+
+`cbind(bin, n) ~ Cond`
+
+The right-hand side of the formula follows the usual lmer- and brms-like
+syntax. In the left-hand side of the formula, `brms` and `lme4`
+have divergent notations.
+
+In future, the `bmscstan` package will be able to use both notations,
+for the moment it is necessary the `lme4` notation `cbind(bin, n)`
+where:
+
+* `bin` is the number of observations
+* `n` is the total number of trials
+
+```{r}
+mdlBin <- BMSC(formula = cbind(bin, n) ~ 1 + Cond,
+            data_ctrl = data.sim.bin, data_sc = data.pt.bin, seed = 2022,
+            chains = 2,
+            family = "binomial", cores = 1)
+
+print( summary( mdlBin ) , digits = 3 )
+```
+
+## Conclusions
+
+In this vignette we have seen how to use the package **bmscstan**
+and its functions to analyse and make sense of Single Case data.
+
+The output of the main functions is rich of information, and the 
+Bayesian Inference can be done by taking into account the Savage-Dickey
+$BF_{10}$, or the $95\%$ CI [see @Kruschke2014 for further details].
+
+In this vignette there is almost no discussion concerning how to test the
+Single Case fixed effects (third part of the main output), but it was used
+to better understand what happens in the differences between the 
+single case and the control group.
+
+However, if your hypotheses focus on the behaviour of the patient, and not
+only on the differences between single case and the control group,
+it will be important to analyse in detail also that part.
+
+
+# References
