@@ -1,0 +1,34 @@
+#' Dados relatvos aos participantes de licitacoes realizadas por orgaos de um ente federativo brasileiro
+#' no periodo de 2011 a 2015
+#'
+#' IMPORTANTE: Todos os campos que pudessem identificar o ente federativo, orgaos, empresas
+#' e certames tiveram seus valores alterados e embaralhados.
+#'
+#' Um data frame contendo 427242 registros de 13 campos.
+#'
+#' part_lic - Dados relativos aos participantes das licitacoes.
+#'
+#' Os campos cujos valores foram alterados estao identificados por um asteristico (*):
+#' \itemize{
+#'   \item{\code{COD_LICITACAO [*]}}{ - Codigo que identifica a licitacao na base de dados.}
+#'   \item{\code{RESUMO_OBJETO}}{ - Descricao resumida do objeto da licitacao.}
+#'   \item{\code{DESC_MODALIDADE}}{ - Modalidade da licitacao.}
+#'   \item{\code{STATUS_LICITACAO}}{ - Status relativo a situacao do certame.}
+#'   \item{\code{DATA_ABERTURA_SESSAO}}{ - Data de abertura da sessão.}
+#'   \item{\code{DESC_UGR [*]}}{ - Descricao da unidade gestora responsavel pelo certame.}
+#'   \item{\code{ID_ITEM}}{ - Identificador do item do objeto a que o participante concorre para fornecer.}
+#'   \item{\code{CNPJCPF_FORNECEDORES [*]}}{ - CNPJ ou CPF do participante do certame.}
+#'   \item{\code{NOME_FORNECEDORES [*]}}{ - Nome do participante do certame.}
+#'   \item{\code{TIPO_PESSOA}}{ - Tipo de pessoa em que o participante pode ser classificado (Fisica/Juridica).}
+#'   \item{\code{VALOR_FINAL}}{ - Valor final homologado para o item do objeto a que o participante concorre para fornecer.}
+#'   \item{\code{VENCEDOR}}{ - Flag que identifica se o participante foi ou nao vencedor no certame (S/N).}
+#'   \item{\code{MICRO_PEQUENA_EMPRESA}}{ - Flag que identifica se o participante e ou nao micro empresa (S/N).}
+#' }
+#'
+#' @docType data
+#' @keywords datasets
+#' @name part_lic
+#' @usage data(part_lic)
+#' @format Um data frame contendo 427242 registros de 13 campos.
+"part_lic"
+
