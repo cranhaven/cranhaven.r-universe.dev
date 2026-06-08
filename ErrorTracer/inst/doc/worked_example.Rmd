@@ -1,0 +1,279 @@
+---
+title: "A one-predictor worked example"
+subtitle: "Walking step by step through the ErrorTracer pipeline"
+author: "Luis Javier Madrigal-Roca"
+date: "`r Sys.Date()`"
+output:
+  rmarkdown::html_vignette:
+    toc: true
+    toc_depth: 3
+    number_sections: true
+vignette: >
+  %\VignetteIndexEntry{A one-predictor worked example}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse  = TRUE,
+  comment   = "#>",
+  eval      = FALSE,   # Stan/brms chunks are too slow for automated builds
+  fig.width = 7,
+  fig.height = 4.5
+)
+```
+
+# What this vignette is for
+
+The methods paper for `ErrorTracer` contains a one-page **Box 1**
+that walks through every stage of the pipeline using a single
+predictor and a single response. The box gives the *intuition* in a
+compressed form. This vignette is the long-form companion: same
+example, same numbers, but with the code, the math, and the diagnostic
+plots laid out one stage at a time so a reader new to Bayesian
+modelling can follow along, run it, and modify it.
+
+The whole example fits one model: phenology shift (days) as a
+function of a single standardised temperature anomaly. We *know* the
+data-generating coefficients because we simulate the data ourselves
+— so you can see how well each stage recovers what was put in.
+
+```{r}
+library(ErrorTracer)
+library(ggplot2)
+library(patchwork)
+```
+
+# Setup: simulate one predictor, one response — over years
+
+Shelf life is a *temporal* concept ("for how many years is my forecast
+still useful?"), so the toy data is generated as a year-indexed time
+series. The temperature predictor `x` drifts upward at a fixed warming
+rate, the response `y` follows it through a linear coefficient
+$\beta$, and the training window is the past while the forecast
+window is the future.
+
+```{r}
+set.seed(20260523L)
+n_train       <- 12L      # 12 training years
+true_beta     <- 4.0      # days of phenology shift per SD of temperature
+true_sigma    <- 1.5      # residual SD (days)
+true_alpha    <- 0.0      # intercept
+warming_slope <- 0.15     # SD of standardised temperature per year
+year0         <- 2000L    # year at which the trend is referenced to zero
+
+years_train <- year0 + seq_len(n_train) - 1L  # 2000..2011
+train <- data.frame(
+  year = years_train,
+  x    = warming_slope * (years_train - year0) +
+         rnorm(n_train, 0, 0.5)               # noisy observed temperature
+)
+train$y <- true_alpha + true_beta * train$x +
+           rnorm(n_train, 0, true_sigma)
+```
+
+We have 12 noisy training observations along the warming trajectory.
+The data-generating slope is $\beta = 4$ days per SD of temperature;
+everything below should recover something close to this.
+
+# Stage 1: turn a quick frequentist fit into a prior
+
+`extract_priors()` is the bridge from a "fast, regularized" world to
+a "slow, Bayesian" world. The recipe is the same for `lm`, `glm`,
+`cv.glmnet`, and `ranger`: take the point estimate (or coefficient)
+as the prior mean and scale the prior SD by the standard error
+(or by the regularised coefficient magnitude, for `glmnet`).
+
+```{r}
+lm_fit  <- lm(y ~ x, data = train)
+summary(lm_fit)$coefficients
+priors  <- extract_priors(lm_fit, multiplier = 2.0, min_sd = 0.1)
+priors
+```
+
+Concretely, with $m = 2$ (the `multiplier` default) and
+$\sigma_{\min} = 0.1$, the prior on $\beta$ is
+
+$$
+\beta \sim \mathcal{N}\!\left(\hat\beta_{\text{lm}},
+                              \bigl[\max(2 \cdot \mathrm{SE},\,
+                                         \sigma_{\min})\bigr]^2\right).
+$$
+
+For our simulated data, $\hat\beta_{\text{lm}} \approx 4.02$ with
+$\mathrm{SE} \approx 0.39$, so the prior is roughly
+$\mathcal{N}(4.02, 0.79^2)$.
+
+# Stage 2: Bayesian refit with the informed prior
+
+```{r}
+bfit <- et_fit(
+  formula = y ~ x,
+  data    = train,
+  priors  = priors,
+  chains  = 4L, iter = 2000L, warmup = 1000L,
+  cores   = 4L, seed = 1L, silent = 2L, refresh = 0
+)
+print(bfit)
+```
+
+Under the hood `et_fit()` calls `brms::brm()` with the prior we
+supplied for $\beta$ plus weakly-informative defaults for the
+intercept and the residual scale. The output is a full posterior:
+
+```{r}
+beta_draws <- as.matrix(bfit$fit, variable = "b_x")[, 1]
+c(mean = mean(beta_draws), sd = sd(beta_draws))
+```
+
+For our seed, the posterior collapses to $\beta \approx 4.01$ with SD
+$\approx 0.38$. The data didn't drag the prior very far because the
+prior was *already* centred on the lm estimate — but the posterior
+SD is sharper than the prior SD, which is the regular Bayesian
+shrinkage we wanted.
+
+A picture is worth a thousand draws. The package ships a helper:
+
+```{r}
+et_plot_prior_posterior(bfit)
+```
+
+# Stage 3: posterior prediction across the forecast horizon
+
+The forecast window is years 2012–2045. At each future year, the
+projected temperature is the trend-line value
+$x(t) = \mathrm{warming\_slope}\cdot(t - 2000)$. We pass
+`env_noise = list(x = 0.3)` to tell `et_predict()` that the projected
+temperature is itself uncertain by $\pm 0.3$ SD (a reasonable error
+for a downscaled climate projection).
+
+```{r}
+year_min     <- year0
+year_max     <- year0 + 45L
+years_grid   <- seq(year_min, year_max, by = 1L)
+forecast_df  <- data.frame(
+  year = years_grid,
+  x    = warming_slope * (years_grid - year0)
+)
+
+pred <- et_predict(
+  model             = bfit,
+  newdata           = forecast_df,
+  env_noise         = list(x = 0.3),
+  n_draws           = 2000L,
+  n_perturb         = 500L,
+  ci_levels         = 0.90,
+  include_env_in_ci = TRUE
+)
+```
+
+Setting `include_env_in_ci = TRUE` folds the environmental noise into
+the reported credible intervals. With it `FALSE` (the default), the CI
+captures parameter + residual uncertainty only; environmental
+variance is still reported separately in `decompose_uncertainty()`,
+but the user-facing CI is "what would the response be if we knew the
+future temperature exactly". The choice depends on whether you're
+forecasting *under* projection uncertainty or *given* a known
+driver.
+
+# Stage 4: decompose the variance over time
+
+`decompose_uncertainty()` returns one row per forecast year with the
+three (or four, if you have autocorrelation) variance components:
+
+```{r}
+decomp <- decompose_uncertainty(pred)
+decomp$year <- forecast_df$year
+head(decomp)
+```
+
+Three things to notice as the forecast horizon extends into the
+future (year increases, so $x$ on the warming trajectory increases
+too):
+
+1. `param_var` grows roughly as $\hat\sigma_\beta^2 \cdot x(t)^2$.
+   That's the *extrapolation cost* of being uncertain about $\beta$:
+   the further past the training window you forecast, the more it
+   matters.
+2. `env_var` is roughly constant at $\hat\beta^2 \cdot \sigma_x^2$.
+   It scales with how steep the dose–response is *and* how poorly
+   we know the future dose, but it does not grow with horizon.
+3. `residual_var` is the biological-noise floor. It does not change
+   with the forecast year because it's a property of the response,
+   not of when you forecast.
+
+A quick numerical look at a representative mid-forecast year:
+
+```{r}
+mid <- which(decomp$year == 2020L)
+decomp[mid, ]
+```
+
+# Stage 5: when does the forecast become uninformative?
+
+A forecast is *informative* when the predictive CI is narrower than
+the plausible range of the response. The plausible range here is "any
+phenology shift between $-4$ and $+4$ days" — anything wider than
+that and we are basically saying "we have no idea".
+
+```{r}
+sl <- shelf_life(
+  predictions    = pred,
+  response_scale = c(-4, 4),
+  ci_level       = 0.90,
+  threshold      = 1.0,
+  time_col       = "year"
+)
+attr(sl, "horizon")
+```
+
+`shelf_life()` walks along the forecast time axis and reports the
+first *year* at which the 90 % CI width first exceeds the response
+range. For this example it lands at $t^{\star} \approx 2027$ — i.e.
+the model still produces a useful forecast for roughly 16 years past
+the end of training; beyond that, the credible interval is wider
+than the plausible response and should not be over-interpreted.
+That answer — a calendar year, not a predictor value — is the
+quantity ecologists and conservation practitioners actually need.
+
+# The whole-pipeline figure
+
+The four diagnostic panels — prior vs posterior, the nested CI fan,
+the stacked variance components, and the shelf-life curve — are
+produced together by the script that generates Box 1 of the paper.
+The exact same code is what appears in the box's figure; see the
+package source under `src/box1_worked_example.R` in the
+proof-of-concept repository (or run the chunk below in your own
+session):
+
+```{r, eval = FALSE}
+# Reproduce the four-panel Box 1 figure used in the methods paper.
+source(system.file("extdata", "box1_worked_example.R",
+                   package = "ErrorTracer"))
+run_box1_worked_example(figures_dir = tempdir(),
+                        tex_path    = tempfile(fileext = ".tex"))
+```
+
+# What this example does *not* show
+
+Two limits of this minimal walk-through deserve flagging:
+
+- **Small $n$, single predictor.** With 12 observations and one
+  driver, the Bayesian fit is doing real work — informative priors
+  matter. Real workflows usually have larger $n$, multiple correlated
+  predictors, and a regularised feature-selection step (elastic net)
+  upstream of `extract_priors()`. The fundamental decomposition is
+  the same.
+- **No grouping.** `et_fit(..., grouping = "g")` runs the same
+  pipeline independently per level of a grouping factor (per SNP
+  cluster, per population, per site). The toy example fits a single
+  global model; the multi-group form returns a named list of
+  `et_model` objects, and `decompose_uncertainty()` / `shelf_life()`
+  preserve the grouping.
+
+# Session info
+
+```{r, eval = TRUE}
+sessionInfo()
+```
