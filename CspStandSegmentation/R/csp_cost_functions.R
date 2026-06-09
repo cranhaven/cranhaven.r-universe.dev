@@ -1,0 +1,642 @@
+# thx zoe https://github.com/zoeschindler/masterarbeit/blob/main/03_raster_calculation_functions.R
+
+#' Add geometric features to a LAS object
+#'
+#' The function calls a fast cpp multi-core function to calculate eigenvalues
+#' for the points in a point cloud based on the k nearest neighbors. Afterwards
+#' it adds geometric features like Curvature, Linearity, Planarity, Sphericity,
+#' Anisotrophy and Verticlity to the points itself.
+#'
+#' Details of the metrics can be found in: Hackel, T., Wegner, J.D. &
+#' Schindler, K. (2016) Contour Detection in Unstructured 3D Point Clouds. In
+#' 2016 IEEE Conference on Computer Vision and Pattern Recognition (CVPR).
+#' Presented at the 2016 IEEE Conference on Computer Vision and Pattern
+#' Recognition (CVPR), IEEE, Las Vegas, NV, USA, pp. 1610-1618.
+#'
+#' @param las A LAS object (see lidR::LAS)
+#' @param k the k nearest neighbors to use for the eigenvalue calculation
+#' @param n_cores The number of CPU cores to use
+#' @return The function returns a single LAS object with the geometric features
+#' attached to it in the LAS@data section.
+#' @author Julian Frey <julian.frey@@wwd.uni-freiburg.de>
+#' @examples
+#' \donttest{
+#' LASfile <- system.file("extdata", "beech.las", package="CspStandSegmentation")
+#' las <- lidR::readLAS(LASfile, select = "xyz")
+#'
+#' las <- add_geometry(las, k = 5, n_cores = 2)
+#' summary(las@data)
+#' }
+#'
+#' @export add_geometry
+add_geometry <- function(las, k = 10L, n_cores = 1) {
+  # check if inputs of the right type
+  if (!lidR::is(las,"LAS")) {
+    stop('las has to be a LAS object.')
+  }
+  if(!(as.integer(k) == k & length(k) == 1 & k > 0 )) {
+    stop('k has to be one positive integer.')
+  }
+  # necessary for raster_geometry
+  # returns geometric features based on eigenvalues
+  eigen <- eigen_decomposition(las, k, n_cores) # k neighbours, n cores
+  las <- las |>
+    add_lasattribute(eigen[,3] / (eigen[,1] + eigen[,2] + eigen[, 3]), 'Curvature', 'curvature') |>
+    add_lasattribute((eigen[,1] - eigen[,2]) / eigen[,1], 'Linearity', 'linearity') |>
+    add_lasattribute((eigen[,2] - eigen[,3]) / eigen[,1], 'Planarity', 'planarity') |>
+    add_lasattribute(eigen[,3] / eigen[,1], 'Sphericity', 'sphericity') |>
+    add_lasattribute((eigen[,1] - eigen[,3]) / eigen[,1], 'Anisotropy', 'anisotropy') |>
+    add_lasattribute(1 - abs(eigen[,4]) ,'Verticality','verticality')
+  return(las)
+}
+
+# ------------------------------------------------------------------------------
+
+#' helper function to voxelize a las element
+#'
+#' Calculate voxel mean values for all numeric attributes in the las@data table
+#' including the XYZ-coordinates.
+#'
+#' @param las a lidR::LAS element
+#' @param res voxel resolution in meter
+#' @return a las element with XYZ-coordinates as the voxel center and
+#' X_gr,Y_gr,Z_gr as the center of gravity (mean point coordinates) as well as
+#' all other numeric columns voxel mean values with their original name.
+#' @author Julian Frey <julian.frey@@wwd.uni-freiburg.de>
+#' @seealso \code{\link[lidR]{voxelize_points}}
+#' @examples
+#'
+#' # read example data
+#' file = system.file("extdata", "beech.las", package="CspStandSegmentation")
+#' las = lidR::readTLSLAS(file)
+#' vox <- las |> voxelize_points_mean_attributes(1)
+#'
+#'
+#' @export voxelize_points_mean_attributes
+voxelize_points_mean_attributes <- function(las, res) {
+  # check if inputs of the right type
+  if (!lidR::is(las,"LAS")) {
+    stop('las has to be a LAS object.')
+  }
+  if(!(is.numeric(res) & length(res) < 3 & res > 0 )) {
+    stop('res has to be numeric and positive.')
+  }
+
+  # Checking resolution input validity
+  if (length(res) == 1L) {
+    res <- c(res, res)
+  } else if (length(res) > 2L) {
+    stop('Wrong resolution provided.')
+  }
+
+  # create voxel coordinates
+  group_grid_3d <- function(...) {
+    if (!exists("group_grid_3d", where = asNamespace("lidR"), mode = "function")) {
+      stop("lidR:::group_grid_3d not available - please update lidR")
+    }
+    get("group_grid_3d", envir = asNamespace("lidR"))(...)
+  }
+
+  by <- group_grid_3d(las@data$X, las@data$Y, las@data$Z, res, c(0, 0, 0.5*res[2]))
+
+  # add mean attributes
+  voxels <- las@data[,lapply(.SD, mean), by = by]
+  if (length(names(las@data)) > 3) {
+    data.table::setnames(voxels, c('X', 'Y', 'Z', 'X_gr', 'Y_gr', 'Z_gr', names(las@data)[4:length(names(las@data))]))
+  } else {
+    data.table::setnames(voxels, c('X', 'Y', 'Z', 'X_gr', 'Y_gr', 'Z_gr'))
+  }
+
+  # convert voxels to LAS object
+  output <- LAS(voxels, header = las@header, crs = st_crs(las), check = FALSE, index = las@index)
+  return(output)
+}
+
+# ------------------------------------------------------------------------------
+
+#' Add voxel coordinates to a las file
+#'
+#' Adds the collums x_vox, y_vox and z_vox in the given ressolution to the las
+#' element. This is convenient if information has been derived in voxel space
+#' and these should be attached to the original points.
+#'
+#' Voxel coordinates derived with this function are identical to those derived
+#' by lidR::voxelize.
+#'
+#' @param las an element of lidR::LAS class
+#' @param res voxel ressolution in [m]
+#' @return las file with additional voxel coordinates
+#' @author Julian Frey <julian.frey@@wwd.uni-freiburg.de>
+#' @examples
+#'
+#' file = system.file("extdata", "beech.las", package="CspStandSegmentation")
+#' las = lidR::readTLSLAS(file)
+#'
+#' las <- add_voxel_coordinates(las,res = 1)
+#'
+#'
+#' @export add_voxel_coordinates
+add_voxel_coordinates <- function(las, res) {
+  # check if inputs of the right type
+  if (!lidR::is(las,"LAS")) {
+    stop('las has to be a LAS object.')
+  }
+  if(!(is.numeric(res) & length(res) < 3 & res > 0 )) {
+    stop('res has to be numeric and positive.')
+  }
+
+  # create voxel coordinates
+  group_grid_3d <- function(...) {
+    if (!exists("group_grid_3d", where = asNamespace("lidR"), mode = "function")) {
+      stop("lidR:::group_grid_3d not available - please update lidR")
+    }
+    get("group_grid_3d", envir = asNamespace("lidR"))(...)
+  }
+
+  vox <- group_grid_3d(las@data$X, las@data$Y, las@data$Z, c(res, res), c(0, 0, 0.5*res))
+
+  # add voxel coordinates to LAS
+  las <- las |>
+    add_lasattribute(vox[[1]], 'x_vox', 'x_vox') |>
+    add_lasattribute(vox[[2]], 'y_vox', 'y_vox') |>
+    add_lasattribute(vox[[3]], 'z_vox', 'z_vox')
+  return(las)
+}
+
+# ------------------------------------------------------------------------------
+
+#' Add all las_attributes from las@data to the header of a las element
+#'
+#' The helper function adds all headings from las@data which are not part of
+#' lidR:::LASATTRIBUTES to the las header using lidR::add_lasattribute. Only
+#' attributes that are included in the header got saved when using
+#' lidR::writeLAS, this is a convenient way to add them.
+#'
+#' @param las an element of lidR::LAS class
+#' @return the las file with updated header
+#' @author Julian Frey <julian.frey@@wwd.uni-freiburg.de>
+#' @examples
+#'
+#' file <- system.file("extdata", "beech.las", package="CspStandSegmentation")
+#' las <- lidR::readTLSLAS(file)
+#'
+#' las@data$noise <- runif(nrow(las@data))
+#' las@data$noiseZ <- las@data$var1 * las@data$Z
+#'
+#' las <- add_las_attributes(las)
+#'
+#' @export add_las_attributes
+add_las_attributes <- function(las) {
+  # check if inputs of the right type
+  if (!lidR::is(las,"LAS")) {
+    stop('las has to be a LAS object.')
+  }
+
+  # Add attributes from data.table permanently to attributes
+  names <- names(las@data)
+  LASATTRIBUTES <- c("X", "Y", "Z",
+                     "Intensity", "ReturnNumber", "NumberOfReturns",
+                     "ScanDirectionFlag", "EdgeOfFlightline","Classification",
+                     "Synthetic_flag", "Keypoint_flag", "Withheld_flag",
+                     "Overlap_flag", "ScanAngle", "ScanAngleRank",
+                     "ScannerChannel", "NIR", "UserData", "gpstime",
+                     "PointSourceID", "R", "G", "B")
+  names <- names[!(names %in% LASATTRIBUTES)]
+  for (name in names) {
+    if (!with(las@data, is.numeric(get(name)))) {
+      next
+    }
+    las <- las |>
+      lidR::add_lasattribute(name = name, desc = name)
+  }
+  return(las)
+}
+
+# ------------------------------------------------------------------------------
+
+# V_w, L_W, S_w are the weights for 1-verticality, sphericity, linearity
+
+#' helper function for csp_cost_segemntation
+#'
+#' The function performs a Dijkstra algorithm on a 3D voxel file to assign
+#' every voxel to the closest seed point using the igraph package.
+#'
+#' @param vox a LAS S4 element with XYZ voxel coordinates in the @data slot.
+#' @param adjacency_df a data.frame with voxel ids (row numbers) in the first
+#' column and a neighboring voxel ID in the second column and the weight
+#' (distance) in the third column. Might be generated using the dbscan::frNN
+#' function (which requires reshaping the data).
+#' @param seeds seed points for tree positions.
+#' @param v_w,l_w,s_w weights for verticality, linearity spericity see
+#' \code{\link{csp_cost_segmentation}}
+#' @param N_cores Number of CPU cores for multi-threading
+#' @param Voxel_size Edge length used to create the voxels. This is only
+#' important to gain comparable distance weights on different voxel sizes.
+#' Should be greater than 0.
+#' @param N_trees The number of closest stem locations to add to the point cloud
+#' If > 1 the distances will be added as well.
+#' @return voxels with the TreeID in the data slot
+#' @author Julian Frey <julian.frey@@wwd.uni-freiburg.de>
+#' @seealso \code{\link{csp_cost_segmentation}}
+#'
+#' @importFrom foreach %dopar% foreach
+#'
+#' @export comparative_shortest_path
+comparative_shortest_path <- function(vox = vox, adjacency_df = adjacency_df, seeds, v_w = 0, l_w = 0, s_w = 0, N_cores = parallel::detectCores() - 1, Voxel_size, N_trees = 1) {
+
+  # update weights
+  adjacency_df$weight <- with(vox@data[adjacency_df$adjacency_list], adjacency_df$weight^2 + ((1 - Verticality) * v_w + Sphericity * s_w + Linearity * l_w) * Voxel_size)
+  adjacency_df$weight[adjacency_df$weight < 0] <- 0.00001 * Voxel_size # catch negative weights
+
+  # set distances to seeds 0
+  adjacency_df$weight[adjacency_df$adjacency_list_id %in% seeds$SeedID] <- 0
+
+  #-----------------------
+  # compute dijkstra matrix for each seed (trunk)
+  # and weigh matrix by DBH^2/3 (Tao et al 2015.)
+  #-----------------------
+
+  # build graph
+  vox_graph <- adjacency_df |>
+    igraph::graph_from_data_frame(directed = FALSE) |>
+    igraph::simplify()
+
+  # calculate a distance (weight) graph per seed using Dijkstra
+  doParallel::registerDoParallel(cores = N_cores)
+  dists_list <- foreach::foreach(
+    t = 1:nrow(seeds),
+    .noexport = c('las', 'map', 'vox', 'tree_seeds', 'ground', 'dtm', 'adjacency_df', 'inv'),
+    .errorhandling = c('pass')) %dopar% {
+      return(igraph::distances(vox_graph, as.character(seeds$SeedID[t]), algorithm = 'dijkstra'))
+    }
+  doParallel::stopImplicitCluster()
+
+  unreachable <- which(sapply(dists_list,function(x) is.character(x[[1]])))
+  if(length(unreachable) > 0) {
+    warning('Not all base positions could be reached by the graph. Try a lower resolution or a different approach to find tree base positions. Error messages for the unreachable TreeIDs:')
+    warning(paste0(unreachable , paste(":",paste(dists_list[unreachable]), collapse = " "), "\n"), call. = FALSE)
+    seeds <- seeds[-unreachable,]
+    dists_list <- dists_list[-unreachable]
+    }
+
+  # Combine to matrix
+  dist_matrix <- simplify2array(dists_list)[1,,]
+
+  #helper function to get the indices of the n smalest values
+  .which_n_min <- function(x, n){
+    return(order(x)[1:n])
+  }
+  .n_min <- function(x, n, na.val = 9999){
+    m <- x[order(x)[1:n]]
+    m[is.na(m)] <- na.val
+    return(m)
+  }
+
+  # get seed with minimum distance
+  #min_matrix_old <- apply(dist_matrix, 1, which.min)
+  min_matrix <- t(apply(dist_matrix, 1, .which_n_min, n = N_trees))
+  #min_dist_matrix_old <- apply(dist_matrix, 1, min, na.rm = TRUE)
+  min_dist_matrix <- t(apply(dist_matrix, 1, .n_min, n = N_trees))
+
+  tree_id_matrix <- apply(min_matrix,2,function(x) seeds$TreeID[as.integer(x)] )
+  tree_id_matrix <- data.table::as.data.table(tree_id_matrix)
+  min_dist_matrix <- data.table::as.data.table(min_dist_matrix)
+
+  if(N_trees == 1){
+    tree_id_matrix <- tree_id_matrix
+    min_dist_matrix <- t(min_dist_matrix)
+    colnames(tree_id_matrix) <- "TreeID"
+    colnames(min_dist_matrix) <- "dist"
+  } else {
+    colnames(tree_id_matrix) <- paste0("TreeID", c("",2:ncol(tree_id_matrix)))
+    colnames(min_dist_matrix) <- paste0("dist", c("",2:ncol(min_dist_matrix)))
+  }
+
+
+  #min_matrix <- data.table::data.table(PointID = as.integer(igraph::V(vox_graph)$name), TreeID = seeds$TreeID[as.integer(min_matrix)], dist = min_dist_matrix)
+  #min_matrix$TreeID[min_dist_matrix == Inf] <- 0 # set SeedIDs 0 for voxels which any seed can't reach
+  min_matrix <- cbind(PointID = as.integer(igraph::V(vox_graph)$name), tree_id_matrix, min_dist_matrix) |> data.table::as.data.table()
+  # replace all TreeIDs where dist is Inf with 0
+  for(i in 1:N_trees){
+    min_matrix[[paste0("TreeID", ifelse(i == 1, "", i))]][min_matrix[[paste0("dist", ifelse(i == 1, "", i))]] == Inf] <- 0
+  }
+
+  # assign voxels to seeds (minimum cost/distance to trunk)
+  vox <- vox |>
+    lidR::remove_lasattribute('TreeID') |>
+    lidR::add_attribute(as.integer(rownames(vox@data)), 'PointID')
+  vox@data <- merge(vox@data, min_matrix, by = 'PointID')
+  return(vox)
+}
+
+# ------------------------------------------------------------------------------
+
+# This is the main function
+# It requires a las point cloud of a forest patch and
+# a forest inventory as it can be calculated by CspStandSegmentation::find_base_coordinates_raster
+# Preferable geometric features should be computed for the point cloud prior
+# to the use of this function using 'add_geometry()'.
+
+#' Comparative Shortest Path with cost weighting tree segmentation
+#'
+#' Segments single trees from forest point clouds based on tree positions
+#' (xyz-coordinates) provided in the map argument.
+#'
+#' The whole point cloud is voxelized in the given resolution and the center of
+#' gravity for the points inside is calculated as voxel coordinate. A graph is
+#' build, which connects the voxel coordinates based on a db-scan algorithm. The
+#' distances between the voxel coordinates is weighted based on geometric
+#' features computed for the points in the voxels. Distances along planar
+#' and/or vertical faces like stems are weighted shorter than distances through
+#' voxels with high sphericity like leaves and clusters of twigs. This
+#' avoids small individuals spreading into the upper canopy.
+#' For every voxel center, the weighted distance in the network is calculated to
+#' all tree locations from the map argument. The TreeID of the map argument
+#' with the shortest distance is assigned to the voxel. All points in the point
+#' cloud receive the TreeID from their parent voxel.
+#'
+#' @param las A lidR LAS S4 object.
+#' @param map A data.frame, including the columns
+#' X, Y, Z, TreeID, with X and Y depicting the location of the trees. Can be generated using CspStandSegmentation::find_base_coordinates_raster
+#' @param Voxel_size The voxel size (3D resolution) for the routing graph to
+#' determine the nearest map location for every point in the point cloud.
+#' @param V_w verticality weight. Since trunks are vertical structures, routing
+#' through voxels with high verticality can be rated 'cheaper.' should be a
+#' number between 0 and 1 with 0 meaning no benefit for more vertical
+#' structures.
+#' @param L_w Linearity weight. Similar to V_w but for linearity, higher
+#' values indicate a malus for linear shapes (usually branches).
+#' @param S_w Spericity weight. Similar to V_w but for sphericity, higher
+#' values indicate a malus for spherical shapes (usually small branches and
+#' leaves).
+#' @param N_cores number of CPU cores used for parallel routing using the
+#' foreach package.
+#' @param N_trees The number of closest stem locations to add to the point cloud
+#' @return Returns a copy of the las point cloud with an additional field for
+#' the TreeID.
+#' @author Julian Frey <julian.frey@@wwd.uni-freiburg.de>
+#' @seealso \code{\link{comparative_shortest_path}}
+#'
+#' @examples
+#'
+#' # read example data
+#' \donttest{
+#' file = system.file("extdata", "beech.las", package="CspStandSegmentation")
+#' las = lidR::readTLSLAS(file)
+#'
+#' # Find tree positions as starting points for segmentation
+#' map <- CspStandSegmentation::find_base_coordinates_raster(las)
+#'
+#' # segment trees
+#' segmented <- las |>
+#' CspStandSegmentation::add_geometry() |>
+#' CspStandSegmentation::csp_cost_segmentation(map, 1, S_w = 0.5)
+#'
+#'
+#' }
+#'
+#' @export csp_cost_segmentation
+csp_cost_segmentation <- function(las, map, Voxel_size = 0.3, V_w = 0, L_w = 0, S_w = 0, N_cores = 1, N_trees = 1) {
+
+  # if map is a LAS object, extract tree positions
+  if (lidR::is(map,"LAS")) {
+    # check if TreeID available
+    if (!('TreeID' %in% names(map@data))) {
+      stop('TreeID has to be a column in the map data.frame.')
+    }
+    inv <- map@data[map@data$TreePosition,]
+    if (nrow(inv) == 0) {
+      inv <- aggregate(map@data[map@data$Z > 1 & map@data$Z < 1.5,], by = list(map@data$TreeID[map@data$Z > 1 & map@data$Z < 1.5]), median)
+    }
+  }
+  # check if inputs of the right type
+  if (!lidR::is(las,"LAS")) {
+    stop('las has to be a LAS object.')
+  }
+  if (!(is.data.frame(map) & all(c('X', 'Y', 'Z', 'TreeID') %in% names(map)))) {
+    stop('map has to be a data.frame with collumn names X,Y,Z,TreeID.')
+  }
+  if(!all(is.numeric(c(Voxel_size, V_w, L_w, S_w, N_cores)))) {
+    stop('Voxel_size, V_w, L_w, S_w and N_cores have to be numeric.')
+  }
+
+  if (Voxel_size <= 0) {
+    stop('Voxel_size has to be greater than 0.')
+  }
+  if(lidR::is.empty(las)) {
+    stop('No points in the point cloud.')
+  }
+  if(nrow(map) == 0) {
+    stop('No tree positions in the map.')
+  }
+
+  # check if TreeID already exists
+  if ('TreeID' %in% names(las@data)) {
+    warning("'las' already contains TreeIDs', which will be overwritten.")
+    las <- las |>
+      lidR::remove_lasattribute('TreeID')
+  }
+  # Check if geometric features exist in las and compute dummies if not
+  if(!all(c('Sphericity', 'Linearity', 'Verticality') %in% names(las@data))) {
+    warning("no geometric features in las.  V_w, L_w and/or S_w weights will be ignored.Use 'las <- las |> add_gemetry()' prior to calling this function.")
+    las <- las |>
+      lidR::add_lasattribute(0, 'Sphericity', 'Sphericity') |>
+      lidR::add_lasattribute(0, 'Linearity', 'Linearity') |>
+      lidR::add_lasattribute(0, 'Verticality', 'Verticality')
+  }
+
+  # Voxelize las with mean attributes
+  vox <- voxelize_points_mean_attributes(las, res = Voxel_size)
+
+  inv <- map
+
+  # Add seeds
+  vox <- vox |>
+    lidR::add_lasattribute(0, 'TreeID', 'TreeID')
+  vox@data <- vox@data[,c('X', 'Y', 'Z', 'X_gr', 'Y_gr', 'Z_gr', 'Sphericity', 'Linearity', 'Verticality', 'TreeID')]
+
+  # Lift the starting points if map doesn't have Z values
+  if (sum(inv$Z) == 0) {
+    inv$Z <- 0.5
+  }
+  if(las@header$`Min Z` > max(inv$Z)) {stop('The minimum Z value of the point cloud is higher than the tree positions. Is the inventory without Z values and the point clound not normalized?')}
+
+  inv <- inv |>
+    cbind(X_gr = inv$X) |>
+    cbind(Y_gr = inv$Y) |>
+    cbind(Z_gr = inv$Z) |>
+    cbind(Sphericity = 0) |>
+    cbind(Linearity = 0) |>
+    cbind(Verticality = 0)
+  vox@data <- rbind(vox@data, inv[,c('X', 'Y', 'Z', 'X_gr', 'Y_gr', 'Z_gr', 'Sphericity', 'Linearity', 'Verticality', 'TreeID')])
+
+  # Seed positions
+  seed_range <- (nrow(vox@data) - nrow(inv) + 1):nrow(vox@data)
+  tree_seeds <- data.frame(SeedID = seed_range, TreeID = vox@data$TreeID[seed_range])
+  rm(seed_range)
+
+  # Use dbscan to calculate a matrix of neighboring points
+  neighborhood_list <- dbscan::frNN(vox@data[,c('X_gr', 'Y_gr', 'Z_gr')], Voxel_size * 2, bucketSize = 22)
+  # dbscan::frNN(vox@data[,c('X_gr', 'Y_gr', 'Z_gr')], Voxel_size * 2, bucketSize = 22)  # voxel size * 1.42 (sqrt(1^2 + 1^2)) 1.73
+
+  # The result has to be disentangled we get the adjacent voxel IDs first
+  adjacency_list <- unlist(neighborhood_list$id)
+
+  # Then we grab the origin voxel using cpp
+  adjacency_list_id <- fast_unlist(neighborhood_list$id, length(adjacency_list)) + 1 # +1 because of cpp counting
+
+  # We do the same with the distances
+  dists_vec <- fast_unlist_dist(neighborhood_list$dist, length(adjacency_list))
+
+  # Compile to a data frame
+  adjacency_df <- data.frame(adjacency_list_id,adjacency_list, weight = dists_vec) #, TreeID = vox@data$TreeID[adjacency_list_id]
+  rm(adjacency_list, adjacency_list_id, dists_vec, neighborhood_list)
+
+  # Calculate CSP, including the weights
+  vox2 <- comparative_shortest_path(vox = vox, adjacency_df = adjacency_df, v_w = V_w, l_w = L_w, s_w = S_w, Voxel_size = Voxel_size, N_cores = N_cores, seeds = tree_seeds, N_trees = N_trees)
+
+  las <- las |>
+    add_voxel_coordinates(Voxel_size)
+  vox_cols <- c('X', 'Y', 'Z', grep("TreeID",colnames(vox2@data), value = TRUE), grep("dist",colnames(vox2@data), value = TRUE) )
+  las@data <- merge(las@data, vox2@data[,vox_cols, with = FALSE], by.x = c('x_vox', 'y_vox', 'z_vox'), by.y = c('X', 'Y', 'Z'))
+  las <- add_las_attributes(las)
+  return(las)
+}
+
+# ------------------------------------------------------------------------------
+
+# Function to calculate tree start points based on a raster density approach
+#'
+#' Find stem base position using a density raster approach
+#' @param las an element of lidR::LAS class
+#' @param zmin lower search boundary
+#' @param zmax upper search boundary
+#' @param q quantile of raster density to assign a tree region
+#' @param eps search radius to merge base points
+#' @param res raster resolution
+#' @return data.frame with X, Y, Z and TreeID for stem base positions
+#' @author Julian Frey <julian.frey@@wwd.uni-freiburg.de>
+#' @examples
+#' # read example data
+#' file = system.file("extdata", "beech.las", package="CspStandSegmentation")
+#' tls = lidR::readTLSLAS(file)
+#'
+#' # Find tree positions
+#' map <- CspStandSegmentation::find_base_coordinates_raster(tls)
+#' @export find_base_coordinates_raster
+find_base_coordinates_raster <- function(las, res = 0.1, zmin = 0.5, zmax = 2, q = 0.975, eps = 0.2){
+  # check if inputs of the right type
+  if (!lidR::is(las,"LAS")) {
+    stop('las has to be a LAS object.')
+  }
+  if(!all(is.numeric(c(zmin, zmax, res, q, eps)))) {
+    stop('zmin, zmax, res, q and eps have to be numeric.')
+  }
+  normalized <- T
+  if (!('Zref' %in% names(las@data))) {
+    normalized <- F
+    las <- las |>
+      lidR::classify_ground(lidR::csf(class_threshold = 0.05, cloth_resolution = 0.05), last_returns = FALSE)
+    dtm <- lidR::rasterize_terrain(las, 0.5, lidR::tin())
+    las <- las |> lidR::normalize_height(lidR::tin(), dtm = dtm)
+  }
+  slice <- las |>  lidR::filter_poi(Z > zmin & Z < zmax)
+  density <- lidR::pixel_metrics(slice, length(Z), res = res)
+  height <- lidR::pixel_metrics(slice, mean(Z), res = res)
+  q_dens <- quantile(terra::values(density), probs = q, na.rm = TRUE)
+  seed_rast <- terra::as.points(density > q_dens)
+  seed_rast <- as.data.frame(terra::subset(seed_rast, seed_rast$V1 == 1), geom = "XY")
+  seed_rast <- cbind(seed_rast, data.frame(cluster = dbscan::dbscan(seed_rast[,c("x", "y")], eps = eps, minPts = 1)$cluster))
+  seed_rast <- aggregate(seed_rast, by = list(seed_rast$cluster), mean)[, 3:5]
+  if(normalized){
+    z_vals <- terra::extract(height, seed_rast[,1:2])[,2]
+    if(any(is.na(z_vals))) z_vals[is.na(z_vals)] <- mean(c(zmin, zmax)) # catch NA's
+  } else {
+    z_vals <- terra::extract(dtm, seed_rast[,1:2])[,2]
+    if(any(is.na(z_vals))) z_vals[is.na(z_vals)] <- mean(terra::values(dtm)) # catch NA's
+  }
+
+  seed_rast <- cbind(seed_rast, z_vals)[,c(1,2,4,3)]
+  colnames(seed_rast) <- c('X','Y','Z','TreeID')
+  return(seed_rast)
+}
+
+# ------------------------------------------------------------------------------
+
+# own function to calculate tree start points
+
+#' Find stem base position using a geometric feature filtering and clustering
+#' approach
+#' @param las an element of lidR::LAS class
+#' @param zmin lower search boundary
+#' @param zmax upper search boundary
+#' @param res cluster search radius
+#' @param min_verticality minimum verticality >0 & <1 for a point to be
+#' considered a stem point
+#' @param min_planarity minimum planarity >0 & <1 for a point to be considered
+#' a stem point
+#' @param min_cluster_size minimum number of points in the cluster to be considered
+#' a tree, if NULL median cluster size is chosen
+#' @return data.frame with X, Y, Z and TreeID for stem base positions
+#' @author Julian Frey <julian.frey@@wwd.uni-freiburg.de>
+#' @examples
+#' # read example data
+#' file = system.file("extdata", "beech.las", package="CspStandSegmentation")
+#' tls = lidR::readTLSLAS(file)
+#'
+#' # Find tree positions
+#' map <- CspStandSegmentation::find_base_coordinates_geom(tls)
+#' @export find_base_coordinates_geom
+find_base_coordinates_geom <- function(las, zmin = 0.5, zmax = 2, res = 0.5, min_verticality = 0.9, min_planarity = 0.5, min_cluster_size = NULL) {
+  # check if inputs of the right type
+  if (!lidR::is(las,"LAS")) {
+    stop('las has to be a LAS object.')
+  }
+  if(!all(is.numeric(c(zmin, zmax, res, min_verticality, min_planarity)))) {
+    stop('zmin, zmax, res, min_verticality and min_planarity have to be numeric.')
+  }
+  Zref <- T # flag if a normalized point cloud was given
+  if (!('Zref' %in% names(las@data))) {
+    las <- las |>
+      lidR::classify_ground(lidR::csf(class_threshold = 0.05, cloth_resolution = 0.05), last_returns = FALSE)
+    dtm <- lidR::rasterize_terrain(las, 0.5, lidR::tin())
+    las <- las |> lidR::normalize_height(lidR::tin(), dtm = dtm)
+    Zref <- F
+  }
+
+  slice <- las |>
+    filter_poi(Classification != 2 & Z > zmin & Z < zmax)
+  if (lidR::is.empty(slice)) {
+    stop('No points found in the specified zmin/xmax range.')
+  }
+
+  if(!Zref) {
+    slice <- slice |>
+      lidR::unnormalize_height()
+  }
+
+  slice <- slice |>
+    add_geometry() |>
+    filter_poi(Planarity > min_planarity & Verticality > min_verticality)
+  if (lidR::is.empty(slice)) {
+    stop('No points found in the specified planarity/verticality range. Try lower parameters (> 0 & < 1)')
+  }
+
+  if (is.null(min_cluster_size)) {
+    cluster <- slice@data[,1:3] |>
+      dbscan::dbscan(res, 1)
+    slice@data$Cluster <- cluster$cluster
+    slice <- slice |>
+      filter_poi(Cluster %in% unique(cluster$cluster)[table(cluster$cluster) > median(table(cluster$cluster))])
+  } else {
+    cluster <- slice@data[,1:3] |>
+      dbscan::dbscan(res, 1)
+    slice@data$Cluster <- cluster$cluster
+    slice <- slice |>
+      filter_poi(Cluster %in% unique(cluster$cluster)[table(cluster$cluster) > min_cluster_size])
+  }
+  map <- aggregate(slice@data[,1:2], by = list(slice@data$Cluster), mean)
+  Z <- aggregate(slice@data[,3], by = list(slice@data$Cluster), min)
+
+  map <- data.frame(map[,2:3], Z = Z[,2], TreeID = 1:nrow(map))
+}
