@@ -1,0 +1,34 @@
+#' @name quatre_montagnes
+#' 
+#' @title Field plot inventory in the Quatre Montagnes area (France)
+#' 
+#' @description Dataset of forest parameters measured in the field on 96 circular plots of 15 m radius. Metrics derived from airborne laser scanning (ALS) point clouds have also been extracted and calculated for those plots.
+#' 
+#' @docType data
+#'
+#' @usage data(quatre_montagnes)
+#'
+#' @format A \code{data.frame} with 76 columns:
+#' \enumerate{
+#' \item \code{plotId} id of field plot
+#' \item \code{X} easting coordinate (epsg: 2154)
+#' \item \code{Y} northing coordinate (epsg: 2154)
+#' \item \code{clusterId} id of cluster, plots were inventoried in groups of 4
+#' \item \code{G_m2_ha} basal area in m2 per ha
+#' \item \code{N_ha} number of trees per ha
+#' \item \code{D_mean_cm} mean tree diameter at breast height (1.3 m) in cm
+#' \item \code{stratum} forest ownership (public or private)
+#' \item \code{[, 9:60]} point cloud metrics computed from ALS, see \code{\link{aba_metrics}}
+#' \item \code{[, 61:73]} metrics derived from tree segmentation in ALS data, see \code{\link{std_tree_metrics}}
+#' \item \code{[, 74:76]} terrain statistics, see \code{\link{terrain_points_metrics}}
+#' }
+#'
+#' @keywords datasets
+#'
+#' @references Monnet, J.-M. 2021. Tutorial on modeling forest parameters with ALS data. ABA data preparation \url{https://lidar.pages.mia.inra.fr/lidaRtRee/articles/area-based.1.data.preparation.html}
+#'
+#' @examples
+#' data(quatre_montagnes)
+#' summary(quatre_montagnes)
+NULL
+"quatre_montagnes"
