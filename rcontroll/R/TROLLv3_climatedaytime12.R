@@ -1,0 +1,25 @@
+#' `TROLL` climate parameters over months
+#'
+#' Climate parameters used by `TROLL` model over months.
+#'
+#' @format A data frame with 12 rows and 12 variables: \describe{
+#'   \item{Temperature}{monthly average of temperature (degree C)}
+#'   \item{DaytimeMeanTemperature}{the monthly average of daytime temperature
+#'   (degree C, 7am-7pm)} \item{NightTemperature}{the monthly average of
+#'   temperature at night  (degree C, 8pm-6am)} \item{Rainfall}{monthly average
+#'   of cumulative rainfall (cm)} \item{WindSpeed}{monthly average of wind speed
+#'   (m/s)} \item{DaytimeMeanIrradiance}{monthly average of cumulative solar
+#'   irradiance averaged over one day (W/m2, 7am-7pm)}
+#'   \item{MeanIrradiance}{monthly average of cumulative solar irradiance over
+#'   24 hours (W/m2)} \item{SaturatedVapourPressure}{monthly average of
+#'   saturation vapour pressure (hPa)} \item{VapourPressure}{monthly average of
+#'   vapour pressur (hPa)} \item{VaporPressureDeficit}{monthly average of vapour
+#'   pressure deficit (VPD, hPa)}
+#'   \item{DayTimeVapourPressureDeficitVPDbasic}{monthly average of daytime
+#'   vapour pressure deficit (7am-7pm) according to basic formula (hPa)}
+#'   \item{DaytimeMeanVapourPressureDeficit}{monthly average of daytime vapour
+#'   pressure deficit (7am-7pm) according to advanced formula (hPa)} }
+#'
+#' @seealso [generate_climate()], [TROLLv3_daytimevar]
+#'
+"TROLLv3_climatedaytime12"
