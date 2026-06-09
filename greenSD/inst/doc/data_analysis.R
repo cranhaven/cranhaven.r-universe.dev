@@ -1,0 +1,16 @@
+## ----eval=FALSE---------------------------------------------------------------
+# bbox <- c(-83.087174,42.333373,-83.042542,42.358748)
+# ndvi <- greenSD::get_esa_wc(bbox = bbox, datatype = 'ndvi', year = 2021)
+# seg <- greenSD::ndvi_to_sem(ndvi$NDVI_p50, threshold = c(0.2, 0.6))
+
+## ----eval=FALSE---------------------------------------------------------------
+# sample_data <- terra::rast(system.file("extdata", "detroit_gs.tif", package = "greenSD"))
+# pwgf <- greenSD::compute_exposure(sample_data, pop_year = 2020, radius = 500, height = F)
+
+## ----eval=FALSE---------------------------------------------------------------
+# green <- greenSD::get_tile_green(bbox = c(-83.087174,42.333373,-83.042542,42.358748),
+#                                  provider = "esri",
+#                                  zoom = 16)
+# r <- terra::ifel(green$green == 0, NA, 1)
+# m <- greenSD::compute_morphology(r, grid_size = 400)
+

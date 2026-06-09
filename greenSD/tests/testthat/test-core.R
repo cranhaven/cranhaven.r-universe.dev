@@ -1,0 +1,12 @@
+testthat::test_that("runs correctly", {
+  city <- greenSD::get_gsdc()
+  esa <- greenSD::get_esa_wc()
+  s2a <- greenSD::get_s2a_ndvi()
+  sample <- greenSD::sample_values()
+  t <- greenSD::get_tile_green()
+  testthat::expect_type(city, "NULL")
+  testthat::expect_type(esa, "NULL")
+  testthat::expect_type(s2a, "NULL")
+  testthat::expect_type(sample, "NULL")
+  testthat::expect_type(t, "NULL")
+})
