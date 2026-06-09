@@ -1,0 +1,103 @@
+---
+title: "Create a function that can process a LAScatalog"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{5. Create a function to process a LAScatalog}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+options(rmarkdown.html_vignette.check_title = FALSE)
+```
+
+The following demonstrates how to write your own functions that are fully applicable on a broad collection of point clouds and based on the available `lidR` tools. We will create a simple `filter_noise` function. This example **should not be considered as the reference method for filtering noise**, but rather as a demonstration to help understand the logic behind the design of lidR, and as a full example of how to create a user-defined function that is fully operational.
+
+## Design a noise filter 
+
+A simple (too simple) way to detect outliers is to measure the 95th percentile of height in 10 x 10-m pixels (area-based approach) and then remove the points that are above the 95th percentile in each pixel plus, for example, 20%. This can easily be built in lidR using `pixel_metrics`, `merge_spatial` and `filter_poi`, and should work either on a normalized or a raw point cloud. Let's create a function method `filter_noise`:
+
+```r
+filter_noise = function(las, sensitivity)
+{
+  p95 <- pixel_metrics(las, ~quantile(Z, probs = 0.95), 10)
+  las <- merge_spatial(las, p95, "p95")
+  las <- filter_poi(las, Z < p95*sensitivity)
+  las$p95 <- NULL
+  return(las)
+}
+```
+
+This function is fully functional on a point cloud loaded in memory
+
+```r
+las <- readLAS("file.las")
+las <- filter_noise(las, sensitivity = 1.2)
+writeLAS(las, "denoised-file.las")
+```
+
+## Extend the `filter_noise` function to a `LAScatalog`
+
+Users can access the catalog processing engine with the function `catalog_apply` i.e. the engine used internally. It can be applied to any function over an entire collection. This function is complex and we created a simplified (but less versatile) version names `catalog_map` that suit for most cases. Here we will apply our custom `filter_noise` function with `catalog_map`. To use our function `filter_noise` on a `LAScatalog` we must create a compatible function (see documentation of `catalog_apply`):
+
+```r
+filter_noise = function(las, sensitivity)
+{
+  if (is(las, "LAS"))
+  {
+      p95 <- pixel_metrics(las, ~quantile(Z, probs = 0.95), 10)
+      las <- merge_spatial(las, p95, "p95")
+      las <- filter_poi(las, Z < p95*sensitivity)
+      las$p95 <- NULL
+      return(las)
+  }
+  
+  if (is(las, "LAScatalog"))
+  {
+      res <- catalog_map(las, filter_noise, sensitivity = sensitivity)
+      return(res)
+  }
+}
+```
+
+And it just works. This function `filter_noise` is now fully compatible with the catalog processing engine and supports all the options of the engine.
+
+```r
+myproject <- readLAScatalog("folder/to/lidar/data/")
+
+opt_filter(myproject)       <- "-drop_z_below 0"
+opt_chunk_buffer(myproject) <- 10
+opt_chunk_size(myproject)   <- 0
+opt_output_files(myproject) <- "folder/to/lidar/data/denoised/{ORIGINALFILENAME}_denoised"
+
+output <- filter_noise(myproject, tolerance = 1.2)
+```
+
+## Finalize the functions
+
+As is, the function `filter_noise` is not actually complete. Indeed the processing options were not checked. For example, this function should not allow the output to be returned into R otherwise the whole point cloud will be returned.
+
+```r
+filter_noise = function(las, sensitivity)
+{
+  if (is(las, "LAS"))
+  {
+      p95 <- pixel_metrics(las, ~quantile(Z, probs = 0.95), 10)
+      las <- merge_spatial(las, p95, "p95")
+      las <- filter_poi(las, Z < p95*sensitivity)
+      las$p95 <- NULL
+      return(las)
+  }
+  
+  if (is(las, "LAScatalog"))
+  {
+     options <- list(
+       need_output_file = TRUE,    # Throw an error if no output template is provided
+       need_buffer = TRUE)         # Throw an error if buffer is 0
+     res <- catalog_map(las, filter_noise, sensitivity = sensitivity, .options = options)
+     return(res)
+  }
+}
+```
+
+Now you know how to build your custom functions that work either on a `LAS` or a `LAScatalog` object. Be careful, `catalog_map` is only a simplification of `catalog_apply` with restricted capabilities. Check out the documentation of `catalog_apply`.

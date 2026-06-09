@@ -1,0 +1,113 @@
+#' Create a \code{LASheader} object
+#'
+#' Creates a  \code{LASheader} object either from a raw \code{list} containing all the
+#' elements named according to the \code{rlas} package or creates a header from a \code{data.frame}
+#' or \code{data.table} containing a point cloud. In the latter case it will generate a header
+#' according to the data using \link[rlas:header_create]{rlas::header_create()}. It will
+#' guess the LAS file format, the point data format, and initialize the scale factors and offsets,
+#' but these may not suit a user's needs. Users are advised to
+#' manually modify the results to fit their specific needs.
+#'
+#' @param data a list containing the data from the header of a LAS file. Can also be
+#' a \code{data.frame} or \code{data.table}
+#' @return An object of class \code{LASheader}
+#' @examples
+#' data = data.frame(X = c(339002.889, 339002.983, 339002.918),
+#'                   Y = c(5248000.515, 5248000.478, 5248000.318),
+#'                   Z = c(975.589, 974.778, 974.471),
+#'                   gpstime = c(269347.28141, 269347.28142, 269347.28143),
+#'                   Intensity = c(82L, 54L, 27L),
+#'                   ReturnNumber = c(1L, 1L, 2L),
+#'                   NumberOfReturns = c(1L, 1L, 2L),
+#'                   ScanDirectionFlag = c(1L, 1L, 1L),
+#'                   EdgeOfFlightline = c(1L, 0L, 0L),
+#'                   Classification = c(1L, 1L, 1L),
+#'                   ScanAngleRank = c(-21L, -21L, -21L),
+#'                   UserData = c(32L, 32L, 32L),
+#'                   PointSourceID = c(17L, 17L, 17L))
+#'
+#' header = LASheader(data)
+#' header
+#'
+#' # Record an EPSG code
+#' epsg(header) <- 32618
+#' header
+#'
+#' las <- LAS(data, header)
+#' las
+#'
+#' # The function inferred a LAS 1.2 format 1 which is correct
+#' # Upgrade to LAS 1.4 for the example
+#' header@VLR <- list() # Erase VLR previously written
+#' header@PHB[["Global Encoding"]][["WKT"]] <- TRUE
+#' header@PHB[["Version Minor"]] <- 4L
+#' header@PHB[["Header Size"]] <- 375L
+#' header@PHB[["Offset to point data"]] <- 375L
+#' wkt(header) <- sf::st_crs("EPSG:32618")$wkt
+#' header
+#' las1.4 <- LAS(data, header)
+#' las1.4
+#' @export
+LASheader <- function(data = list()) {return(new("LASheader", data))}
+
+
+#' Transform to a list
+#'
+#' Functions to construct, coerce and check for both kinds of R lists.
+#'
+#' @param x A LASheader object
+#' @param ... unused
+#' @method as.list LASheader
+#' @name as
+#' @export
+as.list.LASheader <- function(x, ...)
+{
+  PHB  <- x@PHB
+  VLR  <- list(`Variable Length Records` = x@VLR)
+  EVLR <- list(`Extended Variable Length Records` = x@EVLR)
+  return(c(PHB, VLR, EVLR))
+}
+
+#' @export
+#' @rdname Extract
+setMethod("$", "LASheader", function(x, name) { return(x[[name]]) })
+
+#' @export
+#' @rdname Extract
+setMethod("$<-", "LASheader", function(x, name, value) { x[[name]] <- value ; return(x) })
+
+#' @export
+#' @rdname Extract
+setMethod("[[", c("LASheader", "ANY", "missing"), function(x, i, j, ...) {
+
+  assert_is_a_string(i)
+
+  if (i %in% names(x@PHB))
+    return(x@PHB[[i]])
+
+  if (i %in% names(x@VLR))
+    return(x@VLR[[i]])
+
+  if (i %in% names(x@EVLR))
+    return(x@EVLR[[i]])
+
+  return(NULL)
+})
+
+#' @export
+#' @rdname Extract
+setMethod("[[<-", c("LASheader", "character", "missing"), function(x, i, value) {
+
+  assert_is_a_string(i)
+
+  if (i %in% names(x@PHB))
+    x@PHB[[i]] <- value
+
+  if (i %in% names(x@VLR))
+    x@VLR[[i]] <- value
+
+  if (i %in% names(x@EVLR))
+    x@EVLR[[i]] <- value
+
+  return(x)
+})

@@ -1,0 +1,857 @@
+---
+title: "LAScatalog processing engine"
+output: 
+  rmarkdown::html_vignette:
+    toc: true
+vignette: >
+  %\VignetteIndexEntry{3. LAScatalog processing engine}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  fig.width = 2.5,
+  fig.height = 2.5,
+  dev.args = list(pointsize = 9)
+)
+knitr::knit_hooks$set(time_it = local({
+  now <- NULL
+  function(before, options) {
+    if (before) {
+      # record the current time before each chunk
+      now <<- Sys.time()
+    } else {
+      # calculate the time difference after a chunk
+      res <- difftime(Sys.time(), now)
+      # return a character string to show the time
+      #if (res > 0.1)
+      #paste("<br/>========================<br/>Time for this code chunk ", options$label, " to run:", round(res,2), "<br/>========================<br/>")
+    }
+  }
+}))
+knitr::opts_chunk$set(time_it = TRUE)
+#rgl::setupKnitr()
+options(rmarkdown.html_vignette.check_title = FALSE)
+
+library(lidR)
+```
+
+```{r data, echo = FALSE}
+data = structure(list(Max.X = c(332099.99, 333600, 335099.99, 336217.52, 
+332099.99, 333599.99, 335099.99, 336368.67, 332099.99, 333599.99, 
+335100, 336217.52), Min.X = c(331016.91, 332100.01, 333600.01, 
+335100, 331016.91, 332100, 333600, 335100, 331016.92, 332100.01, 
+333600.01, 335100.01), Max.Y = c(5529993.99, 5529993.99, 5529993.99, 
+5529993.99, 5528399.99, 5528399.99, 5528399.99, 5528399.99, 5526399.98, 
+5526399.96, 5526399.99, 5526399.99), Min.Y = c(5528400, 5528400, 
+5528400, 5528400, 5526400, 5526400, 5526400, 5526400, 5524793.5, 
+5524793.5, 5524800.38, 5524793.5), Max.Z = c(53.53, 47.59, 48.66, 
+49.36, 46.13, 48.16, 50.51, 50.86, 45, 74.18, 52.56, 49.33), 
+    Min.Z = c(-15.95, -7.87, -3.55, -14.96, -5.94, -11.15, -5.11, 
+    -4.12, -9.63, -8.27, -35.88, -20.59), filename = c("folder/file1.las", 
+    "folder/file2.las", "folder/file3.las", "folder/file4.las", 
+    "folder/file5.las", "folder/file6.las", "folder/file7.las", 
+    "folder/file8.las", "folder/file9.las", "folder/file10.las", 
+    "folder/file11.las", "folder/file12.las")), row.names = c(NA, 
+-12L), class = "data.frame")
+
+geom <- lapply(1:nrow(data), function(i)
+{
+  mtx <- matrix(c(data$Min.X[i], data$Max.X[i], data$Min.Y[i], data$Max.Y[i])[c(1, 1, 2, 2, 1, 3, 4, 4, 3, 3)], ncol = 2)
+  sf::st_polygon(list(mtx))
+})
+
+geom <-sf::st_sfc(geom)
+sf::st_crs(geom) <- 26917
+data <- sf::st_set_geometry(data, geom)
+
+ctg       <- new("LAScatalog")
+ctg@data  <- data
+```
+
+In `lidR` the `LAScatalog` processing engine refers to the function `catalog_apply()`. This function is the core of the package and drives, internally, every single other function that is capable of processing a `LAScatalog`, including `clip_roi()`, `locate_trees()`, `rasterize_terrain()`, `decimate_points()` and many others as well as some experimental functions in third party packages such as [lidRplugins](https://github.com/Jean-Romain/lidRplugins). This engine is powerful and versatile but also relatively hard to understand for new users and especially for R beginners. This vignette documents how it works by going deeper and deeper inside the engine. It is highly recommended to read the vignette named [LAScatalog formal class](lidR-LAScatalog-class.html) before this one even if one may find some overlap between these two vignettes.
+
+## Overview
+
+When processing a `LAScatalog` the area covered is split into chunks. A chunk can be seen as a square region of interest (ROI) and altogether the chunks cover the collection of files. The collection of files is not physically split, rather the chunks correspond to a virtual splitting of the coverage. Then the chunk are processed sequentially (one after the other) or in parallel but always **independently**. To process each chunk, the corresponding point cloud is extracted from the collection of files and loaded into memory. Any function can be applied on these independent point clouds and the independent outputs are stored in a `list`. The `list` contains one output per chunk and once each chunk is processed the `list` is collapsed into a single continuous valid object such as a raster or a spatial vector. The roles of the catalog engine are to:
+
+- Create a set of chunks that encompass the collection of files
+- Load a buffer on-the-fly around each chunk
+- Apply any user-defined function on the loaded point clouds
+- Take care of parallelism by computing several chunks at a time sending computation to multiple cores or even multiple machines
+- Take care of error handling including the management of logs in case of crash and the capability to return a partial output in case of crash at mid-computation
+- Provide a visual monitoring of the computation progress in real time including feedback on successes, warnings and errors.
+- Merge the independent outputs into a single continuous object.
+
+When using the `LAScatalog` engine, users only need to think about which function they want to apply over their coverage, all the above-mentioned features being managed internally. There are many possible processing tuning tools and this is why one may feel lost by all the options to consider. To simplify, we can make two categories of tools:
+
+1. **High-level API** are `lidR` functions that perform a given operation either on a `LAS` or `LAScatalog` object transparently in a straightforward way. For example, `pixel_metrics()`, `rasterize_terrain()`, and `locate_trees()` are high-level API. Rule of thumb: if the function `catalog_apply()` is not directly used it is a high-level API. Processing options can be tuned with functions that start with `opt_` (for option).
+2. **Low-level API** is the function `catalog_apply()` itself. This function is designed to build new high-level applications and is used internally by all the `lidR` functions but can also be used to build a user's own tools. Options can be tuned with the parameter `.options` of `catalog_apply()`.
+
+In the following vignette we will discuss first the high-level API then the low-level API. The variables named `ctg*` will refer to a `LAScatalog` object in subsequent code.
+
+## High-level API
+
+### Control of the chunk size
+
+The catalog takes care of making chunks and users can define the size of the chunks. By default this size is set to 0 meaning that a chunk is a file and thus each file will be processed sequentially. The chunk size is not the most important option. It is mainly intended to be used with small configuration computers to avoid loading too many points at once. Reducing or increasing the chunk size does not modify the output but it reduces the memory used by reducing the quantity of points loaded. It is recommended to set this option to 0, but sometimes it is a good idea to set it to a small size to process particularly large files.
+
+```{r setbuffer2, echo = FALSE}
+opt_chunk_buffer(ctg) <- 0
+```
+
+
+```{r plotctg, fig.show='hold'}
+opt_chunk_size(ctg) <- 0 # Processing by files
+plot(ctg, chunk = TRUE)
+
+opt_chunk_size(ctg) <- 1000 # Processing chunks of 1000 x 1000
+plot(ctg, chunk = TRUE)
+```
+
+### Control of the chunk buffer
+
+Each chunk is loaded with a buffer around it to ensure that independent clouds will not be affected by edge effects. For example, when computing a digital terrain model if a buffer is not loaded, the terrain is weakly computed at the edge of the point cloud because of the absence of context in the neighbourhood. The chunk buffer size is the most important option. A buffer that is too small can create incorrect outputs. The default is 30 m, which is likely to be appropriate for most use cases.
+
+
+```{r setbuffer1, echo = FALSE}
+opt_chunk_size(ctg) <- 0
+```
+
+
+```{r plotbuffer, fig.show='hold'}
+opt_chunk_buffer(ctg) <- 0 # No buffer
+plot(ctg, chunk = TRUE)
+
+opt_chunk_buffer(ctg) <- 200 # 200 m buffer
+plot(ctg, chunk = TRUE)
+```
+
+`lidR` functions always check if an appropriate buffer is set. For example, it is impossible to apply `rasterize_terrain()` with no buffer.
+
+```{r dtmnobuffer, error=TRUE}
+opt_chunk_buffer(ctg) <- 0
+rasterize_terrain(ctg, 1, tin())
+```
+
+### Control of the chunk alignment
+
+In some cases it might be suitable to control the alignment of the chunks to force a given pattern. This is a rare use case but the engine supports such a possibility. This option is obviously meaningless when processing by file. The chunk alignment is not the most important option and does not modify the output, but it may generate more, or fewer, chunks depending on the alignment. However, it might be very useful in the particular case of the function `catalog_retile()`, for example, to accurately control the new tiling pattern.
+
+
+```{r alignment, fig.show='hold'}
+opt_chunk_size(ctg) <- 2000
+opt_chunk_buffer(ctg) <- 0
+plot(ctg, chunk = TRUE)
+
+opt_chunk_size(ctg) <- 2000
+opt_chunk_buffer(ctg) <- 0
+opt_chunk_alignment(ctg) <- c(1000, 1000)
+plot(ctg, chunk = TRUE)
+```
+
+`clip_roi()` is the single case where the control of the chunk is not respected. `clip_roi()` aims to extract a shape (rectangle, disc, polygon) as a single entity . The chunk pattern does not make sense here.
+
+### Filter points
+
+When reading a single file with `readLAS()` the option `filter` allows for discarding some points based on criteria. For example `-keep_first` keeps only first returns and discards all non-first returns. It is important to understand that the discarded points are discarded while reading and they will never be loaded in memory. This is useful for processing only some points of interest, for example when computing metrics only on first returns above 2 m.
+
+```r
+# Read all the points
+readLAS("file.las")
+
+# Only first returns above 2 m are loaded
+readLAS("file.las", filter = "-drop_first -drop_z_below 2")
+```
+
+This works only when the `readLAS()` function is explicitly called. When using the catalog processing engine, `readLAS()` is called internally under the hood and users cannot explicitly call the `filter` argument. `filter` is propagated with the `opt_filter()` function.
+
+```r
+opt_filter(ctg) <- "-keep_first -drop_z_below 2"
+```
+
+Internally, for each chunk, `readLAS()` will be called with `filter = "-drop_first -drop_z_below 2` in every function that is processing a `LAScatalog` unless the documentation explicitly mentions something else. In the following examples `clip_roi()` is used to extract a plot but only the points classified as ground or water will be read and `pixel_metrics()` is used to compute metrics only on first returns above 2 meters. It does not mean other points do not exist, they are simply not read.
+
+```r
+opt_filter(ctg) <- "-keep_class 2 9"
+las <- clip_circle(ctg, 273400, 5274500, 20)
+
+opt_filter(ctg) <- "-keep_first -drop_z_below 2"
+m <- pixel_metrics(ctg, .stdmetrics, 20)
+```
+
+```{r void, echo = FALSE, rgl=TRUE, dev='png'}
+#LASfile <- system.file("extdata", "Topography.laz", package="lidR")
+#ctg = readLAScatalog(LASfile)
+#opt_progress(ctg) <- FALSE
+#opt_filter(ctg) <- "-keep_class 2 9"
+#las = clip_circle(ctg, 273500, 5274500, 40)
+#m = structure(c(0.921, -0.146, 0.362, 0, 0.386, 0.482, -0.787, 0, 
+#-0.06, 0.864, 0.5, 0, 0, 0, 0, 1), .Dim = c(4L, 4L))
+#plot(las)
+#rgl::view3d(fov = 50, userMatrix = m)
+```
+
+All filters are not necessarily appropriate everywhere. For example, the following is meaningless because it discards all the points that are used to compute a DTM.
+
+```r
+opt_filter(ctg) <- "-drop_class 2 9"
+rasterize_terrain(ctg, 1, tin())
+#> Error: No ground points found. Impossible to compute a DTM.
+```
+
+### Select attributes
+
+When reading a single file with `readLAS()` the option `select` allows for discarding some attributes of the points. For example, `select = "ir"` keeps only the intensity and the return number of each point and discards all the other attributes, such as the scan angle, the flags or the classification. Its role is only to save processing memory by not loading data that are not needed. Similarly to `opt_filter()`, the function `opt_select()` allows propagation of the argument `select` to `readLAS()`.
+
+```r
+# Load Intensity only
+opt_select(ctg) <- "i"
+las <- clip_circle(ctg, 273500, 5274500, 10)
+
+# Load Intensity + Classification + ReturnNumber + NumberOfReturns
+opt_select(ctg) <- "icrn"
+las <- clip_circle(ctg, 273500, 5274500, 10)
+```
+
+However, this option is not always respected because many `lidR` functions already know which optimization they should apply. In the following example the 'classification' attribute is explicitly discarded, yet the creation of a DTM works because the function overwrites the user settings for something better (in this specific case `xyzc`).
+
+```r
+opt_select(ctg) <- "* -c"
+dtm <- rasterize_terrain(ctg, 1, tin())
+```
+
+### Write independent chunks on disk
+
+By default every function returns a continuous output within a single R object stored in memory so it is immediately usable in the working environment in a straightforward way. For example, a `sf/sfc_POINT` for `locate_trees()`.
+
+```{r writeondisk, echo = FALSE, eval = FALSE}
+LASfile <- system.file("extdata", "MixedConifer.laz", package="lidR")
+ctg2 <- readLAScatalog(LASfile)
+opt_progress(ctg2) <- FALSE
+opt_chunk_size(ctg2) <- 100
+```
+
+```r
+# Find the trees
+trees <- locate_trees(ctg2, lmf(3))
+
+# The trees are immediately usable in subsequent analyses
+trees
+#> Simple feature collection with 17865 features and 2 fields
+#> Attribute-geometry relationship: 2 constant, 0 aggregate, 0 identity
+#> Geometry type: POINT
+#> Dimension:     XYZ
+#> Bounding box:  xmin: 481260.8 ymin: 3812980 xmax: 483299.6 ymax: 3816011
+#> Projected CRS: NAD83 / UTM zone 12N
+```
+
+However in some case this behaviour might not be suitable especially for a large collection of files that cover a broad area. In this case the computer might not be able to handle so much data and/or will run into trouble when merging the different independent chunks into a single object. This is why the engine has the capability to write on disk the output of each independent chunk. The function `opt_output_files()` can be used to set a path on disk where the output of each chunk should be saved on disk. This path is templated so the engine is able to create a different file name for each chunk. The general form is the following:
+
+```r
+opt_output_files(ctg) <- "/folder/to/save/filename_{TEMPLATE1}_{TEMPLATE2}...{TEMPLATEN}"
+```
+
+The templates can be `XCENTER`, `YCENTER`, `XLEFT`, `YBOTTOM`, `XRIGHT`, `YTOP`, `ID` or `ORIGINALFILENAME`. The templated string does not contain the file extension. The engine guesses the extension and it works no matter the output. For example:
+
+```{r template, eval = FALSE}
+# Force the results to be written on disk
+opt_output_files(ctg2) <- paste0(tempdir(), "/tree_coordinate_{XLEFT}_{YBOTTOM}")
+trees <- locate_trees(ctg2, lmf(3))
+
+# The output has been modified by these options and it now gives
+# the paths to the written files (here shapefiles)
+trees
+#> "/tmp/RtmpJQHPNz/tree_coordinate_481200_3812900.shp" "/tmp/RtmpJQHPNz/tree_coordinate_481300_3812900.shp" "/tmp/RtmpJQHPNz/tree_coordinate_481200_3813000.shp"
+#> [4] "/tmp/RtmpJQHPNz/tree_coordinate_481300_3813000.shp"
+```
+
+There is one file per chunk and thus processing by file with the template `{ORIGINALFILENAME}` or its shortcut `{*}` may be suitable to further match the output files with the point cloud files. However, depending on the size of the file and the capacity of the computer it is not always possible (see section "Control of the chunk size").
+
+In the previous example, several shapefiles were written on disk and there is no way to combine them into a single light R object. But sometimes it is possible to return a light object that aggregates all the written files. For rasters, for example, it is possible to build a virtual raster mosaic. The engine automatically does this when it is possible.
+
+```{r writechm, eval = FALSE}
+# Force the results to be written on disk
+opt_output_files(ctg2) <- paste0(tempdir(), "/tree_coordinate_{XLEFT}_{YBOTTOM}")
+chm <- rasterize_canopy(ctg2, 1, p2r())
+
+# Many rasters have been written on disk
+# but a light raster has been returned anyway
+chm
+#> class      : RasterLayer 
+#> dimensions : 90, 90, 8100  (nrow, ncol, ncell)
+#> resolution : 1, 1  (x, y)
+#> extent     : 481260, 481350, 3812921, 3813011  (xmin, xmax, ymin, ymax)
+#> crs        : +proj=utm +zone=12 +datum=NAD83 +units=m +no_defs 
+#> source     : /tmp/RtmpZVJ2hy/rasterize_canopy.vrt 
+#> names      : tree_coordinate_481260_3812921 
+#> values     : 0, 32.07  (min, max)
+```
+
+There are two special cases. The first one is when raster files are written. They are merged into a valid `RasterLayer` using a virtual mosaic. The second one is when LAS or LAZ files are written on disk. They are merged into a `LAScatalog`.
+
+```{r clip, fig.show='hold', eval=FALSE}
+opt_output_files(ctg2) <- "{tempdir()}/plot_{ID}"
+new_ctg <- clip_circle(ctg2, x, y, 20)
+new_ctg
+#> class       : LAScatalog (v1.2 format 0)
+#> extent      : 32.372, 163.136, 38.494, 198.636 (xmin, xmax, ymin, ymax)
+#> coord. ref. : NAD83 / UTM zone 17N 
+#> area        : 3895.031 m²
+#> points      : 44 points
+#> density     : 8 points/m²
+#> num. files  : 4 
+```
+
+### Modification of the file format
+
+By default, rasters are written in GeoTiff files, spatial points, spatial polygons and spatial lines either in `sp` or `sf` formats are written in ESRI shapefiles, point-clouds are written in las files, and table are written in csv files. This can be modified at any time by users but it corresponds to advanced settings and thus this section is discussed in a later section about advanced usages. However, the function `opt_laz_compression()` is a simple shortcut to switch from las to laz when writing a point cloud.
+
+```r
+opt_laz_compression(ctg) <- TRUE
+```
+
+### Progress estimation
+
+The engine provides a real time display of the progression that serves two purposes: (a) see the progression and (b) monitor troubleshooting. It is enabled by default and when a `LAScatalog` is processing a chart is displayed. The chunks are progressively coloured. No colour: the chunk is pending. Blue: the chunk is processing. Green: the chunk has been processed. Orange: the chunk has been processed with a warning. Red: the chunk processing failed.
+
+
+```{r, echo=FALSE}
+opt_chunk_size(ctg) <- 0
+opt_output_files(ctg) <- ""
+opt_wall_to_wall(ctg) <- FALSE
+opt_progress(ctg) <- TRUE
+cl <- engine_chunks(ctg)
+for (i in 1:5){
+  bbox <- cl[[i]]@bbox
+  graphics::rect(bbox[1], bbox[2], bbox[3], bbox[4], border = "black", col = "green3")
+}
+
+bbox <- cl[[6]]@bbox
+graphics::rect(bbox[1], bbox[2], bbox[3], bbox[4], border = "black", col = "cornflowerblue")
+
+```
+
+
+This can be disabled with:
+
+```r
+opt_progress(ctg) <- FALSE
+```
+
+### Error handling
+
+If a chunks produced a warning this is rendered in real time with an orange colouring. However, the message(s) of the warning(s) are delayed and printed only at the end of the computation.
+
+```{r, echo=FALSE}
+opt_chunk_size(ctg) <- 0
+opt_output_files(ctg) <- ""
+opt_wall_to_wall(ctg) <- FALSE
+opt_progress(ctg) <- TRUE
+cl <- engine_chunks(ctg)
+for (i in 1:6){
+  bbox <- cl[[i]]@bbox
+  graphics::rect(bbox[1], bbox[2], bbox[3], bbox[4], border = "black", col = "green3")
+}
+
+bbox <- cl[[7]]@bbox
+graphics::rect(bbox[1], bbox[2], bbox[3], bbox[4], border = "black", col = "orange")
+
+bbox <- cl[[8]]@bbox
+graphics::rect(bbox[1], bbox[2], bbox[3], bbox[4], border = "black", col = "cornflowerblue")
+```
+
+If a chunk produced an error this is also rendered in real time. The computation stops as usual but the error is handled in such a way that the code does not actually fail. The functions returned a partial output i.e. the output of the tiles that were computed successfully. A message is printed telling the user what the error was and where it occurred, and suggests to load this specific section of the catalog to test what was wrong with it. In the following case one tile was not classified so it failed.
+
+```r
+#> An error occurred when processing the chunk 9. Try to load this chunk with:
+#>  chunk <- readRDS("/tmp/RtmpTozKLu/chunk9.rds")
+#>  las <- readLAS(chunk)
+#> No ground point found.
+```
+
+```{r, echo=FALSE}
+opt_chunk_size(ctg) <- 0
+opt_output_files(ctg) <- ""
+opt_wall_to_wall(ctg) <- FALSE
+opt_progress(ctg) <- TRUE
+cl <- engine_chunks(ctg)
+for (i in 1:8){
+  bbox <- cl[[i]]@bbox
+  graphics::rect(bbox[1], bbox[2], bbox[3], bbox[4], border = "black", col = "green3")
+}
+
+bbox <- cl[[7]]@bbox
+graphics::rect(bbox[1], bbox[2], bbox[3], bbox[4], border = "black", col = "orange")
+
+bbox <- cl[[9]]@bbox
+graphics::rect(bbox[1], bbox[2], bbox[3], bbox[4], border = "black", col = "red")
+
+```
+
+The engine logged the chunk and it is easy to load this specific processing region for further investigation by copy pasting the mentioned code.
+
+```r
+chunk <- readRDS("/tmp/RtmpTozKLu/chunk9.rds")
+las <- readLAS(chunk)
+```
+
+It is possible to restart the computation at a given chunk to produce the missing parts. In the previous example the chunk number 9 failed so we can restart at 9
+
+```r
+opt_restart(ctg) <- 9
+```
+
+```{r, echo=FALSE}
+opt_chunk_size(ctg) <- 0
+opt_output_files(ctg) <- ""
+opt_wall_to_wall(ctg) <- FALSE
+opt_progress(ctg) <- TRUE
+opt_restart(ctg) <- 9
+cl <- engine_chunks(ctg)
+for (i in 1:4){
+  bbox <- cl[[i]]@bbox
+  graphics::rect(bbox[1], bbox[2], bbox[3], bbox[4], border = "black", col = "green3")
+}
+```
+
+The engine is also able to bypass the error. This can be activated with `opt_stop_early()` and the computation will run until the end in any case. In this case chunks that failed will be missing and the output will contain holes with missing data. We do not recommend the use of this option because other errors will be bypassed as well without triggering any informative message. This option exists and can be useful if used carefully. Users should always try to fix any problems.
+
+```r
+opt_stop_early(ctg) <- FALSE
+dtm <- rasterize_terrain(ctg, 1, tin())
+```
+
+```{r, echo=FALSE}
+opt_chunk_size(ctg) <- 0
+opt_output_files(ctg) <- ""
+opt_wall_to_wall(ctg) <- FALSE
+opt_progress(ctg) <- TRUE
+opt_restart(ctg) <- 1
+cl <- engine_chunks(ctg)
+for (i in 1:length(cl)){
+  bbox <- cl[[i]]@bbox
+  graphics::rect(bbox[1], bbox[2], bbox[3], bbox[4], border = "black", col = "green3")
+}
+
+bbox <- cl[[7]]@bbox
+graphics::rect(bbox[1], bbox[2], bbox[3], bbox[4], border = "black", col = "orange")
+
+bbox <- cl[[9]]@bbox
+graphics::rect(bbox[1], bbox[2], bbox[3], bbox[4], border = "black", col = "red")
+
+```
+
+### Empty chunks
+
+Sometimes some chunks are empty and we discover this only when loading the region of interest. This may happen when the chunk pattern is different from the tiling pattern because some chunks may have been created but they do not actually encompass any points. This is the case when the file is only partially populated because the bounding box of the file/tile is bigger than its actual contents. This often happens on the edge of the collection. In this case the engine displays the chunks in gray. This may also happen if `filter` is set in such a way that a lot of points are discarded and in some chunks all the points appear to be discarded. Those chunk are displayed in gray.
+
+```{r, echo=FALSE}
+opt_chunk_size(ctg) <- 400
+opt_output_files(ctg) <- ""
+opt_wall_to_wall(ctg) <- FALSE
+opt_progress(ctg) <- TRUE
+cl <- engine_chunks(ctg)
+for (i in 1:50){
+  bbox <- cl[[i]]@bbox
+  graphics::rect(bbox[1], bbox[2], bbox[3], bbox[4], border = "black", col = "green3")
+}
+
+bbox <- cl[[1]]@bbox
+graphics::rect(bbox[1], bbox[2], bbox[3], bbox[4], border = "black", col = "gray")
+
+bbox <- cl[[2]]@bbox
+graphics::rect(bbox[1], bbox[2], bbox[3], bbox[4], border = "black", col = "gray")
+
+bbox <- cl[[3]]@bbox
+graphics::rect(bbox[1], bbox[2], bbox[3], bbox[4], border = "black", col = "gray")
+
+bbox <- cl[[14]]@bbox
+graphics::rect(bbox[1], bbox[2], bbox[3], bbox[4], border = "black", col = "gray")
+
+bbox <- cl[[15]]@bbox
+graphics::rect(bbox[1], bbox[2], bbox[3], bbox[4], border = "black", col = "gray")
+
+bbox <- cl[[16]]@bbox
+graphics::rect(bbox[1], bbox[2], bbox[3], bbox[4], border = "black", col = "gray")
+
+bbox <- cl[[29]]@bbox
+graphics::rect(bbox[1], bbox[2], bbox[3], bbox[4], border = "black", col = "gray")
+```
+
+### Parallel processing
+
+The engine takes care of processing the chunks either sequentially or in parallel. The parallelization can be done with a single machine or on multiple machines by sending the chunks to different workers. The parallelization is performed using the framework given by the package [`future`](https://CRAN.R-project.org/package=future). Understanding the basics of this package is thus required. To activate a paralellization strategy users need to register a strategy with `future`. For example:
+
+```r
+library(future)
+plan(multissesion, workers = 4L)
+```
+
+Now 4 chunks will be processed at a time and the engine monitoring displays the processing chunks in real time:
+
+```{r, echo=FALSE}
+opt_chunk_size(ctg) <- 0
+opt_output_files(ctg) <- ""
+opt_wall_to_wall(ctg) <- FALSE
+opt_progress(ctg) <- TRUE
+cl <- engine_chunks(ctg)
+for (i in 1:6) {
+  bbox <- cl[[i]]@bbox
+  graphics::rect(bbox[1], bbox[2], bbox[3], bbox[4], border = "black", col = "green3")
+}
+
+for (i in 7:11) {
+  bbox <- cl[[i]]@bbox
+  graphics::rect(bbox[1], bbox[2], bbox[3], bbox[4], border = "black", col = "cornflowerblue")
+}
+```
+
+However, parallel processing is not magic. First of all it loads several point clouds at one time because several chunks are read at one time. Users must ensure they have enough RAM to support that. Second, there are strong overheads incurred when parallelizing tasks. Putting all cores on a task does not always make it faster!
+
+
+### Overlapping tiles
+
+In `lidR` if some files are overlapping each other, a message is printed to alert users about potential problems. 
+
+```r
+ctg <- readLAScatalog("path/to/folder/")
+#> Be careful, some tiles seem to overlap each other. lidR may return incorrect outputs with edge artifacts when processing this catalog.
+```
+
+Overlapping is not an issue by itself. The actual problem is duplicated points. Because `lidR` makes arbitrary chunks, users are likely to load the same points twice if some areas are duplicated in the original dataset. Below are a few classical cases of overlapping files:
+
+- **The files are already buffered:** the engine is designed to work with a continuous dataset. If files are already buffered users have several options to process the collection but they all imply driving without a seatbelt. The first and best option is to skip the buffer at read time assuming that buffer points are flagged in some way. For example, flagged as withheld:
+
+   ```r
+   opt_filter(ctg) <- "-drop_withhelp"
+   ```
+
+   If it is not the case one can try to retile the `LAScatalog` with a negative buffer to remove the buffer.
+
+   ```r
+   opt_chunk_size(ctg) <- 0
+   opt_output_files(ctg) <- "/data/unbufferd/{ORIGINALFILENAME}"
+   opt_chunk_buffer(ctg) <- -40
+   new_ctg <- catalog_retile(ctg)
+   ```
+   
+   It is also possible to process by file without a buffer by disabling all the internal controls using `opt_wall_to_wall()`. Using this disables the guarantee of having a correct, valid, continuous result. This is a free-wheel mode.
+   
+   ```r
+   opt_chunk_size(ctg) <- 0
+   opt_output_files(ctg) <- "/data/unbufferd/{ORIGINALFILENAME}"
+   opt_chunk_buffer(ctg) <- 0
+   opt_wall_to_wall(ctg) <- FALSE
+   new_ctg <- catalog_retile(ctg)
+   ```
+
+- **The files are flight-lines:** when a file records a single flight transect, files are overlapping, of course, but this does not create regions with duplicated points. You can process normally and ignore the message. The engine will take care of making independent and buffered chunks.
+- **There are some duplicated files:** a few tiles that appear more than once. When plotting the `LAScatalog`, the light blue being transparent, the overlapping regions should appear darker. You must remove these files.
+- **Other:** there are certainly many other reasons to get overlaps.
+
+### Partial processing
+
+It is possible to process only a subregion of the collection by flagging some files. In this case only the flagged files will be processed but the neighbouring tiles will be used to load a buffer so the local context beyond the processed tiles is not lost. In the figure below 2 files are flagged `processed` and the display plots the other tiles almost white.
+
+```{r}
+ctg$processed <- FALSE
+ctg$processed[6:7] <- TRUE
+plot(ctg)
+```
+
+### Partial output
+
+As mentioned in a previous section, when an error stops the computation the output is never `NULL`, but it contains a valid output computed from the part of the catalog that has been processed. It is a partial but valid output. Computation can be restarted from the failling chunk.
+
+## Low-level API
+
+The low-level API refers to the use of `catalog_apply()`. This function drives every single other one and is intended to be used by developers to create new processing routines that do not exist in `lidR`. When `catalog_apply()` is running it respects all the processing options we have seen so far plus some developer's constraints that are not intended to be modified by users. `catalog_apply()` maps any R function but such functions must respect some rules.
+
+### Making a valid function for catalog_apply()
+
+A function mapped by `catalog_apply()` must take a chunk as input and must read the chunk using `readLAS()`. So a valid function starts like this:
+
+```r
+routine <- function(chunk){ 
+   las <- readLAS(chunk)
+}
+```
+
+The size of the chunks, the size of the buffer and the positioning of the chunks depend on the options carried by the `LAScatalog` and set with `opt_chunk_*()` functions. In addition, the `select` and `filter` arguments cannot be specified in `readLAS()`. They are controlled by `opt_filter()` and `opt_select()`, as seen in previous sections. The problem with this is that if any size of chunk can be defined it is possible to create chunks that encompass a tile but that do not contain any points. So sometimes `readLAS(chunk)` may return a point cloud with 0 points (see section 'empty chunks'). In that case subsequent code is likely to fail. As a consequence the function mapped by `catalog_apply()` must check for empty chunks and return `NULL`. When returning `NULL` the engine understands that the chunk was empty.
+
+The following code does not work because `catalog_apply()` checks internally if the function returns `NULL` for empty chunks
+
+```{r, echo = FALSE}
+opt_wall_to_wall(ctg) <- TRUE
+opt_progress(ctg) <- FALSE
+```
+
+```{r, error = TRUE}
+routine <- function(chunk){ 
+  las <- readLAS(chunk)
+}
+
+catalog_apply(ctg, routine)
+```
+
+The following code is valid
+
+```r
+routine <- function(chunk){ 
+   las <- readLAS(chunk)
+   if (is.empty(las)) return(NULL)
+}
+
+catalog_apply(ctg, routine)
+```
+
+### Buffer management
+
+When reading a chunk with `readLAS()` the `LAS` object read is a point cloud that encompass the chunk plus the buffer. This `LAS` object has an extra attribute named `buffer` that records whether the points are in the buffered region or not. 0 refers to no buffer, 1,2,3 and 4 refer, respectively, to bottom, left, top and right buffers. If plotted, this is what could be seen.
+
+```{r getachunk, eval=FALSE,echo=FALSE,warning=FALSE,message=FALSE,error=FALSE,results='hide',fig.keep='none'}
+LASfile <- system.file("extdata", "Megaplot.laz", package="lidR")
+test = readLAScatalog(LASfile)
+
+opt_chunk_size(test) <- 150
+opt_chunk_alignment(test) <- c(50,10)
+opt_progress(ctg) <- FALSE
+chunks = engine_chunks(test)
+chunk = chunks[[5]]
+```
+
+```{r rglbuffer, rgl = TRUE, eval = FALSE}
+las <- readLAS(chunk)
+plot(las, color = "buffer")
+```
+
+<img src="data:image/png;base64,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" />
+
+The chunk is formally a `LAScluster` object. This is a lightweight object that roughly contains the names of the files that need to be read, the extent of the chunk and some metadata useful internally.
+
+```{r, eval = FALSE}
+print(chunk)
+#> class       : LAScluster 
+#> features    : 1 
+#> extent      : 684800, 684950, 5017810, 5017960  (xmin, xmax, ymin, ymax)
+#> crs         : +proj=utm +zone=17 +datum=NAD83 +units=m +no_defs
+```
+
+`raster::extent()`, `terra::ext()` and `sf::st_bbox()` are valid functions that return the bounding box of the chunk. The bounding box of the chunk is the bounding box without the buffer.
+ 
+```{r, warning = FALSE, eval = FALSE}
+raster::extent(chunk)
+#> class      : Extent 
+#> xmin       : 684800 
+#> xmax       : 684950 
+#> ymin       : 5017810 
+#> ymax       : 5017960
+sf::st_bbox(chunk)
+#>    xmin    ymin    xmax    ymax 
+#>  684800 5017810  684950 5017960
+```
+
+Being able to retrieve the true bounding box allows for removal of the buffer. Indeed, the point cloud is loaded with a buffer and all subsequent computation will provide an output with the buffer included in the results. At the end the engine will merge everything and the buffered region will appear twice or more. So the final output must be unbuffered by any means. One can find examples in the documentation of `catalog_apply()`, in [this vignette](lidR-catalog-apply-examples.html) or in the source code of `lidR`.
+
+### Control the options provided by the catalog
+
+Sometime we need to control processing options carried by the `LAScatalog` to ensure that users do not use invalid options. For example `rasterize_terrain()` ensures that the buffer is not 0.
+
+```{r bufferror, error = TRUE}
+opt_chunk_buffer(ctg) <- 0
+rasterize_terrain(ctg, 1, tin())
+```
+
+This can be reproduced with the option `need_buffer = TRUE`
+
+```{r routineerror, error = TRUE}
+routine <- function(chunk){ 
+   las <- readLAS(chunk)
+   if (is.empty(las)) return(NULL)
+}
+
+options = list(need_buffer = TRUE)
+catalog_apply(ctg, routine, .options = options)
+```
+
+Other options are documented in the manual. They serve to make safe new high-level functions. The main idea being that when developers are programming new tools using `catalog_apply()` they are expected to know what they are doing. But when providing new functions to third-party users or to collaborators in a high-level way we are never safe. This is why the catalog engine provides options to control the inputs so that other users won't use your tools incorrectly.
+
+### Merge the outputs
+
+By default `catalog_apply()` returns a `list` with one output per chunk. 
+
+```{r preparectg, echo=FALSE,warning=FALSE,message=FALSE,error=FALSE,results='hide',fig.keep='none'}
+LASfile <- system.file("extdata", "MixedConifer.laz", package="lidR")
+ctg = readLAScatalog(LASfile)
+
+opt_chunk_buffer(ctg) <- 10
+opt_chunk_size(ctg) <- 100
+opt_chunk_alignment(ctg) <- c(50,50)
+opt_progress(ctg) <- FALSE
+```
+
+```{r applyroutine, eval = FALSE}
+routine <- function(chunk){ 
+   las <- readLAS(chunk)               # read the chunk
+   if (is.empty(las)) return(NULL)     # exit if empty
+   ttop <- locate_trees(las, lmf(3))     # make any computation
+   ttop <- sf::st_crop(ttop, st_bbox(chunk))   # remove the buffer
+   return(ttop)
+}
+
+out <- catalog_apply(ctg, routine)
+class(out)
+#> [1] "list"
+print(out[[1]])
+#> Simple feature collection with 178 features and 2 fields
+#> Attribute-geometry relationship: 2 constant, 0 aggregate, 0 identity
+#> Geometry type: POINT
+#> Dimension:     XYZ
+#> Bounding box:  xmin: 481260.8 ymin: 3812980 xmax: 483299.6 ymax: 3816011
+#> Projected CRS: NAD83 / UTM zone 12N
+```
+
+This `list` must be reduced after `catalog_apply()`. The way to merge depends on the contents of the `list`. Here the list contains `sf` so we can `rbind` the list.
+
+```{r, eval = FALSE}
+out <- do.call(rbind, out)
+print(out)
+#> Simple feature collection with 17865 features and 2 fields
+#> Attribute-geometry relationship: 2 constant, 0 aggregate, 0 identity
+#> Geometry type: POINT
+#> Dimension:     XYZ
+#> Bounding box:  xmin: 481260.8 ymin: 3812980 xmax: 483299.6 ymax: 3816011
+#> Projected CRS: NAD83 / UTM zone 12N
+```
+
+But in practice a safe merging is not always trivial and it is annoying to do it manually. The engine supports automerging of `Spatial*`, `sf`, `Raster*`, `stars`, `SpatRaster`, `data.frame` and `LAS` objects.
+
+```{r automerge, eval = FALSE}
+options <- list(automerge = TRUE)
+out <- catalog_apply(ctg, routine, .options = options)
+print(out)
+#> Simple feature collection with 17865 features and 2 fields
+#> Attribute-geometry relationship: 2 constant, 0 aggregate, 0 identity
+#> Geometry type: POINT
+#> Dimension:     XYZ
+#> Bounding box:  xmin: 481260.8 ymin: 3812980 xmax: 483299.6 ymax: 3816011
+#> Projected CRS: NAD83 / UTM zone 12N
+```
+
+In the worst case the type is not supported and a list is returned anyway without failure.
+
+### Make a high-level function
+
+ `catalog_apply()` is not really intended to be used directly. It is intended to be used and hidden within more user-friendly functions referred to as high-level API. High-level API are functions intended to be used by third-party users. Let's assume we have designed a new application to identify dead trees. Let's call this function `find_deadtrees()`. This function takes a point cloud as input and returns a `sf` with the positioning of the dead trees + some attributes.
+
+```r
+find_deadtree <- function(las, param1, param2)
+{
+   # make a complex computation
+   return(dead_trees)
+}
+```
+
+We now want to make this function work with a `LAScatalog` in the sane  way as all the other `lidR` functions. One option is the following. First, the function checks the input, if it is a `LAScatalog` it makes use of `catalog_apply()` to apply itself. Then the function will be fed with `LAScluster`s. We test if the input is a `LAScluster` and if it is we read the chunk and apply the function on the loaded point cloud. To finish, if the input is a `LAS` we perform the actual computation.
+
+```r
+find_deadtrees <- function(las, param1, param2)
+{
+   if (is(las, "LAScatalog"))  {
+      options <- list(automerge = TRUE, need_buffer = TRUE)
+      dead_trees <- catalog_apply(las, find_deadtrees, param1 = param1, param2 = param2, .options = options)
+      return(dead_trees)
+   }
+   else if (is(las, "LAScluster")) {
+      bbox <- st_bbox(las)
+      las <- readLAS(las)
+      if (is.empty(las)) return(NULL) 
+      dead_trees <- find_deadtrees(las, param1, param2)
+      dead_trees <- sf::st_crop(dead_trees, bbox)
+      return(dead_trees)
+   }
+   else if (is(las, "LAS")) {
+      # make an advanced computation
+      return(dead_trees)
+   }
+   else {
+      stop("This type is not supported.")
+   }
+}
+```
+
+The function now works seamlessly both on a `LAS` and a `LAScatalog`. We created a function `find_deadtrees()` that can be applied on a whole collection of files in parallel or not, on multiple machines or not, that returns a valid continuous shapefile, that handles errors nicely, that can optionally write the output of each chunk, and so on...
+
+```r
+# This will works
+las <- readLAS(...)
+deads <- find_deadtrees(las, 0.5, 3)
+
+# And this too
+library(future)
+ctg <- readLAScatalog(...)
+opt_chunk_size(ctg) <- 800
+opt_chunk_buffer(ctg) <- 30
+plan(multissesion, workers = 4L)
+deads <- find_deadtrees(ctg, 0.5, 3)
+```
+
+## Advanced usages of the engine
+
+The following sections concern both high-level and low-level APIs and present some advanced use cases.
+
+### Modify the drivers
+
+Using the processing option `opt_output_files()` users can tell the engine to sequentially write the outputs on a drive with custom filenames. In the default settings raster are written in GeoTiff files, vectors, either in `sp` or `sf` formats, are written in ESRI shapefiles, point clouds are written in las files and `data.frame` are written in csv files. This can be modified at any time. This is documented in `help("lidR-LAScatalog-drivers")`. If somehow the output of the function mapped by `catalog_apply()` is not a raster, a vector, a `data.frame`, the function will fail when writing the output.
+
+```r
+routine <- function(chunk){ 
+   las <- readLAS(chunk)
+   if (is.empty(las)) return(NULL)
+   # Do some computation
+   # output is a list
+   return(output)
+}
+
+opt_output_files(ctg) <- "{tempdir()}/{ID}"
+catalog_apply(ctg, routine)
+#> Erreur : Trying to write an object of class 'list' but this type is not supported.
+```
+
+It is possible to create a new driver. We could for example write the list in a `.rds` file. This can be done by creating a new entry named after the name of the class of the object that needs to be written. Here, a `list`.
+
+```r
+ctg@output_options$drivers$list = list(
+ write = base::saveRDS,
+ object = "object",
+ path = "file",
+ extension = ".rds",
+ param = list(compress = TRUE))
+```
+
+More details in `help("lidR-LAScatalog-drivers")` or in this [wiki page](https://github.com/r-lidar/lidR/wiki/Modify-the-LAScatalog-drivers).
+
+
+### Multi-machines paralellisation
+
+This vignette does not cover the set-up required to make two or more machines able to communicate. In this section we assume that the user is able to connect a remote machine via SSH. There is a [wiki page](https://github.com/r-lidar/lidR/wiki/Make-cheap-High-Performance-Computing-to-process-large-datasets) that covers some of this subject. Assuming a user is able to get access to multiple machines remotely and such machines are all able to read files from the same storage, the multi-machine parallelization is straightforward because it is driven by the `future` package. The only thing users need to do is to register a remote strategy
+
+```r
+library(future)
+plan(remote, workers = c("localhost", "john@132.203.41.25", "bob@132.203.41.152", "alice@132.203.41.125"))
+```
+
+Internally each chunk is sent to a worker. Remember, a chunk is not a subset of the point cloud. What is sent to each worker instead is a tiny internal object named `LAScluster` that roughly contains only the bounding box of the region of interest and the files that need to be read to load the corresponding point cloud. Consequently, the bandwidth needed to send a workload to each worker is virtually null. This is also why the function mapped by `catalog_apply()` should start with `readLAS()`. Indeed, each worker reads its own data using the paths provided by the `LAScatalog`.
+
+On cheap multi-machine parallelization made using several regular computers on a local network, the machines won't necessarily have access to shared data. So a copy of the data is mandatory on each machine. If the data are accessible via the exact same path for each machine it will work smoothly. However, if the data are not available via the same paths it is possible to provide alternative directories where to find the files.
+
+```r
+ctg@input_options$alt_dir = c("/home/Alice/data/", "/home/Bob/remote/project1/data/")
+```
+
+This is covered by this [wiki page](https://github.com/r-lidar/lidR/wiki/Make-cheap-High-Performance-Computing-to-process-large-datasets).
+
