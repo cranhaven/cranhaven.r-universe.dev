@@ -1,0 +1,33 @@
+#' @title Sleep Diary 1-Week Data
+#'
+#' @description A small dataset containing sleep diary data for a single week
+#' and single subject
+#'
+#' \itemize{
+#'   \item FOLIOCC. unique subject id
+#'   \item etapa.
+#'   \item stage.
+#'   \item start_day. first day of measurement
+#'   \item time_bed1. time at which the subject reported going to sleep on day 1
+#'   \item time_wake1. time at which the subject reported waking up on day 1
+#'   \item time_bed2. time at which the subject reported going to sleep on day 2
+#'   \item time_wake2. time at which the subject reported waking up on day 2
+#'   \item time_bed3. time at which the subject reported going to sleep on day 3
+#'   \item time_wake3. time at which the subject reported waking up on day 3
+#'   \item time_bed4. time at which the subject reported going to sleep on day 4
+#'   \item time_wake4. time at which the subject reported waking up on day 4
+#'   \item time_bed5. time at which the subject reported going to sleep on day 5
+#'   \item time_wake5. time at which the subject reported waking up on day 5
+#'   \item time_bed6. time at which the subject reported going to sleep on day 6
+#'   \item time_wake6. time at which the subject reported waking up on day 6
+#'   \item time_bed7. time at which the subject reported going to sleep on day 7
+#'   \item time_wake7. time at which the subject reported waking up on day 7
+#' }
+#'
+#' @docType data
+#' @keywords datasets
+#' @name SleepDiary1Week
+#' @usage data("SleepDiary1Week")
+#' @format a data frame with 1 row and 18 variables
+#'
+NULL
