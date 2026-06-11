@@ -1,0 +1,296 @@
+---
+title: 'postGGIR: NonWear matrix in GGIR outputs '
+author: "Wei Guo"
+date: "2021-02-19"
+output:
+  html_document:
+    df_print: paged
+  pdf_document: default
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+# {r, results="hide"} - The chunks is run but all results are hidden. The code shows in the doc,  
+# {r, include=FALSE} - the code is run but neither the code or the results are shown
+# {r, echo=FLASE} - The code is not shown, but results are
+
+```
+
+
+```{r ,include=FALSE  }
+currentdir="/data/guow4/project0/GGIR/postGGIR/postGGIR_compile/postGGIR3.0/inst/extdata/example/afterGGIR"
+studyname="Example"
+bindir=""
+outputdir="/data/guow4/project0/GGIR/postGGIR/postGGIR_compile/postGGIR3.0/inst/extdata/example/GGIR/output_binfile"
+epochIn=5
+epochOut=5
+flag.epochOut=60
+log.multiplier=9250
+
+```
+
+ 
+## Non-wear time Matrix for `r studyname` data
+      
+The non-wear data was saved in M-metalong-timestamp and M-metalong-nonwearscore under R data of /meta/basic/meta----.bin.RData. GGIR output the matrix to clarify when data was imputed for each long epoch time window and the reason for imputation. NonWear time was summarized in 15 minutes window.
+Value = 1 indicates imputation. 
+
+   +  column 1 = monitor non wear
+   +  column 2 = clipping  
+   +  column 3 = additional nonwear  
+   +  column 4 = protocol based exclusion  
+   +  column 5 = sum of column 1,2,3 and 4. 
+
+This is a program to read nonwear matrix and reformat it for JIVE.
+
+   + 1) Change 15 minutes data to 1 minute level by carry 15 minutes forword    
+   + 2) Carry forward for replace NAs between two nonwear=1,2,3,4,5 values
+   + 3) Redefine nonwear =1 for those 2-5 values
+
+Complications:
+
+   +  For 9:12/97:100th  columns, we might have duplicate columns due to time change such as tc_02:00:00, tc_02:15:00, tc_02:30:00,tc_02:45:00. We just take the better value with each pair.   
+   
+  
+ 
+
+```{r chunk1,include=FALSE,results="hide"} 
+ 
+setwd(currentdir) 
+datadir<-paste(currentdir,"/data",sep="")
+
+  
+listFN<-list.files(datadir,recursive=TRUE)
+idMFN <-listFN[ grep("IDMatrix.",listFN )]  
+if (length(idMFN)>1) stop("please choose which idMFN should be used?") 
+idM<-read.csv(paste("./data/",idMFN,sep=""),head=1,stringsAsFactors=F)
+ 
+ 
+# find such as nonwearscore_Sydney_01_44_900s.csv files 
+csvFN <-listFN[ grep(".csv",listFN )] 
+nwFN <-intersect(csvFN[ grep("nonwearscore",csvFN)],
+                 csvFN[ grep("900s",csvFN)])  
+print(nwFN) 
+if (length(nwFN)>1) stop("please choose which nonwear.data should be used?")  
+nwFN.key<-gsub(900,epochOut,nwFN)
+outFN<-paste("./data/JIVEraw_",nwFN.key,sep="") 
+outFN2<-paste("./data/JIVEimpu_",nwFN.key,sep="") 
+# Change 900s nonwearscore into 60s format
+
+myser<-c(paste(0,0:9,sep=""),10:99)
+timeSer24h_1s<-NULL 
+for (t1 in 1:24)
+for (t2 in 1:60)  
+for (t3 in 1:60) 
+timeSer24h_1s<-c(timeSer24h_1s,paste(myser[t1],myser[t2],myser[t3],sep=":"))
+timeSer24h<-timeSer24h_1s[1:(24*60*60/epochOut)*epochOut-epochOut+1]
+length(timeSer24h)  #2880 for 30s,1440 for 60s
+
+pickmin<-function(x,y){x<-as.numeric(x)
+                       y<-as.numeric(y)
+                       Z<-NULL
+                       for (i in 1:length(x)){
+                       if (is.na(x[i]) & is.na(y[i])) Z[i]<-NA else Z[i]<-min(c(x[i],y[i]),na.rm=TRUE)} 
+                       return(Z)}
+timestamp.switch<-function(x="X00.00.00") {x<-gsub("X","",x) 
+                      return(paste(unlist(strsplit(x,"\\.")),collapse=":")) }  
+
+n1440=24*60*60/epochOut
+n15=900/epochOut 
+```
+
+# Read `r nwFN` file and merge with ID matrix
+
+```{r chunk2}
+
+data<-read.csv(paste("./data/",nwFN,sep=""),head=1,stringsAsFactors=F) 
+temp<-gsub("meta_","",data[,"filename"])
+data["filename"]<-gsub(".RData","",temp)  
+nonwear.mer<-merge(idM,data[,-3],by=c("filename","Date"),all.x=FALSE,all.y=TRUE)
+dim(nonwear.mer)
+Ctop<-which(colnames(nonwear.mer)=="X00.00.00")-1
+  
+# nonwear matrix, NW, 96 columns for normal data, 100 columns for time change day; 00:00:00 00:15:00 ... 23:45:00 
+NW<-nonwear.mer[,(Ctop+1):ncol(nonwear.mer)] 
+dim(NW)
+if (ncol(NW)==96+4) {
+for (j in 9:12) { temp<-pickmin(NW[,j],NW[,j+88]) 
+                  NW[,j]<-temp} 
+NW<-NW[,1:96]
+} else {
+print(paste(c("NO time change columns, dim=",dim(NW)),collapse=" "))
+if (ncol(NW)!=96) stop ("check nonwear matrix: not 96 columns")
+}
+
+NW[NW>=1]<-1 
+colnames(NW)<- unlist(lapply(colnames(NW), timestamp.switch)) 
+if (sum(order(colnames(NW)) != 1:96)!=0) stop ("nonwear columns are not increasing..") 
+nw.NAs.b<-rowSums(is.na( NW)) *n15  #number of NAs in NW matrix,900s->60s
+```
+
+# Plot nonwear status for those with nonwear input 
+
+Among `r nrow(NW)` lines, there are `r length(which(nonwear.mer[, "NonWearMin"]>=1))` lines with Nonwear input. The profit of nonwear status is plotted as below.
+
+```{r c3plot,echo=FALSE, fig.width=10, fig.height=8}
+  
+ 
+for (f in 0:1){ 
+  S0<-which(nonwear.mer[, "NonWearMin"]>=1 & nonwear.mer[, "remove16h7day"]==f)   
+  Data3<-NW[S0,1:96]
+  #print(dim(Data3))
+  #par(mai=c(1.02,1.52,0.82,0 )) # bottom,left,up,right
+  par(las=1)
+  col.light = rep(rainbow(7),100000)
+  x.range = 1:ncol(Data3)
+  plot(x.range,Data3[1,],type="n",ylim=c(0,nrow(Data3)),xaxt="n",  ylab =paste("remove16h7day=",f,sep=""),xlab="Hour",col=col.light,main=paste("Nonwear for ",length(S0),"/",nrow(NW),sep="") )
+ 
+  
+  for(i in  1:nrow(Data3)) {
+  yi<-nrow(Data3)-i+1 
+  S<- which(Data3[i,]==1)  
+  points(x=S,y=rep(yi,length(S)),pch=20,cex=0.17,col=col.light[i]) 
+  } 
+  mylabels = c("01:00", "04:00", "08:00", "12:00", "16:00", "20:00", "23:00")
+  mylabels.at<-which(colnames(Data3) %in% paste(mylabels,":00",sep=""))
+  mylabels = substr(colnames(Data3)[mylabels.at],1,5) 
+  axis(1, at = mylabels.at,labels = mylabels)
+} 
+ 
+```
+ 
+  
+
+# Expand to `r epochOut` seconds level and Carry forward for nonwear!=NA
+
+```{r c5expand}
+jive<-array(NA,dim=c(nrow(NW),n1440)) 
+print(dim(NW)) 
+for (j in 1:ncol(NW)){
+ for (k in 1:n15)  jive[,(j-1)*n15+k]<-NW[,j]      
+} 
+colnames(jive)<-timeSer24h
+jive<-cbind(nonwear.mer[,1:Ctop],nw.NAs.b,jive) 
+write.csv(jive,file=outFN,row.names=F)
+Ctop<-which(colnames(jive)=="00:00:00")-1
+  
+
+# 2) How to handle NAs? non wear score observation carried forward (refer to haochang's old code)  
+#  As a result, 0---NA---0 or 0--NA was change to 0--------0, i.e NA was replaced by earlier score.
+jive2<-jive 
+for (i in 1:nrow(jive)){ 
+  S2<-setdiff(which(!is.na(jive[i,])),1:Ctop) # NonMissingIndex   
+  if (length(S2)>=1) {gap<-S2[-1]-S2[-length(S2)] 
+  if (  length(setdiff(gap,1))>=1   ){ #found NA in middle/end
+  #print(table(gap))
+  for(j in 1:length(S2)){
+    if (j != length(S2)){
+      jive2[i,(S2[j]+1):(S2[j+1])-1] <- jive[i,S2[j]]
+    }else{
+      if (S2[j]!= ncol(jive))  jive2[i,(S2[j]+1):ncol(jive)] <- jive[i,S2[j]]  #if last nonNA= last column then do nothing
+    } 
+  }  
+  print(paste(c(i,length(S2),jive2[i,1:3],j,S2[j],":", S2[which(gap>1)+(-1):1]) ,collapse=" "))
+}}}
+
+```
+Note. We "fix" NAs for nonwear by replacing NA with previous score (earlier score carry forward)
+
+ 
+# Plot nonwear status after carry forward NonWear scores
+
+```{r c6nas,echo=FALSE, fig.width=10, fig.height=5}
+ 
+nw.NAs<-rowSums(is.na( jive2[,-(1:Ctop)])) 
+ 
+for (f in 0:1){ 
+  if (f==0) S0<-which(jive2[, "NonWearMin"]>=1 & jive2[, "remove16h7day"]==0)   
+  if (f==1) S0<-which(nw.NAs>=1 & jive2[, "remove16h7day"]==0)  
+  Data3<-jive2[S0,Ctop+1:n1440]
+  #print(dim(Data3))
+  #par(mai=c(1.02,1.52,0.82,0.42)) # bottom,left,up,right
+  par(las=1)
+  col.light = rep(rainbow(10),100000)
+  x.range = 1:ncol(Data3)
+  plot(x.range,Data3[1,],type="n",ylim=c(0,nrow(Data3)),xaxt="n",  ylab =paste("remove16h7day=",0,sep=""),xlab="Hour",col=col.light,main=ifelse(f==0,paste("Nonwear for ",length(S0),"/",nrow(NW),sep=""),"Check NAs") ) 
+  
+  for(i in  1:nrow(Data3)) {
+  yi<-nrow(Data3)-i+1 
+  if (f==0) S<- which(Data3[i,]==1)  
+  if (f==1) S<- which(is.na(Data3[i,]))  
+
+  points(x=S,y=rep(yi,length(S)),pch=20,cex=0.15,col=col.light[i]) 
+  } 
+  mylabels = c("01:00", "04:00", "08:00", "12:00", "16:00", "20:00", "23:00")
+  mylabels.at<-which(colnames(Data3) %in% paste(mylabels,":00",sep=""))
+  mylabels = substr(colnames(Data3)[mylabels.at],1,5) 
+  axis(1, at = mylabels.at,labels = mylabels)
+} 
+ 
+```
+
+
+# Handle NAs in the head and tail for those incomplete missing lines  
+    + replace head NAs with 1 in the head, treat them as nonwear in JIVE  
+    + replace tail NAs with the last nonNA score in the tail     
+    + wearMatrix = 1- nonwearMarix in JIVE
+
+```{r c7nas}
+
+jive3<-jive2  
+for (i in 1:nrow(jive3)){ 
+  S2<-setdiff(which(!is.na(jive3[i,])),1:Ctop) # NonMissingIndex 
+  if (  length(S2)<1440 ){  
+  #gap<-S2[-1]-S2[-length(S2)]
+  gap<-diff(S2)
+  if (  length(S2)>=1 & (length(setdiff(gap,1))>=1  ) )  stop("Check nonconsective Nonwear scores")
+  #print(c(i,length(S2)))
+  
+  if (S2[1]>Ctop+1) jive3[i,(Ctop+1):(S2[1]-1)]<-1
+  if (S2[length(S2)]<ncol(jive3) ) jive3[i, (S2[length(S2)]+1):ncol(jive3)]<-jive3[i, S2[length(S2)]]
+}
+} 
+nw.NAs<-rowSums(is.na( jive3[,-(1:Ctop)]))
+table(nw.NAs)
+NonWearMin.a<-rowSums(jive3[,-(1:Ctop)]==1) 
+jive3<-cbind(jive3[,1:Ctop],NonWearMin.a,jive3[,-(1:Ctop)])
+write.csv(jive3,file=outFN2,row.names=F)
+```
+
+# NonWear plot after "imputation" for NAs
+
+```{r c8plot,echo=FALSE, fig.width=10, fig.height=8.6}
+par(mfrow=c(2,2))
+boxplot(nw.NAs.b~remove16h7day,jive3,main="Number of NAs before imputation",col=c("blue","red"))
+plot(x=1:nrow(jive3),jive3[,"nw.NAs.b"],col="red",ylab="Number of NAs",xlab="ids x days",main="Number of NAs before imputation")
+S2=which(jive3[,"remove16h7day"]==0)
+points(x=S2,y=jive3[S2,"nw.NAs.b"],col="blue")
+
+
+# .b = before impu and .a=after impu 
+boxplot(NonWearMin.a~remove16h7day,jive3,main="Nonwear minutes after imputation",ylab="NonWearMinutes",col=c("blue","red"))
+plot(x=1:nrow(jive3),jive3[,"NonWearMin.a"],col="red",ylab="NonWearMinutes",xlab="ids x days",main="Nonwear minutes after imputation")
+S1=which(jive3[,"remove16h7day"]==0)
+points(x=S1,y=jive3[S1,"NonWearMin.a"],col="blue")  
+```
+
+Note: 
+
+ +  red points are for "removed" samples with   remove16h7day=1        
+ +  blue points are for "kept" samples with   remove16h7day=0
+   
+
+The nonwear matrix was written into `r outFN2`.  
+ 
+ 
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+How to run this? 
+
+
+
+ 
+cd /data/guow4/project0/GGIR/postGGIR/postGGIR_compile/postGGIR3.0/inst/extdata/example/afterGGIR   
+R -e "rmarkdown::render('part6_Example_postGGIR.nonwear.report.Rmd'   )" 

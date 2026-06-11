@@ -1,0 +1,462 @@
+---
+title: 'Extracts Weekends/Weekday Features of Domains of Physical Activity, Sleep and Circadian Rhythmicity '
+author: "Wei Guo"
+date: "2021-02-19"
+output:
+  html_document:
+    df_print: paged
+  pdf_document: default
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+# {r, results="hide"} - The chunks is run but all results are hidden. The code shows in the doc,  
+# {r, include=FALSE} - the code is run but neither the code or the results are shown
+# {r, echo=FLASE} - The code is not shown, but results are
+# bug= colaus has some NA in newID column on 9660 with csv data but no part2summary
+# bug2=fragmentation can not take character id, will output NA in id column.
+# after fix bug2, output change to a list.
+```
+
+  
+
+ 
+
+
+This R pargram extracts multiple commonly used features for weekday and weekends from minute level actigraphy data.
+
+
+
+
+```{r changeEveryStudy,include=FALSE  }
+currentdir="/data/guow4/project0/GGIR/postGGIR/postGGIR_compile/postGGIR3.0/inst/extdata/example/afterGGIR"
+studyname="Example"
+log.multiplier=9250
+PA.threshold=c(50,100,400)
+RemoveDaySleeper=FALSE
+QCnights.feature.alpha=c(0,0)
+flag.epochOut=60
+epochOut<-flag.epochOut
+
+
+foutFN<-function(x,studyname) paste("part7e_",studyname,"_some_features_page",x,".csv",sep="") #make file name
+setwd(currentdir) 
+```
+
+## Only modify subject-level features based on weekday and weekends    
+  +  amp_L	
+  +  acro_L	
+  +  IS
+  +  PC1, PC2, ..., PC10	
+ 
+
+## Parameters
+ 
+#### `r paste("Calculate subject-level mean when Nvalid.night>=",QCnights.feature.alpha[1], " for each feature.",sep="")`
+
+#### `r paste("Calculate subject-level SD when Nvalid.night>=",QCnights.feature.alpha[2], " for each feature.",sep="")`
+
+  
+
+```{r c1data,include=FALSE}
+#install.packages('devtools')
+#devtools::install_github("junruidi/actigraphy")
+#devtools::install_github("idc9/r_jive")
+#library(actigraphy) 
+
+library(xlsx)   
+library(knitr) 
+library(dplyr)  # %>%
+library(cosinor)  
+library(postGGIR) 
+
+# Prepare count/wear data for JIVE
+enmoFN<-paste("./data/impu.flag_All_",studyname,"_ENMO.data.",epochOut,"s.csv",sep="")   
+ 
+
+# Prepare count/wear data for JIVE 
+D1<-read.csv(enmoFN,head=1, stringsAsFactors=F)
+Ctop<-which(colnames(D1)=="X00.00.00")-1
+table(D1[,c("KEEP","remove16h7day")])
+
+D2<-D1[which(D1[,"KEEP"]=="keep" &!is.na(D1[,"newID"])),]
+S1.keepdaysleep<- which(is.na(D2[,"daysleeper"]) | D2[,"daysleeper"]==0) 
+S1.removedaysleep<- which( D2[,"daysleeper"]==1) 
+if (RemoveDaySleeper & length(S1.removedaysleep)>=1) D3<-D2[-S1.removedaysleep,] else D3<-D2
+daysleeperM<-D2[S1.removedaysleep,1:Ctop]
+
+idM<-unique(D3[,c("filename","newID")])
+
+Swd<-which(D3[,"weekday"] %in% c("Monday","Tuesday","Wednesday","Thursday","Friday"))
+Swe<-which(D3[,"weekday"] %in% c("Saturday","Sunday"))
+idM.wd<-D3[Swd,c("filename","newID","Date")]
+idM.we<-D3[Swe,c("filename","newID","Date")]
+  
+count <-cbind(D3[,c("filename","Date")],D3[,(Ctop+1):ncol(D3)])  
+colnames(count)<-c("ID","Day",paste("MIN",1:1440,sep="")) 
+log.count = cbind(count[,1:2], log(log.multiplier*count[,-c(1,2)] + 1)) 
+
+count.wd<-count[Swd,] 
+count.we<-count[Swe,]
+log.count.wd =  log.count[Swd,]
+log.count.we =  log.count[Swe,]
+
+dim(D3)
+dim(count)
+dim(count.wd)
+dim(count.we)
+
+ 
+```
+
+ 
+
+
+## 1. Data
+
+The activity data at the minute level (`r enmoFN`) was stored in a format of `data.frame` of dimension $(\sum_i d_i) \times `r ncol(D1)`$, where $d_i$ is the number of available days for subject $i$. And the order of the `r ncol(D1)` columns (and corresponding column names) was as follows, `r colnames(D1)[1:Ctop]`, "MIN1", ..., "MIN1440".  
+   
+     *  Raw data = (`r dim(D1)`), `r length(unique(D1[,"filename"]))` files, `r length(unique(D1[,"newID"]))` individuals.
+     *  Clean data = (`r dim(D2)`), `r length(unique(D2[,"filename"]))` files, `r length(unique(D2[,"newID"]))` individuals.     
+     *  Remove daysleepers = (`r dim(D3)`), `r length(unique(D3[,"filename"]))` files, `r length(unique(D3[,"newID"]))` individuals.    
+     *  Count data = (`r dim(count)`), `r length(unique(count[,"ID"]))` individuals.    
+
+
+```{r preC3,echo=FALSE}
+MustHaveTAC<-TRUE
+A=4  #  number of head columns including 1: filename 2: Date 3:newID 4:cleaningcode 
+B=A+1 #first column need to average 
+
+# part7b_1 subject data
+#IS mesor amp acro mesor_L amp_L acro_L PC1 PC2 PC3 PC4 PC5 PC6 PC7 PC8 PC9 PC10
+#CR CR CR CR CR CR CR CR CR CR CR CR CR CR CR CR CR
+#subject subject subject .... 
+# For subject level feature, 7b will do sum for days with same value, so mean=NA when number of valid days < 7.
+```
+
+
+## 2. Feature Extractions  
+* Circadian rhythmicity
+    * functional PCA: `fpca.face (refund)` and ` denseFLMM` 
+    * extended cosinor model with anti logistic transformed cosine curves: `ExtCos`, `ExtCos_long`
+    
+  
+
+### 2.4 cosinor model
+The classic cosinor model is defined as $r(t)= mes + amp \times c(t)$ where $c(t) = \cos([t-\phi]2\pi/24)$ where mes is mesor, amp is amplitude, $\phi$ is the acrophase. 
+
+```{r text,include=FALSE}
+# Extended cosinor model allows for two additional parameters to control the shape. Here we implement the anti logistic transformation, and have $r(t) = min +amp\times F(c(t))$, where $F()$ is the anti logistic function.
+
+
+# `ExtCos` and `ExtCos_long` calcualte the five parameters, (for a single vector amd whole dataset respectively). It is suggested to log transformed the curve by choose `logtransform = TRUE`. 
+```
+
+```{r chunk24, results="hide"}  
+
+extcos.wd = ActCosinor( data = count.wd )  
+extcos.log.wd = ActCosinor( data = log.count.wd ) 
+
+extcos.we = ActCosinor( data = count.we )  
+extcos.log.we = ActCosinor( data = log.count.we )  
+
+ 
+colnames(extcos.wd)[2:ncol(extcos.wd)]<-paste(colnames(extcos.wd)[2:ncol(extcos.wd)],"_wd",sep="") 
+colnames(extcos.log.wd)[2:ncol(extcos.log.wd)]<-paste(colnames(extcos.log.wd)[2:ncol(extcos.log.wd)],"_L_wd",sep="") 
+colnames(extcos.we)[2:ncol(extcos.we)]<-paste(colnames(extcos.we)[2:ncol(extcos.we)],"_we",sep="") 
+colnames(extcos.log.we)[2:ncol(extcos.log.we)]<-paste(colnames(extcos.log.we)[2:ncol(extcos.log.we)],"_L_we",sep="") 
+ 
+```
+
+### 2.5  interdaily statbility
+
+```{r chunk25}  
+is_all.wd = IS_long2(count.data = count.wd, level = "hour")  
+is_all.we = IS_long2(count.data = count.we, level = "hour")  
+colnames(is_all.wd)[2]<-paste(colnames(is_all.wd)[2],"_wd",sep="") 
+colnames(is_all.we)[2]<-paste(colnames(is_all.we)[2],"_we",sep="")   
+```
+
+```{r chunk24x, include=FALSE}  
+
+# subject level 
+
+output<-is_all.wd 
+output<-merge(output,is_all.we,by=c("ID"), all=TRUE)  
+output<-merge(output,extcos.wd,by=c("ID"),all=TRUE)  
+output<-merge(output,extcos.log.wd,by=c("ID"),suffix=c("","_L"),all=TRUE) 
+output<-merge(output,extcos.we,by=c("ID"),suffix=c("","_L"),all=TRUE) 
+output<-merge(output,extcos.log.we,by=c("ID"),suffix=c("","_L"),all=TRUE) 
+ 
+ 
+output<-merge(idM,output,by.x=c("filename" ),by.y=c("ID" ),all=TRUE)  
+dim(output)
+head(output)
+write.csv(output, file=foutFN("1",studyname), col.names = TRUE, row.names = FALSE)  
+
+plot.data<-array(NA,dim=c(nrow(output),ncol(output)-2))
+for (j in 1:ncol(plot.data)) plot.data[,j]<-as.numeric(as.character(unlist(output[,j+2])))
+colnames(plot.data)<-colnames(output)[-c(1,2)]
+plot.data<-plot.data[,order(colnames(plot.data))]
+```
+ 
+```{r plot24, echo=FALSE , fig.width=10, fig.height=8} 
+par(mar=c(8, 4, 2, 2) + 0.1)  # bottom,left,up,right   
+boxplot(plot.data,col=c("blue","grey" ),xlab="",xaxt="n") 
+axis(1, at=1:ncol(plot.data), labels=colnames(plot.data), las = 2, cex.axis = 0.8) 
+``` 
+ 
+   
+
+
+ 
+
+### 2.6 functional principal component analysis
+
+As opposed to Cosinor/extCosinor model, functional principal component analysis (FPCA) is a data driven technique that makes no parametric assumptions about the functional form of diurnal patterns. FPCA represents any sample of diurnal patterns via L2-orthogonal functional "principal components". The resulted principal component scores can be used. Here, FPCA is done by using the `fpca.face` function in the refund package. It is suggsted to take the log transformation to reduce the skewness of count data by setting `logtransform = TRUE`. 
+
+Notice that, here, for simplicity and better interpretability, for each subject, we take the average across all valid days, therefore, we don't account for the within person correlation. To incorporate the within person correlation, one can choose to use multilevel FPCA by using the `denseFLMM` function in the denseFLMM package.
+
+```{r fpca26,include=FALSE}
+######################################################### 
+# 2.6 functional principal component analysis
+
+ftitle<-c("weekday", "weekend")
+for (f in 1:2){ 
+
+if (f==1) log.count.f=log.count.wd 
+if (f==2) log.count.f=log.count.we  
+if (f==1) idM.f<- idM.wd else idM.f<-idM.we 
+ 
+X=log.count.f[,-c(1,2)]
+X <- t(t(X) - colMeans(X, na.rm = TRUE))
+dim(X)  
+mean(X) 
+
+id.groups<-unique(log.count.f[,"ID"])  
+print(length(id.groups)) 
+groups<-NULL
+for (i in 1:nrow(log.count.f)) groups[i]<-which(id.groups==log.count.f[i,"ID"])  
+groups<-as.matrix(groups)
+G=1 
+Zvars<-lapply(seq(len=G),function(g) matrix(1,nrow(log.count.f),1))
+data<-as.matrix(X) #X=demean-log(enmo)
+ 
+idM.avg<-unique(idM.f[,-3])
+S2<-NULL
+for (i in 1:length(id.groups)) S2[i]<-which(idM.avg[,"filename"]==id.groups[i])
+idM.avg2<-idM.avg[S2,] 
+
+ 
+print(c(f,dim(data),nrow(idM.avg2)))
+
+#------------------------------------------------------------ 
+# Method 2: multilevel(2 levels) FPCA seperating subject-level effect and day-level effect
+#------------------------------------------------------------ 
+library(denseFLMM)
+
+
+ 
+
+#Z1 <- denseFLMM(data,groups=groups,Zvars=Zvars,smooth = FALSE,NPC=rep(20,G+1))  
+
+Z2 <- denseFLMM(data, gridpoints = 1:ncol(data), 
+                       Zlist = NA, 
+                       G = G, 
+                       Lvec = NA, 
+                       groups = groups, 
+                       Zvars = Zvars, 
+                       L = NA, 
+                       NPC=rep(20, G+1), 
+                       smooth = FALSE, 
+                       bf = 20, 
+                       smoothalg = "gamm")
+
+dim(Z2$xi[[1]]) ; dim(Z2$xi[[2]]) 
+dim(Z2$phi[[1]]); dim(Z2$phi[[2]])
+  
+  
+#Calculating the percentage of variance explained by each componet for the subject-level PCs and Day-level PCs.
+pervar_sub<-100*Z2$nu[[1]]/sum(Z2$nu[[1]])
+pervar_day<-100*Z2$nu[[2]]/sum(Z2$nu[[2]])
+pervar_sub
+pervar_day
+#Calculating the relative variance explained by subject heterogeneity out of total variability
+sum(Z2$nu[[1]])/Z2$totvar 
+#Calculating the relative variance explained by day-to-day variance out of total variability
+sum(Z2$nu[[2]])/Z2$totvar 
+#Calculating the residual variance/noises out of total variability
+1440*Z2$sigma2/Z2$totvar 
+
+Z2$totvar
+subject_PCs<-cbind(idM.avg2,Z2$xi[[1]]  ) 
+day_PCs<-cbind(idM.f,Z2$xi[[2]]  )
+
+if (f==1) Z2.save.1<-Z2 else Z2.save.2<-Z2
+
+write.csv(day_PCs, file=foutFN("4_denseFLMM_day_PCs", paste(ftitle[f],studyname,sep="_")),  col.names = TRUE, row.names = FALSE )
+write.csv(subject_PCs, file=foutFN("5_denseFLMM_subject_PCs", paste(ftitle[f],studyname,sep="_")), col.names = TRUE, row.names = FALSE )
+}
+```
+
+
+
+```{r lastChunk,echo=FALSE}
+for (f in 1:2){ 
+if (f==1) Z2<-Z2.save.1  else  Z2<-Z2.save.2
+pervar_sub<-100*Z2$nu[[1]]/sum(Z2$nu[[1]]) 
+
+m<-4
+my.ylim<-range(Z2$phi[[1]][,m:1])*1.4
+op=par(mai=c(.6, .8, .3, 0.1),omi=c(0, 0, 0, 0))
+matplot(Z2$phi[[1]][,m:1],type='l',ylab='PC',xlab='',xaxt='n',yaxt='n',main='',lwd=c(.7,.7,2,2),ylim=my.ylim,col=m:1)
+title(xlab = "Hour", line=1.8)
+title(main = paste(ftitle[f],": Subject-specific Effect (", 
+                   round(sum(Z2$nu[[1]])/Z2$totvar,digits=3)*100,'% of Total)',sep=''),line=0.5)
+axis(1,at=(0:12)*2*60,labels=(0:12)*2,cex.axis=1)
+axis(2,las=1,cex.axis=1)
+#axis(2,at=(1:3)*0.01,labels=(1:3)*0.01, las=1,cex.axis=1)
+legend('topleft',co=1:4,
+       legend=paste(paste('PC',1:m,' (',sep=''),sprintf("%.1f",round(pervar_sub[1:m],digits=1)),'%)',sep=''),
+       lty=1,
+       horiz=FALSE,
+       lwd=2 ,
+       bg='transparent',cex=0.725,text.font=1.5,box.col='transparent',
+       ncol=2) 
+ 
+} #f
+# end FPCA
+
+```
+
+
+# 3. Average variable at the subject level and merge 3 parts
+
+### Please pay attention: Use IS and PC10 to locate subject level features; IS has to be the first R subject-level feature and IV has to be the last day level feature.
+
+
+```{r faceMask} 
+ftitle<-c("weekday", "weekend")
+inFN<-paste("part7b_",studyname,"_all_features_2.csv",sep="") #clean file (must have TAC)
+outFN<-paste("part7e_",ftitle,"_",studyname,"_all_features_3.csv",sep="")
+feature<-read.csv(inFN,head=1,stringsAsFactors=F)
+wdwefea<-read.csv(paste("part7e_",studyname,"_some_features_page1.csv",sep=""),head=1,stringsAsFactors=F)  
+ 
+pcFN<-paste("part7e_",ftitle,"_",studyname,"_some_features_page5_denseFLMM_subject_PCs.csv",sep="")
+
+
+# set mean=NA for those features with Nvalid night< 3 or 7.
+NcountSum<-function(x) sum(as.numeric(!is.na(x))) #calcuate number of good value of each feature
+ 
+# align the first matrix according to IDs in the second matrix.
+alignMatrix<-function(Fmer81.N.all,Fmer81){
+if (ncol(Fmer81.N.all)!=ncol(Fmer81)) stop("check the number of columns of input matrix")
+if (length(which(colnames(Fmer81.N.all)!=colnames(Fmer81)))>=1) stop("check the column names of input matrix")
+Fmer81x<-cbind(f=1:nrow(Fmer81),Fmer81)
+data<-merge(Fmer81x[,1:2],Fmer81.N.all,by="filename",all=FALSE)
+data<-data[order(data[,"f"]),-2]
+if (nrow(data)<nrow(Fmer81)) print("found missing lines in the mask")
+return(data)
+}
+ 
+```
+ 
+```{r c3AvgWithMask} 
+#  "filename"  "sleeponset" .... "IV_intradailyvariability"   "IV"   ("IS" ..... "PC10") "weekday" "zeroSleep"  "Nwd"  "Nwe" Nwd_0s"    "Nwe_0s"
+
+C1<-which(colnames(feature)=="IS") 
+C2<-which(colnames(feature)=="PC10") 
+S4<-setdiff(1:ncol(feature),C1:C2)
+
+# make mask for all days
+Fmer5.all<-feature[,S4]  #remove old subject level features
+Ncol8<-which(colnames(Fmer5.all)=="IV")+1 # Ncol8 after are weekday,zeroSleep,Nwd,Nwe,.. 
+Fmer81.N.all<-aggregate(.~filename,data=Fmer5.all[, c(1,B:(Ncol8-1))], NcountSum,na.action=na.pass)  
+ 
+
+for (f in 1:2){#f for wd/we
+#1) Old features
+if (f==1) Fmer5<-feature[which(feature[,"weekday"]<=5),S4]  # day level features
+if (f==2) Fmer5<-feature[which(feature[,"weekday"]>=6),S4]  # S4:rm old subject level features  
+
+
+Ncol8<-which(colnames(Fmer5)=="IV")+1 # Ncol8 after are weekday,zeroSleep,Nwd,Nwe,.. 
+Fmer81<-aggregate(.~filename,data=Fmer5[, c(1,B:(Ncol8-1))], mean,na.rm=T,na.action=na.pass)
+Fmer82<-aggregate(.~filename,data=Fmer5[,c(1,Ncol8:ncol(Fmer5))], sum,na.rm=T,na.action=na.pass) 
+Fmer81.N<-alignMatrix(Fmer81.N.all,Fmer81)
+
+# Wear Mask for the mean features
+Fmer81.mask<-Fmer81
+for (j in 2:ncol(Fmer81.mask)) {S81<- which(Fmer81.N[,j] < QCnights.feature.alpha[1] )
+                                if (length(S81)>=1) Fmer81.mask[S81,j]<-NA}
+if (length(which(Fmer81.N[,"filename"]!=Fmer81[,"filename"]))>=1) stop("Mismatch IDs in Fmer81.mask")
+
+length(unique(Fmer5[,1]))
+dim(Fmer81)
+dim(Fmer82)  
+if (sum(Fmer81[,1]!=Fmer82[,1])>0)  stop("Check IDs of two Fmer8 matrix")
+Fmer8<-cbind(Fmer81.mask,Fmer82[,-c(1,2)]) #change Fmer81.mask
+Fmer8[,"cleancode2"]<-rowSums( (is.na(Fmer81.mask)))
+if (f==1) {Fmer8.bad<-Fmer81.N[which(Fmer8[,"cleancode2"]>=1),]
+            rownames(Fmer8.bad)<-NULL}
+  
+#2) PCs
+wdwePC<-read.csv(pcFN[f],head=1,stringsAsFactors=F)
+colnames(wdwePC)[3:ncol(wdwePC)]<-paste("PC",1:20,sep="")
+wdwePC2<-wdwePC[,c(1,3:12)]
+#3) newfeatures
+if (f==1) S9<-c("filename","newID",colnames(wdwefea)[grep("wd",colnames(wdwefea))])
+if (f==2) S9<-c("filename","newID",colnames(wdwefea)[grep("we",colnames(wdwefea))])
+ 
+part2<-merge(wdwefea[,S9],wdwePC2,by="filename",all=TRUE)
+
+Fmer9<-merge(Fmer8,part2,by="filename",all=TRUE) 
+
+C8<-which(colnames(Fmer9) %in% c("zeroSleep" ,"Nwd","Nwe","Nwd_0s","Nwe_0s","cleancode2"))
+C9<-which(colnames(Fmer9)=="newID") 
+C10<-c(1,C9,setdiff(1:ncol(Fmer9),c(1,C9,C8)),C8)
+Fmer9<-Fmer9[,C10] 
+#Fmer9<-Fmer9[,c(1,51,2:45,52:ncol(Fmer9),46:50)]
+
+write.csv(Fmer9, file=outFN[f],  row.names = FALSE )  
+ 
+ans<-c(ftitle[f],outFN[f],nrow(Fmer9),length(unique(Fmer9[,"filename"])),length(unique(Fmer9[,"newID"])) ) 
+if (f==1) ans1<-ans else ans2<-ans    
+}
+  
+```  
+
+ 
+**`r paste("Calculate subject-level mean when Nvalid.night>=",QCnights.feature.alpha[1], " for each feature. Set them as NAs and will be removed in JIVE for ", nrow(Fmer8.bad), " subjects (",length(which(Fmer5[,1] %in% Fmer8.bad[,1]))," days)  as follows,",sep="")`**
+  
+cleancode2: number of missingness of features of each subject
+
+```{r,echo=F}
+if (nrow(Fmer8.bad)>=1) kable(Fmer8.bad,caption="N valid night of removed subjects for mean features")
+```
+
+
+```{r chunk6,echo=FALSE}
+ansM<-rbind(ans1,ans2) 
+colnames(ansM)<-c("Day","Filename", "Nrow", "Nfiles","Nsubjects")   
+rownames(ansM)<-NULL
+kable(ansM,caption="Description of output files")   
+```
+
+# 4 Plot features
+
+```{r chunk7plot,include=FALSE,warning=FALSE, message=FALSE}
+ 
+t1<-pheno.plot(inputFN=outFN[1],csv=TRUE, start=4)   
+t2<-pheno.plot(inputFN=outFN[2],csv=TRUE, start=4)    
+
+```
+ 
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+How to run this? 
+  
+cd /data/guow4/project0/GGIR/postGGIR/postGGIR_compile/postGGIR3.0/inst/extdata/example/afterGGIR   
+R -e "rmarkdown::render('part7e_Example_postGGIR_JIVE_5_somefeatures_weekday.Rmd'   )" 

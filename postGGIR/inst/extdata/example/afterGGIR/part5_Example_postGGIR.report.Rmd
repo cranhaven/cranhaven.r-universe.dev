@@ -1,0 +1,626 @@
+---
+title: 'postGGIR: Data Processing and Exploratory Data Analysis with GGIR output'
+author: "Wei Guo"
+date: "2021-02-19"
+output:
+  html_document:
+    df_print: paged
+  pdf_document: default
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+# {r, results="hide"} - The chunks is run but all results are hidden. The code shows in the doc,  
+# {r, include=FALSE} - the code is run but neither the code or the results are shown
+# {r, echo=FLASE} - The code is not shown, but results are
+
+```
+
+
+```{r important_steps_in_QC,eval=F,include=F}
+part2_summary.pipeline.R
+ 
+   S4<-which(part4[,"sleeponset"]<36 & part4[,"wakeup"]>36)
+   part4[S4,"daysleeper"]<-1 
+
+part3_data_shrink.R: 
+
+   if (!RemoveDaySleeper) part2ds.nw[k,"Nvalid.day"]<-length(which(part2ds.nw[,"filename"]==part2ds.nw[k,"filename"] & part2ds.nw[,"missing"]=="C"  ))
+ 
+   if (RemoveDaySleeper)  part2ds.nw[k,"Nvalid.day"]<-length(which(part2ds.nw[,"filename"]==part2ds.nw[k,"filename"] & part2ds.nw[,"missing"]=="C" & ( is.na(part2ds.nw[,"daysleeper"]) | part2ds.nw[,"daysleeper"]==0)  ))  
+ 
+  S1<-which( part2ds.nw[,"Nvalid.day"]< QCdays.alpha | part2ds.nw[,"N.valid.hours"]<QChours.alpha ) 
+  part2ds.nw[S1,"remove16h7day"]<-1  
+
+part4_data_imputation.R:
+
+  KEEP[which(is.na(idM[,"newID"]) | idM[,"remove16h7day"]==1 | idM[,"duplicate"]=="remove" |  ImpuMiss.a>=1 )]<-"remove"  
+```
+
+```{r ,include=FALSE  }
+currentdir="/data/guow4/project0/GGIR/postGGIR/postGGIR_compile/postGGIR3.0/inst/extdata/example/afterGGIR"
+studyname="Example"
+bindir=""
+outputdir="/data/guow4/project0/GGIR/postGGIR/postGGIR_compile/postGGIR3.0/inst/extdata/example/GGIR/output_binfile"
+epochIn=5
+epochOut=5
+flag.epochOut=60
+log.multiplier=9250
+QCdays.alpha=0
+QChours.alpha=3
+RemoveDaySleeper=FALSE
+
+```
+
+ This is a program to take a first look at GGIR output files of your accelerometer data.
+
+##  Outline of  `r studyname` data processing 
+  
+   + Make a wide matrix of ENMO data based on csv files
+   + Data Clean
+      * Remove days with valid hours < `r QChours.alpha`
+      * Remove samples with valid days < `r QCdays.alpha`
+   + Average ENMO data into `r flag.epochOut/60` minutes window
+   + Check duplicate samples
+   + Imputation using subject-level mean using the clean data
+   + Graphical representation of the data
+   
+
+
+```{r c1 ,include=FALSE } 
+
+setwd(currentdir)  
+library(xlsx)   
+library(knitr)
+summaryFN1<-paste(currentdir,"/summary/",studyname,"_ggir_output_summary.xlsx",sep="")
+summaryFN2<-paste(currentdir,"/summary/part24daysummary.info.csv",sep="")
+
+sheetName<-c("1_fileList","2_fileSummary","3_dupIDs","4_IDerror","5_NvalidDays","6_Ndays_table","7_missingPattern","8_missingPattern_table","9_final")
+
+  
+D2<-read.xlsx(summaryFN1,head=1,sheetName = sheetName[2])  
+D1<-as.data.frame(cbind(c("GGIR version:","bin files","GGIR folder"),
+          c(gsub("X","",colnames(D2)[1] ),bindir,outputdir)))
+colnames(D1)<-c("Variable","Detail")
+D2.story<-paste("For ",studyname," data, there are ",D2[1,4]," unique bin files as input of GGIR. The activity data were processed using GGIR ",gsub("X","",colnames(D2)[1] ), " and the output was saved into ",outputdir,". There are ",D2[3,5]," missing files in /meta/csv folder. There are ",D2[9,5]," missing files in part2 activity summary file. There are ",D2[11,5]," missing files in part4 sleep summary file. There are ",D2[12,5]," missing files in part5 person summary file.",sep="")
+
+countunique<-function(x){t<-table(gsub(" Hours","",x))
+return(paste(paste(names(t),collapse="/"),"(freq=",paste(t,collapse="/"),")",sep="")) } 
+Device<-read.xlsx(summaryFN1,head=1,sheetName = "10_deviceInfo") 
+Device.story<-paste("The accelerometer data was measured by the ",countunique(Device[,"monitor.name"])," device in ",countunique(Device[,"sample.frequency.in.Hertz"])," Hertz for ", countunique(Device[,"Measurement_Period"])," hours.",sep="")
+```
+Note. Nid(BinFiles) is the number of unique bin files instead of number of subjects.
+
+**`r Device.story`**
+
+#
+# 1. Summary of Output
+
+`r D2.story` 
+
+
+```{r c2, echo=FALSE,results='asis' } 
+ 
+kable(D1,caption="Table 1: Basic information"  ) 
+kable(D2[,-1],caption="Table 2: Summary of GGIR output")
+```
+
+# 2. Check sleep status and daysleepers
+
+```{r c3,echo=FALSE,fig.width=10,fig.height=4 }   
+E<-read.csv(summaryFN2,head=1,stringsAsFactors=F)
+par(mfrow=c(1,3))  
+hist(E[,"sleeponset"],xlab="sleeponset",main=NULL,col="red")
+hist(E[,"wakeup"],xlab="wakeup",main=NULL,col="green")
+hist(E[,"SleepDurationInSpt"],xlab="SleepDurationInSpt",main=NULL,col="blue")
+
+ 
+daysleeperM<-E[which(E[,"daysleeper"]==1),c("filename","Date","N.valid.hours","night","sleeponset","wakeup","SleepDurationInSpt","daysleeper","daysleeper_ggir")] 
+sleep.story<-paste("Among ",nrow(E)," nights, there are ",length(which(E[,"daysleeper"]==1))," daysleeper nights. For daysleeper nights, it happens on ",paste(names(table(daysleeperM[,"night"])),collapse="/")," th night for ",paste(table(daysleeperM[,"night"]),collapse="/")," times. Second,  subjects with daysleeper nights have ",paste(names(table(table(daysleeperM[,"filename"]))),collapse="/")," nights for ",paste(table(table(daysleeperM[,"filename"])),collapse="/")," times.",sep="")
+ 
+daysleeperM<-E[which(E[,"daysleeper"]!=E[,"daysleeper_ggir"]),c("filename","Date","N.valid.hours","night","sleeponset","wakeup","SleepDurationInSpt","daysleeper","daysleeper_ggir")] 
+row.names(daysleeperM)<-NULL
+kable(daysleeperM,caption="Problem of daysleeper of GGIR")
+```
+ 
+**We will `r ifelse(RemoveDaySleeper,"","not ")`remove daysleepers in data imputation and data analysis ( RemoveDaySleeper=`r  RemoveDaySleeper`)**
+
+`r sleep.story` 
+ 
+# 3. Check duplicate samples
+
+```{r c1read ,include=FALSE } 
+ 
+D3<-read.xlsx(summaryFN1,head=1,sheetName = sheetName[3])  
+if (ncol(D3)>=2) { 
+D3.uids<-unique(D3[,2])
+D3.t<-table(table(D3[,2]))
+ 
+D3.story<-paste("For ",studyname," data, there are ",length(D3.uids)," samples with duplicate IDs among ",nrow(D3)," files. In detail, there are ",paste(D3.t,collapse="/")," IDs with ",paste(names(D3.t),collapse="/")," duplicates. You might need to remove duplicates for the future FPCA analysis. ",sep="")
+D3.story2<-paste("The ",length(D3.uids), " IDs with duplicate input are as follows,",   paste(D3.uids,collapse=",   "),sep="")
+} else {
+D3.story<-paste("For ",studyname," data, there are no samples with duplicate IDs  ",sep="")
+D3.story2<-""
+}
+```
+
+`r D3.story` 
+
+
+`r D3.story2` 
+
+
+# 4. Data Quality
+## Number of valid days  
+
+Valid day was defined as >=`r QChours.alpha` valid hours. The number of days/missing days are plotted based on GGIR-part2 output. In GGIR script,  if idloc = 1 (default) the code assumes that ID number is stored in the obvious header field. However, it might be inconsistent with the filenames. Therefore, please do not use this column if ID errors were found.
+  
+ 
+```{r c3nvaild, echo=FALSE , warning=F,message=F, fig.width=10, fig.height=10} 
+D9<-read.xlsx(summaryFN1,head=1,sheetName = sheetName[9])   
+#dim(D9) ;head(D9)  
+par(mfrow=c(2,2))
+mycol<-c("blue","red","green","pink","yellow")
+for (j in 17:20) {  
+ 
+plot.data<- table(D9[,j]) 
+plot.data<-plot.data[order(as.numeric(names(plot.data)))]
+
+barplot(plot.data,xlab= colnames(D9)[j],main=paste(nrow(D9)," samples",sep=""),names.arg=names(plot.data),ylab="Frequency",col=mycol[j-16])  
+}
+```
+
+
+
+## Non-wear time check      
+The non-wear data was saved in M-metalong-timestamp and M-metalong-nonwearscore under R data of /meta/basic/meta----.bin.RData. GGIR output the matrix to clarify when data was imputed for each long epoch time window and the reason for imputation. NonWear time was summarized in 15 minutes window.
+Value = 1 indicates imputation. 
+
+   +  column 1 = monitor non wear
+   +  column 2 = clipping  
+   +  column 3 = additional nonwear  
+   +  column 4 = protocol based exclusion  
+   +  column 5 = sum of column 1,2,3 and 4. 
+
+More details could be found `r paste( currentdir,"/data/",studyname,"_NonWear*csv/pdf",sep="")`, in which the nonwear time was shown/plotted on each day for each subject. GGIR will impute the data for nonwear time using the subject mean if you set up impute=TRUE when you run GGIR and save the imputed data into the csv files.
+
+
+```{r c4plotNday, echo=FALSE,  fig.width=10, fig.height=5}
+ 
+nwFN<-paste(currentdir,"/data/", "plot.nonwearVSnvalidhours.csv",sep="")
+data<-read.csv(nwFN,head=1,stringsAsFactors=FALSE)   
+par(mfrow=c(1,2)) 
+plot(data[,"RowNonWear23"]/4,data[,"N.valid.hours"],xlab="NonWear Time",ylab="Valid Hours" ,col="red")
+plot(data[,"RowNonWear23"]/4 ,xlab="index of days/ids",ylab="NonWear Hours" ,col="green")
+#plot(data[,"RowNonWear23"]/4,data[,"N.hours"]-data[,"N.valid.hours"],xlab="NonWear Time",ylab="Invalid Hours",main=studyname) 
+#               15minutes /60= 1/4
+ 
+data2<-aggregate(data$RowNonWear23, by=list(Category=data$filename2), FUN=mean)
+plot(data2[,2]/4,  xlab="Subject",ylab="Subject mean of NonWear hours", col="blue")
+hist(data2[,2]/4,  xlab="Subject mean of NonWear hours" , col="orange",main="")
+```
+ 
+
+
+
+## Missing Pattern 
+We would like to check missing pattern and exam the missingness for each sample.
+
+```{r c5missing, echo=FALSE,  warning=FALSE,message=FALSE,fig.width=10, fig.height=5}
+  
+E<-read.csv(summaryFN2,head=1,stringsAsFactors=F)
+par(mfrow=c(1,2))  
+#hist(E[,"N.valid.hours"],main="N_valid hours for all")
+#hist(E[which(E[,"missing"]=="C"),"N.valid.hours"],xlab="N hours",main="Complete days") #>=16
+#hist(E[which(E[,"missing"]=="M"),"N.valid.hours"],xlab="N hours",main="Missing days") 
+ 
+
+t1<-table(E[which(E[,"measurementday"]==1),"weekday"]) 
+t1<-t1[c("Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday")] 
+barplot(t1,xlab="First Day",cex.names=0.8,col="purple")  
+#barplot(table(E[which(E[,"missing"]=="M"),"measurementday"]),main="Which day is missing",xlab="measurementday")
+
+t2<-table(E[which(E[,"missing"]=="M"),"ith_day"]) 
+if (length(t2)>=1){ 
+s1<-which(names(t2)>0)
+s2<-which(names(t2)<0) 
+t2<-t2[c(s1,s2)]
+try( barplot(t2,xlab="ith day is missing",col="pink" ) )
+}
+```
+
+Check missing pattern of each sample. Most missingness are expected on the first and last day. 
+
+```{r c6plotmissing, echo=FALSE }  
+par(mfrow=c(1,1)) 
+t6<- table(D9[,"misspattern"])  
+par(mai=c(1.02,2.52,0.82,0 )) # bottom,left,up,right
+barplot(t6,main="missing pattern (f>=5)",horiz=TRUE,las=2,col="blue")
+if (length(t6)>=20) {t6<-t6[t6>=5] 
+barplot(t6,main="missing pattern (f>=5)",horiz=TRUE,las=2,col="blue") 
+barplot(t6[t6<max(t6)],main="missing pattern (f>=5) - zoom in",horiz=TRUE,las=2,col="green") #remove max
+} else barplot(t6,main="missing pattern",horiz=TRUE,las=2,col="blue") 
+   
+```
+   
+
+ 
+ 
+# 5. Data Reformating and Cleaning
+     
+Under /meta/csv folder, the ENMO and angleZ data was saved in the long format for each subject/input. So we need to transform the long data into a square matrix and merge all files together. By default, the days < 16 valid hours will be removed and subject with <7 valid days will be removed as well for a general two weeks data. 
+
+Under the  `r paste( currentdir,"/data/",  sep="")` directory,   
+
+     +  step1.   `r paste("All_",studyname,"_ANGLEZ/ENMO.data.csv",sep="") ` are merged angleZ/ENMO data for all subjects. Please be aware that there are some extra head lines from cat command. Format= filename,Date,00:00:00... 
+     +  step2.  `r paste("flag_All_",studyname,"_ANGLEZ/ENMO.data.Xs.csv",sep="") ` are adding basic information mainly from part2 summary file for the merged angleZ/ENMO data. Xs are the epoch length in the output file. For example, 60s means the data was reduced into minute level by taking minute level mean for each line. Format=filename,Date,id,calender_date,N.valid.hours,N.hours,weekday,measurementday,newID,Nmiss_c9_c31 missing,Ndays,ith_day, Nmiss,Nnonmiss,misspattern,RowNonWear,NonWearMin,remove16h7day,duplicate,00:00:00... 
+     +  step3.  `r paste("impu.flag_All_",studyname,"_ENMO.data.",flag.epochOut,"s.csv",sep="") ` is impute all NAs by subject-level mean on that column. Please be aware that there are NAs after imputation due to systematic missingness, which means we observe NAs on same timestamp for some subjects.  Format are same as above but adding ImpuMiss column. 
+     +  Hint, please remove data with  remove16h7day=1 or duplicate=remove or ImpuMiss>=1 for statistical analysis.  
+
+ 
+ 
+
+```{r c21ansM , echo=FALSE }  
+inFN<-paste(currentdir,"/data/impu.flag_All_",studyname,"_ENMO.data.",flag.epochOut,"s.csv",sep="")
+D<-read.csv(inFN,head=1, stringsAsFactors=FALSE) 
+
+#dim(D)
+#head(D)  
+numberCheck<-function(Data,S){ d<-Data[S,]
+ids<-unique(d[,"filename"])
+ans<-c(dim(d),length(ids),round(dim(d)[1]/length(ids),3)) 
+return(list(N=ans,ids=ids))
+}
+
+QCcheck<-function(data){
+
+S5<-c("daysleeper","remove16h7day","duplicate","ImpuMiss.a","KEEP") 
+ans1<-numberCheck(data,1:nrow(data)) 
+ans1b<-numberCheck(data,which(!is.na(data[,"newID"]))) 
+ans2<-numberCheck(data,which(data[,S5[1]]==0 | is.na(data[,S5[1]] )))  #"daysleeper
+
+if (RemoveDaySleeper){
+ans3<-numberCheck(data,which((data[,S5[1]]==0 | is.na(data[,S5[1]] )) & data[,S5[2]]==0)) 
+ans4<-numberCheck(data,which((data[,S5[1]]==0 | is.na(data[,S5[1]] )) & data[,S5[2]]==0 & (is.na(data[,S5[3]]) | data[,S5[3]]!="remove"))) 
+ans5<-numberCheck(data,which((data[,S5[1]]==0 | is.na(data[,S5[1]] )) & data[,S5[2]]==0 & (is.na(data[,S5[3]]) | data[,S5[3]]!="remove") & data[,S5[4]]==0)) 
+} else {
+ans3<-numberCheck(data,which(data[,S5[2]]==0)) 
+ans4<-numberCheck(data,which(data[,S5[2]]==0 & (is.na(data[,S5[3]]) | data[,S5[3]]!="remove"))) 
+ans5<-numberCheck(data,which(data[,S5[2]]==0 & (is.na(data[,S5[3]]) | data[,S5[3]]!="remove") & data[,S5[4]]==0))  
+}
+
+ans6<-numberCheck(data,which(data[,S5[5]]=="keep")) 
+
+action<-ifelse(RemoveDaySleeper,"Remove ","Mark but keep ") 
+
+
+ansM<-rbind(c(ans1$N,""),c(ans1b$N,paste(setdiff(ans1$ids,ans1b$ids),collapse=",")), 
+                         c(ans2$N,paste(action,paste(setdiff(ans1b$ids,ans2$ids),collapse=","),sep=":")), 
+                         c(ans3$N,paste(setdiff(ans2$ids,ans3$ids),collapse=",")), 
+                         c(ans4$N,paste(setdiff(ans3$ids,ans4$ids),collapse=",")), 
+                         c(ans5$N,paste(setdiff(ans4$ids,ans5$ids),collapse=",")),  
+                         c(ans6$N,paste(setdiff(ans5$ids,ans6$ids),collapse=",")) ) 
+ansM<-cbind(c("rawCSV","withPart2",S5),ansM)
+colnames(ansM)<-c("QCsteps","nrow","ncol","nsubjects","ndaysPerSub","Removed Subjects")
+
+return(ansM)
+}
+ 
+ansM<-QCcheck(D)  
+kable(ansM,caption="Data Clean Summary for Imputation/Analysis")                      
+
+ 
+dataclean<-D[ which(D[,"KEEP"]=="keep"),] 
+Ctop=which(colnames(dataclean) %in% c("00:00:00","X00.00.00"))-1 
+
+
+#print(paste("Ctop=",Ctop,sep=""))    
+n.time<-ncol(dataclean)-Ctop
+n.row<-nrow(dataclean)
+n.ind<-length(unique(dataclean[,"filename"]))  
+hTAC.idm<-dataclean[, (1:Ctop)] 
+hTAC<-dataclean[,-(1:Ctop)]
+#dim(hTAC)
+
+if ("X00.00.00" %in% colnames(hTAC)){ 
+colname.csv.change<-function(x)paste(substr(x,2,3),substr(x,5,6),substr(x,8,9),sep=":")
+colnames(hTAC)<-unlist(lapply(colnames(hTAC),colname.csv.change))
+}
+ 
+x.range = 1:n.time
+col.light = rgb(0, 0, 0, alpha = 5, maxColorValue = 255)  
+time.labels = c("01:00", "04:00", "08:00", "12:00", "16:00", "20:00", "23:00") 
+time.labels.at = which(colnames(hTAC) %in% paste(time.labels,":00",sep=""))
+hour.labels= paste(c(paste(0,1:9,sep=""),10:24),":00:00",sep="")  
+hour.line.at=which(colnames(hTAC) %in% hour.labels)
+
+
+```
+
+**Note 1: Data imputation use data with remove16h7day=0 only**      
+**Note 2: At the final step, KEEP="keep" define the clean data without duplicates and missingness in imputation**
+
+ 
+# 6. Exploratory Data Analysis
+
+
+```{r C5data , echo=FALSE }  
+# started with clean/imputed/shrink data to run Vadim's plot
+dataclean<-D[ which(D[,"KEEP"]=="keep" & !is.na(D[,"newID"]) ),] 
+Ctop=which(colnames(dataclean) %in% c("00:00:00","X00.00.00"))-1  
+
+#print(paste("Ctop=",Ctop,sep=""))    
+n.time<-ncol(dataclean)-Ctop
+n.row<-nrow(dataclean)
+n.ind<-length(unique(dataclean[,"filename"]))  
+hTAC.idm<-dataclean[, (1:Ctop)] 
+hTAC<-dataclean[,-(1:Ctop)]   
+LhTAC <- log(hTAC*log.multiplier+1) 
+#dim(hTAC)
+
+if ("X00.00.00" %in% colnames(hTAC)){ 
+colname.csv.change<-function(x)paste(substr(x,2,3),substr(x,5,6),substr(x,8,9),sep=":")
+colnames(hTAC)<-unlist(lapply(colnames(hTAC),colname.csv.change))
+}
+ 
+x.range = 1:n.time
+col.light = rgb(0, 0, 0, alpha = 5, maxColorValue = 255)  
+time.labels = c("01:00", "04:00", "08:00", "12:00", "16:00", "20:00", "23:00") 
+time.labels.at = which(colnames(hTAC) %in% paste(time.labels,":00",sep=""))
+hour.labels= paste(c(paste(0,1:9,sep=""),10:24),":00:00",sep="")  
+hour.line.at=which(colnames(hTAC) %in% hour.labels)
+```
+
+## 6.1) `r paste(studyname," GeneActiv Data profiles",sep="")`
+   
+   + `r n.ind` samples for `r studyname` study (`r n.row` X `r n.time` matrix) in `r inFN` file.  
+   + Diurnal profiles: $x_i(t), t = 1,\ldots, `r n.time`$        
+
+ 
+
+  
+```{r fig1, echo=FALSE, message = F, warning = F, fig.width= 10,fig.height=5}
+ 
+
+## plot all profiles for ``r n.row`` ``r studyname`` samples.
+
+plot(x.range, as.numeric(hTAC[1,]), type="n",ylim=range(hTAC,na.rm=TRUE), xaxt = "n", ylab = "Raw Activity Counts", xlab = "Hour", 
+col = col.light) 
+for(i in 1:n.row) {lines(x.range, as.numeric(hTAC[i,]), col = col.light, type = "l", lwd = 1)}
+axis(1, at = time.labels.at, labels = time.labels)
+abline(v = hour.line.at, col = "gray", lty = "dotted") 
+  
+```
+
+```{r fig2, echo=FALSE, message = F, warning = F, fig.width= 10,fig.height=5}
+ 
+## plot all profiles   
+LhTAC.mean <- apply(LhTAC, 2, mean, na.rm=T)
+LhTAC.sd <- apply(LhTAC, 2, sd, na.rm=T)
+
+
+col.light = rgb(0, 0, 0, alpha = 5, maxColorValue = 255) 
+plot(x.range, LhTAC[1,], type = "n", ylim = range(LhTAC,na.rm=TRUE),xaxt = "n", ylab = "Log (9250*ENMO + 1)", xlab = "Hour", 
+col = col.light, main = "Diurnal Profiles (mean+-1.96sd)")
+
+for(i in 1:n.row) lines(x.range, LhTAC[i,], col = col.light, type = "l", lwd = 1)
+lines(x.range, LhTAC.mean, col = "blue", type = "l", lwd = 2)
+lines(x.range, LhTAC.mean + 1.96*LhTAC.sd, col = "blue", type = "l", lty = "dashed", lwd = 2)
+lines(x.range, LhTAC.mean - 1.96*LhTAC.sd, col = "blue", type = "l", lty = "dashed", lwd = 2)
+axis(1, at = time.labels.at, labels = time.labels)
+abline(v = hour.line.at, col = "gray", lty = "dotted") 
+
+ 
+```
+ 
+Marginal info: **hour-specific means and standard deviations**
+
+
+
+
+## 6.2) Sample correlation 
+
+  **total sample variation**: $$\sum_{t=1}^T \widehat{Cov}(x(t),x(t))$$   
+  **Sample covariance matrix**   $$\widehat{Cov}(x(t), x(s)) = \frac{1}{n}\sum_{i=1}^n (x_i(t)-\bar{x}(t))(x_i(s)-\bar{x}(s))$$    
+  **Sample correlation matrix**   $$\widehat{Corr}(x(t), x(s)) = \frac{\widehat{Cov}(x(t), x(s))}{\sqrt{\widehat{Cov}(x(t))\widehat{Cov}(x(s))}}$$
+
+ 
+
+```{r fig3,echo = F, warning = F, message = F, fig.width=10, fig.height=5} 
+par(mfrow=c(1,2))
+require("fields") 
+x.range24=x.range/length(x.range)*24 
+LhTAC.cov = cov(LhTAC,use="pairwise.complete.obs") 
+image.plot(x=x.range24,y=x.range24,z = LhTAC.cov, xlab = "Hour", ylab = "Hour",main="covariance") 
+  
+LhTAC.cor = cor(LhTAC,use="pairwise.complete.obs")  
+image.plot(x=x.range24,y=x.range24,z = LhTAC.cor, xlab = "Hour", ylab = "Hour",main="correlation") 
+```
+ 
+
+## 6.3)  Principal Component Analysis   
+  + Step 1: De-mean all diurnal profiles
+
+```{r fig4,echo = F, warning = F, message = F, fig.width=10, fig.height=5,eval=FALSE}
+ 
+
+# create de-meaned diurnal profiles
+LhTAC.demean = LhTAC - matrix(apply(LhTAC, 2, mean,na.rm=TRUE), n.row, ncol(LhTAC), byrow = TRUE)
+ 
+LhTAC.sd = apply(LhTAC, 2, sd,na.rm=TRUE)
+
+## plot all profiles 
+col.light = rgb(0, 0, 0, alpha = 5, maxColorValue = 255) 
+plot(x.range, LhTAC.demean[1,], type = "n", ylim = range(LhTAC.demean,na.rm=TRUE), xaxt = "n",  ylab = "Log(ENMO)", xlab = "Hour", col = col.light ) 
+for(i in 1:n.row) lines(x.range, LhTAC.demean[i,], col = col.light, type = "l", lwd = 1) 
+abline(h = 0, col = "blue", lwd = 3)
+lines(1.96*LhTAC.sd, col = "blue", lwd = 3, type = "l", lty = "dashed")
+lines(-1.96*LhTAC.sd, col = "blue", lwd = 3, type = "l", lty = "dashed") 
+axis(1, at = time.labels.at, labels = time.labels)
+abline(v = hour.line.at, col = "gray", lty = "dotted") 
+
+
+```
+
+ 
+
+  + Step 2: Find "principal" patterns that explain largest proportion of total variation 
+
+```{r fig5.0,echo = FALSE, warning = F, message = F, fig.width=10, fig.height=5,eval=FALSE}
+
+LhTAC.demean = LhTAC - matrix(apply(LhTAC, 2, mean,na.rm=TRUE), n.row, ncol(LhTAC), byrow = TRUE)
+LhTAC.cov = cov(LhTAC.demean,use="pairwise.complete.obs") 
+s = eigen(LhTAC.cov, symmetric = T)
+lambda = s$values  
+plot(x.range, 100*lambda/sum(lambda), xlab = "PCs", ylab = "% of total variation explained",main="PCs for COV(demean-log-ENMO)", lwd = 4, col = "blue")
+abline(v = x.range, col = "gray", lty = "dotted") 
+```
+ 
+
+```{r fig6, echo = F, warning = F, message = F, fig.width=10, fig.height=5}
+require(fields)
+ 
+set.seed(1) 
+LhTAC.demean = LhTAC - matrix(apply(LhTAC, 2, mean,na.rm=TRUE), n.row, ncol(LhTAC), byrow = TRUE)
+LhTAC.cov = cov(LhTAC.demean,use="pairwise.complete.obs")
+s = eigen(LhTAC.cov, symmetric = T)
+lambda = s$values
+plot(x.range, 100*cumsum(lambda)/sum(lambda), xlab = "PC", ylab = "cumulative % of total variation explained",lwd = 4, col = "blue",main="PCs for COV(demean-log-ENMO)")
+abline(v = x.range, col = "gray", lty = "dotted")
+lambda.per<-   round(100* lambda /sum(lambda),2)
+
+```
+
+  
+
+  + Step 3: Principal components = "principal" patterns  
+     - PC1 explains ``r lambda.per[1]``% of total variation   
+     - PC2 explains ``r lambda.per[2]``% of total variation   
+     - PC3 explains ``r lambda.per[3]``% of total variation  
+ 
+
+```{r fig7,echo = F, warning = F, message = F, fig.width=10, fig.height=5}
+LhTAC.demean = LhTAC - matrix(apply(LhTAC, 2, mean,na.rm=TRUE), n.row, ncol(LhTAC), byrow = TRUE)
+LhTAC.cov = cov(LhTAC.demean,use="pairwise.complete.obs")
+s = eigen(LhTAC.cov, symmetric = T)  
+phi = s$vectors
+ 
+col = c("red", "green", "blue")
+plot(x.range, phi[,1], ylim = c(1.3*min(phi[,1:3]), 1.3*max(phi[,1:3])), xaxt = "n", xlab = "Hours", ylab = "PCs", lwd = 3, col = col[1], 
+type = "l") 
+for (k in 2:3) lines(x.range, phi[,k], lwd = 3, col = col[k], type = "l")
+axis(1, at = time.labels.at, labels = time.labels)
+abline(v = x.range, col = "gray", lty = "dotted")
+abline(h = 0, col = "black", lty = "dotted", lwd = 2) 
+legend("bottomright",c("PC1","PC2","PC3"),col=col,lty=1,lwd=2) 
+
+```
+ 
+   
+ 
+ 
+
+
+## 6.4) Functional PCA    
+
+fPCA wants to find a sequence of orthonormal functions $\phi_1(t),\ldots, \phi_K(t)$ that sequentially explains most of **total variation (= information)** 
+
+Each observed diurnal pattern is substituted with its fPCA approximation $$x_i(t) \approx \mu(t) + \phi_1(t)\xi_{i1}+\phi_2(t)\xi_{i2}+\phi_3(t)\xi_{i3} $$
+
+  + $\phi_1(t),\phi_2(t), \phi_3(t)$ are **principal functions** (data-driven population-level basis)
+  + $\xi_{i1},\xi_{i2},\xi_{i3}$ are **principal scores** (subject-specific coordinates) 
+
+Instead of **`r n.time` correlated numbers** $(x_i(1), x_i(2),\ldots, x_i(`r n.time`))$, we can work with **3 uncorrelated scores** $\xi_{i1}, \xi_{i2}, \xi_{i3}$ that capture roughly  ``r sum(lambda.per[1:3])``% of total variation
+
+R package "denseFLMM" performs functional PCA with repeat measure    
+     * multilevel(2 levels) FPCA seperating subject-level effect and day-level effect
+
+
+
+```{r,echo=FALSE,  warning = F, message = F}
+require(denseFLMM) 
+id.groups<-unique(hTAC.idm[,"filename"])   
+groups<-NULL
+for (i in 1:nrow(hTAC.idm)) groups[i]<-which(id.groups==hTAC.idm[i,"filename"])  
+groups<-as.matrix(groups)
+G=1 
+Zvars<-lapply(seq(len=G),function(g) matrix(1,dim(hTAC.idm)[1],1))
+data<-as.matrix(LhTAC.demean)
+Z <- denseFLMM(data,groups=groups,Zvars=Zvars,smooth = FALSE,NPC=rep(20,G+1))  
+# dim(Z$xi[[1]]) ; dim(Z$xi[[2]]) 
+# dim(Z$phi[[1]]);dim(Z$phi[[2]])
+  
+
+#Calculating the percentage of variance explained by each componet for the subject-level PCs and Day-level PCs.
+pervar_sub<-100*Z$nu[[1]]/sum(Z$nu[[1]])
+pervar_day<-100*Z$nu[[2]]/sum(Z$nu[[2]])
+# pervar_sub
+# pervar_day
+#Calculating the relative variance explained by subject heterogeneity out of total variability
+# sum(Z$nu[[1]])/Z$totvar 
+#Calculating the relative variance explained by day-to-day variance out of total variability
+# sum(Z$nu[[2]])/Z$totvar 
+#Calculating the residual variance/noises out of total variability
+# n.time*Z$sigma2/Z$totvar 
+
+# Z$totvar
+
+  
+
+#first 4 subject-level PCs----------------------------
+ 
+m<-4
+my.ylim<-range(Z$phi[[1]][,m:1])*1.4
+op=par(mai=c(.6, .8, .3, 0.1),omi=c(0, 0, 0, 0))
+matplot(Z$phi[[1]][,m:1],type='l',ylab='PC',xlab='',xaxt='n',yaxt='n',main='',lwd=c(.7,.7,2,2),ylim=my.ylim,col=m:1)
+title(xlab = "Hour", line=1.8)
+title(main = paste("Subject-specific Effect (", 
+                   round(sum(Z$nu[[1]])/Z$totvar,digits=3)*100,'% of Total)',sep=''),line=0.5)
+axis(1,at=(0:12)*2*60,labels=(0:12)*2,cex.axis=1)
+axis(2,las=1,cex.axis=1)
+#axis(2,at=(1:3)*0.01,labels=(1:3)*0.01, las=1,cex.axis=1)
+legend('topleft',co=1:4,
+       legend=paste(paste('PC',1:m,' (',sep=''),sprintf("%.1f",round(pervar_sub[1:m],digits=1)),'%)',sep=''),
+       lty=1,
+       horiz=FALSE,
+       lwd=2 ,
+       bg='transparent',cex=0.725,text.font=1.5,box.col='transparent',
+       ncol=2)
+ 
+
+
+
+#first 5 day-level PCs -----------------------------
+ 
+par(mfrow=c(1,1))
+m<-4
+my.ylim<-range(Z$phi[[2]][,m:1])*1.4
+op=par(mai=c(.6, .8, .3, 0.1),omi=c(0, 0, 0, 0))
+matplot(Z$phi[[2]][,m:1],type='l',ylab='PC',xlab='',xaxt='n',yaxt='n',main='',
+        ylim=my.ylim,lwd=c(.7,.7,2,2,2),col=m:1)
+title(xlab = "Hour", line=1.8)
+title(main = paste("Day-specific Effect (", 
+                   round(sum(Z$nu[[2]]) /Z$totvar,digits=3)*100,'% of Total)',sep=''),line=0.5)
+axis(1,at=(0:12)*2*60,labels=(0:12)*2,cex.axis=1)
+axis(2,las=1,cex.axis=1)
+legend('topleft',col=1:m,
+       legend=paste(paste('PC',1:m,' (',sep=''),sprintf("%.1f",round(pervar_day[1:m],digits=3)),'%)',sep=''),
+       box.col='transparent',horiz=FALSE, ncol = 2,
+       lty=1,lwd=2, bg='transparent',cex=0.725,text.font=1.5)
+ 
+
+```
+ 
+  
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+How to run this? 
+
+ 
+ 
+ 
+cd /data/guow4/project0/GGIR/postGGIR/postGGIR_compile/postGGIR3.0/inst/extdata/example/afterGGIR   
+R -e "rmarkdown::render('part5_Example_postGGIR.report.Rmd'   )" 

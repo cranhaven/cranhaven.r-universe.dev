@@ -1,0 +1,328 @@
+---
+title: 'Perform JIVE Decomposition for All Features using r.jive '
+author: "Wei Guo"
+date: "2021-02-19"
+output:
+  html_document:
+    df_print: paged
+  pdf_document: default
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+# {r, results="hide"} - The chunks is run but all results are hidden. The code shows in the doc,  
+# {r, include=FALSE} - the code is run but neither the code or the results are shown
+# {r, echo=FLASE} - The code is not shown, but results are
+# bug= colaus has some NA in newID column on 9660 with csv data but no part2summary
+```
+
+
+
+   
+ 
+```{r c1,include=FALSE}
+ 
+library(xlsx)   
+library(knitr)  
+currentdir="/data/guow4/project0/GGIR/postGGIR/postGGIR_compile/postGGIR3.0/inst/extdata/example/afterGGIR"
+studyname="Example"
+setwd(currentdir) 
+#install.packages("r.jive")
+library(r.jive)
+
+```
+
+
+
+This program implements Joint and Individual Variation Explained (JIVE), a flexible exploratory method for the integrated dimension reduction and visualization of multiple high-throughput data sources measured on the same samples set. The method was originally described in E. Lock et al. (2013), and the package is described in O'Connell and Lock (2016); users should refer therein for details. Briefly stated, JIVE decomposes a multi-source dataset into three terms: a low-rank approximation capturing joint variation across sources, low-rank approximations for structured variation individual to each source, and residual noise. This decomposition can be considered a generalization of Principal Components Analysis (PCA) for multi-source data.
+
+ 
+In brief, Data (Nfeature * Nsample) = Joint + Individual + Residual
+  
+ 
+ 
+
+```{r c2,include=FALSE}
+#----------------------------------------------------- 
+# 0) global.transform for each column
+#----------------------------------------------------- 
+
+global.transform<-function(L0){ #quantile("normal", rank) 
+
+z <- matrix(0,nrow(L0),ncol(L0))
+
+for (i in 1:ncol(L0)){
+  F <- ecdf(L0[,i])
+  u <- F(L0[,i])
+  z[,i] <- qnorm(u)
+}
+
+z[is.infinite(z)] = max(z[!is.infinite(z)],na.rm=TRUE)+1
+colnames(z)<-colnames(L0)
+return(z)
+}
+
+rmNAline<-function(d1){
+S0<-which(rowSums(is.na(d1))==0)
+return(d1[S0,])
+}
+```
+
+
+
+
+
+# Data preparation before running JIVE      
+   Merge subject-mean and subject-sd for each feature.
+
+
+
+```{r c3, results="hide"}  
+inFN<-paste("part7b_",studyname,"_all_features_",3:4,".csv",sep="")  
+jiveOutFN<-paste("part7d_",studyname,"_jive_Decomposition.csv",sep="")  
+scoreOutFN<-paste("part7d_",studyname,"_jive_predScore.csv",sep="")  
+
+
+domainName<-c("SL","PA","CR")  
+jive.data.rownames<-list()
+jive.data<-list() 
+for (f in 1:2){#f=1 mean; f=2 sd
+d0<-read.csv(inFN[f], header = TRUE,stringsAsFactors=FALSE) 
+ncat<-NULL
+for (j in 1:ncol(d0)) ncat[j]<-length(table(d0[,j],useNA="no"))
+nopoly<-colnames(d0)[which(ncat==1)]
+
+ 
+sleepC1<-which(colnames(d0)=="sleeponset") #6/5/2020
+paC2<-which(colnames(d0)=="TAC")
+crC3<-which(colnames(d0)=="RA_ggir")  
+crC4<-which(colnames(d0)=="PC10")
+S1<-c(sleepC1,paC2,crC3,crC4+1)
+
+jive.filenames.f<-d0[,1] 
+jive.data.f<-list()
+jive.data.rownames.f<-list()
+for (k in 1:3){
+  data<-t(d0[,c(S1[k]:(S1[k+1]-1))])  
+  S2<-which(rownames(data) %in% nopoly)
+  if (length(S2)>=1) data<-data[-S2,]
+
+  jive.data.f[[k]]<-data 
+  if (f==1) rownames(jive.data.f[[k]])<-rownames(data) 
+  if (f==2) rownames(jive.data.f[[k]])<-paste("sd_",rownames(data),sep="")
+  print(dim(data))
+}
+names(jive.data.f)<-domainName
+
+if (f==1) jive.data<-jive.data.f
+if (f==2) { 
+  for (k in 1:3)  {jive.data[[k]]<-rbind(jive.data[[k]],jive.data.f[[k]]) 
+                   jive.data.rownames[[k]]<-rownames( jive.data[[k]] )  
+                  } 
+}
+}#f
+try(jive.data[[1]][,1:10])
+jive.filenames<-jive.filenames.f 
+d<-rbind(jive.data[[1]],jive.data[[2]],jive.data[[3]]) #feature * ind
+d<-cbind(filename=jive.filenames,t(d))  # mean+sd
+```
+
+# Global normalization of the input data 
+
+```{r c5}  
+jive.data.norm<-jive.data
+for (k in 1:3){
+ jive.data.norm[[k]]<-t(global.transform(t(jive.data.norm[[k]])))
+ print(c(domainName[k],dim(jive.data.norm[[k]])))
+}
+```
+
+
+
+
+# Run JIVE 
+    +  Find failure of jive due to too many missingness. JIVE could allowed small proportion of missingness. So postGGIR add some steps to remove missingness.
+
+
+```{r c6, results="hide"}   
+res <- try(jive(jive.data.norm,scale=TRUE,center=TRUE)) 
+if (attr(res,"class")=="jive") jive.message<-"JIVE runs successfully and skip the 3 steps of removing NAs" else jive.message<-"JIVE fails and therefore run the following 3 steps of removing NAs"    
+```
+
+**`r jive.message`**
+  
+### step 1) Remove the NAs in the JIVE data 
+
+```{r c61,warning=F,message=F}
+#(a) check NAs;   jive.data= feature* individual
+S9<-NULL  # columns with missing
+for (k in 1:3){
+ S1<-colSums(is.na (jive.data[[k]]))
+ S2<- which(S1>=1)  
+ S9<-c(S9,S2)
+}
+S9<-sort(unique(S9) )
+ 
+S0<-cbind(jive.filenames[S9],S9)
+for (k in 1:3){
+  S1<-colSums(is.na (jive.data[[k]]))  
+  S0<-cbind( S0,paste(domainName[k],"(",S1[S9],"/",nrow(jive.data[[k]]),")",sep="")) 
+}
+colnames(S0)<-c("filename","columnJ",paste("domain",1:3,sep=""))   
+
+#(b) if jive fails, use the clean data without NAs 
+dclean<-d
+if (attr(res,"class")=="try-error" & length(S9)>=1 ){ # =jive when it is good  
+for (k in 1:3)  jive.data[[k]]<-jive.data[[k]][,-S9] #rm column/subject with NA
+jive.filenames<-jive.filenames[-S9]  
+action<-"Remove"
+dclean<-d[-which(d[,1] %in% S0[,1]),]
+} else action<-"Found but keep"
+jive.data.outFN<-paste("part7d_",studyname,"_jive_Input.csv",sep="")
+write.csv(dclean,file=jive.data.outFN,row.names=F)
+ 
+if (length(S9)>=1 ){    
+row.names(S0)<-NULL 
+options(knitr.kable.NA = '')
+kable(S0,caption=paste("Found ",nrow(S0)," files due to missingness",sep=""))  
+}  
+```
+
+**`r paste(action," ",length(S9)," samples with missing among ",nrow(d)," days and therefore the final data includes ",ncol(jive.data[[1]])," subjects for JIVE decomposion, and the data was saved into ",jive.data.outFN,".",sep="")`**
+ 
+### step 2) Redo Global normalization of the input data 
+ 
+```{r c62}
+
+if (attr(res,"class")=="try-error"){ # =jive when it is good 
+jive.data.norm<-jive.data
+for (k in 1:3){
+ jive.data.norm[[k]]<-t(global.transform(t(jive.data.norm[[k]])))
+ print(c(domainName[k],dim(jive.data.norm[[k]])))
+}
+} 
+```
+
+### step 3) re-run jive after removing NAs
+
+```{r c63, results="hide"}  
+if (attr(res,"class")=="try-error"){ # =jive when it is good  
+res <- jive(jive.data.norm,scale=TRUE,center=TRUE)  
+}
+```
+
+
+
+# Wirte output of JIVE decomposition
+
+```{r c64, results="hide"}  
+summary(res) 
+names(res) # [1] "data","joint","individual","rankJ" ,"rankA","method","converged","scale"
+ 
+jive.joint<-NULL
+jive.ind<-NULL
+for (k in 1:3){
+   temp<- cbind(jive.data.rownames[[k]],domainName[k],"J",res$joint[[k]])
+   jive.joint<-rbind(jive.joint,temp)
+   print(dim(temp))
+   temp2<- cbind(jive.data.rownames[[k]],domainName[k],"A",res$individual[[k]])
+   jive.ind<-rbind(jive.ind,temp2)
+   print(dim(temp2))
+
+} 
+jive.out<-rbind(jive.joint,jive.ind) 
+colnames(jive.out)<-c("feature","domain","jive",jive.filenames)
+
+write.csv(jive.out,file=jiveOutFN,row.names=F) 
+
+``` 
+
+The variation explained by joint structure and individual structure  
+ 
+```{r,echo=FALSE} 
+summary(res) 
+plot(res)
+``` 
+ 
+
+We create heatmaps of the full JIVE decomposition (Data=Joint+Individual+Residual) and order the rows and columns of all matrices by complete linkage clustering of the joint structure. The columns (samples) are vertically aligned for all heatmaps, with red correspoding to higher values and blue lower values. The estimated joint structure shows clear joint patterns that can also be seen in three of the original data heatmaps. 
+ 
+
+```{r c7,echo=FALSE} 
+plot(res, type="heat") 
+#showVarExplained(res)
+#showHeatmaps(res) 
+```
+ 
+
+#  Computes JIVE scores (jive.predict)
+   +  Use fixed r.jive if necessary of the issue of ncomp=ncol>> nrow
+
+```{r c8 }  
+ 
+# data(BRCA_data)
+# jive.data<- Data 
+# res = jive(jive.data)
+J_Est<-NULL
+try(J_Est <- jive.predict(jive.data.norm, res))
+
+if (!is.list(J_Est)){ 
+library(postGGIR)
+J_Est<-NULL
+try(J_Est <- jive.predict2(jive.data.norm, res))
+}
+ 
+
+if (is.list(J_Est)){ 
+
+Jscore <- cbind(paste("JScore_Joint", 1:nrow(J_Est$joint.scores),sep="_"),J_Est$joint.scores) 
+for (k in 1:3) {
+  temp<- J_Est$indiv.scores[[k]]   
+  temp2<-cbind(paste("JScore",domainName[k],1:nrow(temp),sep="_"),temp)
+  Jscore <- rbind(Jscore,temp2)
+  print(dim(Jscore))
+} 
+colnames(Jscore)<-c("JScore",jive.filenames) 
+rownames(Jscore)<-Jscore[,1] 
+Jscore2<-cbind(filename=jive.filenames,t(Jscore[,-1])) 
+write.csv(Jscore2,file=scoreOutFN,row.names=F) 
+# Jscore[,1:5]
+print(paste(c("Get Jive Score with dim=",dim(Jscore)),collapse="  "))
+}
+
+```
+
+ 
+```{r c9, echo=FALSE}   
+if (is.list(J_Est)){  
+try(showPCA(res,n_joint=2,Colors= 'purple') )  
+try(showPCA(res,n_joint=1,n_indiv=c(1,1,1),Colors='purple') ) 
+pca.message<-"Get PCA plots for jont and individual scores"
+} else {pca.message<-"Errors: R jive.predict fails to compute JIVE scores" }
+``` 
+
+### `r pca.message`
+
+```{r showPCA_notrun_JustSeeDef,include=FALSE,eval=FALSE}
+ n_joint = 1
+ n_indiv = c(1,1,1)  
+    l <- length(result$data)
+    nPCs = n_joint + sum(n_indiv)
+    PCs = matrix(nrow = nPCs, ncol = dim(result$data[[1]])[2])
+    PC_names = rep("", nPCs)
+    if (n_joint > 0) {
+        SVD = svd(do.call(rbind, result$joint), nu = n_joint,
+            nv = n_joint)
+        PCs[1:n_joint, ] = diag(SVD$d)[1:n_joint, 1:n_joint] %*%
+            t(SVD$v[, 1:n_joint])
+        PC_names[1:n_joint] = paste("Joint ", 1:n_joint)
+    }
+```     
+
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+How to run this? 
+
+cd /data/guow4/project0/GGIR/postGGIR/postGGIR_compile/postGGIR3.0/inst/extdata/example/afterGGIR   
+R -e "rmarkdown::render('part7d_Example_postGGIR_JIVE_4_outputReport.Rmd'   )" 
