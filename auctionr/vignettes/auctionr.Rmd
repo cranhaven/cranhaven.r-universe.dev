@@ -1,0 +1,81 @@
+---
+title: "Introduction to auctionr"
+output: rmarkdown::html_vignette
+date: "`r Sys.Date()`"
+vignette: >
+  %\VignetteIndexEntry{Introduction to auctionr}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+library(auctionr)
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+The package offers two functions: 
+  
+1.  Data-generating `auction_generate_data()`, which simulates outcomes of a procurement auction, where the winning bid is the amount that a single buyer will pay to the top bidding supplier.
+
+1.  Estimating `auction_model()`, which recovers the parameters of the Weibull distribution for private costs $(\mu$ and $\alpha)$, the Log-Normal variance of the unobserved heterogeneity ($\sigma$), as well as the loads on the observed heterogeneity $(\beta_i)$.
+  
+## Generating sample data
+
+The code below generates a vector of winning bids, `winning_bid`, with a corresponding number of bids, `n_bids`, and a set of observed heterogeneity covariates `Xi`. 
+
+```{r}
+set.seed(5)
+dat <- auction_generate_data(obs = 100, mu = 10, alpha = 2,
+                             sigma = 0.2, beta = c(-1,1),
+                             new_x_mean= c(-1,1),
+                             new_x_sd = c(0.5,0.8))
+head(dat)
+```
+
+## Trying out several random starting points to estimate standard errors
+
+The simulated sample above was constructed in such a way that, when passed to the estimation procedure with certain initial values, it will not produce standard errors for the MLE estimators. This is due to the fact that the Hessian matrix is approximated *numerically*, so there is no guarantee that it will be a positive definite:
+
+```{r}
+## Standard error calculation fails in the following single run
+res <- auction_model(dat, 
+                      init_param =  c(8, 2, .5, .4, .6),
+                      num_cores = 1,
+                      std_err = TRUE)
+
+res
+```
+
+This issue can be solved by following a classic best-practice recommendation for optimization problems to use several initial values and run the procedure multiple times to ensure that the ultimate solution is a global optimum. Here is a recommended code, where we run the estimation procedure 4 times and only select cases where the standard errors were obtained with a valid Hessian:
+
+```{r}
+## Solving the issue with multiple runs
+res_list <- list()
+max_llik <- c()
+init_param0 = c(8, 2, .5, .4, .6)
+
+set.seed(100)
+for (i in 1:4){
+   init_param = c(abs(init_param0[1:3]*rnorm(3) + 5*rnorm(3)), init_param0[4:5] + .5*rnorm(2))
+   res <- auction_model(dat, init_param = init_param, num_cores = 1, std_err = TRUE)
+   print(res)
+   
+   ## Only keeping results with valid standard errors
+   if (all(!is.na(res$std_err))){
+       res_list <- c(res_list, list(res))
+       max_llik = c(max_llik, res$value)
+   }
+}
+```
+
+Two out of four `auction_model()` runs produced standard errors. We then select the one, which reports the highest likelihood:
+
+```{r}
+res_final <- res_list[[which.max(max_llik)]]
+res_final
+```
+
+Note that the estimated parameters are close to the true values of `mu=10, alpha = 2, sigma = 0.2, beta = c(-1,1))`.
