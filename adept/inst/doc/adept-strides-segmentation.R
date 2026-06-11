@@ -1,0 +1,541 @@
+## ----setup, include = FALSE---------------------------------------------------
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  warning = FALSE,
+  message = FALSE,
+  global.par = TRUE
+)
+## Label to whether or not run code from local 
+run_local <- FALSE
+# run_local <- FALSE
+# wd.tmp <- "/Users/martakaras/Dropbox/_PROJECTS/R/adept/vignettes/"
+
+## ----echo=FALSE, out.width='90%'----------------------------------------------
+knitr::include_graphics('https://imgur.com/VcK6o7o.jpg')
+
+## ----echo=FALSE, out.width='45%'----------------------------------------------
+knitr::include_graphics('https://imgur.com/5Ji2hQF.jpg');knitr::include_graphics('https://imgur.com/lTdCixX.jpg')
+
+## -----------------------------------------------------------------------------
+# devtools::install_github("martakarass/adept")
+library(adept)
+library(adeptdata)
+library(lubridate)
+options(digits.secs = 2)
+head(acc_running)
+tz(acc_running$date_time)
+
+## ----plot_xyz, fig.width=7.5, fig.height=4.5----------------------------------
+library(lubridate)
+library(dplyr)
+library(ggplot2)
+library(reshape2)
+library(gridExtra)
+library(magrittr)
+
+## Define time frame start values for data subset
+t1 <- ymd_hms("2018-10-25 18:07:00", tz = "UTC") 
+t2 <- ymd_hms("2018-10-25 18:20:30", tz = "UTC") 
+t3 <- ymd_hms("2018-10-25 18:22:00", tz = "UTC") 
+
+## Mutate data: generate vector magnitude variable
+acc_running %<>% mutate(vm = sqrt(x^2 + y^2 + z^2))
+
+## Subset data 
+acc_running_sub <- 
+  acc_running %>%
+  filter((date_time >= t1 & date_time < t1 + as.period(4, "seconds")) | 
+           (date_time >= t2 & date_time < t2 + as.period(4, "seconds")) | 
+           (date_time >= t3 & date_time < t3 + as.period(4, "seconds")) )
+
+## Plot (x,y,z) values 
+acc_running_sub %>%
+  select(-vm) %>%
+  melt(id.vars = c("date_time", "loc_id")) %>%
+  mutate(dt_floor = paste0("time frame start: ", 
+                           floor_date(date_time, unit = "minutes"))) %>%
+  ggplot(aes(x = date_time, y = value, color = variable)) + 
+  geom_line(size = 0.5) + 
+  facet_grid(loc_id ~ dt_floor, scales = "free_x") + 
+  theme_bw(base_size = 9) + 
+  labs(x = "Time [s]", y = "Acceleration [g]", color = "Accelerometer axis of measurement: ",
+       title = "Raw accelerometry data (x,y,z)") + 
+  theme(legend.position = "top")
+
+
+## ----plot_vm, fig.width=7.5, fig.height=4.1-----------------------------------
+## Plot vector magnitude values 
+acc_running_sub %>%
+  mutate(dt_floor = paste0(
+    "time frame start: ",  floor_date(date_time, unit = "minutes"))) %>%
+  ggplot(aes(x = date_time, y = vm)) + 
+  geom_line(size = 0.5) + 
+  facet_grid(loc_id ~ dt_floor, scales = "free_x") + 
+  theme_bw(base_size = 9) + 
+  labs(x = "Time [s]", y = "Vector magnitue [g]", 
+       title = "Vector magnitude (vm) summary of raw accelerometry data") 
+
+## ----plot_vmc, fig.width=7.5, fig.height=4.2----------------------------------
+## Function to compute vmc from a vm window vector
+vmc <- function(vm.win){
+  mean(abs(vm.win - mean(vm.win)))
+}
+
+## Compute vmc vector in 3-seconds windows 
+vm <- acc_running$vm
+win.vl <- 100 * 3
+rn.seq <- seq(1, to = length(vm), by = win.vl)
+vmc.vec <- sapply(rn.seq, function(rn.i){
+  vm.win.idx <- rn.i : (rn.i + win.vl - 1)
+  vm.win <- vm[vm.win.idx]
+  vmc(vm.win)
+})
+
+vmc.df <- data.frame(vmc = vmc.vec,
+                     date_time = acc_running$date_time[rn.seq],
+                     rn_seq = rn.seq,
+                     loc_id = acc_running$loc_id[rn.seq]) 
+vmc.df.rest <- 
+  vmc.df %>% 
+  filter(loc_id == "left_ankle") %>%
+  mutate(resting = ifelse(vmc < 0.4, 1, 0),
+         vmc_tau_i = rn_seq - 150000) %>%
+  select(date_time, resting, vmc_tau_i)
+vmc.df <- vmc.df %>% left_join(vmc.df.rest, by = "date_time")
+
+## Plot vmc 
+vmc.df %>%
+  filter(date_time < max(acc_running$date_time) - 5, 
+         date_time > min(acc_running$date_time) + 5) %>%
+  ggplot(aes(x = date_time, y = vmc)) +
+  facet_grid(loc_id ~ .) + 
+  geom_tile(aes(fill = factor(resting)),  height = Inf, alpha = 0.1) +
+  geom_line(size = 0.3) +
+  theme_bw(base_size = 9) + 
+  labs(x = "Exercise time [min]", y = "Vector magnitue count",
+       title = "Vector magnitude count (vmc) computed over 3 second-length windows of (vm)",
+       fill = "Resting: ") + 
+  scale_fill_manual(values = c("white", "blue")) + 
+  theme(legend.position = "top",
+        legend.background = element_rect(fill = "grey90"))
+## Time percentage when (vmc) computed from left ankle is below 0.4
+(vmc.low.frac <- mean(vmc.df.rest$resting))
+
+## ----segm_la, fig.width=6, fig.height=3---------------------------------------
+template <- list(stride_template$left_ankle[[2]][1, ],
+                 stride_template$left_ankle[[2]][2, ])
+par(mfrow = c(1,2), cex = 0.7)
+plot(template[[1]], type = "l", xlab = "", ylab = "", main = "Left ankle: template 1")
+plot(template[[2]], type = "l", xlab = "", ylab = "", main = "Left ankle: template 2")
+
+## ----segm_la2, eval = !run_local----------------------------------------------
+x.la <- acc_running$vm[acc_running$loc_id == "left_ankle"]
+out1.la <- segmentPattern(
+  x = x.la,
+  x.fs = 100,
+  template = template,
+  pattern.dur.seq = seq(0.5, 1.8, length.out = 50),
+  similarity.measure = "cor",
+  x.adept.ma.W = 0.15,
+  finetune = "maxima",
+  finetune.maxima.ma.W = 0.05,
+  finetune.maxima.nbh.W = 0.2,
+  compute.template.idx = TRUE,
+  run.parallel = TRUE)
+
+## ---- eval =  FALSE, include = FALSE------------------------------------------
+#  ## Run only manually, when some changes have been introduced and file needs to be updated
+#  # setwd(wd.tmp)
+#  path.tmp <- "static/results/out1_la.csv"
+#  write.csv(out1.la, path.tmp, row.names = FALSE)
+
+## ----  include = FALSE, eval = run_local--------------------------------------
+#  ## Run only when executed locally
+#  path.tmp <- "static/results/out1_la.csv"
+#  x.la <- acc_running$vm[acc_running$loc_id == "left_ankle"]
+#  out1.la <- read.csv(path.tmp)
+
+## -----------------------------------------------------------------------------
+head(out1.la)
+
+## ----segm_lh, fig.width=6, fig.height=3---------------------------------------
+template <- list(stride_template$left_hip[[1]][1, ],
+                 stride_template$left_hip[[2]][2, ])
+par(mfrow = c(1,2), cex = 0.7)
+plot(template[[1]], type = "l", xlab = "", ylab = "", main = "Left hip: template 1")
+plot(template[[2]], type = "l", xlab = "", ylab = "", main = "Left hip: template 2")
+
+## ----segm_lh2, eval = !run_local----------------------------------------------
+template <- list(stride_template$left_hip[[1]][1, ],
+                 stride_template$left_hip[[2]][2, ])
+x.lh <- acc_running$vm[acc_running$loc_id == "left_hip"]
+out1.lh <- segmentPattern(x = x.lh,
+                          x.fs = 100,
+                          template = template,
+                          pattern.dur.seq = seq(0.5, 1.8, length.out = 50),
+                          similarity.measure = "cor",
+                          x.adept.ma.W = 0.05,
+                          finetune = "maxima",
+                          finetune.maxima.ma.W = 0.15,
+                          finetune.maxima.nbh.W = 0.2,
+                          compute.template.idx = TRUE,
+                          run.parallel = TRUE)
+
+## ---- eval = FALSE, include=FALSE---------------------------------------------
+#  # setwd(wd.tmp)
+#  path.tmp <- "static/results/out1_lh.csv"
+#  write.csv(out1.lh, path.tmp, row.names = FALSE)
+
+## ---- eval = run_local, include = FALSE---------------------------------------
+#  x.lh <- acc_running$vm[acc_running$loc_id == "left_hip"]
+#  path.tmp <- "static/results/out1_lh.csv"
+#  out1.lh <- read.csv(path.tmp)
+
+## -----------------------------------------------------------------------------
+head(out1.lh)
+
+## ---- fig.width=7, fig.height=4-----------------------------------------------
+## Merge results from two sensor locations, add resting/non-resting info
+plt.df.la <- 
+  out1.la %>% 
+  merge(vmc.df.rest) %>%
+  filter(tau_i >= vmc_tau_i, tau_i < vmc_tau_i + 3 * 100, resting == 0) %>%
+  mutate(location = "left_ankle")
+plt.df.lh <- 
+  out1.lh %>% 
+  merge(vmc.df.rest) %>%
+  filter(tau_i >= vmc_tau_i, tau_i < vmc_tau_i + 3 * 100, resting == 0) %>%
+  mutate(location = "left_hip")
+plt.df <- rbind(plt.df.la, plt.df.lh)
+
+ggplot(plt.df,
+    aes(x = tau_i / (100 * 60) , y = T_i / 100)) + 
+  geom_tile(data = vmc.df.rest, 
+            aes(x = vmc_tau_i / (100 * 60), y = 1, fill = factor(resting)), 
+            height = Inf, alpha = 0.1, inherit.aes = FALSE) +
+  geom_point(alpha = 0.2) + 
+  facet_grid(location ~ .) + 
+  theme_bw(base_size = 10) + 
+  labs(x = "Exercise time [min]", y = "Estimated stride duration time [s]",
+       fill = "Resting: ") + 
+  theme(legend.position = "top") + 
+  scale_fill_manual(values = c("white", "blue")) + 
+  theme(legend.position = "top",
+        legend.background = element_rect(fill = "grey90")) + 
+  scale_y_continuous(limits = c(0.5, 1.8))
+
+## ----extract_subject_specific_sp, eval = !run_local---------------------------
+## For data frame #1 (raw vm segments)
+stride.acc.vec.la <- numeric()
+stride.tau_i.vec.la <- numeric()
+stride.idx.vec.la <- numeric()
+## For data frame #2 (scaled vm segments)
+stride_S.acc.vec.la <- numeric()
+stride_S.tau_i.vec.la <- numeric()
+stride_S.phase.vec.la <- numeric()
+
+for (i in 1:nrow(plt.df.la)){
+  out.i <- plt.df.la[i, ]
+  x.la.i <- x.la[out.i$tau_i : (out.i$tau_i + out.i$T_i - 1)]
+  x.la.i.len <- length(x.la.i)
+  if (var(x.la.i) < 1e-3) next
+  ## For data frame #1 
+  stride.acc.vec.la   <- c(stride.acc.vec.la, x.la.i)
+  stride.tau_i.vec.la <- c(stride.tau_i.vec.la, rep(out.i$tau_i, x.la.i.len))
+  stride.idx.vec.la <- c(stride.idx.vec.la, 1:x.la.i.len)
+  ## For data frame #2
+  x.la.i_S <- approx(x = seq(0, 1, length.out = length(x.la.i)),
+                     y = x.la.i,
+                     xout = seq(0, 1, length.out = 200))$y
+  x.la.i_S <- as.numeric(scale(x.la.i_S))
+  stride_S.acc.vec.la <- c(stride_S.acc.vec.la, x.la.i_S)
+  stride_S.tau_i.vec.la <- c(stride_S.tau_i.vec.la, rep(out.i$tau_i, 200))
+  stride_S.phase.vec.la <- c(stride_S.phase.vec.la, seq(0, 1, length.out = 200))
+}
+
+## data frame #1 
+stride.df.la <- data.frame(acc = stride.acc.vec.la, 
+                           tau_i = stride.tau_i.vec.la,
+                           idx = stride.idx.vec.la)
+## data frame #2
+stride_S.df.la <- data.frame(acc = stride_S.acc.vec.la, 
+                             tau_i = stride_S.tau_i.vec.la,
+                             phase = stride_S.phase.vec.la)
+
+## ---- eval = FALSE, include = FALSE-------------------------------------------
+#  # setwd(wd.tmp)
+#  
+#  ## For data frame #1
+#  path.tmp <- "static/results/stride_df_la.csv"
+#  write.csv(stride.df.la, path.tmp, row.names = FALSE)
+#  
+#  ## For data frame #2
+#  path.tmp <- "static/results/stride_S_df_la.csv"
+#  write.csv(stride_S.df.la, path.tmp, row.names = FALSE)
+
+## ---- eval = run_local, include = FALSE---------------------------------------
+#  ## For data frame #1
+#  path.tmp <- "static/results/stride_df_la.csv"
+#  stride.df.la <- read.csv(path.tmp)
+#  
+#  ## For data frame #2
+#  path.tmp <- "static/results/stride_S_df_la.csv"
+#  stride_S.df.la <- read.csv(path.tmp)
+
+## ----plot_subject_specific_sp, fig.width=7, fig.height=3----------------------
+## Plot segmented walking strides
+plt1 <- 
+  stride.df.la %>%
+  ggplot(aes(x = idx/100, y = acc, group = tau_i)) + 
+  geom_line(alpha = 0.1) + 
+  theme_bw(base_size = 8) + 
+  labs(x = "Stride pattern duration [s]", y = "Vector magnitude [g]",
+       title = "Segmented walking strides")
+plt2 <- 
+  stride_S.df.la %>%
+  ggplot(aes(x = phase, y = acc, group = tau_i)) + 
+  geom_line(alpha = 0.1) + 
+  theme_bw(base_size = 8) + 
+  labs(x = "Stride pattern phase", y = "Vector magnitude (scaled) [g]",
+       title = "Segmented walking strides, aligned and scaled") 
+grid.arrange(plt1, plt2, nrow = 1)
+
+## ----correlation_clustering, eval = !run_local--------------------------------
+## Compute strides distance martrix
+stride_S.dfdc.la <- dcast(stride_S.df.la, phase ~ tau_i, value.var = "acc")[, -1]
+data.mat.tau_i <- as.numeric(colnames(stride_S.dfdc.la))
+data.mat <-  as.matrix(stride_S.dfdc.la)
+D.mat  <- dist(cor(data.mat))
+
+## Get cluster medoids
+cluster.k <- 2
+medoids.idx <- round(seq(1, ncol(stride_S.dfdc.la), length.out = cluster.k + 2))
+medoids.idx <- medoids.idx[-c(1, medoids.idx + 2)]
+
+## Cluster strides
+set.seed(1)
+pam.out <- cluster::pam(D.mat, cluster.k, diss = TRUE, medoids = medoids.idx)
+table(pam.out$clustering)
+
+## Put clustering results into data frame 
+data.df <- as.data.frame(t(data.mat))
+colnames(data.df) <- seq(0, to = 1, length.out = 200)
+data.df$tau_i <- data.mat.tau_i
+data.df$cluster <- pam.out$clustering
+data.dfm <- melt(data.df, id.vars = c("tau_i", "cluster"))
+data.dfm$variable <- as.numeric(as.character(data.dfm$variable))
+data.dfm$cluster <- paste0("cluster ", data.dfm$cluster)
+
+## ---- eval = FALSE, include=FALSE---------------------------------------------
+#  # setwd(wd.tmp)
+#  
+#  path.tmp <- "static/results/data_dfm.csv"
+#  write.csv(data.dfm, path.tmp, row.names = FALSE)
+
+## ---- eval = run_local, include = FALSE---------------------------------------
+#  path.tmp <- "static/results/data_dfm.csv"
+#  data.dfm <- read.csv(path.tmp)
+
+## ----plot_correlation_clustering, fig.width=4, fig.height=5.5-----------------
+data.dfm.agg <- 
+  data.dfm %>%
+  group_by(variable, cluster) %>% 
+  summarise(value = mean(value))
+ggplot(data.dfm, aes(x = variable, y = value, group = tau_i)) + 
+  geom_line(alpha = 0.2) + 
+  geom_line(data = data.dfm.agg,  aes(x = variable, y = value, group = 1),
+            color = "red", size = 1, inherit.aes = FALSE) +  
+  facet_grid(cluster ~ .) + 
+  theme_bw(base_size = 9) + 
+  labs(x = "Stride pattern phase", y = "Vector magnitude (scaled) [g]",
+       title = "Segmented walking strides, aligned, scaled, clustered\nRed line: point-wise mean") 
+
+## ----correlation_clustering_2, fig.width=7, fig.height=2.8--------------------
+data.dfm %>%
+  select(tau_i, cluster)  %>%
+  distinct() %>%
+  left_join(plt.df.la, by = "tau_i") %>%
+  ggplot(aes(x = tau_i / (100 * 60) , y = T_i / 100, color = cluster)) + 
+  geom_tile(data = vmc.df.rest, 
+            aes(x = vmc_tau_i / (100 * 60), y = 1, fill = factor(resting)), 
+            height = Inf, alpha = 0.1, inherit.aes = FALSE) +
+  geom_point(alpha = 0.4) + 
+  theme_bw(base_size = 9) + 
+  labs(x = "Exercise time [min]", y = "Estimated stride duration time [s]",
+       color = "Stride assignment: ",
+       fill = "Resting: ") + 
+  scale_fill_manual(values = c("white", "blue")) + 
+  theme(legend.position = "top",
+        legend.background = element_rect(fill = "grey90"))  + 
+  scale_y_continuous(limits = c(0.5, 1.8))
+
+## -----------------------------------------------------------------------------
+## Function to compute local maxima
+## source: https://stackoverflow.com/questions/6836409/finding-local-maxima-and-minima
+localMaxima <- function(x) {
+  y <- diff(c(-.Machine$integer.max, x)) > 0L
+  y <- cumsum(rle(y)$lengths)
+  y <- y[seq.int(1L, length(y), 2L)]
+  if (x[[1]] == x[[2]]) {
+    y <- y[-1]
+  }
+  y
+}
+
+## Function which cut x vector at indices given by x.cut.idx,
+## approximate cut parts into common length and average 
+## parts point-wise into one vector
+cut.and.avg <- function(x, x.cut.idx){
+  x.cut.idx.l <- length(x.cut.idx)
+  mat.out <- matrix(NA, nrow = x.cut.idx.l-1, ncol = 200)
+  for (i in 1:(length(x.cut.idx)-1)){
+    xp <- x[x.cut.idx[i]:x.cut.idx[i+1]]
+    xpa <- approx(seq(0, 1, length.out = length(xp)), xp, seq(0, 1, length.out = 200))$y
+    mat.out[i, ] <- as.numeric(scale(xpa, scale = TRUE, center = TRUE))
+  }
+  out <- apply(mat.out, 2, mean)
+  as.numeric(scale(out, scale = TRUE, center = TRUE))
+}
+
+## Smooth the accelerometry vm time-series 
+acc_running$vm_smoothed1 <- windowSmooth(x = acc_running$vm, x.fs = 100, W = 0.05)
+
+## Make subset of data which has data parts of different speed of running
+acc_running_sub2 <- 
+  acc_running %>%
+  filter((date_time >= t2 & date_time < t2 + as.period(6, "seconds")) | 
+           (date_time >= t3 & date_time < t3 + as.period(6, "seconds")))  %>%
+  mutate(dt_floor = floor_date(date_time, unit = "minutes"))
+## Vector of signatures for data parts of different speed of running
+dt_floor.unique <- unique(acc_running_sub2$dt_floor)
+
+## ----semi_manual_la, fig.width = 7, fig.height=2.3----------------------------
+## Left ankle-specific subset of data  
+sub.la <- acc_running_sub2[acc_running_sub2$loc_id == "left_ankle", ]
+par(mfrow = c(1,3), cex = 0.6)
+
+## Left ankle: template 1
+x1 <- sub.la[sub.la$dt_floor == dt_floor.unique[1], "vm_smoothed1"]
+x1.locMax <- localMaxima(x1)
+plot(1:length(x1), x1, type = "l", main = "(vm) local maxima", xlab = "Index", ylab = "")
+abline(v = x1.locMax, col = "red")
+plot(1:length(x1), x1, type = "l", main = "(vm) local maxima subset", xlab = "Index", ylab = "")
+abline(v = x1.locMax[c(3, 6, 9, 13, 16, 19, 23, 26, 29)], col = "red")
+template.la.x1 <- cut.and.avg(x1, x1.locMax[c(3, 6, 9, 13, 16, 19, 23, 26, 29)])
+plot(1:length(template.la.x1), template.la.x1, type = "l", 
+     col = "red", main = "left ankle: template 1", xlab = "Index", ylab = "")
+
+## Left ankle: template 2
+x2 <- sub.la[sub.la$dt_floor == dt_floor.unique[2], "vm_smoothed1"]
+x2.locMax <- localMaxima(x2)
+plot(1:length(x2), x2, type = "l", main = "(vm) local maxima", xlab = "Index", ylab = "")
+abline(v = x2.locMax, col = "red")
+plot(1:length(x2), x2, type = "l", main = "(vm) local maxima subset", xlab = "Index", ylab = "")
+abline(v = x2.locMax[c(8, 18, 26, 37, 44)], col = "red")
+template.la.x2 <- cut.and.avg(x2, x2.locMax[c(8, 18, 26, 37, 44)])
+plot(1:length(template.la.x2), template.la.x2, type = "l", 
+     col = "red", main = "left ankle: template 2", xlab = "Index", ylab = "")
+## Template object
+template.la <- list(template.la.x1, template.la.x2)
+
+## ----semi_manual_lh, fig.width = 7, fig.height=2.3----------------------------
+## Left hip-specific subset of data  
+sub.lh <- acc_running_sub2[acc_running_sub2$loc_id == "left_hip", ]
+par(mfrow = c(1,3), cex = 0.6)
+
+## Left hip: template 1 
+x1 <- sub.lh[sub.lh$dt_floor == dt_floor.unique[1], "vm_smoothed1"]
+x1.locMax <- localMaxima(x1)
+plot(1:length(x1), x1, type = "l", main = "(vm) local maxima", xlab = "Index", ylab = "")
+abline(v = x1.locMax, col = "red")
+plot(1:length(x1), x1, type = "l", main = "(vm) local maxima subset", xlab = "Index", ylab = "")
+abline(v = x1.locMax[c(3, 10, 17, 24, 30, 37, 43, 49, 56)], col = "red")
+template.lh.x1 <- cut.and.avg(x1, x1.locMax[c(3, 10, 17, 24, 30, 37, 43, 49, 56)])
+plot(1:length(template.lh.x1), template.lh.x1, type = "l", 
+     col = "red", main = "left ankle: template 1", xlab = "Index", ylab = "")
+
+## Left hip: template 2
+x2 <- sub.lh[sub.lh$dt_floor == dt_floor.unique[2], "vm_smoothed1"]
+x2.locMax <- localMaxima(x2)
+plot(1:length(x2), x2, type = "l", main = "(vm) local maxima", xlab = "Index", ylab = "")
+abline(v = x2.locMax, col = "red")
+plot(1:length(x2), x2, type = "l", main = "(vm) local maxima subset", xlab = "Index", ylab = "")
+abline(v = x2.locMax[c(5, 13, 19, 24, 31)], col = "red")
+template.lh.x2 <- cut.and.avg(x2, x2.locMax[c(5, 13, 19, 24, 31)])
+plot(1:length(template.lh.x2), template.lh.x2, type = "l", 
+     col = "red", main = "left ankle: template 2", xlab = "Index", ylab = "")
+## Template object
+template.lh <- list(template.lh.x1, template.lh.x2)
+
+## ----segm_app2_la2, eval = !run_local-----------------------------------------
+out2.la <- segmentPattern(x = x.la,
+                          x.fs = 100,
+                          template = template.la,
+                          pattern.dur.seq = seq(0.5, 1.8, length.out = 50),
+                          similarity.measure = "cor",
+                          x.adept.ma.W = 0.15,
+                          finetune = "maxima",
+                          finetune.maxima.ma.W = 0.05,
+                          finetune.maxima.nbh.W = 0.2,
+                          compute.template.idx = TRUE,
+                          run.parallel = TRUE)
+
+out2.lh <- segmentPattern(x = x.lh,
+                          x.fs = 100,
+                          template = template.lh,
+                          pattern.dur.seq = seq(0.5, 1.8, length.out = 50),
+                          similarity.measure = "cor",
+                          x.adept.ma.W = 0.05,
+                          finetune = "maxima",
+                          finetune.maxima.ma.W = 0.15,
+                          finetune.maxima.nbh.W = 0.2,
+                          compute.template.idx = TRUE,
+                          run.parallel = TRUE)
+
+## ---- eval = FALSE, include=FALSE---------------------------------------------
+#  # setwd(wd.tmp)
+#  
+#  path.tmp <- "static/results/out2_la.csv"
+#  write.csv(out2.la, path.tmp, row.names = FALSE)
+#  
+#  path.tmp <- "static/results/out2_lh.csv"
+#  write.csv(out2.lh, path.tmp, row.names = FALSE)
+
+## ---- eval = run_local, include=FALSE-----------------------------------------
+#  path.tmp <- "static/results/out2_la.csv"
+#  out2.la <- read.csv(path.tmp)
+#  
+#  path.tmp <- "static/results/out2_lh.csv"
+#  out2.lh <- read.csv(path.tmp)
+
+## ---- fig.width=7, fig.height=4-----------------------------------------------
+## Merge results from two sensor locations, add resting/non-resting info
+plt.df.la.2 <- 
+  out2.la %>% 
+  merge(vmc.df.rest) %>%
+  filter(tau_i >= vmc_tau_i, tau_i < vmc_tau_i + 3 * 100, resting == 0) %>%
+  mutate(location = "left_ankle")
+plt.df.lh.2 <- 
+  out2.lh %>% 
+  merge(vmc.df.rest) %>%
+  filter(tau_i >= vmc_tau_i, tau_i < vmc_tau_i + 3 * 100, resting == 0) %>%
+  mutate(location = "left_hip")
+plt.df <- rbind(plt.df.la.2, plt.df.lh.2)
+
+ggplot(plt.df,
+    aes(x = tau_i / (100 * 60) , y = T_i / 100)) + 
+  geom_tile(data = vmc.df.rest, 
+            aes(x = vmc_tau_i / (100 * 60), y = 1, fill = factor(resting)), 
+            height = Inf, alpha = 0.1, inherit.aes = FALSE) +
+  geom_point(alpha = 0.2) + 
+  facet_grid(location ~ .) + 
+  theme_bw(base_size = 10) + 
+  labs(x = "Exercise time [min]", y = "Estimated stride duration time [s]",
+       fill = "Resting: ") + 
+  theme(legend.position = "top") + 
+  scale_fill_manual(values = c("white", "blue")) + 
+  theme(legend.position = "top",
+        legend.background = element_rect(fill = "grey90")) + 
+  scale_y_continuous(limits = c(0.5, 1.8))
+
