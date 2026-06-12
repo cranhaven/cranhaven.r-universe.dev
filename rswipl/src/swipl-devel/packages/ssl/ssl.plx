@@ -1,0 +1,465 @@
+\documentclass[11pt]{article}
+\usepackage{times}
+\usepackage{pl}
+\usepackage{html}
+\sloppy
+\makeindex
+
+\onefile
+\htmloutput{.}					% Output directory
+\htmlmainfile{ssl}				% Main document file
+\bodycolor{white}				% Page colour
+
+\begin{document}
+
+\title{SWI-Prolog SSL Interface}
+\author{\href{https://www.metalevel.at}{Markus Triska}, Jan van der Steen, Matt Lilley and Jan Wielemaker \\[5pt]
+        E-mail: \email{jan@swi-prolog.org}
+       }
+
+\maketitle
+
+\begin{abstract}
+The SWI-Prolog SSL (Secure Socket Layer) library implements a pair of
+\jargon{filtered streams} that realises an SSL encrypted connection on
+top of a pair of Prolog \jargon{wire} streams, typically a network
+socket. SSL provides public key based encryption and digitally signed
+identity information of the \jargon{peer}. The SSL library is well
+integrated with SWI-Prolog's HTTP library for both implementing HTTPS
+servers and communicating with HTTPS servers. It is also used by the
+\href{http://www.swi-prolog.org/pack/list?p=smtp}{smtp pack} for
+accessing secure mail agents. Plain SSL can be used to realise secure
+connections between e.g., Prolog agents.
+\end{abstract}
+
+\pagebreak
+\tableofcontents
+\pagebreak
+
+
+\section{Introduction}
+\label{sec:ssl-intro}
+
+Raw TCP/IP networking is dangerous for two reasons:
+
+\begin{enumerate}
+\item It is hard to tell whether the party you think you are talking
+  to is indeed the right one.
+\item  Anyone with access to a subnet through which your data flows can
+`tap' the wire and listen for sensitive information such as passwords,
+credit card numbers, etc.
+\end{enumerate}
+
+Transport Layer Security~(TLS) and its predecessor Secure Socket
+Layer~(SSL), which are both often collectively called~SSL, solve both
+problems. SSL~uses:
+
+\begin{itemize}
+\item certificates to establish the \textit{identity} of the peer
+\item \textit{encryption} to make it useless to tap into the wire.
+\end{itemize}
+
+SSL allows agents to talk in private and create secure web services.
+
+The SWI-Prolog \pllib{ssl} library provides an API to turn a pair of
+arbitrary Prolog \jargon{wire} streams into SSL powered encrypted
+streams. Note that secure protocols such as secure HTTP simply run the
+plain protocol over (SSL) encrypted streams.
+
+The \pllib{crypto} library provides additional predicates related to
+cryptography and authentication, secure hashes and elliptic~curves.
+
+Cryptography is a difficult topic. If you just want to download
+documents from an HTTPS server without worrying much about security,
+http_open/3 will do the job for you. As soon as you have higher security
+demands we strongly recommend you to read enough background material to
+understand what you are doing. See \secref{ssl-security} for some
+remarks regarding this implementation. This
+\href{http://www.tldp.org/HOWTO/SSL-Certificates-HOWTO/index.html}{The
+Linux Documentation Project page} provides some additional background
+and tips for managing certificates and keys.
+
+
+\input{ssllib.tex}
+
+\input{crypto.tex}
+
+\section{XML cryptographic libraries}
+\label{sec:ssl-xml-libs}
+
+The SSL package provides several libraries dealing with cryptographic
+operations of XML documents. These libraries depend on the \const{sgml}
+package. These libraries are part of this package because the
+\const{sgml} package has no external dependencies and will thus be
+available in any SWI-Prolog installation while configuring and building
+this \const{ssl} package is much more involved.
+
+\input{saml.tex}
+\input{xmlenc.tex}
+\input{xmldsig.tex}
+
+\section{SSL Security}
+\label{sec:ssl-security}
+
+Using SSL (in this particular case based on the OpenSSL implementation)
+to connect to SSL services (e.g., an \verb$https://$ address) easily
+gives a false sense of security. This section explains some of the
+pitfalls.\footnote{We do not claim to be complete, just to start warning
+you if security is important to you. Please make sure you
+understand (Open)SSL before relying on it.}. As stated in the
+introduction, SSL aims at solving two issues: tapping information from
+the wire by means of encryption and make sure that you are talking to
+the right address.
+
+Encryption is generally well arranged as long as you ensure that the
+underlying SSL library has all known security patches installed and you
+use an encryption that is not known to be weak. The Windows version and
+MacOS binaries of SWI-Prolog ships with its own binary of the OpenSSL
+library. Ensure this is up-to-date. On systems that ship with the
+OpenSSL library SWI-Prolog uses the system version. This applies notably
+for all Linux packages. Check the origin and version of the OpenSSL
+libraries and verify there are no more recent security patches regularly
+if security is important to you. The OpenSSL library version as reported
+by SSLeay_version() is available in the Prolog flag
+\const{ssl_library_version} as illustrated below on Ubuntu 14.04.
+
+\begin{code}
+?- [library(ssl)].
+?- current_prolog_flag(ssl_library_version, X).
+X = 'OpenSSL 1.0.1f 6 Jan 2014'.
+\end{code}
+
+Whether you are talking to the right address is a complicated
+issue. The core of the validation is that the server provides a
+\jargon{certificate} that identifies the server. This certificate is
+digitally \jargon{signed} by another certificate, and ultimately by a
+\jargon{root certificate}. (There may be additional links in this
+chain as well, or there may just be one certificate signed by itself)
+Verifying the peer implies:
+
+\begin{enumerate}
+    \item Verifying the chain or digital signatures until a trusted
+    root certificate is found, taking care that the chain does not
+    contain any invalid certificates, such as certificates which have
+    expired, are not yet valid, have altered or forged signatures,
+    are valid for the purposes of SSL (and in the case of an issuer,
+    issuing child certificates)
+    \item Verifying that the signer of a certificate did not \jargon{revoke}
+    the signed certificate.
+    \item Verifying that the host we connected to is indeed the host
+    claimed in the certificate.
+\end{enumerate}
+
+The default https client plugin (\pllib{http/http_ssl_plugin})
+registers the system trusted root certificate with OpenSSL. This is
+achieved using the option
+\term{cacerts}{[system(root_certificates)]} of ssl_context/3. The
+verification is left to OpenSSL. To the best of our knowledge, the
+current (1.0) version of OpenSSL \textbf{only} implements step (1) of
+the verification process outlined above. This implies that an attacker
+that can control DNS mapping (host name to IP) or routing (IP to
+physical machine) can fake to be a secure host as long as they manage
+to obtain a certificate that is signed from a recognised
+authority. Version 1.0.2 supports hostname checking, and will not
+validate a certificate chain if the leaf certificate does not match
+the hostname. 'Match' here is not a simple string comparison;
+certificates are allowed (subject to many rules) to have wildcards in
+their SubjectAltName field. Care must also be taken to ensure that the
+name we are checking against does not contain embedded NULLs. If
+SWI-Prolog is compiled against a version of OpenSSL that does NOT have
+hostname checking (ie 1.0.0 or earlier), it will attempt to do the
+validation itself. This is not guaranteed to be perfect, and it only
+supports a small subset of allowed wildcards. If security is
+important, use OpenSSL 1.0.2 or higher.
+
+After validation, the predicate ssl_peer_certificate/2 can be used to
+obtain the peer certificate and inspect its properties.
+
+\section{CRLs and Revocation}
+\label{sec:crl}
+Certificates must sometimes be revoked. Unfortunately this means that
+the elegant chain-of-trust model breaks down, since the information
+you need to determine whether a certificate is trustworthy no longer
+depends on just the certificate and whether the issuer is trustworthy,
+but now on a third piece of data - whether the certificate has been
+revoked. These are managed in two ways in OpenSSL: CRLs and
+OCSP. SWI-Prolog supports CRLs only. (Typically OCSP responders are
+configured in such a way as to just consult CRLs anyway. This gives
+the illusion of up-to-the-minute revocation information because OCSP
+is an interactive, online, real-time protocol. However the information
+provided can still be several \emph{weeks} out of date!)
+
+To do CRL checking, pass require_crl(true) as an option to the
+ssl_context/3 (or http_open/3) option list. If you do this, a
+certificate will not be validated unless it can be \emph{checked} for
+on a revocation list. There are two options for this:
+
+First, you can pass a list of filenames in as the option crl/1. If the
+CRL corresponds to an issuer in the chain, and the issued certificate
+is not on the CRL, then it is assumed to not be revoked. Note that
+this does NOT prove the certificate is actually trustworthy - the CRL
+you pass may be out of date! This is quite awkward to get right, since
+you do not necessarily know in advance what the chain of certificates
+the other party will present are, so you cannot reasonably be expected
+to know which CRLs to pass in.
+
+Secondly, you can handle the CRL checking in the cert_verify_hook when
+the Error is bound to unknown_crl. At this point you can obtain the
+issuer certificate (also given in the hook), find the CRL distribution
+point on it (the crl/1 argument), try downloading the CRL (the URL can
+have literally any protocol, most commonly HTTP and LDAP, but
+theoretically anything else, too, including the possibility that the
+certificate has no CRL distribution point given, and you are expected
+to obtain the CRL by email, fax, or telegraph. Therefore how to
+actually obtain a CRL is out of scope of this document), load it
+using load_crl/2, then check to see whether the certificate currently
+under scrutiny appears in the list of revocations. It is up to the
+application to determine what to do if the CRL cannot be obtained -
+either because the protocol to obtain it is not supported or because
+the place you are obtaining it from is not responding. Just because
+the CRL server is not responding does not mean that your certificate
+is safe, of course - it has been suggested that an ideal way to extend
+the life of a stolen certificate key would be to force a denial of
+service of the CRL server.
+
+
+\subsubsection{Disabling certificate checking}
+\label{sec:disable-certificate}
+
+In some cases clients are not really interested in host validation of
+the peer and whether or not the certificate can be trusted.  In these
+cases the client can pass \term{cert_verify_hook}{cert_accept_any},
+calling cert_accept_any/5 which accepts any certificate. Note that
+this will accept literally ANY certificate presented - including ones
+which have expired, have been revoked, and have forged
+signatures. This is probably not a good idea!
+
+
+\subsubsection{Establishing a safe connection}
+\label{sec:ssl-safe-connection}
+
+Applications that exchange sensitive data with e.g., a backend server
+typically need to ensure they have a secure connection to their
+peer. To do this, first obtain a non-secure connection to the peer (eg
+via a TCP socket connection). Then create an SSL context via
+ssl_context/3. For the client initiating the connection, the role is
+'client', and you should pass options host/1 and cacerts/1
+at the very least. If you expect the peer to have a certificate which
+would be accepted by your host system, you can pass
+\term{cacerts}{[system(root_certificates)]}, otherwise you will need
+a copy of the CA certificate which was used to sign the peer's
+certificate. Alternatively, you can pass cert_verify_hook/1 to write
+your own custom validation for the peer's certificate. Depending on
+the requirements, you may also have to provide your /own/ certificate
+if the peer demands mutual authentication. This is done via the
+certificate_file/1, key_file/1 and either password/1 or
+pem_password_hook/1.
+
+Once you have the SSL context and the non-secure stream, you can call
+ssl_negotiate/5 to obtain a secure stream. ssl_negotiate/5 will raise
+an exception if there were any certificate errors that could not be
+resolved.
+
+The peer behaves in a symmetric fashion: First, a non-secure
+connection is obtained, and a context is created using ssl_context/3
+with the role set to server. In the server case, you must provide
+certificate_file/1 and key_file/1, and then either password/1 or
+pem_password_hook/1. If you require the other party to present a
+certificate as well, then peer_cert(true) should be provided. If the
+peer does not present a certificate, or the certificate cannot be
+validated as trusted, the connection will be rejected.
+
+By default, revocation is not checked. To enable certificate
+revocation checking, pass require_crl(true) when creating the SSL
+context. See \secref{crl} for more information about revocations.
+
+
+\section{Example code}
+\label{sec:ssl-examples}
+
+Examples of a simple server and client (\file{server.pl} and
+\file{client.pl} as well as a simple HTTPS server (\file{https.pl}) can
+be found in the example directory which is located in
+\file{doc/packages/examples/ssl} relative to the SWI-Prolog installation
+directory. The \file{etc} directory contains example certificate files
+as well as a \file{README} on the creation of certificates using OpenSSL
+tools.
+
+\subsection{Accessing an HTTPS server}
+\label{sec:ssl-https-client}
+
+Accessing an \verb$https://$ server can be achieved using the code
+skeleton below. The line \verb$:- use_module(library(http/http_ssl_plugin)).$
+can actually be omitted because the plugin is dynamically loaded by
+http_open/3 if the \const{https}~scheme is detected.
+See \secref{ssl-security} for more information about security aspects.
+
+\begin{code}
+:- use_module(library(http/http_open)).
+:- use_module(library(http/http_ssl_plugin)).
+
+    ...,
+    http_open(HTTPS_url, In, []),
+    ...
+\end{code}
+
+
+\subsection{Creating an HTTPS server}
+\label{sec:ssl-https-server}
+
+The SWI-Prolog infrastructure provides two main ways to launch an
+HTTPS~server:
+
+\begin{itemize}
+\item Using \const{library(http/thread_httpd)}, the server is started
+  in HTTPS~mode by adding an option~\const{ssl/1} to
+  http_server/2. The argument of \const{ssl/1} is an option list that
+  is passed as the third argument to ssl_context/3.
+\item Using \const{library(http/http_unix_daemon)}, an HTTPS~server is
+  started by using the command line argument~\const{--https}.
+\end{itemize}
+
+Two items are typically specified as, respectively, options or
+additional command~line arguments:
+
+\begin{itemize}
+\item \textbf{server certificate}. This identifies the server and
+  acts as a \jargon{public key} for the encryption.
+\item \textbf{private key} of the server, which must be kept secret.
+  The key \textit{may} be protected by a password. If this is the
+  case, the server must provide the password by means of the
+  \const{password} option, the \const{pem_password_hook} callback
+  or, in case of the Unix daemon, via the \const{--pwfile} or
+  \const{--password} command line options.
+\end{itemize}
+
+Here is an example that uses the self-signed demo certificates
+distributed with the SSL package. As is typical for publicly
+accessible HTTPS~servers, this version does \textit{not} require a
+certificate from the~client:
+
+\begin{code}
+:- use_module(library(http/thread_httpd)).
+:- use_module(library(http/http_ssl_plugin)).
+
+https_server(Port, Options) :-
+        http_server(reply,
+                    [ port(Port),
+                      ssl([ certificate_file('etc/server/server-cert.pem'),
+                            key_file('etc/server/server-key.pem'),
+                            password("apenoot1")
+                          ])
+                    | Options
+                    ]).
+\end{code}
+
+There are two \jargon{hooks} that let you extend HTTPS servers with
+custom definitions:
+
+\begin{itemize}
+\item \texttt{http:ssl_server_create_hook(+SSL0, -SSL, +Options)}:
+  This extensible predicate is called exactly \textit{once}, after
+  creating an HTTPS~server with Options. If this predicate succeeds,
+  \texttt{SSL} is the~context that is used for negotiating all new
+  connections.  Otherwise, \texttt{SSL0} is used, which is the context
+  that was created with the given options.
+\item \texttt{http:ssl_server_open_client_hook(+SSL0, -SSL,
+  +Options)}: This predicate is called before \textit{each} connection
+  that the server negotiates with a client. If this predicate
+  succeeds, \texttt{SSL} is the context that is used for the
+  new~connection.  Otherwise, \texttt{SSL0} is~used, which is the
+  context that was created when launching the~server.
+\end{itemize}
+
+Important use cases of these hooks are running dual-stack RSA/ECDSA
+servers, updating certificates while the server keeps running, and
+tweaking SSL~parameters for connections. Use ssl_set_options/3 to
+create and configure copies of existing contexts in these hooks.
+
+The example file \file{https.pl} also provides a server that
+\textit{does} require the client to show its certificate. This
+provides an additional level of security, often used to allow a
+selected set of clients to perform sensitive tasks.
+
+Note that a single Prolog program can call http_server/2 with different
+parameters to provide services at several security levels as described
+below. These servers can either use their own dispatching or commonly
+use http_dispatch/1 and check the \const{port} property of the request
+to verify they are called with the desired security level. If a service
+is approached at a too low level of security, the handler can deny
+access or use HTTP redirect to send the client to to appropriate
+interface.
+
+\begin{itemize}
+    \item A plain HTTP server at port 80.  This can either be used for
+    non-sensitive information or for \jargon{redirecting} to a more
+    secure service.
+    \item An HTTPS server at port 443 for sensitive services to the
+    general public.
+    \item An HTTPS server that demands for a client key on a selected
+    port for administrative tasks or sensitive machine-to-machine
+    communication.
+\end{itemize}
+
+
+\subsection{HTTPS behind a proxy}
+\label{sec:https-proxy}
+
+The above expects Prolog to be accessible directly from the internet.
+This is becoming more popular now that services are often deployed
+using \jargon{virtualization}. If the Prolog services are placed behind
+a reverse proxy, HTTPS implementation is the task of the proxy server
+(e.g., Apache or Nginx). The communication from the proxy server to the
+Prolog server can use either plain HTTP or HTTPS. As plain HTTP is
+easier to setup and faster, this is typically preferred if the network
+between the proxy server and Prolog server can be trusted.
+
+Note that the proxy server \emph{must} decrypt the HTTPS traffic because
+it must decide on the destination based on the encrypted HTTP header.
+\jargon{Port forwarding} provides another option to make a server
+running on a machine that is not directly connected to the internet
+visible. It is not needed to decrypt the traffic using port forwarding,
+but it is also not possible to realise \jargon{virtual hosts} or
+\jargon{path-based} proxy rules.
+
+Virtual hosts for HTTPS are available via \jargon{Server Name
+  Indication}~(SNI). This is a TLS extension that allows servers to
+host different domains from the same IP address. See the sni_hook/1
+option of ssl_context/3 for more information.
+
+\section{Compatibility of the API}
+\label{sec:compatibility}
+Previous versions of the library used plain Prolog terms to represent
+the certificate objects as lists of fields. Newer versions of the
+library preserve the raw underlying structures as opaque handles to
+allow for more complicated operations to be performed on them. Any old
+code which obtains fields from the certificate using memberchk/2
+should be modified to use certificate_field/2 instead. For example,
+\begin{code}
+  memberchk(subject(Subject), Certificate)
+\end{code}
+will instead need to be
+\begin{code}
+  cerficate_field(Certificate, subject(Subject))
+\end{code}
+
+Note that some of the fields do not match up exactly with their
+previous counterparts (key is now public_key, for example).
+
+\section{Acknowledgments}
+\label{sec:ssl-acknowledgments}
+
+The development of the SWI-Prolog SSL interface has been sponsored by
+\href{http://www.sss.co.nz}{Scientific Software and Systems Limited}.
+The current version contains contributions from many people.  Besides
+the mentioned authors, \href{https://www.metalevel.at}{Markus Triska}
+has submitted several patches, and improved and documented the
+integration of this package with the HTTP infrastructure.
+
+%\bibliographystyle{plain}
+%\bibliography{ssl}
+
+\printindex
+
+\end{document}
+

@@ -1,0 +1,550 @@
+/*  Part of XPCE --- The SWI-Prolog GUI toolkit
+
+    Author:        Jan Wielemaker
+    E-mail:        jan@swi-prolog.org
+    WWW:           https://www.swi-prolog.org
+    Copyright (c)  2025, SWI-Prolog Solutions b.v.
+    All rights reserved.
+
+    Redistribution and use in source and binary forms, with or without
+    modification, are permitted provided that the following conditions
+    are met:
+
+    1. Redistributions of source code must retain the above copyright
+       notice, this list of conditions and the following disclaimer.
+
+    2. Redistributions in binary form must reproduce the above copyright
+       notice, this list of conditions and the following disclaimer in
+       the documentation and/or other materials provided with the
+       distribution.
+
+    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+    "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+    LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS
+    FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE
+    COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+    INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+    BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+    LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+    CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+    LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
+    ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+    POSSIBILITY OF SUCH DAMAGE.
+*/
+
+#include <h/kernel.h>
+#include <h/graphics.h>
+#include "sdldisplay.h"
+#include "sdluserevent.h"
+#include <math.h>
+
+static void	ws_open_display(DisplayObj d, SDL_DisplayID id);
+
+static DisplayObj
+ws_create_display(SDL_DisplayID id)
+{ ASSERT_SDL_MAIN();
+  SDL_Rect rect;
+  bool rc = SDL_GetDisplayBounds(id, &rect);
+  DisplayObj dsp;
+
+  if ( !rc )
+  { Cprintf("SDL_GetDisplayBounds(): %s\n", SDL_GetError());
+    return NULL;
+  }
+
+  const char *name = SDL_GetDisplayName(id);
+  Name dname;
+
+  if ( name )
+  { dname = UTF8ToName(name);
+  } else			/* or should we give up? */
+  { char buf[100];
+    Cprintf("SDL_GetDisplayName(): %s\n", SDL_GetError());
+    snprintf(buf, sizeof(buf), "Display %d", (int)id);
+    dname = UTF8ToName(buf);
+  }
+
+  dsp = newObject(ClassDisplay,
+		  dname,
+		  newObject(ClassArea, toInt(rect.x), toInt(rect.y),
+				       toInt(rect.w), toInt(rect.h), EAV),
+		  EAV);
+
+  if ( dsp )
+  { ws_open_display(dsp, id);
+    if ( SDL_GetDisplayUsableBounds(id, &rect) )
+    { assign(dsp, work_area,
+	     newObject(ClassArea, toInt(rect.x), toInt(rect.y),
+		       toInt(rect.w), toInt(rect.h), EAV));
+    } else
+    { Cprintf("SDL_GetDisplayUsableBounds(): %s\n", SDL_GetError());
+      assign(dsp, work_area, dsp->area);
+    }
+  }
+
+  return dsp;
+}
+
+static DisplayObj
+ws_update_primary_display(DisplayManager dm)
+{ SDL_DisplayID pid = SDL_GetPrimaryDisplay();
+  Cell cell;
+  DisplayObj primary = NULL;
+
+  for_cell(cell, dm->members)
+  { DisplayObj dsp = cell->value;
+    WsDisplay  wsd = dsp->ws_ref;
+    BoolObj isprimary = ( wsd && wsd->id == pid) ? ON : OFF;
+    if ( isDefault(dsp->primary) )
+      assign(dsp, primary, isprimary);
+    else if ( dsp->primary != isprimary )
+      send(dsp, NAME_primary, isprimary, EAV);
+    if ( isOn(isprimary) )
+      primary = dsp;
+  }
+
+  return primary;
+}
+
+static void
+ws_number_displays(DisplayManager dm)
+{ Cell cell;
+
+  for_cell(cell, dm->members)
+  { DisplayObj dsp = cell->value;
+    if ( isDefault(dsp->number) )
+    { for(int i=2; ; i++)
+      { if ( !getMemberDisplayManager(dm, toInt(i)) )
+	{ assign(dsp, number, toInt(i));
+	  break;
+	}
+      }
+    }
+  }
+}
+
+bool
+ws_init_displays(void)
+{ int count;
+  SDL_DisplayID *displays = SDL_GetDisplays(&count);
+  DisplayManager dm = TheDisplayManager();
+
+  for(int i=0; i<count; i++)
+    ws_create_display(displays[i]);
+
+  SDL_free(displays);
+
+  DisplayObj primary = ws_update_primary_display(dm);
+  if ( primary )
+  { assign(primary, number, ONE);
+    nameReferenceObject(primary, NAME_display);
+    ws_number_displays(dm);
+  }
+
+  succeed;
+}
+
+DisplayObj
+dsp_id_to_display(SDL_DisplayID id)
+{ DisplayManager dm = TheDisplayManager();
+  Cell cell;
+
+  for_cell(cell, dm->members)
+  { DisplayObj d = cell->value;
+    WsDisplay wsd = d->ws_ref;
+
+    if ( wsd && wsd->id == id )
+      return d;
+  }
+
+  return NULL;
+}
+
+static void
+update_area(Area a, SDL_Rect *rect)
+{ assign(a, x, toInt(rect->x));
+  assign(a, y, toInt(rect->y));
+  assign(a, w, toInt(rect->w));
+  assign(a, h, toInt(rect->h));
+}
+
+status
+ws_poll_dimensions_display(DisplayObj dsp)
+{ WsDisplay wsd = dsp->ws_ref;
+
+  if ( wsd )
+  { ASSERT_SDL_MAIN();
+    SDL_DisplayID id = wsd->id;
+    SDL_Rect rect;
+    SDL_GetDisplayBounds(id, &rect);
+    update_area(dsp->area, &rect);
+    SDL_GetDisplayUsableBounds(id, &rect);
+    update_area(dsp->work_area, &rect);
+  }
+
+  return true;
+}
+
+
+bool
+sdl_display_event(SDL_Event *ev)
+{ switch(ev->type)
+  { case SDL_EVENT_DISPLAY_ADDED:
+    { SDL_DisplayID id = ev->display.displayID;
+      DisplayObj dsp = ws_create_display(id);
+      if ( dsp )
+      { DisplayManager dm = TheDisplayManager();
+	ws_update_primary_display(dm);
+	ws_number_displays(dm);
+	DEBUG(NAME_display, Cprintf("Added display %s\n", pp(dsp)));
+      }
+      return true;
+    }
+    case SDL_EVENT_DISPLAY_REMOVED:
+    { SDL_DisplayID id = ev->display.displayID;
+      DisplayObj dsp = dsp_id_to_display(id);
+      DEBUG(NAME_display, Cprintf("Removed display %s\n", pp(dsp)));
+      if ( emptyChain(dsp->frames) )
+      { send(dsp, NAME_removed, EAV);
+      } else
+      { assign(dsp, removed, ON);
+	Cprintf("Cannot destroy display %s: has frames\n", pp(dsp));
+      }
+      return true;
+    }
+    case SDL_EVENT_DISPLAY_MOVED:
+    { SDL_DisplayID id = ev->display.displayID;
+      DisplayObj dsp = dsp_id_to_display(id);
+      DEBUG(NAME_display, Cprintf("Moved display %s\n", pp(dsp)));
+      if ( dsp )
+	ws_poll_dimensions_display(dsp);
+      return true;
+    }
+  }
+
+  fail;
+}
+
+		 /*******************************
+		 *	       BELL		*
+		 *******************************/
+
+#define BELL_FREQ    440	/* Hz */
+#define BELL_MS      200	/* duration in milliseconds */
+#define BELL_RATE    44100	/* sample rate */
+#define BELL_POLL_MS 50		/* cleanup poll interval */
+
+typedef struct
+{ SDL_AudioStream *stream;
+} BellData;
+
+static Uint32 SDLCALL
+bell_cleanup(void *userdata, SDL_TimerID id, Uint32 interval)
+{ BellData *bd = userdata;
+
+  if ( SDL_GetAudioStreamAvailable(bd->stream) > 0 )
+    return interval;		/* still playing, check again */
+
+  SDL_DestroyAudioStream(bd->stream);	/* also closes the device */
+  free(bd);
+  return 0;			/* cancel timer */
+}
+
+/**
+ * Sound the system bell with the specified volume.
+ *
+ * @param d Pointer to the DisplayObj representing the display context.
+ * @param volume The volume level for the bell sound (0-100).
+ */
+void
+ws_bell_display(DisplayObj d, int volume)
+{ if ( !SDL_WasInit(SDL_INIT_AUDIO) &&
+       !SDL_InitSubSystem(SDL_INIT_AUDIO) )
+  { Cprintf("ws_bell_display: audio init: %s\n", SDL_GetError());
+    return;
+  }
+
+  SDL_AudioSpec spec = { SDL_AUDIO_S16, 1, BELL_RATE };
+  SDL_AudioStream *stream =
+    SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK,
+			      &spec, NULL, NULL);
+  if ( !stream )
+  { Cprintf("ws_bell_display: %s\n", SDL_GetError());
+    return;
+  }
+
+  int nsamples = BELL_RATE * BELL_MS / 1000;
+  Sint16 *buf = malloc(nsamples * sizeof(Sint16));
+  if ( !buf )
+  { SDL_DestroyAudioStream(stream);
+    return;
+  }
+
+  double amplitude = (volume / 100.0) * 32767.0;
+  for ( int i = 0; i < nsamples; i++ )
+    buf[i] = (Sint16)(amplitude * sin(2.0 * M_PI * BELL_FREQ * i / BELL_RATE));
+
+  SDL_PutAudioStreamData(stream, buf, nsamples * (int)sizeof(Sint16));
+  free(buf);
+  SDL_ResumeAudioStreamDevice(stream);
+
+  BellData *bd = malloc(sizeof(*bd));
+  if ( !bd )
+  { SDL_DestroyAudioStream(stream);
+    return;
+  }
+  bd->stream = stream;
+  if ( !SDL_AddTimer(BELL_POLL_MS, bell_cleanup, bd) )
+  { SDL_DestroyAudioStream(stream);
+    free(bd);
+  }
+}
+
+/**
+ * Retrieve the color depth (bits per pixel) of the display.
+ *
+ * @param d Pointer to the DisplayObj representing the display context.
+ * @return Integer representing the color depth.
+ */
+int
+ws_depth_display(DisplayObj d)
+{ return 32;			/* 8-bit RGBA */
+}
+
+/**
+ * Get the resolution of the display in pixels per inch.
+ *
+ * @param d Pointer to the DisplayObj representing the display context.
+ * @param rx Pointer to an integer to store the horizontal resolution.
+ * @param ry Pointer to an integer to store the vertical resolution.
+ * @return Integer status code indicating success or failure.
+ */
+bool
+ws_resolution_display(DisplayObj d, int *rx, int *ry)
+{ float scale = ws_pixel_density_display(d);
+  *rx = 96*scale;
+  *ry = 96*scale;
+  return true;
+}
+
+/**
+ * Activate the screen saver on the display.
+ *
+ * @param d Pointer to the DisplayObj representing the display context.
+ */
+void
+ws_activate_screen_saver(DisplayObj d)
+{ SDL_EnableScreenSaver();
+}
+
+/**
+ * Whether SDL reports that the running session can show an
+ * on-screen keyboard.
+ */
+bool
+ws_has_screen_keyboard_support(DisplayObj d)
+{ ASSERT_SDL_MAIN();
+  return SDL_HasScreenKeyboardSupport();
+}
+
+/**
+ * Whether the on-screen keyboard is currently shown.  SDL3 reports
+ * this per window; in practice the OSK is session-global, so we ask
+ * any open frame on the display.
+ */
+bool
+ws_screen_keyboard_shown(DisplayObj d)
+{ ASSERT_SDL_MAIN();
+  Cell cell;
+  for_cell(cell, d->frames)
+  { FrameObj fr = cell->value;
+    WsFrame  wfr = fr->ws_ref;
+    if ( wfr && wfr->ws_window )
+      return SDL_ScreenKeyboardShown(wfr->ws_window);
+  }
+  return false;
+}
+
+/**
+ * Set the SDL hint that decides whether SDL_StartTextInput() should
+ * request the on-screen keyboard.  `auto` (SDL default) shows the
+ * OSK only when no physical keyboard is detected; `on`/`off` force
+ * the corresponding behaviour.
+ */
+void
+ws_set_screen_keyboard(DisplayObj d, Name mode)
+{ ASSERT_SDL_MAIN();
+  const char *v = "auto";
+  if      ( mode == NAME_on  ) v = "1";
+  else if ( mode == NAME_off ) v = "0";
+  SDL_SetHint(SDL_HINT_ENABLE_SCREEN_KEYBOARD, v);
+}
+
+/**
+ * Deactivate the screen saver on the display.
+ *
+ * @param d Pointer to the DisplayObj representing the display context.
+ */
+void
+ws_deactivate_screen_saver(DisplayObj d)
+{ SDL_DisableScreenSaver();
+}
+
+/**
+ * Open the display, establishing a connection for graphical operations.
+ *
+ * @param d Pointer to the DisplayObj representing the display context.
+ */
+static void
+ws_open_display(DisplayObj d, SDL_DisplayID id)
+{ ASSERT_SDL_MAIN();
+  WsDisplay wsd = d->ws_ref = alloc(sizeof(ws_display));
+  memset(wsd, 0, sizeof(*wsd));
+  SDL_WindowFlags flags = SDL_WINDOW_HIDDEN;
+
+#if O_HDP
+  flags |= SDL_WINDOW_HIGH_PIXEL_DENSITY;
+#endif
+
+  wsd->id = id;
+  wsd->hidden_window = SDL_CreateWindow(
+    "xpce hidden window", 64, 64,
+    flags);
+  wsd->hidden_renderer = SDL_CreateRenderer(wsd->hidden_window, NULL);
+  wsd->hidden_surface = cairo_image_surface_create(
+    CAIRO_FORMAT_ARGB32, 64, 64);
+  wsd->hidden_cairo = cairo_create(wsd->hidden_surface);
+  wsd->scale = SDL_GetWindowPixelDensity(wsd->hidden_window);
+  cairo_scale(wsd->hidden_cairo, wsd->scale, wsd->scale);
+}
+
+/**
+ * Close the SDL resources for a display
+ *
+ * @param d Pointer to the DisplayObj representing the display context.
+ */
+void
+ws_close_display(DisplayObj d)
+{ WsDisplay wsd = d->ws_ref;
+
+  if ( wsd )
+  { ASSERT_SDL_MAIN();
+    d->ws_ref = NULL;
+    SDL_DestroyRenderer(wsd->hidden_renderer);
+    SDL_DestroyWindow(wsd->hidden_window);
+    cairo_destroy(wsd->hidden_cairo);
+    cairo_surface_destroy(wsd->hidden_surface);
+    unalloc(sizeof(*wsd), wsd);
+  }
+}
+
+float
+ws_pixel_density_display(Any obj)
+{ DisplayObj dsp = CurrentDisplay(obj);
+
+  if ( dsp && dsp->ws_ref )
+  { WsDisplay wsd = dsp->ws_ref;
+    return wsd->scale;
+  } else
+  { ASSERT_SDL_MAIN();
+    SDL_DisplayID display_id = SDL_GetPrimaryDisplay();
+    return SDL_GetDisplayContentScale(display_id);
+  }
+}
+
+
+/**
+ * Check if there are events queued on the display.
+ *
+ * @param d Pointer to the DisplayObj representing the display context.
+ * @return SUCCEED if events are queued; otherwise, FAIL.
+ */
+status
+ws_events_queued_display(DisplayObj d)
+{ /* may be called from any thread */
+  return SDL_HasEvents(0, MY_EVENT_HIGHEST);
+}
+
+status
+ws_selection_display(DisplayObj d, Name which, StringObj data)
+{ ASSERT_SDL_MAIN();
+  char *u8 = charArrayToUTF8((CharArray)data);
+  bool rc;
+
+  if ( which == NAME_primary )
+    rc = SDL_SetPrimarySelectionText(u8);
+  else if ( which == NAME_clipboard )
+    rc = SDL_SetClipboardText(u8);
+  else
+    rc = false;
+
+  DEBUG(NAME_selection,
+	Cprintf("ws_selection_display: \"%s\", %s -> %d\n",
+		u8, pp(which), rc));
+
+  return rc;
+}
+
+/**
+ * Retrieve the current selection for the specified type and target.
+ *
+ * @param d Pointer to the DisplayObj representing the display context.
+ * @param which Name object specifying the selection source as one of
+ *        NAME_clipboard or NAME_primary.
+ * @param target Name object specifying the target format.  Normally
+ *        NAME_text
+ * @return Object representing the selection.
+ */
+Any
+ws_get_selection(DisplayObj d, Name which, Name target)
+{ ASSERT_SDL_MAIN();
+  if ( target == NAME_text || target == NAME_utf8_string )
+  { char *text = NULL;
+
+    if ( which == NAME_clipboard )
+      text = SDL_GetClipboardText();
+    else if ( which == NAME_primary )
+      text = SDL_GetPrimarySelectionText();
+
+    if ( text )
+    { StringObj rc;
+
+#ifdef __WINDOWS__	/* SDL3 returns lines separated by \r\n */
+      for(char *s = text, *o = text;; s++)
+      { char c = *s;
+
+	if ( c == '\r' && s[1] == '\n' )
+	  continue;
+	*o++ = c;
+	if ( !c )
+	  break;
+      }
+#endif
+
+      rc = UTF8ToString(text);
+      SDL_free(text);
+      answer(rc);
+    }
+  }
+
+  Cprintf("ws_get_selection(%s, %s, %s): not supported\n",
+	  pp(d), pp(which), pp(target));
+  fail;
+}
+
+Name
+ws_get_system_theme_display(DisplayObj d)
+{ ASSERT_SDL_MAIN();
+  SDL_SystemTheme theme = SDL_GetSystemTheme();
+
+  switch(theme)
+  { case SDL_SYSTEM_THEME_UNKNOWN:
+      fail;
+    case SDL_SYSTEM_THEME_LIGHT:
+      return NAME_light;
+    case SDL_SYSTEM_THEME_DARK:
+      return NAME_dark;
+  }
+
+  fail;
+}

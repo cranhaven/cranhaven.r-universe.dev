@@ -1,0 +1,313 @@
+#!/bin/bash
+#
+# This helper script is supposed to be executed from a build directory
+# and sets CMake options depending on  the name of the directory.  The
+# build directory must be called
+#
+#     build.feature1-feature2-...
+#
+# Recognized features can be found in the function set_config() below.
+# Note that this mechanism is comparable to the _presets_ mechanism of
+# recent CMake versions.
+
+# Defaults
+
+build_type=RelWithDebInfo
+generator=Ninja
+export CC=
+export CXX=
+opts=
+cmake=cmake
+os=any
+gcc_suffix=""
+brew=false
+
+# Get config from build.feat1-feat2 and arguments
+
+if [ "$1" == --help ]; then
+cat <<EOF
+Usage: $0 [feature ...]
+
+Features come from the build directory named build.feat1-feat2-...
+Optional commandline arguments are added at the end.
+
+Known features are
+EOF
+print_kv()
+{ kv="$1"
+  k="${kv%%:*}"
+  v="${kv#*:}"
+  if [ "$k" = group ]; then
+      printf '\n\033[1m%s\033[0m\n' "$v"
+  else
+      printf '  \033[1m%-15s\033[0m %s\n' "$k" "$v"
+  fi
+}
+
+lines=$(grep '# [^-. ]*: ' $0 | sed 's/[^#]*# \([^-. ]*\): \(.*\)/\1:\2/')
+
+printf '%s\n' "$lines" | while IFS= read -r line; do
+    print_kv "$line"
+done
+
+cat <<EOF
+
+In addition, following environment variables can be
+defined before the configure script is run, e.g.:
+  SWIPL_DOC_SERVER=ON
+  SWIPL_INSTALL_PREFIX=$HOME/cmake/@builddir@
+  SWIPL_PUBLIC_NETWORK_TESTS=true
+  SWIPL_REDIS_SERVER=localhost:6379
+  SWIPL_TEST_FAIL_ON_UNLIKELY=y
+  SWIPL_TEST_ODBC_DRIVER=DRIVER=SQLite3;Database=test.sqlite
+
+Additional cmake options can be specified after the
+configure script is run, e.g.:
+  ../scripts/configure &&
+  cmake -DTEST_PROTOBUFS_PROTOC=ON . &&
+  ninja
+EOF
+
+exit 0
+fi
+
+argv="$@"
+s="$(basename $(pwd))"
+oifs=$IFS
+IFS='-.'
+set -- $s
+shift				# remove build
+IFS=$oifs
+set -- "$@" $argv
+seen_options="$@"
+
+optval()
+{ echo $1 | sed 's/[^=]*=\(.*\)/\1/'
+}
+
+# Main switch.  Set environment options and CMake flags based on the
+# selected features.
+
+set_config()
+{ case $1 in
+      # group: CMake generator
+      make)			# make: Build using Unix Makefiles
+	  generator="Unix Makefiles"
+	  ;;
+      # group: Select the compiler
+      gcc)			# gcc: Compile using gcc
+	  export CC=gcc
+	  export CXX=g++
+	  ;;
+      gcc=*)			# gcc=version: Compile using gcc-version
+	  version=$(optval $1)
+	  export CC=gcc-$version
+	  export CXX=g++-$version
+	  ;;
+      clang)			# clang: Compile using clang
+	  export CC=clang
+	  export CXX=clang++
+	  ;;
+      clang=*)			# clang=version: Compile using clang-version
+	  version=$(optval $1)
+	  export CC=clang-$version
+	  export CXX=clang++-$version
+	  ;;
+      # group: C standard
+      c11)			# c11: Enforce strict C11 standard
+	  CFLAGS+=" -pedantic -DPEDANTIC"
+	  ;;
+      gnu23)			# gnu23: Use gnu23 standard
+	  CFLAGS+=" -std=gnu23"
+	  ;;
+      # group: Platform
+      wasm)			# wasm: Setup for Emscripten
+          os=wasm
+	  WASM_HOME=${WASM_HOME-$HOME/wasm}
+	  source $WASM_HOME/emsdk/emsdk_env.sh
+	  TOOLCHAIN=$EMSDK/upstream/emscripten/cmake/Modules/Platform/Emscripten.cmake
+	  [ -f $TOOLCHAIN ] || echo "Could not find emscripten toolchain"
+	  cmake="emcmake cmake"
+	  build_type=Release
+	  opts+=" -DCMAKE_TOOLCHAIN_FILE=$TOOLCHAIN"
+	  opts+=" -DCMAKE_FIND_ROOT_PATH=$WASM_HOME"
+	  opts+=" -DUSE_GMP=OFF"
+	  opts+=" -DINSTALL_DOCUMENTATION=OFF"
+	  opts+=" -DINSTALL_PROLOG_SRC=OFF"
+	  ;;
+      termux)			# termux: Build for Android termux
+	  opts+=" -DPOSIX_SHELL=${PREFIX}/bin/sh"
+	  opts+=" -DSWIPL_TMP_DIR=${PREFIX}/tmp"
+	  opts+=" -DSYSTEM_CACERT_FILENAME=${PREFIX}/etc/tls/cert.pem"
+	  ;;
+      brew|homebrew)		# brew: MacOS: use Homebrew dependencies
+	  opts+=" -DMACOSX_DEPENDENCIES_FROM=Homebrew"
+	  brew=true
+	  gcc_suffix=""
+	  ;;
+      port|macports)		# port: MacOS: use Macports dependencies
+	  opts+=" -DMACOSX_DEPENDENCIES_FROM=Macports"
+	  gcc_suffix="-mp"
+	  ;;
+      # group: Optimization
+      native)			# native: Optimize for native CPU
+	  CFLAGS+=" -mtune=native -march=native"
+	  ;;
+      pgo)			# pgo: Optimize using Profile Guided Optimization
+	  build_type=PGO
+	  ;;
+      # group: Debugging
+      debug)			# debug: Compiler for debugging
+	  build_type=Debug
+	  ;;
+      asan)			# asan: Compile with Address sanitizer
+	  build_type=Sanitize
+	  ;;
+      ubsan)			# ubsan: Compile with Undefined sanitizer
+	  build_type=Sanitize
+	  opts+=" -DSANITIZE=undefined"
+	  ;;
+      # group: LSP support files
+      lsp)			# lsp: Generate compile_commands.json
+	  opts+=" -DCMAKE_EXPORT_COMPILE_COMMANDS=ON"
+	  ;;
+      # group: Dependencies
+      libbf)			# libbf: Use LibBF instead of GMP for bignums
+	  opts+=" -DUSE_GMP=OFF"
+	  ;;
+      malloc)			# malloc: Use native malloc instead of tcmalloc
+	  opts+=" -DUSE_TCMALLOC=OFF"
+	  ;;
+      # group: Select thread support
+      single)			# single: Build single-threaded version
+	  opts+=" -DMULTI_THREADED=OFF"
+	  ;;
+      engines)			# engine: Include engine support in single threaded version
+	  opts+=" -DENGINES=ON"
+	  ;;
+      # group: Virtual machine switch
+      novmif)			# novmif: Force compiling VM as C switch
+	  opts+=" -DVMI_FUNCTIONS=OFF"
+	  ;;
+      vimf)			# vimf: Force compiling VM as functions
+	  opts+=" -DVMI_FUNCTIONS=ON"
+	  ;;
+      # group: Profiling and coverage analysis
+      profile)			# profile: Prepare for valgrind profiling
+	  opts+=" -DVMI_FUNCTIONS=ON"
+	  CFLAGS+=" -fno-inline"
+	  ;;
+      gcov)			# gcov: Prepare for test coverage analysis
+	  opts+=" -DGCOV=ON -DINSTALL_TESTS=ON"
+	  CFLAGS+=" -fno-inline"
+	  ;;
+      # group: Select components to enable or disable
+      noqlf)			# noqlf: Do not generate .qlf for library
+	  opts+=" -DINSTALL_QLF=OFF"
+	  ;;
+      nosrc)			# nosrc: Do not install library source
+	  opts+=" -DINSTALL_QLF=ON"
+	  opts+=" -DINSTALL_PROLOG_SRC=OFF"
+	  ;;
+      nogui)			# nogui: Omit the XPCE gui
+	  opts+=" -DSWIPL_PACKAGES_GUI=OFF"
+	  ;;
+      test)			# test: Install tests with the system
+	  opts+=" -DINSTALL_TESTS=ON"
+	  ;;
+      nodoc)			# nodoc: Do not install HTML docs
+	  opts+=" -DINSTALL_DOCUMENTATION=OFF"
+	  ;;
+      pdf)			# pdf: Build PDF documentation
+	  opts+=" -DBUILD_PDF_DOCUMENTATION=ON"
+	  ;;
+      *)
+	  echo "WARNING: Unknown config option: $1"
+	  ;;
+  esac
+}
+
+while [ $# != 0 ]; do
+    set_config $1
+    shift
+done
+
+if [ $(uname) = Darwin -a $brew = false ]; then
+    gcc_suffix="-mp"
+fi
+
+# By default we use Macports on MacOS, which provides gcc as gcc-mp
+case "$CC" in
+    gcc*)
+	CC=$( echo "$CC"  | sed "s/gcc/gcc$gcc_suffix/")
+	CXX=$(echo "$CXX" | sed "s/g++/g++$gcc_suffix/")
+	;;
+esac
+
+function confirm ()
+{ while true; do
+    echo -n "$1 "
+    read answer
+    case "$answer" in
+          y*)   return 0
+                ;;
+          n*)   return 1
+                ;;
+          *)
+                echo "Please answer yes or no"
+                ;;
+    esac
+  done
+}
+
+export CFLAGS
+export LDFLAGS
+
+using=
+[ -z "$CC" ]      || using+=" "CC=$CC
+[ -z "$CXX" ]     || using+=" "CXX=$CXX
+[ -z "$CFLAGS" ]  || using+=" "CFLAGS='"'$CFLAGS'"'
+[ -z "$LDFLAGS" ] || using+=" "LDFLAGS='"'$LDFLAGS'"'
+
+cat << EOF
+# Configure using
+#
+#    $using cmake -DCMAKE_BUILD_TYPE=$build_type -G "$generator" $opts
+#    ..
+#
+EOF
+
+if ! confirm "Run Cmake? "; then
+  exit 1
+fi
+
+cat > configure << EOF
+# Created by ../scripts/configure for $config at $(date)
+
+EOF
+echo "# Options:" >>configure
+for seen_key in ${seen_options}
+do
+    echo "#  " ${seen_key} >>configure
+done | sort
+echo "# (end options)" >>configure
+
+cat >> configure << EOF
+
+$using $cmake -DCMAKE_BUILD_TYPE=$build_type -G "$generator" $opts ..
+EOF
+chmod +x configure
+
+# Create direnv file.  We need this to avoid resetting variables
+# when re-running cmake
+[ -z "$CC" ]      || echo "export CC=$CC"                  > .envrc
+[ -z "$CXX" ]     || echo "export CXX=$CXX"               >> .envrc
+[ -z "$CFLAGS" ]  || echo "export CFLAGS="'"'$CFLAGS'"'   >> .envrc
+[ -z "$LDFLAGS" ] || echo "export LDFLAGS="'"'$LDFLAGS'"' >> .envrc
+case $config in
+    *wasm*)
+        echo "export WASM_HOME="'"'$WASM_HOME'"'         >> .envrc
+	echo "export EMSDK_QUIET=1"			 >> .envrc
+	echo "source "'$'"WASM_HOME/emsdk/emsdk_env.sh"	 >> .envrc
+esac
+./configure

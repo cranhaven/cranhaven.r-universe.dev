@@ -1,0 +1,901 @@
+/*  Part of XPCE --- The SWI-Prolog GUI toolkit
+
+    Author:        Jan Wielemaker and Anjo Anjewierden
+    E-mail:        jan@swi-prolog.org
+    WWW:           https://www.swi.psy.uva.nl/projects/xpce/
+    Copyright (c)  1985-2026, University of Amsterdam
+			      SWI-Prolog Solutions b.v.
+    All rights reserved.
+
+    Redistribution and use in source and binary forms, with or without
+    modification, are permitted provided that the following conditions
+    are met:
+
+    1. Redistributions of source code must retain the above copyright
+       notice, this list of conditions and the following disclaimer.
+
+    2. Redistributions in binary form must reproduce the above copyright
+       notice, this list of conditions and the following disclaimer in
+       the documentation and/or other materials provided with the
+       distribution.
+
+    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+    "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+    LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS
+    FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE
+    COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+    INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+    BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+    LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+    CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+    LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
+    ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+    POSSIBILITY OF SUCH DAMAGE.
+*/
+
+#include <h/kernel.h>
+#include <h/dialog.h>
+
+static status
+initialiseMenuBar(MenuBar mb, Name name)
+{ assign(mb, pen,     CLASSDEFAULT);	/* not a resource for graphical! */
+
+  createDialogItem(mb, name);
+
+  assign(mb, members, newObject(ClassChain, EAV));
+  assign(mb, buttons, newObject(ClassChain, EAV));
+
+  succeed;
+}
+
+
+static status
+RedrawAreaButtonMenuBar(Button b, Area a)
+{ int x, y, w, h;
+  Any ofg = NIL;
+  int flags = 0;
+
+  if ( b->look != NAME_gtk && b->look != NAME_win )
+    return RedrawAreaButton(b, a);
+
+  initialiseDeviceGraphical(b, &x, &y, &w, &h);
+  NormaliseArea(x, y, w, h);
+
+  if ( b->status == NAME_preview )
+  { Elevation e;
+
+    if ( b->look == NAME_gtk &&
+	 (e = getClassVariableValueObject(b, NAME_previewElevation)) &&
+	 notNil(e) )
+    { r_3d_box(x, y, w, h, 0, e, TRUE);
+    } else /* if ( b->look == NAME_win ) */
+    { Any fg = getClassVariableValueObject(b, NAME_selectedForeground);
+      Any bg = getClassVariableValueObject(b, NAME_selectedBackground);
+
+      if ( !fg ) fg = WHITE_COLOUR;
+      if ( !bg ) bg = BLACK_COLOUR;
+      r_fill(x, y, w, h, bg);
+      ofg = r_colour(fg);
+    }
+  }
+
+  if ( b->active == OFF )
+    flags |= LABEL_INACTIVE;
+
+  RedrawLabelDialogItem(b, accelerator_code(b->accelerator),
+			x, y, w, h,
+			NAME_center, NAME_center, flags);
+
+  if ( notNil(ofg) )
+    r_colour(ofg);
+
+  succeed;
+}
+
+
+static status
+RedrawAreaMenuBar(MenuBar mb, Area a)
+{ Cell cell;
+  Int x = mb->area->x;
+
+  for_cell(cell, mb->buttons)
+  { Button b = cell->value;
+
+    assign(b->area, x, add(b->area->x, x));
+    assign(b->area, y, mb->area->y);
+    if ( overlapArea(b->area, a) )
+    { int ba = (mb->active == ON && b->popup->active == ON);
+
+      assign(b, device, mb->device);
+      assign(b, active, ba ? ON : OFF);
+      assign(b, status, b->popup == mb->current ? NAME_preview
+						: NAME_inactive);
+      RedrawAreaButtonMenuBar(b, a);
+      assign(b, device, NIL);
+    }
+    assign(b->area, x, sub(b->area->x, x));
+    assign(b->area, y, ZERO);
+  }
+
+  return RedrawAreaGraphical(mb, a);
+}
+
+
+static Button
+getButtonMenuBar(MenuBar mb, PopupObj p)
+{ Cell cell;
+
+  for_cell(cell, mb->buttons)
+  { Button b = cell->value;
+    if ( b->popup == p )
+      answer(b);
+  }
+
+  fail;
+}
+
+
+static status
+changedMenuBarButton(MenuBar mb, Any obj)
+{ Button b = DEFAULT;
+
+  if ( instanceOfObject(obj, ClassPopup) )
+    b = getButtonMenuBar(mb, obj);
+  else
+    b = obj;
+
+  if ( isDefault(b) )
+    changedDialogItem(mb);
+  else if ( instanceOfObject(b, ClassButton) )
+  { Area a = b->area;
+
+    changedImageGraphical(mb, a->x, a->y, a->w, a->h);
+  }
+
+  succeed;
+}
+
+
+static status
+computeButtonMenuBar(Button b)
+{ if ( b->look == NAME_win || b->look == NAME_gtk )
+  { int w, h, isimage;
+
+    TRY(obtainClassVariablesObject(b));
+    dia_label_size(b, &w, &h, &isimage);
+
+    if ( !isimage )
+    { w += valInt(getAvgCharWidthFont(b->label_font)) * 2;
+
+      if ( b->look == NAME_gtk )
+	h += 4;
+    } else
+    { w += 4;
+      h += 4;
+    }
+
+    CHANGING_GRAPHICAL(b,
+	assign(b->area, w, toInt(w));
+	assign(b->area, h, toInt(h)));
+
+    assign(b, request_compute, NIL);
+    succeed;
+  } else
+    return qadSendv(b, NAME_compute, 0, NULL);
+}
+
+
+
+static status
+computeMenuBar(MenuBar mb)
+{ Cell cell;
+  int x = 0;
+  int gap;
+  int h = 0;
+
+  if ( hasSendMethodObject(mb, NAME_assignAccelerators) ) /* TBD */
+    send(mb, NAME_assignAccelerators, EAV);
+
+  obtainClassVariablesObject(mb);
+  gap = valInt(mb->gap);
+
+  for_cell(cell, mb->buttons)
+  { Button b = cell->value;
+
+    if ( notNil(b->request_compute) && !isFreeingObj(b) )
+      computeButtonMenuBar(b);
+    assign(b->area, x, toInt(x));
+
+    x += valInt(b->area->w) + gap;
+    if ( valInt(b->area->h) > h )
+      h = valInt(b->area->h);
+  }
+
+  CHANGING_GRAPHICAL(mb,
+	assign(mb->area, w, x > 0 ? toInt(x-gap) : ZERO);
+	assign(mb->area, h, toInt(h));
+	changedDialogItem(mb));
+
+  succeed;
+}
+
+
+static Point
+getReferenceMenuBar(MenuBar mb)
+{ Button b = getHeadChain(mb->buttons);
+
+  if ( b )
+  { Point ref;
+
+    if ( !(ref = getReferenceDialogItem(b)) &&
+	 !instanceOfObject(b->label, ClassImage) &&
+	 (ref = getReferenceButton(b)) )
+    { if ( b->look == NAME_win || b->look == NAME_gtk )
+      { Int rx = getAvgCharWidthFont(b->label_font);
+	assign(ref, x, rx);
+      }
+      answer(ref);
+    }
+  }
+
+  return getReferenceDialogItem(mb);
+}
+
+
+static status
+showPopupMenuBar(MenuBar mb, PopupObj p)
+{ Button b = getButtonMenuBar(mb, p);
+  Point pos = tempObject(ClassPoint, b->area->x, mb->area->h, EAV);
+  PopupObj close = NIL;
+
+  if ( notNil(mb->current) && mb->current->displayed == ON )
+    close = mb->current;
+  currentMenuBar(mb, p);
+  send(mb->current, NAME_update, mb, EAV);
+  assign(mb->current, default_item, NIL); /* Initialy do not select */
+  send(mb->current, NAME_open, mb, pos, OFF, OFF, ON, EAV);
+  considerPreserveObject(pos);
+  if ( notNil(close) )
+    send(close, NAME_close, EAV);
+
+  succeed;
+}
+
+
+static status
+cancelMenuBar(MenuBar mb, EventObj ev)
+{ PceWindow sw = getWindowGraphical((Graphical)mb);
+
+  if ( notNil(mb->current) && mb->current->displayed == ON )
+  { PopupObj current = mb->current;
+
+    send(mb->current, NAME_close, EAV);
+    assign(mb, current, NIL);
+
+    changedMenuBarButton(mb, current);
+  }
+
+  if ( sw )
+  { grabPointerWindow(sw, OFF);
+    focusWindow(sw, NIL, NIL, NIL, NIL);
+  }
+
+  succeed;
+}
+
+
+		/********************************
+		*            EVENTS		*
+		********************************/
+
+static PopupObj
+getPopupFromEventMenuBar(MenuBar mb, EventObj ev)
+{ int ex, ey;
+  Int EX, EY;
+  Cell cell;
+
+  if ( !get_xy_event(ev, mb, ON, &EX, &EY) )
+    fail;
+  ex = valInt(EX); ey = valInt(EY);
+
+  if ( ey < 0 || ey >= valInt(mb->area->h) )
+    fail;
+
+  for_cell(cell, mb->buttons)
+  { Button b = cell->value;
+
+    if ( ex >= valInt(b->area->x) &&
+	 ex <= valInt(b->area->x) + valInt(b->area->w) )
+      return b->popup;
+  }
+
+  fail;
+}
+
+
+/* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+`menu_bar->key' will show the popup  of   the  button  which accelerator
+matches the key. This is done the  same   way  as  a click will show the
+popup, so the  user  can  freely   switch  between  keyboard  and  mouse
+operation.
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+
+static status
+keyMenuBar(MenuBar mb, Name key)
+{ Cell cell;
+
+  if ( mb->active == OFF )
+    fail;
+					/* show popup if matching key */
+  for_cell(cell, mb->buttons)
+  { Button b = cell->value;
+
+    if ( b->active == ON && b->accelerator == key )
+    { PceWindow sw = getWindowGraphical((Graphical)mb);
+
+      attributeObject(mb, NAME_Stayup, ON);
+      showPopupMenuBar(mb, b->popup);
+      previewMenu((Menu)b->popup, getHeadChain(b->popup->members));
+
+      grabPointerWindow(sw, ON);
+      focusWindow(sw, (Graphical) mb, DEFAULT, DEFAULT, NIL);
+
+      succeed;
+    }
+  }
+
+  fail;
+}
+
+
+static status
+eventMenuBar(MenuBar mb, EventObj ev)
+{ PopupObj p;
+  static Int lastx;
+  static Int lasty;
+
+  if ( mb->active == OFF )
+    fail;
+
+  DEBUG(NAME_popup,
+	if ( ev->id != NAME_locMove )
+	  Cprintf("eventMenuBar: %s at %s,%s\n",
+		  pp(ev->id), pp(ev->x), pp(ev->y)));
+
+  if ( isDownEvent(ev) )
+    assign(mb, button, getButtonEvent(ev));
+
+  if ( notNil(mb->current) )
+  { if ( isDragEvent(ev) || isAEvent(ev, NAME_locMove) )
+    { if ( ev->x != lastx || ev->y != lasty )
+      { if ( (p = getPopupFromEventMenuBar(mb, ev)) && p != mb->current )
+	  showPopupMenuBar(mb, p);
+	postEvent(ev, (Graphical) mb->current, DEFAULT);
+      }
+    } else if ( isUpEvent(ev) )
+    { /*PceWindow sw = ev->window;*/
+      PceWindow sw = getWindowGraphical((Graphical)mb);
+      PopupObj p;
+
+      if ( valInt(getClickTimeEvent(ev)) < 1000 && /* CLICK: stay-up */
+	   valInt(getClickDisplacementEvent(ev)) < 10 &&
+	   getAttributeObject(mb, NAME_Stayup) != ON )
+      { attributeObject(mb, NAME_Stayup, ON);
+	grabPointerWindow(sw, ON);
+	focusWindow(sw, (Graphical) mb, DEFAULT, DEFAULT, NIL);
+      } else if ( (p = getPopupFromEventMenuBar(mb, ev)) &&
+		  mb->current != p &&
+		  getAttributeObject(mb, NAME_Stayup) == ON )
+      { showPopupMenuBar(mb, p);	/* stayup: open next */
+	generateEventGraphical((Graphical)mb, NAME_msLeftDrag);
+      } else
+      { int grabbed = (getAttributeObject(mb, NAME_Stayup) == ON);
+
+	if ( grabbed )
+	  grabPointerWindow(sw, OFF);
+
+	postEvent(ev, (Graphical) mb->current, DEFAULT);
+
+	if ( mb->current->displayed == OFF ) /* popup has closed */
+	{ PopupObj current = mb->current;
+
+	  assign(mb, current, NIL);
+	  send(current, NAME_execute, mb, EAV);
+	  if ( !onFlag(mb, F_FREED|F_FREEING) )
+	    changedMenuBarButton(mb, current);
+	}
+
+	if ( !onFlag(mb, F_FREED|F_FREEING) &&
+	     !onFlag(sw, F_FREED|F_FREEING) )
+	{ if ( isNil(mb->current) )
+	  { focusWindow(sw, NIL, NIL, NIL, NIL);
+	    deleteAttributeObject(mb, NAME_Stayup);
+	  } else if ( mb->current->displayed == ON )
+	  { if ( !grabbed )
+	      attributeObject(mb, NAME_Stayup, ON);
+	    grabPointerWindow(sw, ON);
+	    if ( !grabbed )
+	      focusWindow(sw, (Graphical) mb, DEFAULT, DEFAULT, NIL);
+	  }
+	}
+      }
+    } else if ( isAEvent(ev, NAME_keyboard) )
+    { PopupObj current = mb->current;
+      int pref;
+
+      if ( (pref = isAEvent(ev, NAME_cursorLeft)) ||
+	   isAEvent(ev, NAME_cursorRight) )
+      { PopupObj next;
+
+	if ( pref )
+	{ if ( !(next = getPreviousChain(mb->members, mb->current)) )
+	    next = getTailChain(mb->members);
+	} else
+	{ if ( !(next = getNextChain(mb->members, mb->current)) )
+	    next = getHeadChain(mb->members);
+	}
+
+	showPopupMenuBar(mb, next);
+
+	if ( !emptyChain(next->members) )
+	  previewMenu((Menu)next, getHeadChain(next->members));
+      } else if ( ev->id == toInt(27) )	/* ESC ... */
+      {	cancelMenuBar(mb, ev);
+      } else
+      { /*PceWindow sw = ev->window;*/
+	PceWindow sw = getWindowGraphical((Graphical)mb);
+
+	postEvent(ev, (Graphical)current, DEFAULT);
+
+	if ( mb->current->displayed == OFF )
+	{ grabPointerWindow(sw, OFF);
+	  focusWindow(sw, NIL, NIL, NIL, NIL);
+
+	  if ( notNil(mb->current->selected_item) )
+	  { assign(mb, current, NIL);
+	    send(current, NAME_execute, mb, EAV);
+	    if ( !onFlag(mb, F_FREED|F_FREEING) )
+	      changedMenuBarButton(mb, current);
+	  }
+	}
+      }
+    } else
+      postEvent(ev, (Graphical)mb->current, DEFAULT);
+
+    lastx = ev->x;
+    lasty = ev->y;
+
+    succeed;
+  } else
+  { if ( isDownEvent(ev) )
+    { if ( (p = getPopupFromEventMenuBar(mb, ev)) && p->active == ON )
+      { showPopupMenuBar(mb, p);
+	postEvent(ev, (Graphical) mb->current, DEFAULT);
+	focusCursorGraphical((Graphical)mb,
+			     getClassVariableValueObject(p, NAME_cursor));
+	lastx = ev->x;
+	lasty = ev->y;
+
+	succeed;
+      }
+    }
+  }
+
+  lastx = ev->x;
+  lasty = ev->y;
+
+  return eventDialogItem(mb, ev);
+}
+
+		 /*******************************
+		 *	     GEOMETRY		*
+		 *******************************/
+
+static Int
+getHorStretchMenuBar(MenuBar mb)
+{ answer(mb->look == NAME_motif ? ONE : ZERO);
+}
+
+
+static status
+geometryMenuBar(MenuBar mb, Int x, Int y, Int w, Int h)
+{ Cell cell;
+  int gap = valInt(mb->gap);
+  int wtot = 0;
+  int extragap, cx = 0;
+  int htot = 0;
+
+  for_cell(cell, mb->buttons)
+  { Graphical b = cell->value;
+
+    ComputeGraphical(b);
+    wtot += valInt(b->area->w) + gap;
+    htot = max(htot, valInt(b->area->h));
+  }
+
+  if ( wtot )
+    wtot -= gap;
+
+  if ( notDefault(w) && valInt(w) > wtot )
+    extragap = valInt(w) - wtot;
+  else
+    extragap = 0;
+
+  for_cell(cell, mb->buttons)
+  { DialogItem b = cell->value;
+
+    if ( extragap && b->alignment == NAME_right )
+    { cx += extragap;
+      extragap = 0;
+    }
+
+    assign(b->area, x, toInt(cx));
+    cx += valInt(b->area->w) + gap;
+  }
+
+  if ( cx )
+    cx -= gap;
+
+  return geometryGraphical(mb, x, y, toInt(cx), toInt(htot));
+}
+
+
+		/********************************
+		*          ATTRIBUTES		*
+		********************************/
+
+static status
+clearMenuBar(MenuBar mb)
+{ clearChain(mb->members);
+  clearChain(mb->buttons);
+
+  return requestComputeGraphical(mb, DEFAULT);
+}
+
+
+static status
+appendMenuBar(MenuBar mb, PopupObj p, Name alignment, Any before)
+{ Button bbutton = NIL;
+
+  if ( notDefault(before) )
+  { Cell cell;
+
+    for_cell(cell, mb->buttons)
+    { Button b = cell->value;
+      if ( before == b->popup ||
+	   before == b->popup->name )
+      { bbutton = b;
+	break;
+      }
+    }
+  }
+
+  if ( !memberChain(mb->members, p) )
+  { Button b = newObject(ClassButton, p->name, NIL, EAV);
+
+    labelDialogItem((DialogItem)b, p->label);
+    appendChain(mb->members, p);
+    assign(p, context, mb);
+
+    if ( alignment == NAME_right )
+    { insertBeforeChain(mb->buttons, b, bbutton);
+      assign(b, alignment, NAME_right);
+    } else
+    { if ( isNil(bbutton) )
+      { Cell cell;
+
+	for_cell(cell, mb->buttons)
+	{ Button b2 = cell->value;
+
+	  if ( b2->alignment == NAME_right )
+	  { bbutton = b2;
+	    break;
+	  }
+	}
+      }
+      insertBeforeChain(mb->buttons, b, bbutton);
+    }
+
+    assign(b, popup, p);
+    obtainClassVariablesObject(mb);
+    if ( mb->look != NAME_openLook )
+    { assign(b, label_font, mb->label_font);
+      assign(b, pen,        mb->pen);
+      assign(b, radius,     mb->radius);
+    }
+    send(p, NAME_format, getSlotObject(mb, NAME_format), EAV);
+    requestComputeGraphical(mb, DEFAULT);
+  }
+
+  succeed;
+}
+
+
+static PopupObj
+getMemberMenuBar(MenuBar mb, Any obj)
+{ if ( isName(obj) )
+  { Cell cell;
+
+    for_cell(cell, mb->members)
+    { PopupObj p = cell->value;
+      if ( p->name == obj )
+	answer(p);
+    }
+    fail;
+  } else if ( memberChain(mb->members, obj) )
+    answer(obj);
+  else
+    fail;
+}
+
+
+static status
+deleteMenuBar(MenuBar mb, PopupObj p)
+{ deleteChain(mb->members, p);
+  requestComputeGraphical(mb, DEFAULT);
+
+  succeed;
+}
+
+
+static status
+activeMemberMenuBar(MenuBar mb, PopupObj p, BoolObj val)
+{ if ( p->active != val )
+  { CHANGING_GRAPHICAL(mb,
+	assign(p, active, val);
+        changedMenuBarButton(mb, p));
+  }
+
+  succeed;
+}
+
+
+static status
+allActiveMenuBar(MenuBar mb, BoolObj val)
+{ Cell cell;
+
+  CHANGING_GRAPHICAL(mb,
+	for_cell(cell, mb->members)
+	{ PopupObj p = cell->value;
+	  assign(p, active, val);
+	}
+	changedDialogItem(mb));
+
+  succeed;
+}
+
+
+static status
+onMenuBar(MenuBar mb, Any obj)
+{ Cell cell;
+
+  for_cell(cell, mb->members)
+    send(cell->value, NAME_on, obj, EAV);
+
+  succeed;
+}
+
+
+static status
+offMenuBar(MenuBar mb, Any obj)
+{ Cell cell;
+
+  for_cell(cell, mb->members)
+    send(cell->value, NAME_off, obj, EAV);
+
+  succeed;
+}
+
+
+static status
+allOnMenuBar(MenuBar mb, PopupObj p)
+{ return send(p, NAME_allOn, EAV);
+}
+
+
+static status
+allOffMenuBar(MenuBar mb, PopupObj p)
+{ return send(p, NAME_allOff, EAV);
+}
+
+
+status
+currentMenuBar(MenuBar mb, PopupObj p)
+{ if ( mb->current != p )
+  { changedMenuBarButton(mb, mb->current);
+    if ( notNil(mb->current) )
+      assign(mb->current, context, NIL);
+    assign(mb, current, p);
+    if ( notNil(p) )
+	 assign(p, context, mb);
+    if ( notNil(p) && notNil(mb->button) )
+      assign(mb->current, button, mb->button);
+    changedMenuBarButton(mb, mb->current);
+    if ( isNil(p) )
+    { PceWindow sw = getWindowGraphical((Graphical)mb);
+      if ( sw && !onFlag(sw, F_FREED|F_FREEING) )
+	focusWindow(sw, NIL, NIL, NIL, NIL);
+      if ( !onFlag(mb, F_FREED|F_FREEING) )
+	deleteAttributeObject(mb, NAME_Stayup);
+    }
+  }
+
+  succeed;
+}
+
+static status
+lookMenuBar(MenuBar mb, Name look)
+{ if ( mb->look != look )
+  { Cell cell;
+
+    assign(mb, look, look);
+    for_cell(cell, mb->buttons)
+      send(cell->value, NAME_look, look, EAV);
+    for_cell(cell, mb->members)
+      send(cell->value, NAME_look, look, EAV);
+
+    requestComputeGraphical(mb, DEFAULT);
+    if ( mb->displayed == ON )
+    { CHANGING_GRAPHICAL(mb,
+			 ComputeGraphical(mb);
+			 changedEntireImageGraphical(mb));
+    }
+  }
+
+  succeed;
+}
+
+
+		 /*******************************
+		 *	   ACCELERATORS		*
+		 *******************************/
+
+static status
+assignAcceletatorsMenuBar(MenuBar mb)
+{ return assignAccelerators(mb->buttons, CtoName("\\e"), NAME_label);
+}
+
+
+		/********************************
+		*             VISUAL		*
+		********************************/
+
+static Chain
+getContainsMenuBar(MenuBar mb)
+{ answer(mb->members);
+}
+
+
+static status
+resetMenuBar(MenuBar mb)
+{ if ( notNil(mb->current) )
+  { send(mb->current, NAME_close, EAV);
+    currentMenuBar(mb, NIL);
+  }
+
+  succeed;
+}
+
+		 /*******************************
+		 *	 CLASS DECLARATION	*
+		 *******************************/
+
+/* Type declarations */
+
+static char *T_activeMember[] =
+        { "popup=member:popup", "active=bool" };
+static char *T_geometry[] =
+	{ "x=[int]", "y=[int]", "width=[int]", "height=[int]" };
+static char *T_append[] =
+	{ "member=popup", "alignment=[{left,right}]", "before=[name|popup]" };
+
+/* Instance Variables */
+
+static vardecl var_menuBar[] =
+{ IV(NAME_members, "chain", IV_GET,
+     NAME_organisation, "The pulldown menus"),
+  IV(NAME_format, "{left,center,right}", IV_GET,
+     NAME_appearance, "Format of labels in their box"),
+  IV(NAME_current, "popup*", IV_GET,
+     NAME_event, "Currently visible popup"),
+  IV(NAME_button, "button_name*", IV_NONE,
+     NAME_event, "Button that caused me to start"),
+  IV(NAME_buttons, "chain", IV_GET,
+     NAME_repaint, "Chain holding the buttons"),
+  IV(NAME_gap, "int", IV_GET,
+     NAME_appearance, "Distance between buttons"),
+  IV(NAME_radius, "int", IV_GET,
+     NAME_appearance, "Radius for the buttons")
+};
+
+/* Send Methods */
+
+static senddecl send_menuBar[] =
+{ SM(NAME_compute, 0, NULL, computeMenuBar,
+     DEFAULT, "Recompute the menu-bar"),
+  SM(NAME_geometry, 4, T_geometry, geometryMenuBar,
+     NAME_resize, "Resize menu-bar"),
+  SM(NAME_event, 1, "event", eventMenuBar,
+     DEFAULT, "Process an event"),
+  SM(NAME_initialise, 1, "name=[name]", initialiseMenuBar,
+     DEFAULT, "Create from a label"),
+  SM(NAME_reset, 0, NULL, resetMenuBar,
+     NAME_abort, "Reset menubar after an abort"),
+  SM(NAME_key, 1, "key=name", keyMenuBar,
+     NAME_accelerator, "Execute (first) menu_item with accelerator"),
+  SM(NAME_assignAccelerators, 0, NULL, assignAcceletatorsMenuBar,
+     NAME_accelerator, "Assign accelerators for the items"),
+  SM(NAME_activeMember, 2, T_activeMember, activeMemberMenuBar,
+     NAME_active, "(De)activate popup or name"),
+  SM(NAME_allActive, 1, "bool", allActiveMenuBar,
+     NAME_active, "(De)activate all popups"),
+  SM(NAME_allOff, 1, "member:popup", allOffMenuBar,
+     NAME_active, "Deactivate all items of popup or name"),
+  SM(NAME_allOn, 1, "member:popup", allOnMenuBar,
+     NAME_active, "Activate all items of popup or name"),
+  SM(NAME_off, 1, "name|menu_item", offMenuBar,
+     NAME_active, "Deactivate menu_item or name"),
+  SM(NAME_on, 1, "name|menu_item", onMenuBar,
+     NAME_active, "Activate menu_item or name"),
+  SM(NAME_showPopup, 1, "popup", showPopupMenuBar,
+     NAME_event, "Make popup <-current and ->open it"),
+  SM(NAME_append, 3, T_append, appendMenuBar,
+     NAME_organisation, "Append a popup to the menubar"),
+  SM(NAME_clear, 0, NULL, clearMenuBar,
+     NAME_organisation, "Remove all menus from the menu_bar"),
+  SM(NAME_delete, 1, "member:popup", deleteMenuBar,
+     NAME_organisation, "Delete popup or name"),
+  SM(NAME_look, 1, "{open_look,motif,win,gtk}", lookMenuBar,
+     NAME_appearance, "Look-and-feel switch")
+};
+
+/* Get Methods */
+
+static getdecl get_menuBar[] =
+{ GM(NAME_contains, 0, "any", NULL, getContainsMenuBar,
+     DEFAULT, "Chain with popup menus contained"),
+  GM(NAME_reference, 0, "point", NULL, getReferenceMenuBar,
+     DEFAULT, "Reference of first button"),
+  GM(NAME_popupFromEvent, 1, "popup", "event", getPopupFromEventMenuBar,
+     NAME_event, "Find popup to open from event on menu_bar"),
+  GM(NAME_horStretch, 0, "0..", NULL, getHorStretchMenuBar,
+     NAME_layout, "Stetchability (1)"),
+  GM(NAME_member, 1, "popup", "name|popup", getMemberMenuBar,
+     NAME_organisation, "Find popup from name")
+};
+
+/* Resources */
+
+static classvardecl rc_menuBar[] =
+{ RC(NAME_format, "name", "left",
+     "Format items {left,center,right}"),
+  RC(NAME_gap, "int", UXWIN("10", "5"),
+     "Distance between buttons"),
+  RC(NAME_look, RC_REFINE, UXWIN("gtk", "win"),
+     NULL),
+  RC(NAME_labelFont, "font", "normal",
+     "Default font for labels"),
+  RC(NAME_pen, "int", "1",
+     "Thickness of line around labels"),
+  RC(NAME_radius, "int", "0",
+     "Rounding radius of the buttons"),
+  RC(NAME_size, "size", "size(80,20)",
+     "Minimum size for labels")
+};
+
+/* Class Declaration */
+
+static Name menuBar_termnames[] = { NAME_label };
+
+ClassDecl(menuBar_decls,
+          var_menuBar, send_menuBar, get_menuBar, rc_menuBar,
+          1, menuBar_termnames);
+
+
+status
+makeClassMenuBar(Class class)
+{ declareClass(class, &menuBar_decls);
+  setRedrawFunctionClass(class, RedrawAreaMenuBar);
+
+  succeed;
+}

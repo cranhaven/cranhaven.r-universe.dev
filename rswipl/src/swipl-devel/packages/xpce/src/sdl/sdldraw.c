@@ -1,0 +1,2583 @@
+/*  Part of XPCE --- The SWI-Prolog GUI toolkit
+
+    Author:        Jan Wielemaker
+    E-mail:        jan@swi-prolog.org
+    WWW:           https://www.swi-prolog.org
+    Copyright (c)  2025, SWI-Prolog Solutions b.v.
+    All rights reserved.
+
+    Redistribution and use in source and binary forms, with or without
+    modification, are permitted provided that the following conditions
+    are met:
+
+    1. Redistributions of source code must retain the above copyright
+       notice, this list of conditions and the following disclaimer.
+
+    2. Redistributions in binary form must reproduce the above copyright
+       notice, this list of conditions and the following disclaimer in
+       the documentation and/or other materials provided with the
+       distribution.
+
+    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+    "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+    LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS
+    FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE
+    COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+    INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+    BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+    LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+    CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+    LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
+    ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+    POSSIBILITY OF SUCH DAMAGE.
+*/
+
+#include <h/kernel.h>
+#include <h/graphics.h>
+#include <h/text.h>
+#include <cairo/cairo.h>
+#ifdef CAIRO_HAS_PDF_SURFACE
+#include <cairo/cairo-pdf.h>
+#endif
+#define _USE_MATH_DEFINES
+#include <math.h>
+#include "sdldraw.h"
+#include "sdlcolour.h"
+#include "sdlfont.h"
+#include "sdlimage.h"
+#include "sdldisplay.h"
+#include "sdlframe.h"
+#include "sdlwindow.h"
+
+#define MAX_CTX_DEPTH (10)		/* Max draw context depth */
+
+typedef enum
+{ DCTX_WINDOW,
+  DCTX_IMAGE,
+  DCTX_PDF
+} context_type;
+
+typedef struct
+{ int		open;			/* Allow for nested open */
+  PceWindow	window;			/* Pce's notion of the window */
+  FrameObj	frame;			/* Pce's frame of the window */
+  DisplayObj	display;		/* Pce's display for the frame */
+  context_type  type;			/* DCTX_* */
+  cairo_surface_t *target;		/* Target for rendering to */
+  cairo_t      *cr;			/* Cairo context */
+  int		offset_x;		/* Paint offset in X direction */
+  int		offset_y;		/* Paint offset in Y direction */
+  int		fixed_colours;		/* Colours are fixed */
+  Any		colour;			/* Current colour */
+  Any		background;		/* Background colour */
+  Any		default_colour;
+  Any		default_background;
+  Any		fill;		/* Default for fill operations */
+  Name		dash;			/* Dash pattern */
+  double	pen;			/* Drawing thickness */
+} sdl_draw_context;
+
+#define X(x) ((x) + context.offset_x)
+#define Y(y) ((y) + context.offset_y)
+#define Translate(x, y)	 { (x) = X(x); (y) = Y(y); }
+#define InvTranslate(x, y) { x -= context.offset_x; y -= context.offset_y; }
+#define CR (context.cr)
+
+#define FloatArea(x, y, w, h)		     \
+  double _lw = (double)context.pen/2.0;	     \
+  double fx = (x)+_lw/2.0;		     \
+  double fy = (y)+_lw/2.0;		     \
+  double fw = (w)-_lw;			     \
+  double fh = (h)-_lw;
+
+static void pce_cairo_set_source_color(cairo_t *cr, Colour pce);
+#if 0
+static bool validate_cairo_text_consistency(cairo_t *draw_cr);
+#endif
+
+static bool r_set_fill_fgbg(Any fill, Name which);
+static void r_fill_fgbg(double x, double y, double w, double h,
+			Any fill, Name which);
+
+
+		 /*******************************
+		 *        CONTEXT STACK         *
+		 *******************************/
+
+#include <gra/graphstate.c>
+
+static sdl_draw_context	context;	/* current context */
+static sdl_draw_context	ctx_stack[MAX_CTX_DEPTH];  /* Context stack */
+static int		ctx_stacked;	/* Saved frames */
+
+static void
+reset_context(void)
+{ memset(&context, 0, sizeof(context));
+}
+
+static void
+push_context(void)
+{ if ( context.open )
+    ctx_stack[ctx_stacked++] = context;
+  if ( ctx_stacked >= MAX_CTX_DEPTH )
+    Cprintf("**************** ERROR: Draw Context Stack overflow\n");
+
+  reset_context();
+}
+
+
+/**
+ * Reset the drawing state to its default values.
+ */
+void
+resetDraw(void)
+{ memset(&context, 0, sizeof(context));
+}
+
+void
+d_init_surface(cairo_surface_t *surf, Any background)
+{ int width   = cairo_image_surface_get_width(surf);
+  int height  = cairo_image_surface_get_height(surf);
+  cairo_t *cr = cairo_create(surf);
+  cairo_new_path(cr);
+  if ( instanceOfObject(background, ClassColour) )
+  { pce_cairo_set_source_color(cr, background);
+  } else
+  { Cprintf("stub: non-colour background: %s\n", pp(background));
+  }
+  cairo_rectangle(cr, 0, 0, width, height);
+  cairo_fill(cr);
+  cairo_destroy(cr);
+}
+
+/**
+ * Set the drawing offset for subsequent drawing operations.
+ *
+ * @param x The x-coordinate offset.
+ * @param y The y-coordinate offset.
+ */
+void
+d_offset(int x, int y)
+{ DEBUG(NAME_redraw, Cprintf("d_offset(%d, %d)\n", x, y));
+
+  context.offset_x = x;
+  context.offset_y = y;
+}
+
+/**
+ * Set the rendering offset for subsequent rendering operations.
+ *
+ * @param x The x-coordinate offset.
+ * @param y The y-coordinate offset.
+ */
+void
+r_offset(int x, int y)
+{ context.offset_x += x;
+  context.offset_y += y;
+}
+
+/**
+ * Initialize the fill state with the specified offset and starting point.
+ *
+ * @param offset Pointer to the Point object representing the offset.
+ * @param x0 The starting x-coordinate.
+ * @param y0 The starting y-coordinate.
+ * @param state Pointer to the fill_state structure to be initialized.
+ */
+void
+r_filloffset(Point offset, int x0, int y0, fill_state *state)
+{
+}
+
+/**
+ * Restore the fill state from the provided state structure.
+ *
+ * @param state Pointer to the fill_state structure to be restored.
+ */
+void
+r_fillrestore(fill_state *state)
+{
+}
+
+/**
+ * Switch to a new display, returning the old display
+ *
+ * @param d Pointer to the DisplayObj.
+ * @return The previous DisplayObj.
+ */
+DisplayObj
+d_display(DisplayObj d)
+{ DisplayObj old = context.display;
+  context.display = d;
+  return old;
+}
+
+/**
+ * Ensure that the display is properly initialized and ready for drawing.
+ */
+void
+d_ensure_display(void)
+{ if ( context.display == NULL )
+    d_display(CurrentDisplay(NIL));
+}
+
+/**
+ * Start  drawing in  a window.   The x,y,w,h  describe the  region to
+ * paint in  window client  coordinates.  The drawing  code translates
+ * this  to  window coordinates  using  Translate(x,y),  based on  the
+ * window `scroll_offset`.
+ *
+ * @param sw Pointer to the PceWindow object.
+ * @param x X offset of the region we will paint
+ * @param y Y offset of the region we will paint
+ * @param w The width of the region we will paint.
+ * @param h The height of the region we will paint.
+ * @param clear Flag indicating whether to clear the region
+ * @param limit is unused and always TRUE.
+ * @return SUCCEED on success; otherwise, FAIL.
+ */
+status
+d_window(PceWindow sw, int x, int y, int w, int h, int clear, int limit)
+{ if ( !ws_created_window(sw) )
+  { Cprintf("d_window(%s): not created\n");
+    fail;
+  }
+
+  DEBUG(NAME_redraw,
+	Cprintf("d_window(%s, %d, %d, %d, %d, %d) off=%d,%d\n",
+		pp(sw), x, y, w, h, clear,
+		valInt(sw->scroll_offset->x),
+		valInt(sw->scroll_offset->y)));
+
+  if ( context.open && context.window == sw )
+  { Cprintf("d_window(%s): Context is already open\n",
+	    pp(sw));
+    context.open++;
+    succeed;
+  }
+
+  push_context();
+  context.open = 1;
+
+  FrameObj  fr = getFrameWindow(sw, OFF);
+  DisplayObj d = fr->display;
+  WsWindow wsw = sw->ws_ref;
+
+  context.type       = DCTX_WINDOW;
+  context.window     = sw;
+  context.frame      = fr;
+  context.display    = d;
+  context.target     = wsw->backing;
+  context.cr         = cairo_create(context.target);
+  context.offset_x   = valInt(sw->scroll_offset->x);
+  context.offset_y   = valInt(sw->scroll_offset->y);
+  context.colour     = notDefault(sw->colour) ? sw->colour : d->foreground;
+  context.background = sw->background;
+  context.default_colour = context.colour;
+  context.default_background = context.background;
+
+  /* do we need to clip? */
+  cairo_scale(context.cr, wsw->scale, wsw->scale);
+
+  d_clip(x, y, w, h);
+  if ( clear )
+    r_fill(x, y, w, h, context.background);
+
+  succeed;
+}
+
+/**
+ * Draw into an image at the specified location with given dimensions.
+ *
+ * @param i Pointer to the Image object.
+ * @param x
+ * @param y
+ * @param w
+ * @param h Area of the image that will be affected.
+ */
+status
+d_image(Image i, int x, int y, int w, int h)
+{ DisplayObj d =  CurrentDisplay(NIL);
+  ws_open_image(i);
+  Any colour = d->foreground;
+  Any background = d->background;
+
+  push_context();
+  context.open = 1;
+
+  context.type               = DCTX_IMAGE;
+  context.display            = d;
+  context.target             = i->ws_ref;
+  context.cr                 = cairo_create(context.target);
+  context.background         = background;
+  context.colour             = colour;
+  context.default_colour     = context.colour;
+  context.default_background = context.background;
+
+  succeed;
+}
+
+#ifdef CAIRO_HAS_PDF_SURFACE
+status
+d_pdf(const char *file, int w, int h, double scale)
+{ push_context();
+  context.open = 1;
+
+  Colour background = WHITE_COLOUR;
+  Colour colour     = BLACK_COLOUR;
+
+  context.type               = DCTX_PDF;
+  context.display            = NIL;
+  context.target             = cairo_pdf_surface_create(file,
+							w*scale, h*scale);
+  context.cr                 = cairo_create(context.target);
+  context.background         = background;
+  context.colour             = colour;
+  context.default_colour     = context.colour;
+  context.default_background = context.background;
+
+  cairo_scale(context.cr, scale, scale);
+
+  succeed;
+}
+#else
+#warning "No PDF backend in Cairo"
+#endif
+
+void
+d_done_pdf(void)
+{ cairo_show_page(context.cr);
+  cairo_destroy(context.cr);
+  cairo_surface_finish(context.target);
+  cairo_surface_destroy(context.target);
+}
+
+
+/**
+ * Define a clipping region for subsequent drawing operations.
+ *
+ * @param x The x-coordinate of the clipping region.
+ * @param y The y-coordinate of the clipping region.
+ * @param w The width of the clipping region.
+ * @param h The height of the clipping region.
+ */
+void
+d_clip(int x, int y, int w, int h)
+{ NormaliseArea(x, y, w, h);
+  Translate(x, y);
+  cairo_reset_clip(CR);
+  cairo_rectangle(CR, x, y, w, h);
+  cairo_clip(CR);
+}
+
+/**
+ * Finalize the current drawing operation.
+ */
+void
+d_done(void)
+{ DEBUG(NAME_redraw, Cprintf("d_done(): open = %d\n", context.open));
+  if ( --context.open == 0 )
+  { if ( context.type == DCTX_PDF )
+    { d_done_pdf();
+    } else
+    { cairo_destroy(context.cr);
+    }
+    context.cr = NULL;
+    if ( ctx_stacked )
+      context = ctx_stack[--ctx_stacked];
+    else
+      reset_context();
+  }
+}
+
+/**
+ * Remove the current clipping region.
+ */
+void
+d_clip_done(void)
+{ cairo_reset_clip(CR);
+}
+
+/**
+ * Compute the intersection of two IArea structures.
+ *
+ * @param a Pointer to the first IArea.
+ * @param b Pointer to the second IArea.
+ */
+void
+intersection_iarea(IArea a, IArea b)
+{ int x, y, w, h;
+
+  x = (a->x > b->x ? a->x : b->x);
+  y = (a->y > b->y ? a->y : b->y);
+  w = (a->x + a->w < b->x + b->w ? a->x + a->w : b->x + b->w) - x;
+  h = (a->y + a->h < b->y + b->h ? a->y + a->h : b->y + b->h) - y;
+
+  if ( w < 0 ) w = 0;
+  if ( h < 0 ) h = 0;
+
+  a->x = x;
+  a->y = y;
+  a->w = w;
+  a->h = h;
+}
+
+		 /*******************************
+		 *         CAIRO UTILS          *
+		 *******************************/
+
+static void
+pce_cairo_set_source_color(cairo_t *cr, Colour pce)
+{ SDL_Color c = pceColour2SDL_Color(pce);
+  cairo_set_source_rgba(cr, c.r/256.0, c.g/256.0, c.b/256.0, c.a/256.0);
+}
+
+static PangoLayout *
+pce_cairo_set_font(cairo_t *cr, FontObj pce)
+{ WsFont wsf = ws_get_font(pce);
+  if ( wsf )
+  { pango_cairo_update_layout(cr, wsf->layout);
+    return wsf->layout;
+  } else
+  { Cprintf("stub: No font for %s\n", pp(pce));
+    return NULL;
+  }
+}
+
+		 /*******************************
+		 *      DRAWING PRIMITIVES      *
+		 *******************************/
+
+/**
+ * Invert the colors within a specified rectangular area.
+ *
+ * @param x The x-coordinate of the top-left corner of the rectangle.
+ * @param y The y-coordinate of the top-left corner of the rectangle.
+ * @param w The width of the rectangle.
+ * @param h The height of the rectangle.
+ */
+void
+r_complement(int x, int y, int w, int h)
+{
+}
+
+/**
+ * Set the thickness of lines for subsequent drawing operations.
+ *
+ * @param pen The desired pen thickness.
+ */
+double
+r_thickness(double pen)
+{ double old = context.pen;
+  context.pen = pen;
+  return old;
+}
+
+/**
+ * Apply a transformation to a value, typically for coordinate adjustments.
+ *
+ * @param val The value to be transformed.
+ * @return The transformed value.
+ */
+int
+r_transformed(int val)
+{
+    return 0;
+}
+
+/**
+ * Set the dash pattern for lines.
+ *
+ * @param name The name of the dash pattern to apply.
+ */
+static struct dashpattern
+{ Name	  dash;
+  double  *dash_list;
+  int	  dash_list_length;
+} dash_patterns[] =
+{ { NAME_none,	     NULL,					  0},
+  { NAME_dotted,     (double[]){1.0,2.0},			  2},
+  { NAME_dashed,     (double[]){7.0,7.0},			  2},
+  { NAME_dashdot,    (double[]){7.0,3.0,1.0,7.0},		  4},
+  { NAME_dashdotted, (double[]){9.0,3.0,1.0,3.0,1.0,3.0,1.0,3.0}, 8},
+  { NAME_longdash,   (double[]){13.0,7.0},			  2},
+  { 0,		     NULL,					  0},
+};
+
+void
+r_dash(Name name)
+{ if ( name != context.dash )
+  { struct dashpattern *dp = dash_patterns;
+
+    for( ; dp->dash != 0; dp++ )
+    { if ( dp->dash == name )
+      { cairo_set_dash(CR, dp->dash_list, dp->dash_list_length, 0);
+
+	context.dash = name;
+	return;
+      }
+    }
+    errorPce(name, NAME_badTexture);
+  }
+}
+
+/**
+ * Set the fill pattern for subsequent drawing operations.
+ *
+ * @param fill The fill pattern to use.
+ * @param which One of `foreground` or `background` if `fixed_colours`
+ *        is active.   Currently ignored.
+ */
+void
+r_fillpattern(Any fill, Name which)
+{ if ( context.fixed_colours && !instanceOfObject(fill, ClassImage) )
+  { fill = (which == NAME_foreground ? context.colour
+				     : context.background);
+  } else if ( isDefault(fill) )
+    fill = context.colour;
+  else if ( fill == NAME_foreground )
+    fill = context.colour;
+  else if ( fill == NAME_background )
+    fill = context.background;
+  else if ( fill == NAME_current )
+    return;
+
+  context.fill = fill;
+}
+
+/**
+ * Fix the foreground and background colours.  This is used to draw
+ * selected or (de-)activated objects with a particular colour.
+ *
+ * @param fg The foreground color.
+ * @param bg The background color.
+ * @param ctx Context to save current setting to be restored
+ *        by r_unfix_colours()
+ */
+void
+r_fix_colours(Any fg, Any bg, ColourContext ctx)
+{ ctx->foreground = context.colour;
+  ctx->background = context.background;
+  ctx->lock	  = context.fixed_colours;
+
+  if ( !context.fixed_colours )
+  { if ( !fg || isNil(fg) ) fg = DEFAULT;
+    if ( !bg || isNil(bg) ) bg = DEFAULT;
+
+    r_default_colour(fg);
+    r_background(bg);
+  }
+
+  context.fixed_colours++;
+}
+
+/**
+ * Restore the previous color context, undoing any temporary color changes.
+ *
+ * @param ctx The color context to restore.
+ */
+void
+r_unfix_colours(ColourContext ctx)
+{ if ( (context.fixed_colours = ctx->lock) == 0 )
+  { r_default_colour(ctx->foreground);
+    r_background(ctx->background);
+  }
+}
+
+/**
+ * Retrieve the default color for a given input.
+ *
+ * @param c The input color or identifier.
+ * @return The default color associated with the input.
+ */
+Any
+r_default_colour(Any c)
+{ Any old = context.default_colour;
+
+  if ( !context.fixed_colours )
+  { if ( notDefault(c) )
+      context.default_colour = c;
+
+    r_colour(context.default_colour);
+  }
+
+  return old;
+}
+
+/**
+ * Retrieve the current drawing color.
+ *
+ * @param c The input color or identifier.
+ * @return The current drawing color.
+ */
+Any
+r_colour(Any c)
+{ Any old = context.colour;
+
+  if ( context.fixed_colours )
+    return old;
+
+  if ( isDefault(c) )
+    c = context.default_colour;
+
+  context.colour = c;
+
+  return old;
+}
+
+/**
+ * Set the background color.
+ *
+ * @param c A color, DEFAULT or an image.
+ * @return The old background.
+ */
+Any
+r_background(Any c)
+{ Any old = context.background;
+
+  if ( isDefault(c) || context.fixed_colours )
+    return old;
+  context.background = c;
+
+  return old;
+}
+
+Any
+r_current_colour(void)
+{ return context.colour;
+}
+
+/**
+ * Swap the foreground and background colors.
+ */
+void
+r_swap_background_and_foreground(void)
+{ Any tmp = context.background;
+
+  context.background = context.colour;
+  context.colour = tmp;
+}
+
+/**
+ * Set or retrieve the subwindow drawing mode.
+ *
+ * @param val The boolean value to set or retrieve the mode.
+ * @return The current subwindow mode.
+ */
+BoolObj
+r_subwindow_mode(BoolObj val)
+{
+    return val;
+}
+
+/**
+ * Set or retrieve the invert drawing mode.
+ *
+ * @param val The boolean value to set or retrieve the mode.
+ */
+void
+r_invert_mode(BoolObj val)
+{
+}
+
+/**
+ * Translate coordinates by a specified offset.
+ *
+ * @param x The x-offset.
+ * @param y The y-offset.
+ * @param ox Pointer to store the original x-coordinate.
+ * @param oy Pointer to store the original y-coordinate.
+ */
+void
+r_translate(int x, int y, int *ox, int *oy)
+{ Translate(x, y);
+
+  *ox = x;
+  *oy = y;
+}
+
+void
+my_cairo_rounded_rectangle(cairo_t *cr, double x, double y, double w, double h,
+			   double r, bool sub)
+{ double x0 = x,     y0 = y;
+  double x1 = x + w, y1 = y + h;
+
+  if (r > w / 2) r = w / 2;
+  if (r > h / 2) r = h / 2;
+
+  if ( sub )
+    cairo_new_sub_path(cr);
+  else
+    cairo_new_path(cr);
+  cairo_arc(cr, x1 - r, y0 + r, r, -90 * M_PI/180.0,   0 * M_PI/180.0);
+  cairo_arc(cr, x1 - r, y1 - r, r,   0 * M_PI/180.0,  90 * M_PI/180.0);
+  cairo_arc(cr, x0 + r, y1 - r, r,  90 * M_PI/180.0, 180 * M_PI/180.0);
+  cairo_arc(cr, x0 + r, y0 + r, r, 180 * M_PI/180.0, 270 * M_PI/180.0);
+  cairo_close_path(cr);
+}
+
+
+/**
+ * Draw a rectangle (box) with optional rounded corners and fill.
+ *
+ * @param x The x-coordinate of the top-left corner.
+ * @param y The y-coordinate of the top-left corner.
+ * @param w The width of the rectangle.
+ * @param h The height of the rectangle.
+ * @param r The radius for rounded corners.
+ * @param fill The fill pattern or color.
+ */
+void
+r_box(int x, int y, int w, int h, int r, Any fill)
+{ Translate(x, y);
+  NormaliseArea(x, y, w, h);
+  FloatArea(x, y, w, h);	/* reduce by pen */
+
+  DEBUG(NAME_draw,
+	Cprintf("r_box(%d, %d, %d, %d, %d, %s)\n",
+		x, y, w, h, r, pp(fill)));
+
+  cairo_new_path(CR);
+  cairo_set_line_width(CR, context.pen);
+  cairo_save(CR);
+  cairo_set_antialias(CR, CAIRO_ANTIALIAS_NONE);
+  if ( r )
+    my_cairo_rounded_rectangle(CR, fx, fy, fw, fh, r, true);
+  else
+    cairo_rectangle(CR, fx, fy, fw, fh);
+  if ( notNil(fill) )
+  { r_fillpattern(fill, NAME_background);
+    pce_cairo_set_source_color(CR, context.fill);
+    if ( context.pen )
+      cairo_fill_preserve(CR);
+    else
+      cairo_fill(CR);
+  }
+  if ( context.pen )
+  { pce_cairo_set_source_color(CR, context.colour);
+    cairo_stroke(CR);
+  }
+  cairo_restore(CR);
+}
+
+/**
+ * Draw a rectangle with a shadow effect.
+ *
+ * @param x The x-coordinate of the top-left corner.
+ * @param y The y-coordinate of the top-left corner.
+ * @param w The width of the rectangle.
+ * @param h The height of the rectangle.
+ * @param r The radius for rounded corners.
+ * @param shadow The size of the shadow.
+ * @param fill The fill pattern or image.
+ */
+void
+r_shadow_box(int x, int y, int w, int h, int r, int shadow, Any fill)
+{ if ( !shadow )
+  { r_box(x, y, w, h, r, fill);
+  } else
+  { if ( shadow > h ) shadow = h;
+    if ( shadow > w ) shadow = w;
+
+    Any old = r_colour(BLACK_COLOUR);
+    r_box(x+shadow, y+shadow, w-shadow, h-shadow, r, BLACK_COLOUR);
+    r_colour(old);
+    r_box(x, y, w-shadow, h-shadow, r, isNil(fill) ? WHITE_COLOUR : fill);
+  }
+}
+
+/**
+ * Sets  the  fill-pattern for  the  interior  of elevated  areas  and
+ * returns TRUE  if the  interior needs to  be filled.   Returns FALSE
+ * otherwise.   The special  colours `reduced'  and `highlighted'  are
+ * interpreted as relative colours to the background.
+*/
+
+static bool
+r_elevation_fillpattern(Elevation e, bool up)
+{ Any fill = NIL;
+
+  if ( up && notDefault(e->colour) )
+  { fill = e->colour;
+  } else if ( !up && notDefault(e->background) )
+  { fill = e->background;
+  }
+
+  if ( isNil(fill) )
+    return false;
+
+  if ( fill == NAME_reduced || fill == NAME_hilited )
+  { Any bg = context.background;
+
+    if ( instanceOfObject(bg, ClassColour) )
+    { if ( fill == NAME_reduced )
+	fill = getReduceColour(bg, DEFAULT);
+      else
+	fill = getHiliteColour(bg, DEFAULT);
+    } else
+      return false;
+  }
+
+  r_fillpattern(fill, NAME_background);
+
+  return true;
+}
+
+
+/**
+ * Retrieve the shadow associated with a specific elevation level.
+ *
+ * @param e The elevation level.
+ * @return The shadow corresponding to the elevation.
+ */
+Any
+r_elevation_shadow(Elevation e)
+{ if ( isDefault(e->shadow) )
+  { Any bg = context.background;
+
+    if ( instanceOfObject(bg, ClassColour) )
+      return getReduceColour(bg, DEFAULT);
+    else
+      return BLACK_COLOUR;
+  } else
+    return e->shadow;
+}
+
+static Any
+r_elevation_relief(Elevation e)
+{ if ( isDefault(e->relief) )
+  { Any bg = context.background;
+
+    if ( instanceOfObject(bg, ClassColour) )
+      return getHiliteColour(bg, DEFAULT);
+    else
+      return WHITE_COLOUR;
+  } else
+    return e->relief;
+}
+
+/**
+ * Draw a series of 3D segments with lighting effects.
+ *
+ * @param n The number of segments.
+ * @param s The array of segments to draw.
+ * @param e The elevation level for 3D effect.
+ * @param light The lighting intensity or direction.
+ */
+void
+r_3d_segments(int n, ISegment s, Elevation e, int light)
+{ Any colour;
+
+  if ( light )
+    colour = r_elevation_relief(e);
+  else
+    colour = r_elevation_shadow(e);
+  r_thickness(1);
+
+  DEBUG(NAME_draw, Cprintf("Drawing %d segments with %s (pen=%.1f)\n", n, pp(colour), context.pen));
+
+  pce_cairo_set_source_color(CR, colour);
+  cairo_set_line_width(CR, context.pen);
+
+  ISegment p = s;
+  ISegment end = &s[n];
+  while(p<end)
+  { cairo_new_path(CR);
+    cairo_move_to(CR, X(p->x1), Y(p->y1));
+    cairo_line_to(CR, X(p->x2), Y(p->y2));
+    while ( p < end && p[1].x1 == p->x2 && p[1].y1 == p->y2 )
+    { p++;
+      cairo_line_to(CR, X(p->x2), Y(p->y2));
+    }
+    cairo_stroke(CR);
+    p++;
+  }
+}
+
+/**
+ * Draw a 3D-styled rectangle.
+ *
+ * @param x The x-coordinate of the top-left corner.
+ * @param y The y-coordinate of the top-left corner.
+ * @param w The width of the rectangle.
+ * @param h The height of the rectangle.
+ * @param radius The corner radius for rounding.
+ * @param e The elevation level for 3D effect.
+ * @param up Boolean indicating if the box appears raised.
+ */
+
+#define MAX_SHADOW 10
+
+void
+r_3d_box(double x, double y, double w, double h,
+	 double radius, Elevation e, bool up0)
+{ double shadow = valNum(e->height);
+  bool up = up0;
+
+  if ( shadow < 0.0 )
+  { shadow = -shadow;
+    up = !up;
+  }
+  radius = max(0.0,radius);
+
+  DEBUG(NAME_draw,
+	Cprintf("r_3d_box(%f, %f, %f, %f, %f, %s, %d)\n",
+		x, y, w, h, radius, pp(e), up));
+
+  NormaliseArea(x, y, w, h);
+  if ( w < 0.1 || h < 0.1 )
+    return;
+
+  radius = min(radius, min(w,h)/2);
+
+  if ( e->kind == NAME_shadow )
+  { shadow = min(shadow, min(w, h));
+    if ( shadow > MAX_SHADOW )
+      shadow = MAX_SHADOW;
+    r_box(x, y, w-shadow, h-shadow, radius-shadow, e->colour);
+
+    int xt = x, yt = y;
+    Translate(xt, yt);
+
+    if ( radius > 0 )
+    { Cprintf("stub: r_3d_box(): shadow and radius;\n");
+    } else
+    { w -= shadow;
+      h -= shadow;
+
+      pce_cairo_set_source_color(CR, r_elevation_shadow(e));
+      cairo_set_line_width(CR, 1);
+      for( int os=0; os < shadow; os++ )
+      { cairo_move_to(CR, xt+w+os,   yt+shadow);
+	cairo_line_to(CR, xt+w+os,   yt+h+os);
+	cairo_line_to(CR, xt+shadow, yt+h+os);
+	cairo_stroke(CR);
+      }
+    }
+  } else
+  { bool fill = r_elevation_fillpattern(e, up0);
+
+    if ( shadow != 0.0 )
+    { Colour top_left_color;
+      Colour bottom_right_color;
+
+      if ( up )
+      { top_left_color     = r_elevation_relief(e);
+	bottom_right_color = r_elevation_shadow(e);
+      } else
+      { top_left_color     = r_elevation_shadow(e);
+	bottom_right_color = r_elevation_relief(e);
+      }
+
+      if ( shadow > MAX_SHADOW )
+	shadow = MAX_SHADOW;
+
+      Translate(x, y);
+      if ( radius > 0 )			/* with rounded corners */
+      {	pce_cairo_set_source_color(CR, top_left_color);
+	cairo_new_path(CR);
+	cairo_move_to(CR, x, y);
+	cairo_line_to(CR, x+w, y);
+	cairo_line_to(CR, x, y+h);
+	cairo_close_path(CR);
+	cairo_clip(CR);
+
+	my_cairo_rounded_rectangle(CR, x, y, w, h, radius, false);
+	cairo_fill(CR);
+	cairo_reset_clip(CR);
+
+	pce_cairo_set_source_color(CR, bottom_right_color);
+	cairo_new_path(CR);
+	cairo_move_to(CR, x+w, y);
+	cairo_line_to(CR, x+w, y+h);
+	cairo_line_to(CR, x, y+h);
+	cairo_close_path(CR);
+	cairo_clip(CR);
+
+	my_cairo_rounded_rectangle(CR, x, y, w, h, radius, false);
+	cairo_fill(CR);
+	cairo_reset_clip(CR);
+
+	// Fill base
+	if ( r_set_fill_fgbg(NAME_current, NAME_background) )
+	{ double ix = x+shadow, iy = y+shadow, iw = w-2*shadow, ih = h-2*shadow;
+	  double ir = radius * ((w+h)-2*shadow)/(w+h);
+
+	  my_cairo_rounded_rectangle(CR, ix, iy, iw, ih, ir, true);
+	  cairo_fill(CR);
+	}
+      } else
+      { pce_cairo_set_source_color(CR, top_left_color);
+	// Top (light)
+	cairo_move_to(CR, x, y);
+	cairo_line_to(CR, x + w, y);
+	cairo_line_to(CR, x + w - shadow, y + shadow);
+	cairo_line_to(CR, x + shadow, y + shadow);
+	cairo_close_path(CR);
+	cairo_fill(CR);
+	// Left (light)
+	cairo_move_to(CR, x, y);
+	cairo_line_to(CR, x, y + h);
+	cairo_line_to(CR, x + shadow, y + h - shadow);
+	cairo_line_to(CR, x + shadow, y + shadow);
+	cairo_close_path(CR);
+	cairo_fill(CR);
+        // Bottom (dark)
+	pce_cairo_set_source_color(CR, bottom_right_color);
+	cairo_move_to(CR, x, y + h);
+	cairo_line_to(CR, x + w, y + h);
+	cairo_line_to(CR, x + w - shadow, y + h - shadow);
+	cairo_line_to(CR, x + shadow, y + h - shadow);
+	cairo_close_path(CR);
+	cairo_fill(CR);
+	// Right (dark)
+	cairo_move_to(CR, x + w, y);
+	cairo_line_to(CR, x + w, y + h);
+	cairo_line_to(CR, x + w - shadow, y + h - shadow);
+	cairo_line_to(CR, x + w - shadow, y + shadow);
+	cairo_close_path(CR);
+	cairo_fill(CR);
+      }
+      InvTranslate(x,y);
+    }
+
+    if ( fill && radius == 0.0 ) /* r_fill_fgbg() uses floats  */
+      r_fill_fgbg(x+shadow, y+shadow, w-2*shadow,
+		  h-2*shadow, NAME_current, NAME_background);
+  }
+}
+
+/**
+ * Draw a 3D-styled line between two points.
+ *
+ * @param x1 The x-coordinate of the starting point.
+ * @param y1 The y-coordinate of the starting point.
+ * @param x2 The x-coordinate of the ending point.
+ * @param y2 The y-coordinate of the ending point.
+ * @param e The elevation level for 3D effect.
+ * @param up Boolean indicating if the line appears raised.
+ */
+void
+r_3d_line(int x1, int y1, int x2, int y2, Elevation e, bool up)
+{ double z = valNum(e->height);
+  Colour up_color, down_color;
+
+  Translate(x1, y1);
+  Translate(x2, y2);
+
+  if ( up )
+  { up_color   = r_elevation_relief(e);
+    down_color = r_elevation_shadow(e);
+  } else
+  { down_color = r_elevation_shadow(e);
+    up_color   = r_elevation_relief(e);
+  }
+
+  if ( abs(y1-y2) < abs(x1-x2) )
+  { cairo_set_line_width(CR, z);
+    pce_cairo_set_source_color(CR, down_color);
+    cairo_move_to(CR, x1, (double)y1-(double)z/2);
+    cairo_line_to(CR, x2, (double)y2-(double)z/2);
+    cairo_stroke(CR);
+    pce_cairo_set_source_color(CR, up_color);
+    cairo_move_to(CR, x1, (double)y1+(double)z/2);
+    cairo_line_to(CR, x2, (double)y2+(double)z/2);
+    cairo_stroke(CR);
+  } else
+  { Cprintf("stub: r_3d_line() (not horizontal)\n");
+  }
+}
+
+/**
+ * Draw a 3D-styled triangle.
+ *
+ * @param x1 The x-coordinate of the first vertex.
+ * @param y1 The y-coordinate of the first vertex.
+ * @param x2 The x-coordinate of the second vertex.
+ * @param y2 The y-coordinate of the second vertex.
+ * @param x3 The x-coordinate of the third vertex.
+ * @param y3 The y-coordinate of the third vertex.
+ * @param e The elevation level for 3D effect.
+ * @param up Boolean indicating if the triangle appears raised.
+ * @param map Bitmap of up/down edges
+ */
+/* Find the intersection point of two lines, each given as point + direction. */
+static inline void
+line_intersect(double px, double py, double pdx, double pdy,
+	       double qx, double qy, double qdx, double qdy,
+	       double *rx, double *ry)
+{ double denom = pdx*qdy - pdy*qdx;
+
+  if ( fabs(denom) > 1e-10 )
+  { double t = ((qx-px)*qdy - (qy-py)*qdx) / denom;
+    *rx = px + t*pdx;
+    *ry = py + t*pdy;
+  } else			/* parallel — fall back to midpoint */
+  { *rx = (px+qx)/2.0;
+    *ry = (py+qy)/2.0;
+  }
+}
+
+void
+r_3d_triangle(double x1, double y1, double x2, double y2, double x3, double y3,
+	      Elevation e, bool up, unsigned int map)
+{ double shadow = valNum(e->height);
+
+  DEBUG(NAME_draw,
+	Cprintf("r_3d_triangle(%1f,%1f, %1f,%1f, %1f,%1f %s, %d)\n",
+		x1,y1, x2,y2, x3,y3, pp(e), up));
+
+  if ( shadow < 0.0 )
+  { shadow = -shadow;
+    up = !up;
+  }
+
+  double ix1 = x1, iy1 = y1;
+  double ix2 = x2, iy2 = y2;
+  double ix3 = x3, iy3 = y3;
+
+  if ( shadow > 0.1 )
+  { Colour up_color, down_color;
+
+    if ( up )
+    { up_color   = r_elevation_relief(e);
+      down_color = r_elevation_shadow(e);
+    } else
+    { up_color   = r_elevation_shadow(e);
+      down_color = r_elevation_relief(e);
+    }
+
+    /* Compute the inner (inset) triangle such that every edge is exactly
+     * shadow pixels wide (perpendicular distance).  For each edge compute
+     * its inward unit normal, offset the edge line by shadow along that
+     * normal, then intersect adjacent offset lines to get inner vertices.
+     */
+    // Edge directions
+    double d1x = x2-x1, d1y = y2-y1, l1 = sqrt(d1x*d1x + d1y*d1y);
+    double d2x = x3-x2, d2y = y3-y2, l2 = sqrt(d2x*d2x + d2y*d2y);
+    double d3x = x1-x3, d3y = y1-y3, l3 = sqrt(d3x*d3x + d3y*d3y);
+    // Inward unit normals (rotate edge 90°, then flip if pointing outward)
+    double cx = (x1+x2+x3)/3.0, cy = (y1+y2+y3)/3.0;
+    double n1x = -d1y/l1, n1y =  d1x/l1;
+    if ( (cx-(x1+x2)/2)*n1x + (cy-(y1+y2)/2)*n1y < 0 ) { n1x=-n1x; n1y=-n1y; }
+    double n2x = -d2y/l2, n2y =  d2x/l2;
+    if ( (cx-(x2+x3)/2)*n2x + (cy-(y2+y3)/2)*n2y < 0 ) { n2x=-n2x; n2y=-n2y; }
+    double n3x = -d3y/l3, n3y =  d3x/l3;
+    if ( (cx-(x3+x1)/2)*n3x + (cy-(y3+y1)/2)*n3y < 0 ) { n3x=-n3x; n3y=-n3y; }
+    // Inner vertices: intersect pairs of adjacent offset edge lines
+    line_intersect(x3+shadow*n3x, y3+shadow*n3y, d3x, d3y,
+		   x1+shadow*n1x, y1+shadow*n1y, d1x, d1y, &ix1, &iy1);
+    line_intersect(x1+shadow*n1x, y1+shadow*n1y, d1x, d1y,
+		   x2+shadow*n2x, y2+shadow*n2y, d2x, d2y, &ix2, &iy2);
+    line_intersect(x2+shadow*n2x, y2+shadow*n2y, d2x, d2y,
+		   x3+shadow*n3x, y3+shadow*n3y, d3x, d3y, &ix3, &iy3);
+
+    /* Draw each edge as a filled quadrilateral with the correct colour.
+     * Adjacent quads share the edge outer_Vn → inner_Vn so they connect
+     * without gaps regardless of which colour each edge has.
+     * map bit 0: edge (x1,y1)→(x2,y2); bit 1: (x2,y2)→(x3,y3);
+     * bit 2: (x3,y3)→(x1,y1).  Set bit = up_color, clear bit = down_color.
+     */
+    pce_cairo_set_source_color(CR, (map & 0x1) ? up_color : down_color);
+    cairo_move_to(CR, X(x1), Y(y1));
+    cairo_line_to(CR, X(x2), Y(y2));
+    cairo_line_to(CR, X(ix2), Y(iy2));
+    cairo_line_to(CR, X(ix1), Y(iy1));
+    cairo_close_path(CR);
+    cairo_fill(CR);
+
+    pce_cairo_set_source_color(CR, (map & 0x2) ? up_color : down_color);
+    cairo_move_to(CR, X(x2), Y(y2));
+    cairo_line_to(CR, X(x3), Y(y3));
+    cairo_line_to(CR, X(ix3), Y(iy3));
+    cairo_line_to(CR, X(ix2), Y(iy2));
+    cairo_close_path(CR);
+    cairo_fill(CR);
+
+    pce_cairo_set_source_color(CR, (map & 0x4) ? up_color : down_color);
+    cairo_move_to(CR, X(x3), Y(y3));
+    cairo_line_to(CR, X(x1), Y(y1));
+    cairo_line_to(CR, X(ix1), Y(iy1));
+    cairo_line_to(CR, X(ix3), Y(iy3));
+    cairo_close_path(CR);
+    cairo_fill(CR);
+  }
+
+  if ( r_elevation_fillpattern(e, up) )
+    r_fill_triangle(ix1, iy1, ix2, iy2, ix3, iy3);
+}
+
+/**
+ * Draw a 3D-styled diamond shape.
+ *
+ * @param x The x-coordinate of the top-left corner.
+ * @param y The y-coordinate of the top-left corner.
+ * @param w The width of the diamond.
+ * @param h The height of the diamond.
+ * @param e The elevation level for 3D effect.
+ * @param up Boolean indicating if the diamond appears raised.
+ */
+void
+r_3d_diamond(int x, int y, int w, int h, Elevation e, int up)
+{
+}
+
+/**
+ * Draw an arc within a specified rectangle in the clockwise direction.
+ *
+ * @param x The x-coordinate of the top-left corner of the bounding rectangle.
+ * @param y The y-coordinate of the top-left corner of the bounding rectangle.
+ * @param w The width of the bounding rectangle.
+ * @param h The height of the bounding rectangle.
+ * @param s The starting angle of the arc.
+ * @param e The ending angle of the arc.
+ * @param close {none, chord, pie_slice}
+ * @param fill The fill pattern or color.
+ */
+void
+r_arc(int x, int y, int w, int h, int s, int e, Name close, Any fill)
+{ Translate(x, y);
+  NormaliseArea(x, y, w, h);
+  FloatArea(x, y, w, h);
+  double fs = s * M_PI / 180.0;
+  double fe = e * M_PI / 180.0;
+
+  cairo_new_path(CR);
+  cairo_save(CR);
+  cairo_translate(CR, fx + fw / 2.0, fy + fh / 2.0);  // Move to center
+  cairo_scale(CR, fw / 2.0, fh / 2.0);              // Scale unit circle
+  if ( close == NAME_pieSlice )
+    cairo_move_to(CR, 0, 0);
+  cairo_arc(CR, 0, 0, 1.0, fs, fe);
+  cairo_restore(CR);
+  if ( close == NAME_pieSlice || close == NAME_chord )
+  { cairo_close_path(CR);
+  }
+  if ( notNil(fill) )
+  { r_fillpattern(fill, NAME_foreground);
+    pce_cairo_set_source_color(CR, context.fill);
+    if ( context.pen )
+      cairo_fill_preserve(CR);
+    else
+      cairo_fill(CR);
+  }
+  if ( context.pen )
+  { cairo_set_line_width(CR, context.pen);
+    pce_cairo_set_source_color(CR, context.colour);
+    cairo_stroke(CR);
+  }
+}
+
+/**
+ * Draw an ellipse within a specified rectangle.
+ *
+ * @param x The x-coordinate of the top-left corner of the bounding rectangle.
+ * @param y The y-coordinate of the top-left corner of the bounding rectangle.
+ * @param w The width of the bounding rectangle.
+ * @param h The height of the bounding rectangle.
+ * @param fill The fill pattern or color.
+ */
+void
+r_ellipse(int x, int y, int w, int h, Any fill)
+{ r_arc(x, y, w, h, 0, 360, NAME_none, fill);
+}
+
+/**
+ * Draw a 3D-styled ellipse.
+ *
+ * @param x The x-coordinate of the top-left corner of the bounding rectangle.
+ * @param y The y-coordinate of the top-left corner of the bounding rectangle.
+ * @param w The width of the bounding rectangle.
+ * @param h The height of the bounding rectangle.
+ * @param z The elevation level for 3D effect.
+ * @param up Boolean indicating if the ellipse appears raised.
+ */
+void
+r_3d_ellipse(int x, int y, int w, int h, Elevation z, int up)
+{
+}
+
+/**
+ * Draw a straight line between two points.
+ *
+ * @param x1 The x-coordinate of the starting point.
+ * @param y1 The y-coordinate of the starting point.
+ * @param x2 The x-coordinate of the ending point.
+ * @param y2 The y-coordinate of the ending point.
+ */
+void
+r_line(double x1, double y1, double x2, double y2)
+{ Translate(x1, y1);
+  Translate(x2, y2);
+  DEBUG(NAME_draw, Cprintf("r_line(%d, %d, %d, %d)\n",
+			   x1, y1, x2, y2));
+
+  cairo_new_path(CR);
+  pce_cairo_set_source_color(CR, context.colour);
+  cairo_set_line_width(CR, context.pen);
+  cairo_move_to(CR, x1, y1);
+  cairo_line_to(CR, x2, y2);
+  cairo_stroke(CR);
+}
+
+/**
+ * Draw a text underline.
+ *  param underline is either a colour or DEFAULT or the boolean OFF.
+ *  If DEFAULT, we paint using the current colour
+ */
+
+void
+r_underline(FontObj font, double x, double base, double w, Any underline)
+{ if ( underline != OFF )
+  { WsFont wsf = ws_get_font(font);
+    Any oldc = NULL;
+    if ( instanceOfObject(underline, ClassColour) )
+      oldc = r_colour(underline);
+    double o_pen = r_thickness(wsf->ul_thickness);
+    r_dash(NAME_none);
+    double uly = base + wsf->ul_thickness/2.0 - wsf->ul_position;
+    r_line(x, uly, x+w, uly);
+    r_thickness(o_pen);
+    if ( oldc )
+      r_colour(oldc);
+  }
+}
+
+/**
+ * Draw a polygon defined by a series of points.  Used for
+ * class `bezier` and `graphical->draw_poly`.
+ *
+ * @param pts An array of points defining the polygon.
+ * @param n The number of points in the array.
+ * @param close Boolean indicating whether to close the polygon.
+ * @todo  Combine with r_fill_polygon().  This avoids creating the
+ *        Cairo path twice.
+ * @todo  Use Cairo's native Bezier curve support.
+ */
+void
+r_polygon(FPoint pts, int n, int close)
+{ if ( context.pen > 0 )
+  { cairo_new_path(CR);
+    bool first = true;
+    for(int i=0; i<n; i++)
+    { double x = pts[i].x;
+      double y = pts[i].y;
+      Translate(x,y);
+      if ( first )
+      { cairo_move_to(CR, x, y);
+	first = false;
+      } else
+      { cairo_line_to(CR, x, y);
+      }
+    }
+    if ( close )
+      cairo_close_path(CR);
+
+    pce_cairo_set_source_color(CR, context.colour);
+    cairo_set_line_width(CR, context.pen);
+    cairo_stroke(CR);
+  }
+}
+
+/**
+ * Draw a cubic Bezier curve using Cairo.
+ * The coordinates are translated by the current drawing offset.
+ *
+ * @param start The starting point of the curve.
+ * @param control1 The first control point for the cubic Bezier.
+ * @param control2 The second control point for the cubic Bezier.
+ * @param end The end point of the curve.
+ */
+void
+r_bezier(fpoint start, fpoint control1, fpoint control2, fpoint end)
+{ if ( context.pen > 0 )
+  { cairo_new_path(CR);
+    Translate(start.x, start.y);
+    Translate(end.x, end.y);
+    Translate(control1.x, control1.y);
+    Translate(control2.x, control2.y);
+
+    cairo_move_to(CR, start.x, start.y);
+    cairo_curve_to(CR, control1.x, control1.y, control2.x, control2.y, end.x, end.y);
+
+    pce_cairo_set_source_color(CR, context.colour);
+    cairo_set_line_width(CR, context.pen);
+    cairo_stroke(CR);
+  }
+}
+
+/**
+ * Draw a path defined by a chain of points.
+ *
+ * @param points The chain of points defining the path.
+ * @param ox The x-offset for the path.
+ * @param oy The y-offset for the path.
+ * @param radius The corner radius for rounded corners.
+ * @param closed Boolean indicating whether the path is closed.
+ * @param fill The fill pattern or image.
+ */
+void
+r_path(Chain points, int ox, int oy, int radius, int closed, Image fill)
+{ if ( radius )
+    Cprintf("stub: r_path(): radius ignored\n");
+
+  cairo_new_path(CR);
+  Cell cell;
+  bool first = true;
+  for_cell(cell, points)
+  { Point p = cell->value;
+    int x = valInt(p->x)+ox;
+    int y = valInt(p->y)+oy;
+    Translate(x,y);
+    if ( first )
+    { cairo_move_to(CR, x, y);
+      first = false;
+    } else
+    { cairo_line_to(CR, x, y);
+    }
+  }
+  if ( closed )
+    cairo_close_path(CR);
+
+  if ( notNil(fill) )
+  { r_fillpattern(fill, NAME_foreground);
+    pce_cairo_set_source_color(CR, context.fill);
+    cairo_fill_preserve(CR);
+  }
+
+  if ( context.pen )
+  { pce_cairo_set_source_color(CR, context.colour);
+    cairo_set_line_width(CR, context.pen);
+    cairo_stroke(CR);
+  }
+}
+
+/**
+ * Perform an image operation with a specified operator.
+ *
+ * @param image The image to operate on.
+ * @param sx The source x-coordinate.
+ * @param sy The source y-coordinate.
+ * @param x The destination x-coordinate.
+ * @param y The destination y-coordinate.
+ * @param w The width of the area to operate on.
+ * @param h The height of the area to operate on.
+ * @param op The operation to perform.
+ */
+void
+r_op_image(Image image, int sx, int sy, int x, int y, int w, int h, Name op)
+{
+}
+
+static cairo_surface_t *
+recolor_bw_surface(cairo_surface_t* input,
+		   Colour foreground,
+		   Colour background,
+		   bool dbg)
+{ uint32_t fg, bg;
+
+  ws_named_colour(foreground);
+  ws_named_colour(background);
+  fg = valInt(foreground->rgba);
+  bg = valInt(background->rgba);
+  uint8_t bg_r = ColorRValue(bg);
+  uint8_t bg_g = ColorGValue(bg);
+  uint8_t bg_b = ColorBValue(bg);
+
+  int width = cairo_image_surface_get_width(input);
+  int height = cairo_image_surface_get_height(input);
+
+  cairo_surface_t* output =
+    cairo_image_surface_create(CAIRO_FORMAT_ARGB32, width, height);
+  if ( cairo_surface_status(output) != CAIRO_STATUS_SUCCESS )
+    return NULL;
+
+  uint32_t* in_data = (uint32_t*)cairo_image_surface_get_data(input);
+  uint32_t* out_data = (uint32_t*)cairo_image_surface_get_data(output);
+  int stride = cairo_image_surface_get_stride(input) / 4;
+
+  for (int y = 0; y < height; ++y)
+  { if ( dbg ) Cprintf("\ny=%d", y);
+    for (int x = 0; x < width; ++x)
+    { uint32_t px = in_data[y * stride + x];
+      uint8_t a = (px >> 24) & 0xFF;
+      uint8_t r = (px >> 16) & 0xFF;
+      uint8_t g = (px >> 8) & 0xFF;
+      uint8_t b = px & 0xFF;
+
+      uint32_t out_px;
+
+      if ( a == 0 )
+      { out_px = 0;
+      } else if ( r < 128 && g < 128 && b < 128 )
+      { out_px = (fg & 0xFFFFFF) | (0xff << 24);
+      } else
+      { uint8_t r = (bg_r*a)/255; /* pre-multiply alpha */
+	uint8_t g = (bg_g*a)/255;
+	uint8_t b = (bg_b*a)/255;
+	out_px = RGBA(r,g,b,a);
+      }
+
+      if ( dbg ) Cprintf(" 0x%08x->0x%08x", px, out_px);
+
+      out_data[y * stride + x] = out_px;
+    }
+  }
+  if ( dbg ) Cprintf("\n");
+
+  cairo_surface_mark_dirty(output);
+  return output;
+}
+
+
+/**
+ * Draw an image onto the display.
+ *
+ * @param image The image to draw.
+ * @param sx The source x-coordinate.
+ * @param sy The source y-coordinate.
+ * @param x The destination x-coordinate.
+ * @param y The destination y-coordinate.
+ * @param w The width of the area to draw.
+ * @param h The height of the area to draw.
+ * @param transparent Boolean indicating whether to handle transparency.
+ */
+void
+r_image(Image image, int sx, int sy,
+	int x, int y, int w, int h)
+{ cairo_surface_t *surface = pceImage2CairoSurface(image);
+  bool free_surface = false;
+
+  if ( !surface )
+    return;
+
+  if ( image->kind == NAME_bitmap &&
+       ( context.colour != BLACK_COLOUR ||
+	 context.background != WHITE_COLOUR ) )
+  { bool dbg = false;
+    DEBUG(NAME_bitmap, dbg = true);
+    if ( dbg ) Cprintf("%s: re-colouring\n", pp(image));
+    cairo_surface_t *copy = recolor_bw_surface(surface,
+					       context.colour,
+					       context.background,
+					       dbg);
+    if ( copy )
+    { surface = copy;
+      free_surface = true;
+    }
+  }
+
+  Translate(x, y);
+  NormaliseArea(x, y, w, h);
+  if ( w == 0 || h == 0 )
+    return;
+
+  DEBUG(NAME_draw,
+	Cprintf("r_image(%s, %d, %d -> %d, %d, %d, %d)\n",
+		pp(image), sx, sy, x, y, w, h));
+
+  int width  = cairo_image_surface_get_width(surface);
+  int height = cairo_image_surface_get_height(surface);
+  if ( w == width && h == height )
+  { cairo_new_path(CR);
+    cairo_set_source_surface(CR, surface, x, y);
+    cairo_paint(CR);
+  } else
+  { cairo_save(CR);
+    cairo_translate(CR, x, y);
+    cairo_scale(CR, (float)w/(float)width, (float)h/(float)height);
+    cairo_set_source_surface(CR, surface, 0, 0);
+    cairo_paint(CR);
+    cairo_restore(CR);
+  }
+
+  if ( free_surface )
+    cairo_surface_destroy(surface);
+}
+
+static bool
+r_set_fill_fgbg(Any fill, Name which)
+{ r_fillpattern(fill, which);
+  DEBUG(NAME_draw,
+	Cprintf("fill with %s->%s\n", pp(fill), pp(context.fill)));
+  if ( instanceOfObject(context.fill, ClassColour) )
+  { pce_cairo_set_source_color(CR, context.fill);
+    return true;
+  } else if ( isNil(context.fill) )
+  { cairo_set_source_rgba(CR, 0, 0, 0, 0);
+    return true;
+  }
+
+  return false;
+}
+
+static void
+r_fill_fgbg(double x, double y, double w, double h, Any fill, Name which)
+{ NormaliseArea(x, y, w, h);
+  if ( w > 0 && h > 0 )
+  { if ( r_set_fill_fgbg(fill, which) )
+    { Translate(x, y);
+      bool transparent = isNil(context.fill);
+      cairo_operator_t saved_op;
+
+      if ( transparent )
+      { saved_op = cairo_get_operator(CR);
+	cairo_set_operator(CR, CAIRO_OPERATOR_SOURCE);
+      }
+      cairo_rectangle(CR, x, y, w, h);
+      cairo_fill(CR);
+      if ( transparent )
+	cairo_set_operator(CR, saved_op);
+    } else
+    { Cprintf("stub: r_fill(%s)\n", pp(context.fill));
+    }
+  }
+}
+
+/**
+ * Clear a rectangular area on the screen.  This
+ *
+ * @param x The x-coordinate of the top-left corner of the rectangle.
+ * @param y The y-coordinate of the top-left corner of the rectangle.
+ * @param w The width of the rectangle.
+ * @param h The height of the rectangle.
+ */
+void
+r_clear(int x, int y, int w, int h)
+{ r_fill_fgbg(x, y, w, h, NAME_background, NAME_background);
+}
+
+/**
+ * Fill a rectangular area with a specified pattern.
+ *
+ * @param x The x-coordinate of the top-left corner.
+ * @param y The y-coordinate of the top-left corner.
+ * @param w The width of the rectangle.
+ * @param h The height of the rectangle.
+ * @param pattern The fill pattern or color.  If DEFAULT, use the
+ *        current colour.
+ */
+
+void
+r_fill(double x, double y, double w, double h, Any fill)
+{ r_fill_fgbg(x, y, w, h, fill, NAME_foreground);
+}
+
+
+/**
+ * Fill a polygon defined by a series of points.
+ *
+ * @param pts An array of points defining the polygon.
+ * @param n The number of points in the array.
+ */
+void
+r_fill_polygon(FPoint pts, int n)
+{ if ( n <= 0 ) return;
+
+  cairo_new_path(CR);
+
+  // 2. Set background to transparent (optional)
+  cairo_set_source_rgba(CR, 0, 0, 0, 0);
+  cairo_paint(CR);
+
+  pce_cairo_set_source_color(CR, context.fill);
+  double x = pts[0].x;
+  double y = pts[0].y;
+  Translate(x, y);
+  cairo_move_to(CR, x, y);
+  for (int i = 1; i < n; i++)
+  { double x = pts[i].x;
+    double y = pts[i].y;
+    Translate(x, y);
+    cairo_line_to(CR, x, y);
+  }
+  cairo_close_path(CR);
+  cairo_fill(CR);
+}
+
+/**
+ * Draw a caret (text cursor) at the specified position.
+ *
+ * @param cx The x-coordinate of the caret.
+ * @param cy The y-coordinate of the caret.
+ * @param font The font used for the caret.
+ */
+void
+r_caret(int cx, int cy, FontObj font)
+{
+}
+
+/**
+ * Fill a triangle defined by three points.
+ *
+ * @param x1 The x-coordinate of the first vertex.
+ * @param y1 The y-coordinate of the first vertex.
+ * @param x2 The x-coordinate of the second vertex.
+ * @param y2 The y-coordinate of the second vertex.
+ * @param x3 The x-coordinate of the third vertex.
+ * @param y3 The y-coordinate of the third vertex.
+ */
+void
+r_fill_triangle(double x1, double y1, double x2, double y2, double x3, double y3)
+{ fpoint pts[3] =
+    { {.x = x1, .y = y1 },
+      {.x = x2, .y = y2 },
+      {.x = x3, .y = y3 }
+    };
+
+  r_fill_polygon(pts, 3);
+}
+
+/**
+ * Draw a triangle defined by three points with an optional fill.
+ *
+ * @param x1 The x-coordinate of the first vertex.
+ * @param y1 The y-coordinate of the first vertex.
+ * @param x2 The x-coordinate of the second vertex.
+ * @param y2 The y-coordinate of the second vertex.
+ * @param x3 The x-coordinate of the third vertex.
+ * @param y3 The y-coordinate of the third vertex.
+ * @param fill The fill pattern or color.
+ */
+void
+r_triangle(int x1, int y1, int x2, int y2, int x3, int y3, Any fill)
+{
+}
+
+/**
+ * Set the color of a specific pixel.
+ *
+ * @param x The x-coordinate of the pixel.
+ * @param y The y-coordinate of the pixel.
+ * @param val The color value to set.
+ */
+bool
+r_pixel(int x, int y, Any val)
+{ int width  = cairo_image_surface_get_width(context.target);
+  int height = cairo_image_surface_get_height(context.target);
+  int stride = cairo_image_surface_get_stride(context.target);
+  uint8_t *data = cairo_image_surface_get_data(context.target);
+
+  assert(cairo_image_surface_get_format(context.target) == CAIRO_FORMAT_ARGB32);
+
+  if ( x >= 0 && x <= width && y >= 0 && y <= height )
+  { uint32_t *p = (uint32_t*)(data + y * stride + x * 4);
+    uint32_t rgba;
+
+    if ( instanceOfObject(val, ClassColour) )
+    { Colour c = val;
+      ws_named_colour(c);
+      rgba = (uint32_t)valInt(c->rgba);
+    } else
+    { if ( isOn(val) )
+	rgba = 0xff000000;
+      else
+	rgba = 0xffffffff;
+    }
+
+    if ( *p != rgba )
+    { *p = rgba;
+      cairo_surface_mark_dirty(context.target);
+    }
+    return true;
+  } else
+  { return false;
+  }
+}
+
+/**
+ * Invert the color of a specific pixel.
+ *
+ * @param x The x-coordinate of the pixel.
+ * @param y The y-coordinate of the pixel.
+ */
+void
+r_complement_pixel(int x, int y)
+{
+}
+
+/**
+ * Modify the current drawing context or state.
+ */
+void
+d_modify(void)
+{
+}
+
+/**
+ * Retrieve the color value of a specific pixel.
+ *
+ * @param x The x-coordinate of the pixel.
+ * @param y The y-coordinate of the pixel.
+ * @return The color value of the pixel.
+ */
+COLORRGBA
+r_get_pixel(int x, int y)
+{ int width  = cairo_image_surface_get_width(context.target);
+  int height = cairo_image_surface_get_height(context.target);
+  int stride = cairo_image_surface_get_stride(context.target);
+  unsigned char *data = cairo_image_surface_get_data(context.target);
+
+  assert(cairo_image_surface_get_format(context.target) == CAIRO_FORMAT_ARGB32);
+
+  if ( x >= 0 && x <= width && y >= 0 && y <= height )
+  { unsigned char *p = data + y * stride + x * 4;
+    uint8_t b = p[0];
+    uint8_t g = p[1];
+    uint8_t r = p[2];
+    uint8_t a = p[3];
+
+    return RGBA(r,g,b,a);
+  } else
+  { return 0;
+  }
+}
+
+/**
+ * Check if a font contains a specific character.
+ *
+ * @param f The font object.
+ * @param c The character code to check.
+ * @return Non-zero if the character is present; otherwise, zero.
+ */
+bool
+s_has_char(FontObj f, unsigned int c)
+{ if ( c > 0x10ffff )
+    return false;
+  WsFont wsf = ws_get_font(f);
+
+  return wsf && wsf->font && pango_font_has_char(wsf->font, c);
+}
+
+/**
+ * Retrieve the default character code for a font.
+ *
+ * @param font The font object.
+ * @return The default character code.
+ */
+int
+s_default_char(FontObj font)
+{ return 'x';
+}
+
+/**
+ * Retrieve the ascent (height above baseline) of a font.
+ *
+ * @param font The font object.
+ * @return The ascent value.
+ */
+double
+s_ascent(FontObj font)
+{ (void)ws_get_font(font);
+  return isNum(font->ascent) ? valNum(font->ascent) : 0.0;
+}
+
+/**
+ * Retrieve the descent (depth below baseline) of a font.
+ *
+ * @param font The font object.
+ * @return The descent value.
+ */
+double
+s_descent(FontObj font)
+{ (void)ws_get_font(font);
+  return isNum(font->descent) ? valNum(font->descent) : 0.0;
+}
+
+/**
+ * Retrieve the line height for the font.  Note that older version sum
+ * the ascent and descent.
+ *
+ * @param font The font object.
+ * @return The total height.
+ */
+double
+s_height(FontObj font)
+{ return s_ascent(font) + s_descent(font);
+}
+
+static
+cairo_t *
+ws_font_context(void)
+{ if ( context.cr )
+  { assert(context.open);
+    return context.cr;
+  }
+
+  DisplayObj d = CurrentDisplay(NIL);
+  WsDisplay wsd = d->ws_ref;
+  return wsd->hidden_cairo;
+}
+
+static void
+s_extents_utf8(const char *u, size_t ulen, FontObj font,
+	       PangoRectangle *ink, PangoRectangle *logical)
+{ cairo_t *cr = ws_font_context();
+  cairo_save(cr);
+  PangoLayout *layout = pce_cairo_set_font(cr, font);
+  pango_layout_set_text(layout, u, ulen);
+  pango_layout_get_extents(layout, ink, logical);
+  cairo_restore(cr);
+}
+
+
+static void
+s_extents(PceString s, int from, int to, FontObj font,
+	  PangoRectangle *ink, PangoRectangle *logical)
+{ string s2 = *s;
+  if ( from > s2.s_size )
+    from = s2.s_size;
+  if ( to > s2.s_size )
+    to = s2.s_size;
+  if ( to <= from )
+  { if ( ink ) memset(ink, 0, sizeof(*ink));
+    if ( logical ) memset(logical, 0, sizeof(*logical));
+    return;
+  }
+
+  if ( s2.s_iswide )
+  { s2.s_textW += from;
+  } else
+  { s2.s_textA += from;
+  }
+  s2.s_size = to-from;
+
+  size_t ulen;
+  const char *u = stringToUTF8(&s2, &ulen);
+  s_extents_utf8(u, ulen, font, ink, logical);
+}
+
+
+/**
+ * Calculate the width of a substring within a string using a specific font.
+ *
+ * @param s The string object.
+ * @param from The starting index of the substring.
+ * @param to The ending index of the substring.
+ * @param font The font object.
+ * @return The width of the substring.
+ */
+double
+str_width(PceString s, int from, int to, FontObj font)
+{ if ( to > from )
+  { PangoRectangle logical;
+
+    s_extents(s, from, to, font, NULL, &logical);
+    return logical.width/(double)PANGO_SCALE;
+  } else
+    return 0.0;
+}
+
+/**
+ * Calculate the advance width (cursor movement) of a substring within
+ * a string using a specific font.
+ *
+ * @param s The string object.
+ * @param from The starting index of the substring.
+ * @param to The ending index of the substring.
+ * @param font The font object.
+ * @return The advance width of the substring.
+ */
+double
+str_advance(PceString s, int from, int to, FontObj font)
+{ if ( to > from )
+  { PangoRectangle logical;
+
+    s_extents(s, from, to, font, NULL, &logical);
+    return P2D(logical.width);
+  } else
+    return 0.0;
+}
+
+double
+str_advance_utf8(const char *u, int ulen, FontObj font)
+{ if ( ulen > 0 )
+  { PangoRectangle logical;
+
+    s_extents_utf8(u, ulen, font, NULL, &logical);
+    return P2D(logical.width);
+  }
+
+  return 0.0;
+}
+
+/** Advance width of a charW buffer, measured as a Pango run.
+ *
+ * Unlike summing c_width() per character, this asks Pango to measure
+ * the complete sequence, so font-fallback substitution and any GPOS
+ * kerning adjustments are included.  Used by paint_line to size the
+ * highlight fill rectangle correctly.
+ */
+double
+str_advance_W(charW *s, int l, FontObj font)
+{ if ( l <= 0 )
+    return 0.0;
+  string str = { .text_union = { .textW = s },
+                 .hdr.f = { .size = l, .iswide = true, .readonly = true } };
+  return str_advance(&str, 0, l, font);
+}
+
+/** Map an x pixel offset to a character index within s[from..to).
+ *
+ * Uses the same Pango layout that renders the text, so font-fallback
+ * substitution and GPOS kerning are accounted for.  Summing c_width()
+ * per character (as a hand-written hit-test would) drifts from the
+ * real glyph positions for proportional fonts with fallback glyphs.
+ * The returned value is an absolute index into `s` in the range
+ * [from, to].  When `round` is true the result is the nearest caret
+ * position (a point past the middle of a glyph maps to the next one,
+ * as for click-to-position-caret).  When false it is the index of
+ * the glyph the point is inside (hit-test, e.g. picking a symbol).
+ */
+int
+str_x_to_index(PceString s, int from, int to, FontObj font, int x,
+	       int round)
+{ string s2 = *s;
+  if ( from > s2.s_size )
+    from = s2.s_size;
+  if ( to > s2.s_size )
+    to = s2.s_size;
+  if ( to <= from )
+    return from;
+
+  if ( s2.s_iswide )
+    s2.s_textW += from;
+  else
+    s2.s_textA += from;
+  s2.s_size = to-from;
+
+  size_t ulen;
+  const char *u = stringToUTF8(&s2, &ulen);
+
+  cairo_t *cr = ws_font_context();
+  cairo_save(cr);
+  PangoLayout *layout = pce_cairo_set_font(cr, font);
+  pango_layout_set_text(layout, u, ulen);
+
+  if ( x < 0 )
+    x = 0;
+  int byte_index = 0, trailing = 0;
+  pango_layout_xy_to_index(layout, x*PANGO_SCALE, 0,
+                           &byte_index, &trailing);
+  cairo_restore(cr);
+
+  const char *p = u + byte_index;
+  if ( round )
+  { while ( trailing-- > 0 && p < u+ulen )
+      p = g_utf8_next_char(p);
+  }
+
+  long off = g_utf8_pointer_to_offset(u, p);
+  return from + (int)off;
+}
+
+/**
+ * Retrieve the width of a specific character in a font.
+ *
+ * @param c The character code.
+ * @param font The font object.
+ * @return The width of the character.
+ * @todo: cache for fixed-width fonts
+ */
+double
+c_width(uchar_t c, FontObj font)
+{ float cw;
+
+  if ( s_cwidth(c, font, &cw) )
+  { return cw;
+  } else
+  { char s[10];
+    char *o = utf8_put_char(s, c);
+    double w = str_advance_utf8(s, o-s, font);
+    s_setcwidth(c, font, w);
+    return w;
+  }
+}
+
+void
+s_print_utf8(const char *u, size_t len, int x, int y, FontObj font)
+{ DEBUG(NAME_draw,
+	{ const char *du = u;
+	  char buf[100];
+	  if ( u[len] )
+	  { size_t dlen = len;
+	    if ( dlen > sizeof(buf)-1 )
+	      dlen = sizeof(buf)-1;
+	    memcpy(buf, u, dlen);
+	    buf[dlen] = 0;
+	    du = buf;
+	  }
+	  Cprintf("s_print_utf8(\"%s\", %d, %d, %d, %s) (color: %s)\n",
+		  du, len, x, y, pp(font), pp(context.colour));
+	});
+
+  Translate(x, y);
+  cairo_new_path(CR);
+  PangoLayout *layout = pce_cairo_set_font(CR, font);
+  pce_cairo_set_source_color(CR, context.colour);
+  /* pango_layout_get_baseline reports the baseline of whatever text
+   * is currently in the layout, so set the text first — otherwise a
+   * previous call that rendered an emoji (whose glyph font has a
+   * different baseline than the roman font) makes the next plain-text
+   * call draw a few pixels off.  Visible as the "see😀aap" selection
+   * shifting the unselected tail. */
+  pango_layout_set_text(layout, u, len);
+  int baseline = pango_layout_get_baseline(layout);
+  cairo_move_to(CR, x, y-P2D(baseline));
+  pango_cairo_show_layout(CR, layout);
+}
+
+/**
+ * Render a string of ISO-Latin-1 characters at a specified position
+ * using a specific font.
+ *
+ * @param s The array of ASCII characters.
+ * @param l The length of the character array.
+ * @param x The x-coordinate for rendering.
+ * @param y The y-coordinate for rendering.
+ * @param f The font object.
+ */
+void
+s_printA(charA *s, int l, int x, int y, FontObj font)
+{ if ( l <= 0 )
+    return;
+  string str = { .text_union = { .textA = s },
+                 .hdr.f = { .size = l,
+			    .iswide = false,
+			    .readonly = true
+			  }
+               };
+
+  size_t ulen;
+  const char *u = stringToUTF8(&str, &ulen);
+  s_print_utf8(u, ulen, x, y, font);
+}
+
+/**
+ * Render a string of wide characters  at a specified position using a
+ * specific  font.   This   is  the  print  function   used  by  class
+ * `text_image`.
+ *
+ * @param s The array of wide characters.
+ * @param l The length of the character array.
+ * @param x The x-coordinate for rendering.
+ * @param y The y-coordinate for the baseline.
+ * @param font The font object.
+ */
+void
+s_printW(charW *s, int l, int x, int y, FontObj font)
+{ if ( l <= 0 )
+    return;
+  string str = { .text_union = { .textW = s },
+                 .hdr.f = { .size = l,
+			    .iswide = true,
+			    .readonly = true
+			  }
+               };
+
+  size_t ulen;
+  const char *u = stringToUTF8(&str, &ulen);
+  s_print_utf8(u, ulen, x, y, font);
+}
+
+/**
+ * Render a PceString at a specified position using a specific font.
+ *
+ * @param s The PceString object.
+ * @param x The x-coordinate for rendering.
+ * @param y The y-coordinate for rendering.
+ * @param f The font object.
+ */
+void
+s_print(PceString s, int x, int y, FontObj f)
+{ if ( isstrA(s) )
+    s_printA(s->s_textA, s->s_size, x, y, f);
+  else
+    s_printW(s->s_textW, s->s_size, x, y, f);
+}
+
+/**
+ * Render a PceString at a specified position with alignment using a
+ * specific font.
+ *
+ * @param s The PceString object.
+ * @param x The x-coordinate for rendering.
+ * @param y The y-coordinate for rendering.
+ * @param f The font object.
+ */
+void
+s_print_aligned(PceString s, int x, int y, FontObj f)
+{ if ( s->s_size > 0 )
+  { x += 0; //lbearing(str_fetch(s, 0));
+    s_print(s, x, y, f);
+  }
+}
+
+/**
+ * Print part of a PceString at x,y
+ */
+
+static void
+str_draw_text(FontObj font, PceString s, int offset, int len, int x, int y)
+{ if ( offset >= s->s_size )
+    return;
+
+  if ( offset < 0 )
+  { len += offset;
+    offset = 0;
+  }
+
+  if ( offset + len > s->s_size )
+    len = s->s_size - offset;
+
+  if ( s->s_size > 0 )
+  { InvTranslate(x, y);			/* Hack */
+
+    if ( isstrA(s) )
+    { s_printA(s->s_textA+offset, len, x, y, font);
+    } else
+    { s_printW(s->s_textW+offset, len, x, y, font);
+    }
+  }
+}
+
+static void
+str_text(FontObj font, PceString s, int x, int y)
+{ if ( s->s_size > 0 )
+  { x += 0; //lbearing(str_fetch(s, 0));
+
+    str_draw_text(font, s, 0, s->s_size, x, y);
+  }
+}
+
+static void
+str_stext(FontObj font, PceString s, int f, int len,
+	  int x, int y, Style style)
+{ if ( len > 0 )
+  { Any ofg = NULL;
+
+    if ( notNil(style) )
+    { double w = str_advance(s, f, f+len, font);
+
+      if ( notDefault(style->background) )
+      { double a = s_ascent(font);
+	double b = s_descent(font);
+
+	r_fill(x, y-a, w, b+a, style->background);
+      }
+      if ( notDefault(style->colour) )
+	ofg = r_colour(style->colour);
+    }
+
+    str_draw_text(font, s, f, len, x, y);
+
+    if ( ofg )
+      r_colour(ofg);
+  }
+}
+
+
+
+		/********************************
+		*         MULTILINE TEXT	*
+		********************************/
+
+#define MAX_TEXT_LINES 200		/* lines in a text object */
+
+typedef struct
+{ int	x;				/* origin x offset */
+  int	y;				/* origin y offset */
+  int	width;				/* pixel width of line */
+  int	height;				/* pixel height of line */
+  string text;				/* text of the line */
+} strTextLine;
+
+/**
+ * Break a string into multiple lines.
+ */
+
+static void
+str_break_into_lines(PceString s, strTextLine *line, int *nlines, int maxlines)
+{ int here = 0;
+  int size = s->s_size;
+  int nls = 0;
+
+  *nlines = 0;
+
+  if ( size == 0 )			/* totally empty: report one line */
+  { str_cphdr(&line->text, s);
+    line->text.s_text = s->s_text;
+    line->text.s_size = 0;
+    *nlines = 1;
+    return;
+  }
+
+  for( ; here < size && nls < maxlines; line++, nls++ )
+  { int el;
+
+    str_cphdr(&line->text, s);
+    line->text.s_text = str_textp(s, here);
+
+    if ( (el = str_next_index(s, here, '\n')) >= 0 )
+    { line->text.s_size = el - here;
+      here = el + 1;
+      if ( here == size )		/* last char is newline: add a line */
+      { line++, nls++;
+	str_cphdr(&line->text, s);
+	line->text.s_text = str_textp(s, here);
+	line->text.s_size = 0;
+      }
+    } else
+    { line->text.s_size = size - here;
+      here = size;
+    }
+  }
+
+  *nlines = nls;
+}
+
+/**
+ * Given a string  broken into lines, compute the  dimensions for each
+ * of the lines given the target area and adjustment.
+ */
+
+static void
+str_compute_lines(strTextLine *lines, int nlines, FontObj font,
+		  int x, int y, int w, int h,
+		  Name hadjust, Name vadjust)
+{ int cy;
+  int th = s_height(font);
+  strTextLine *line;
+  int n;
+
+  if ( vadjust == NAME_top )
+    cy = y;
+  else if ( vadjust == NAME_center )
+    cy = y + (1 + h - nlines*th)/2;
+  else /*if ( vadjust == NAME_bottom )*/
+    cy = y + h - nlines*th;
+
+  for( n = 0, line = lines; n++ < nlines; line++, cy += th )
+  { line->y      = cy;
+    line->height = th;
+    line->width  = str_width(&line->text, 0, line->text.s_size, font);
+
+    if ( hadjust == NAME_left )
+      line->x = x;
+    else if ( hadjust == NAME_center )
+      line->x = x + (w - line->width)/2;
+    else /*if ( hadjust == NAME_right )*/
+      line->x = x + w - line->width;
+  }
+}
+
+/**
+ * Calculate the rendered size of a PceString using the specified font.
+ *
+ * @param s Pointer to the PceString object.
+ * @param font Pointer to the FontObj used for rendering.
+ * @param width Pointer to an integer where the width will be stored.
+ * @param height Pointer to an integer where the height will be stored.
+ */
+void
+str_size(PceString s, FontObj font, int *width, int *height)
+{ strTextLine lines[MAX_TEXT_LINES];
+  strTextLine *line;
+  int nlines, n;
+  int w = 0;
+
+  str_break_into_lines(s, lines, &nlines, MAX_TEXT_LINES);
+  for(n = 0, line = lines; n++ < nlines; line++)
+  { if ( line->text.s_size > 0 )
+    { int lw = str_width(&line->text, 0, line->text.s_size, font);
+
+      if ( w < lw )
+	w = lw;
+    }
+  }
+
+  *width  = w;
+  *height = nlines * s_height(font);
+}
+
+
+/**
+ * Draw a string within a specified area, applying horizontal and
+ * vertical alignment.
+ *
+ * @param s Pointer to the PceString object to be drawn.
+ * @param font Pointer to the FontObj specifying the font to use.
+ * @param x The x-coordinate of the top-left corner of the drawing area.
+ * @param y The y-coordinate of the top-left corner of the drawing area.
+ * @param w The width of the drawing area.
+ * @param h The height of the drawing area.
+ * @param hadjust Name indicating horizontal alignment (e.g., left, center, right).
+ * @param vadjust Name indicating vertical alignment (e.g., top, center, bottom).
+ * @param flags Additional flags controlling rendering behavior.
+ * @param underline is a bool or colour, defining underlining
+ * @param flags is currently unused
+ */
+void
+str_string(PceString s, FontObj font,
+	   int x, int y, int w, int h,
+	   Name hadjust, Name vadjust, Any underline, int flags)
+{ strTextLine lines[MAX_TEXT_LINES];
+  strTextLine *line;
+  int nlines, n;
+  int baseline;
+
+  if ( s->s_size == 0 )
+    return;
+
+  Translate(x, y);
+  baseline = s_ascent(font);
+  str_break_into_lines(s, lines, &nlines, MAX_TEXT_LINES);
+  str_compute_lines(lines, nlines, font, x, y, w, h, hadjust, vadjust);
+
+  for(n=0, line = lines; n++ < nlines; line++)
+  { str_text(font, &line->text, line->x, line->y+baseline);
+    if ( isOn(underline) || instanceOfObject(underline, ClassColour) )
+      r_underline(font, line->x, y+baseline, line->width, underline);
+  }
+}
+
+/**
+ * Draw a selected substring within a specified area, applying styles and alignment.
+ *
+ * @param s Pointer to the PceString object containing the text.
+ * @param font Pointer to the FontObj specifying the font to use.
+ * @param f The starting index of the selection.
+ * @param t The ending index of the selection.
+ * @param style The Style to apply to the selected text.
+ * @param x The x-coordinate of the top-left corner of the drawing area.
+ * @param y The y-coordinate of the top-left corner of the drawing area.
+ * @param w The width of the drawing area.
+ * @param h The height of the drawing area.
+ * @param hadjust Name indicating horizontal alignment.
+ * @param vadjust Name indicating vertical alignment.
+ */
+void
+str_selected_string(PceString s, FontObj font,
+		    int f, int t, Style style,
+		    int x, int y, int w, int h,
+		    Name hadjust, Name vadjust)
+{ strTextLine lines[MAX_TEXT_LINES];
+  strTextLine *line;
+  int nlines, n;
+  int baseline;
+
+  if ( s->s_size == 0 )
+    return;
+
+  Translate(x, y);
+  baseline = s_ascent(font);
+  str_break_into_lines(s, lines, &nlines, MAX_TEXT_LINES);
+  str_compute_lines(lines, nlines, font, x, y, w, h, hadjust, vadjust);
+
+  int here = 0;
+  for(n=0, line = lines; n++ < nlines; line++)
+  { int len = line->text.s_size;
+
+    if ( t <= here || f >= here+len )	/* outside */
+    { str_text(font, &line->text, line->x, line->y+baseline);
+    } else
+    { int sf, sx, sl;
+
+      sf = (f <= here     ?      0 : f-here);
+      sl = (t >= here+len ? len-sf : t-here-sf);
+      sx = str_advance(&line->text, 0, sf, font);
+
+      str_stext(font, &line->text, 0,  sf, line->x,    line->y+baseline, NIL);
+      str_stext(font, &line->text, sf, sl, line->x+sx, line->y+baseline, style);
+      if ( sf+sl < len )
+      { int a  = sf+sl;
+	int ax = sx + str_advance(&line->text, sf, a, font);
+
+	str_stext(font, &line->text, a, len-a, line->x+ax, line->y+baseline, NIL);
+      }
+    }
+
+    here += len + 1;			/* 1 for the newline */
+  }
+}
+
+/**
+ * Draws a string, just like str_string(), but underscores the first
+ * character matching the accelerator (case-insensitive).
+ */
+
+static void
+str_draw_text_lines(int acc, FontObj font,
+		    int nlines, strTextLine *lines,
+		    int ox, int oy)
+{ strTextLine *line;
+  int n;
+  int baseline = s_ascent(font);
+
+  for(n=0, line = lines; n++ < nlines; line++)
+  { str_text(font, &line->text, line->x+ox, line->y+baseline+oy);
+
+    if ( acc )
+    { int cx = line->x+ox;
+      int cn;
+
+      cx += 0; // lbearing(str_fetch(&line->text, 0));
+
+      for(cn=0; cn<line->text.s_size; cn++)
+      { int c  = str_fetch(&line->text, cn);
+
+	if ( (int)tolower(c) == acc )
+	{ cx += str_advance(&line->text, 0, cn, font);
+	  int cw = str_width(&line->text, cn, cn+1, font);
+	  int cy = line->y+baseline+oy;
+
+	  r_underline(font, cx, cy, cw, DEFAULT);
+	  acc = 0;
+	  break;
+	}
+      }
+    }
+  }
+}
+
+
+/**
+ * Draw a label with an optional accelerator key indicator within a
+ * specified area.
+ *
+ * @param s Pointer to the PceString object representing the label text.
+ * @param acc The index of the character to underline as the accelerator key.
+ * @param font Pointer to the FontObj specifying the font to use.
+ * @param x The x-coordinate of the top-left corner of the drawing area.
+ * @param y The y-coordinate of the top-left corner of the drawing area.
+ * @param w The width of the drawing area.
+ * @param h The height of the drawing area.
+ * @param hadjust Name indicating horizontal alignment.
+ * @param vadjust Name indicating vertical alignment.
+ * @param flags Additional flags controlling rendering behavior.
+ */
+void
+str_label(PceString s, int acc, FontObj font,
+	  int x, int y, int w, int h,
+	  Name hadjust, Name vadjust, int flags)
+{ strTextLine lines[MAX_TEXT_LINES];
+  int nlines;
+
+  if ( s->s_size == 0 )
+    return;
+
+  Translate(x, y);
+  str_break_into_lines(s, lines, &nlines, MAX_TEXT_LINES);
+  str_compute_lines(lines, nlines, font, x, y, w, h, hadjust, vadjust);
+
+  if ( flags & LABEL_INACTIVE )
+  { Colour old = context.colour; /* ignore "fixed_colours" */
+    context.colour = WHITE_COLOUR;
+
+    str_draw_text_lines(acc, font, nlines, lines, 1, 1);
+    context.colour = ws_3d_grey();
+    str_draw_text_lines(acc, font, nlines, lines, 0, 0);
+    context.colour = old;
+  } else
+    str_draw_text_lines(acc, font, nlines, lines, 0, 0);
+}

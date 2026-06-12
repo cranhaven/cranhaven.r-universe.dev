@@ -1,0 +1,359 @@
+#!/bin/bash
+
+if [ ! -f VERSION ]; then
+  echo "ERROR: must be executed from top directory"
+  exit 1
+fi
+
+version=`cat VERSION`
+pdf_build_dir=build.pdf
+macos_builddir=build.bundle-gcc
+PUBLIC="plweb@oehoe:srv/plweb/data/download/devel"
+export MACOSX_DEPLOYMENT_TARGET=10.15
+
+build_pdf()
+{ rm -rf build.pdf
+  mkdir build.pdf
+  ( cd build.pdf
+    cmake -DBUILD_PDF_DOCUMENTATION=ON -G Ninja ..
+    ninja
+  )
+}
+
+# Build the Windows version using the Docker from
+# https://github.com/SWI-Prolog/docker-swipl-build-mingw.git
+
+MINGW_DOCKER_DIR=$HOME/src/docker/docker-swipl-build-mingw
+
+build_win64()
+{ make -C $MINGW_DOCKER_DIR SWIPLSRC=`pwd` win64
+}
+
+build_macos_universal_binary()
+{ buildir=${1-build.macosx-fat}
+  rm -rf $buildir
+  mkdir $buildir
+  ( cd $buildir
+    PREFIX=$HOME/deps
+    export PKG_CONFIG_LIBDIR="/usr/lib/pkgconfig:$PREFIX/lib/pkgconfig"
+    export CMAKE_PREFIX_PATH="$PREFIX:/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr"
+    CUFLAGS="-arch x86_64"
+    export CFLAGS="-Wno-nullability-completeness $CUFLAGS"
+    export CXXFLAGS="$CFLAGS"
+    export PATH=$HOME/deps/bin:$PATH
+    MACOSX_DEPLOYMENT_TARGET=$MACOSX_DEPLOYMENT_TARGET \
+	cmake -DCMAKE_BUILD_TYPE=Release \
+	      -DSWIPL_CC=cc -DSWIPL_CXX=c++ \
+	      -DMACOSX_DEPENDENCIES_FROM=$HOME/deps \
+	      -DPKG_CONFIG_EXECUTABLE=/opt/local/bin/pkg-config \
+              -DMACOS_UNIVERSAL_BINARY=ON \
+              -DBUILD_MACOS_BUNDLE=ON \
+	      -DJAVA_COMPATIBILITY=ON \
+	      -DCMAKE_FRAMEWORK_PATH=/Library/Frameworks \
+	      -G Ninja ..
+    ninja
+    cpack
+  )
+}
+
+build_macos_gcc_arch()
+{ arch=$1
+  builddir=$2
+
+  case $arch in
+      arm64)
+	  GCCDIR=/opt/local/bin
+	  ;;
+      x86_64)
+	  GCCDIR=$HOME/x86_64/bin
+	  ;;
+      *)
+	  echo "ERROR: Unknown architecture $arch"
+	  return 1
+  esac
+
+  if [ -z "$builddir" ]; then
+      echo "ERROR: Usage: $0 arch builddir"
+      return 1
+  fi
+
+  rm -rf $builddir
+  mkdir $builddir
+  ( cd $builddir
+    PREFIX=$HOME/deps
+    export PKG_CONFIG_LIBDIR="/usr/lib/pkgconfig:$PREFIX/lib/pkgconfig"
+    export CMAKE_PREFIX_PATH="$PREFIX:/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr"
+    export PATH=$HOME/deps/bin:$GCCDIR:$PATH
+    export CC=gcc-mp-15
+    export CXX=g++-mp-15
+    MACOSX_DEPLOYMENT_TARGET=$MACOSX_DEPLOYMENT_TARGET \
+	cmake -DCMAKE_BUILD_TYPE=PGO \
+	      -DSWIPL_CC=cc -DSWIPL_CXX=c++ \
+	      -DMACOSX_DEPENDENCIES_FROM=$HOME/deps \
+	      -DPKG_CONFIG_EXECUTABLE=/opt/local/bin/pkg-config \
+              -DMACOS_UNIVERSAL_BINARY=ON \
+              -DBUILD_MACOS_BUNDLE=ON \
+	      -DJAVA_COMPATIBILITY=ON \
+	      -DCMAKE_FRAMEWORK_PATH=/Library/Frameworks \
+	      -G Ninja ..
+    ninja
+  )
+}
+
+build_macos_gcc_universal()
+{ # Build a signed and notarized universal (arm64 + x86_64) .pkg.
+  #
+  # Requires:
+  #   $APPLEID  -- the Apple ID associated with your Developer ID
+  #                (e.g., jan@swi-prolog.org).  Used as a sanity check
+  #                that signing/notarization is intended; the actual
+  #                credentials are read from the notarytool keychain
+  #                profile (see below).
+  #
+  # The function looks up the active Developer ID Application and
+  # Developer ID Installer identities from the login keychain via
+  # `security find-identity', and uses a notarytool keychain profile
+  # (default name: swipl-notary; override via $NOTARYTOOL_PROFILE)
+  # set up once with `xcrun notarytool store-credentials'.  See
+  # doc/MacOSXInstaller.md for the full setup walk-through.
+
+  if [ -z "$APPLEID" ]; then
+      cat <<_EOF_ >&2
+ERROR: \$APPLEID is not set.  Set it to the Apple ID tied to your
+       Developer ID, e.g.:  export APPLEID=jan@swi-prolog.org.
+       See doc/MacOSXInstaller.md for the full signing/notarization
+       setup.
+_EOF_
+      return 1
+  fi
+
+  app_id=$(security find-identity -v -p codesigning |
+           awk -F'"' '/Developer ID Application:/ {print $2; exit}')
+  pkg_id=$(security find-identity -v -p basic |
+           awk -F'"' '/Developer ID Installer:/ {print $2; exit}')
+  if [ -z "$app_id" ] || [ -z "$pkg_id" ]; then
+      cat <<_EOF_ >&2
+ERROR: Developer ID Application and/or Installer identities are not
+       in your login keychain.  Inspect with:
+           security find-identity -v -p basic
+       See doc/MacOSXInstaller.md to (re-)issue the certificates.
+_EOF_
+      return 1
+  fi
+
+  PROFILE=${NOTARYTOOL_PROFILE:-swipl-notary}
+
+  echo "APPLEID:  $APPLEID"
+  echo "app id:   $app_id"
+  echo "pkg id:   $pkg_id"
+  echo "notary:   $PROFILE"
+
+  # The build takes 10--30 minutes and uses private keys from the
+  # login keychain in three separate phases (codesign during the
+  # fixup pass, productbuild after pkgbuild, and codesign again on
+  # the resulting framework).  To avoid a Security Server interaction
+  # prompt --- which fails outright outside an Aqua session, and is
+  # awkward even inside one --- pre-unlock the keychain once at the
+  # start of the run and propagate the password via $KEYCHAIN_PASSWORD
+  # to the install hook.  If the password is not already in the
+  # environment, prompt for it silently.  `stty -echo' is portable
+  # across bash and zsh; `read -s' is not.
+  if [ -z "$KEYCHAIN_PASSWORD" ]; then
+      printf "Login keychain password: " >&2
+      stty -echo
+      IFS= read -r KEYCHAIN_PASSWORD
+      stty echo
+      printf "\n" >&2
+      export KEYCHAIN_PASSWORD
+  fi
+  security unlock-keychain \
+      -p "$KEYCHAIN_PASSWORD" \
+      ~/Library/Keychains/login.keychain-db || return 1
+  # Refresh the partition list so apple-tool / apple / unsigned
+  # callers can use the private keys without a confirmation dialog.
+  security set-key-partition-list \
+      -S apple-tool:,apple:,unsigned: \
+      -s \
+      -k "$KEYCHAIN_PASSWORD" \
+      ~/Library/Keychains/login.keychain-db >/dev/null || return 1
+
+  buildir=${1-build.fat-gcc}
+  buildir_x86_64=$buildir-x86_64
+
+  # Compute and clean the install staging prefix.  cmake/Install.cmake
+  # honours $SWIPL_INSTALL_PREFIX with @builddir@ substitution; we use
+  # the same template here (default: $HOME/cmake/@builddir@) so the
+  # cleanup matches whatever the build is about to install into.
+  # Guarded by the presence of our framework/app under the prefix so
+  # we never rm anything that doesn't look like a previous install.
+  prefix_template=${SWIPL_INSTALL_PREFIX:-$HOME/cmake/@builddir@}
+  install_prefix=$(echo "$prefix_template" | sed "s|@builddir@|$buildir|g")
+  if [ -d "$install_prefix/Library/Frameworks/swipl.framework" ] || \
+     [ -d "$install_prefix/Applications/swipl-win.app" ]; then
+      echo "Cleaning previous install at $install_prefix"
+      rm -rf "$install_prefix"
+  fi
+
+  build_macos_gcc_arch x86_64 $buildir_x86_64 || return 1
+  build_macos_gcc_arch arm64 $buildir || return 1
+  ( cd $buildir
+    ../scripts/macos-import-x86_64.sh ../$buildir_x86_64 || return 1
+    cmake -DSWIPL_CODESIGN_IDENTITY="$app_id" \
+          -DSWIPL_PKGBUILD_IDENTITY="$pkg_id" \
+          -DSWIPL_NOTARYTOOL_PROFILE="$PROFILE" \
+          . || return 1
+    ninja pkg
+  )
+}
+
+build_macos_gcc()
+{ buildir=${1-build.macosx-gcc}
+
+  rm -rf $builddir
+  mkdir $builddir
+  ( cd $builddir
+    PREFIX=$HOME/deps
+    export PKG_CONFIG_LIBDIR="/usr/lib/pkgconfig:$PREFIX/lib/pkgconfig"
+    export CMAKE_PREFIX_PATH="$PREFIX:/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr"
+    export CFLAGS="-Wno-nullability-completeness $CUFLAGS"
+    export CXXFLAGS="$CFLAGS"
+    export PATH=$HOME/deps/bin:$PATH
+    export CC=gcc-mp-15
+    export CXX=g++-mp-15
+    MACOSX_DEPLOYMENT_TARGET=$MACOSX_DEPLOYMENT_TARGET \
+	cmake -DCMAKE_BUILD_TYPE=PGO \
+	      -DSWIPL_CC=cc -DSWIPL_CXX=c++ \
+	      -DMACOSX_DEPENDENCIES_FROM=$HOME/deps \
+	      -DPKG_CONFIG_EXECUTABLE=/opt/local/bin/pkg-config \
+              -DBUILD_MACOS_BUNDLE=ON \
+	      -DJAVA_COMPATIBILITY=ON \
+	      -DCMAKE_FRAMEWORK_PATH=/Library/Frameworks \
+	      -G Ninja ..
+    ninja
+    cpack
+  )
+}
+
+build_source()
+{ ./scripts/make-src-tape
+}
+
+ubuntu()
+{ $HOME/src/docker/ubuntu/run.sh -C $(pwd) $*
+}
+
+reset_nox()
+{ git -C debian checkout nox
+  git -C debian reset --hard origin/nox-devel
+  git submodule update debian
+}
+
+# Build a single PPA in case something went wrong and we need
+# to retry.
+build_PPA()
+{ distro=$1
+
+  git checkout ppa
+  git rebase master
+  ubuntu ./scripts/make-ppa --distro=$distro --push
+  git checkout master
+  git submodule update debian
+}
+
+# Build all PPAs
+build_PPAs()
+{ reset_nox
+  git branch -D ppa || true
+  git checkout -b ppa
+  for distro in $(./scripts/make-ppa --list-distros); do
+    ubuntu ./scripts/make-ppa --distro=$distro --push
+  done
+  git checkout master
+  git submodule update debian
+}
+
+is_clean_release()
+{ if [ V${version} != $(git describe) ]; then
+    echo "ERROR: Git tag is inconsistent with release"
+    return 1
+  fi
+  if [ ! -z "$(git diff -q)" ]; then
+    echo "ERROR: Working directory is dirty"
+    return 1
+  fi
+}
+
+list_file()
+{ if [ -f "$1" ]; then
+     ls -l "$1"
+  fi
+}
+
+list_built()
+{ if [ $(uname) = Darwin ]; then
+    list_file $macos_builddir/swipl-${version}-1.fat.dmg
+  else
+    ls -l build.win64/swipl-${version}-1.x64.exe
+    ls -l build.pdf/man/SWI-Prolog-$version.pdf
+    ls -l ../swipl-$version.tar.gz
+  fi
+}
+
+build()
+{ is_clean_release && force_build
+}
+
+force_build()
+{ if [ $(uname) = Darwin ]; then
+    if uname -a | grep arm64 > /dev/null; then
+      build_macos_gcc_universal $macos_builddir
+    else
+      build_macos_gcc $macos_builddir
+    fi
+  else
+    build_pdf
+    build_win64
+    build_source
+    [ "$PPA" = no ] || build_PPAs
+  fi
+
+  list_built
+}
+
+################
+# Uploading
+
+upload_file()
+{ if [ -f "$2" ]; then
+    rsync -Pvu "$2" ${PUBLIC}/$1
+  fi
+}
+
+upload_win64()
+{ upload_file bin build.win64/swipl-${version}-1.x64.exe
+}
+
+upload_macosx()
+{ if [ -f $macos_builddir/swipl-${version}-1.fat.dmg ]; then
+    echo "Uploading MacOS binary version"
+    upload_file bin $macos_builddir/swipl-${version}-1.fat.dmg
+  fi
+}
+
+upload_pdf()
+{ upload_file doc build.pdf/man/SWI-Prolog-$version.pdf
+}
+
+upload_src()
+{ upload_file src ../swipl-$version.tar.gz
+}
+
+upload()
+{ if [ $(uname) = Darwin ]; then
+    upload_macosx
+  else
+    upload_win64
+    upload_pdf
+    upload_src
+  fi
+}

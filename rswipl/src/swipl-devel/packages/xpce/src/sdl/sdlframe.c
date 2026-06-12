@@ -1,0 +1,1124 @@
+/*  Part of XPCE --- The SWI-Prolog GUI toolkit
+
+    Author:        Jan Wielemaker
+    E-mail:        jan@swi-prolog.org
+    WWW:           https://www.swi-prolog.org
+    Copyright (c)  2025, SWI-Prolog Solutions b.v.
+    All rights reserved.
+
+    Redistribution and use in source and binary forms, with or without
+    modification, are permitted provided that the following conditions
+    are met:
+
+    1. Redistributions of source code must retain the above copyright
+       notice, this list of conditions and the following disclaimer.
+
+    2. Redistributions in binary form must reproduce the above copyright
+       notice, this list of conditions and the following disclaimer in
+       the documentation and/or other materials provided with the
+       distribution.
+
+    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+    "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+    LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS
+    FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE
+    COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+    INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+    BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+    LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+    CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+    LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
+    ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+    POSSIBILITY OF SUCH DAMAGE.
+*/
+
+#include <h/kernel.h>
+#include <h/graphics.h>
+#include "sdldisplay.h"
+#include "sdlframe.h"
+#include "sdlwindow.h"
+#include "sdlcolour.h"
+#include "sdlevent.h"
+#include "sdluserevent.h"
+#include "sdlcursor.h"
+#include <math.h>
+
+#define MainWindow(fr)	     ( isNil(fr->members->head) ? (Any) fr : \
+			       fr->members->head->value )
+
+bool		ws_draw_frame(FrameObj fr);
+
+
+WsFrame
+sdl_frame(FrameObj fr, bool create)
+{ WsFrame f;
+
+  if ( !(f=fr->ws_ref) && create )
+  { f = fr->ws_ref = alloc(sizeof(*f));
+    memset(f, 0, sizeof(*f));
+  }
+
+  return f;
+}
+
+
+/**
+ * Check if the frame has been created.
+ *
+ * @param fr Pointer to the FrameObj to check.
+ * @return SUCCEED if the frame is created; otherwise, FAIL.
+ */
+status
+ws_created_frame(FrameObj fr)
+{ WsFrame f = sdl_frame(fr, false);
+
+  return f && f->ws_window;
+}
+
+/**
+ * Uncreate the windows  in a frame after we unmap  the frame.  We can
+ * leave the window  backing in place (we could also  destroy it), but
+ * we must delete the SDL texture  as that is connected to the frame's
+ * texture.
+ */
+
+static void
+uncreate_window_frame(PceWindow sw)
+{ ASSERT_SDL_MAIN();
+  WsWindow wsw = sw->ws_ref;
+
+  if ( wsw->texture )
+  { SDL_DestroyTexture(wsw->texture);
+    wsw->texture = NULL;
+  }
+
+  if ( instanceOfObject(sw, ClassWindowDecorator) )
+  { WindowDecorator dw = (WindowDecorator)sw;
+    uncreate_window_frame(dw->window);
+  }
+  if ( notNil(sw->subwindows) && !emptyChain(sw->subwindows) )
+  { Cell cell;
+
+    for_cell(cell, sw->subwindows)
+      uncreate_window_frame(cell->value);
+  }
+}
+
+static void
+uncreate_windows_frame(FrameObj fr)
+{ Cell cell;
+  for_cell(cell, fr->members)
+  { uncreate_window_frame(cell->value);
+  }
+}
+
+/**
+ * Uncreate or destroy the specified frame.
+ *
+ * @param fr Pointer to the FrameObj to uncreate.
+ */
+void
+ws_uncreate_frame(FrameObj fr)
+{ WsFrame f = sdl_frame(fr, false);
+
+  if ( f && f->ws_window )
+  { ASSERT_SDL_MAIN();
+    deleteChain(ChangedFrames, fr);
+    SDL_DestroyRenderer(f->ws_renderer);
+    SDL_DestroyWindow(f->ws_window);
+    unalloc(sizeof(*f), f);
+    fr->ws_ref = NULL;
+    uncreate_windows_frame(fr);
+  }
+
+  ws_event_destroyed_target(fr);
+}
+
+static SDL_Window *
+sdl_parent_window(FrameObj fr, FrameObj *frp)
+{ Any pfr = fr->transient_for;
+
+  if ( isNil(pfr) )
+    pfr = getAttributeObject(fr, NAME_parent);
+  if ( pfr && instanceOfObject(pfr, ClassFrame) )
+  { if ( frp )
+      *frp = pfr;
+    WsFrame pf = sdl_frame(pfr, false);
+    if ( pf )
+      return pf->ws_window;
+  }
+
+  return NULL;
+}
+
+/**
+ * Create the specified frame.
+ *
+ * @param fr Pointer to the FrameObj to create.
+ * @return SUCCEED on successful creation; otherwise, FAIL.
+ */
+status
+ws_create_frame(FrameObj fr)
+{ ASSERT_SDL_MAIN();
+  SDL_Window *win = NULL;
+  FrameObj pfr = NIL;
+  SDL_Window *parent = sdl_parent_window(fr, &pfr);
+  int x = valInt(fr->area->x);
+  int y = valInt(fr->area->y);
+  int w = valInt(fr->area->w);
+  int h = valInt(fr->area->h);
+  bool focusable = true;
+
+  if ( fr->kind == NAME_popup && parent )
+  { focusable = false;
+    SDL_PropertiesID props = SDL_CreateProperties();
+    SDL_SetPointerProperty(props, SDL_PROP_WINDOW_CREATE_PARENT_POINTER,
+			   parent);
+    SDL_SetBooleanProperty(props, SDL_PROP_WINDOW_CREATE_MENU_BOOLEAN, true);
+    SDL_SetBooleanProperty(props, SDL_PROP_WINDOW_CREATE_HIDDEN_BOOLEAN, true);
+    SDL_SetBooleanProperty(props, SDL_PROP_WINDOW_CREATE_FOCUSABLE_BOOLEAN, false);
+#if defined(__APPLE__) && defined(SDL_PROP_WINDOW_CREATE_CONSTRAIN_POPUP_BOOLEAN)
+    /* SDL on MacOS does not handle popup placement correctly on secondary displays */
+    SDL_SetBooleanProperty(props, SDL_PROP_WINDOW_CREATE_CONSTRAIN_POPUP_BOOLEAN, false);
+#endif
+    SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_X_NUMBER, x);
+    SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_Y_NUMBER, y);
+    SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_WIDTH_NUMBER, w);
+    SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_HEIGHT_NUMBER, h);
+#if O_HDP
+    SDL_SetBooleanProperty(props, SDL_PROP_WINDOW_CREATE_HIGH_PIXEL_DENSITY_BOOLEAN,
+			   true);
+#endif
+
+    win = SDL_CreateWindowWithProperties(props);
+    SDL_DestroyProperties(props);
+#ifdef __APPLE__
+    if ( win )
+      SDL_SetWindowPosition(win, x, y);
+#endif
+  } else
+  {
+#if O_HDPX
+    float scale = ws_pixel_density_display(fr);
+    DEBUG(NAME_sdl, Cprintf("%s: scale = %.2f\n", pp(fr), scale));
+    x = x/scale; y = y/scale; w = w/scale; h = h/scale;
+#endif
+
+    DEBUG(NAME_sdl, Cprintf("Create %s as transient for %p at %d %d %dx%d\n",
+			    pp(fr), parent, x, y, w, h));
+
+
+    SDL_PropertiesID props = SDL_CreateProperties();
+    SDL_SetStringProperty(props, SDL_PROP_WINDOW_CREATE_TITLE_STRING,
+			  nameToUTF8(fr->label));
+    SDL_SetBooleanProperty(props, SDL_PROP_WINDOW_CREATE_HIDDEN_BOOLEAN, true);
+    SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_WIDTH_NUMBER, w);
+    SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_HEIGHT_NUMBER, h);
+    SDL_SetBooleanProperty(props, SDL_PROP_WINDOW_CREATE_RESIZABLE_BOOLEAN,
+			   fr->can_resize == ON);
+#if O_HDP
+    SDL_SetBooleanProperty(props, SDL_PROP_WINDOW_CREATE_HIGH_PIXEL_DENSITY_BOOLEAN,
+			   true);
+#endif
+    if ( parent )
+    { SDL_SetPointerProperty(props, SDL_PROP_WINDOW_CREATE_PARENT_POINTER,
+			     parent);
+    }
+
+    Area da = fr->display->area;	/* work_area is unreliable */
+
+    if ( isOn(fr->placed) )
+    {
+#ifdef __WINDOWS__
+      x += GetSystemMetrics(SM_CXBORDER);
+      y += GetSystemMetrics(SM_CYBORDER) + GetSystemMetrics(SM_CYCAPTION);
+#endif
+      x += valInt(da->x);
+      y += valInt(da->y);
+      DEBUG(NAME_frame,
+	    Cprintf("%s: passing position %d,%d\n", pp(fr), x, y));
+      SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_X_NUMBER, x);
+      SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_Y_NUMBER, y);
+    } else
+    { x = valInt(da->x) + (valInt(da->w)-w)/2;
+      y = valInt(da->y) + (valInt(da->h)-h)/2;
+      SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_X_NUMBER, x);
+      SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_Y_NUMBER, y);
+    }
+    win = SDL_CreateWindowWithProperties(props);
+    SDL_DestroyProperties(props);
+  }
+
+  if ( win )
+  { SDL_Renderer *renderer = SDL_CreateRenderer(win, NULL);
+    assert(renderer);
+    SDL_RenderPresent(renderer); /* Probably temporary */
+
+    WsFrame f = sdl_frame(fr, true);
+    f->ws_window = win;
+    f->ws_renderer = renderer;
+    f->ws_id = SDL_GetWindowID(win);
+#ifdef __WINDOWS__
+    SDL_PropertiesID props = SDL_GetWindowProperties(win);
+    f->hwnd = SDL_GetPointerProperty(
+      props,
+      SDL_PROP_WINDOW_WIN32_HWND_POINTER,
+      NULL);
+#endif
+
+    DEBUG(NAME_sdl,
+	  Cprintf("Registered window %p with id %d\n", win, f->ws_id));
+
+    ws_draw_frame(fr);
+    SDL_ShowWindow(win);
+    if ( focusable )
+      SDL_RaiseWindow(win);
+
+    succeed;
+  }
+
+  return errorPce(fr, NAME_xOpen, fr->display);
+}
+
+/**
+ * Translate a SDL window id into a frame object.  For now this simply
+ * walks all frames.  That may  actually be good enough, especially if
+ * we would cache the frame that got the last event.
+ *
+ * @return Frame for id or NULL
+ */
+
+FrameObj
+wsid_to_frame(SDL_WindowID id)
+{ DisplayManager dm = TheDisplayManager();
+  Cell c1;
+
+  for_cell(c1, dm->members)
+  { DisplayObj d = c1->value;
+    Cell c2;
+
+    for_cell(c2, d->frames)
+    { FrameObj fr = c2->value;
+      WsFrame f = sdl_frame(fr, false);
+      if ( f && f->ws_id == id )
+	return fr;
+    }
+  }
+
+  fail;
+}
+
+static bool
+frame_displayed(FrameObj fr, BoolObj val)
+{ Cell cell;
+
+  for_cell(cell, fr->members)
+  { PceWindow sw = cell->value;
+    send(sw, NAME_displayed, val, EAV);
+  }
+
+  return true;
+}
+
+/**
+ * Find  the x,y  offset of  a window,  possibly the  frame itself,  a
+ * direct window, a  window inside a decorator or a  subwindow of some
+ * other window, relative to the frame.
+ *
+ * @returns `false` if `window` is not displayed on `fr`
+ * @todo  We   should  unify  the  subwindow   notion  between  window
+ * decorators and "normal" subwindows.
+ */
+
+static bool
+ws_window_frame_position_(Any window, FrameObj fr, float *ox, float *oy)
+{ if ( window == fr )
+    return true;
+  if ( instanceOfObject(window, ClassFrame) )
+    return false;
+
+  if ( instanceOfObject(window, ClassWindow) )
+  { PceWindow sw = window;
+    if ( notNil(sw->frame) )
+    { if ( sw->frame == fr )
+      { *ox += valNum(sw->area->x);
+	*oy += valNum(sw->area->y);
+	return true;
+      }
+      return false;
+    }
+
+    if ( notNil(sw->parent) )
+    { PceWindow me = DEFAULT;
+      Int x, y;
+      get_absolute_xy_graphical((Graphical)sw, (Device *)&me, &x, &y);
+      assert(me == sw->parent);
+      *ox += valNum(x);
+      *oy += valNum(y);
+      return ws_window_frame_position_(sw->parent, fr, ox, oy);
+    }
+
+    if ( instanceOfObject(sw->device, ClassWindowDecorator) )
+    { *ox += valNum(sw->area->x);
+      *oy += valNum(sw->area->y);
+
+      return ws_window_frame_position_(sw->device, fr, ox, oy);
+    }
+  }
+
+  Cprintf("ws_window_frame_position(%s) failed\n", pp(window));
+  return false;
+}
+
+bool
+ws_window_frame_position(Any window, FrameObj fr, float *ox, float *oy)
+{ float x = *ox, y = *oy;
+  if ( ws_window_frame_position_(window, fr, &x, &y) )
+  { *ox = x;
+    *oy = y;
+    return true;
+  }
+
+  return false;
+}
+
+#define Area2FRect(a)			\
+  { valNum(a->x), valNum(a->y),		\
+    valNum(a->w), valNum(a->h)		\
+  }
+#define AreaSize2FRect(a)		\
+  { 0.0f, 0.0f,				\
+    valNum(a->w), valNum(a->h)		\
+  }
+
+#define scaleFRect(r, scale)		\
+  do					\
+  { r.x *= scale;			\
+    r.y *= scale;			\
+    r.w *= scale;			\
+    r.h *= scale;			\
+  } while(0)
+
+
+typedef struct
+{ float x;
+  float y;
+} foffset;
+
+static void*
+ws_draw_resize_area_frame(Any ctx, TileObj t, Int x, Int y, Int w, Int h)
+{ ASSERT_SDL_MAIN();
+  FrameObj fr = ctx;
+  WsFrame wfr = fr->ws_ref;
+  float x1, y1, x2, y2;
+
+  //Cprintf("Resize area %s: %d %d %d %d\n", pp(fr),
+  //valInt(x), valInt(y), valInt(w), valInt(h));
+
+  if ( t->super->orientation == NAME_horizontal )
+  { x1 = valNum(x) + valNum(w)/2.0;
+    y1 = valNum(y);
+    x2 = x1;
+    y2 = valInt(y) + valNum(h);
+  } else
+  { x1 = valNum(x);
+    y1 = valNum(y) + valNum(h)/2.0;
+    x2 = valNum(x) + valNum(w);
+    y2 = y1;
+  }
+  float scale = SDL_GetWindowPixelDensity(wfr->ws_window);
+  x1 = rintf(x1*scale);
+  y1 = rintf(y1*scale);
+  x2 = rintf(x2*scale);
+  y2 = rintf(y2*scale);
+
+  SDL_RenderLine(wfr->ws_renderer, x1, y1, x2, y2);
+
+  return NULL;			/* continue */
+}
+
+static void
+ws_draw_resize_frame(FrameObj fr)
+{ ASSERT_SDL_MAIN();
+  TileObj tile = getTileFrame(fr);
+
+  if ( tile )
+  { WsFrame wfr = fr->ws_ref;
+    Colour fg = fr->display->foreground;
+    SDL_Color c = pceColour2SDL_Color(fg);
+
+    SDL_SetRenderDrawColor(wfr->ws_renderer, c.r, c.g, c.b, c.a);
+    forResizeAreaTile(tile, ws_draw_resize_area_frame, fr);
+  }
+}
+
+
+static void
+ws_draw_window(FrameObj fr, PceWindow sw, foffset *off)
+{ WsFrame  wfr = fr->ws_ref;
+  WsWindow wsw = sw->ws_ref;
+
+  if ( wsw )
+  { ASSERT_SDL_MAIN();
+    Area a = sw->area;
+    SDL_FRect dstrect = Area2FRect(a);
+    float scale = SDL_GetWindowPixelDensity(wfr->ws_window);
+
+    dstrect.x += off->x;
+    dstrect.y += off->y;
+    scaleFRect(dstrect, scale);
+    DEBUG(NAME_sdl,
+	  Cprintf("Draw %s in %s %d %d %d %d\n",
+		  pp(sw), pp(fr),
+		  valInt(a->x), valInt(a->y), valInt(a->w), valInt(a->h)));
+
+    SDL_Color  bg = pceColour2SDL_Color(sw->background);
+    SDL_SetRenderDrawColor(wfr->ws_renderer, bg.r, bg.g, bg.b, bg.a);
+    SDL_RenderRect(wfr->ws_renderer, &dstrect);
+
+    cairo_surface_flush(wsw->backing);
+    int width    = cairo_image_surface_get_width(wsw->backing);
+    int height   = cairo_image_surface_get_height(wsw->backing);
+    int stride   = cairo_image_surface_get_stride(wsw->backing);
+    Uint32 *data = (Uint32 *)cairo_image_surface_get_data(wsw->backing);
+    SDL_Surface *sdl_surf = SDL_CreateSurfaceFrom(width, height,
+						  SDL_PIXELFORMAT_ARGB8888,
+						  data, stride);
+    if ( !wsw->texture )
+      wsw->texture = SDL_CreateTexture(wfr->ws_renderer,
+				       SDL_PIXELFORMAT_ARGB8888,
+				       SDL_TEXTUREACCESS_STREAMING,
+				       width, height);
+
+    SDL_UpdateTexture(wsw->texture, NULL, data, stride);
+    SDL_RenderTexture(wfr->ws_renderer, wsw->texture, NULL, &dstrect);
+    SDL_DestroySurface(sdl_surf);
+    if ( wfr->flash_end_ms && SDL_GetTicks() < wfr->flash_end_ms )
+    { int lum = (int)(0.299f*bg.r + 0.587f*bg.g + 0.114f*bg.b);
+      Uint8 v = lum > 128 ? 0 : 255;		/* dark on light, light on dark */
+      SDL_SetRenderDrawBlendMode(wfr->ws_renderer, SDL_BLENDMODE_BLEND);
+      SDL_SetRenderDrawColor(wfr->ws_renderer, v, v, v, 128);
+      if ( wfr->flash_rect.w > 0.0f )
+      { SDL_FRect isect;
+	if ( SDL_GetRectIntersectionFloat(&dstrect, &wfr->flash_rect, &isect) )
+	  SDL_RenderFillRect(wfr->ws_renderer, &isect);
+      } else
+      { SDL_RenderFillRect(wfr->ws_renderer, &dstrect);
+      }
+      SDL_SetRenderDrawBlendMode(wfr->ws_renderer, SDL_BLENDMODE_NONE);
+    }
+
+    if ( instanceOfObject(sw, ClassWindowDecorator) )
+    { foffset off2;
+      off2.x = off->x + valNum(sw->area->x);
+      off2.y = off->y + valNum(sw->area->y);
+      WindowDecorator dw = (WindowDecorator)sw;
+      ws_draw_window(fr, dw->window, &off2);
+    }
+    if ( notNil(sw->subwindows) && !emptyChain(sw->subwindows) )
+    { Cell cell;
+
+      for_cell(cell, sw->subwindows)
+      { PceWindow sub = cell->value;
+	PceWindow me = DEFAULT;
+	Int x, y;
+	get_absolute_xy_graphical((Graphical)sub, (Device *)&me, &x, &y);
+	assert(me == sw);
+
+	foffset off2;
+	off2.x = off->x + (float)(valInt(sw->area->x) + valInt(x));
+	off2.y = off->y + (float)(valInt(sw->area->y) + valInt(y));
+	DEBUG(NAME_sdl,
+	      Cprintf("Drawing subwindow %s of %s at %f,%f\n",
+		      pp(sub), pp(sw), pp(me), off2.x, off2.y));
+
+	ws_draw_window(fr, sub, &off2);
+      }
+    }
+  }
+}
+
+bool
+ws_draw_frame(FrameObj fr)
+{ if ( !ws_created_frame(fr) )
+    false;
+
+  WsFrame wfr = fr->ws_ref;
+  ASSERT_SDL_MAIN();
+
+  DEBUG(NAME_sdl,
+	Cprintf("BEGIN ws_draw_frame(%s)\n", pp(fr)));
+  assert(instanceOfObject(fr->background, ClassColour));
+  SDL_Color c = pceColour2SDL_Color(fr->background);
+  SDL_SetRenderDrawColor(wfr->ws_renderer, c.r, c.g, c.b, c.a);
+  SDL_RenderClear(wfr->ws_renderer);
+  Cell cell;
+  for_cell(cell, fr->members)
+  { foffset off = {0.0f,0.0f};
+    ws_draw_window(fr, cell->value, &off);
+  }
+  ws_draw_resize_frame(fr);
+  SDL_RenderPresent(wfr->ws_renderer);
+  DEBUG(NAME_sdl,
+	Cprintf("END ws_draw_frame(%s)\n", pp(fr)));
+
+  return true;
+}
+
+
+Uint32 SDLCALL
+flash_end_callback(void *userdata, SDL_TimerID id, Uint32 interval)
+{ FrameObj fr = userdata;
+
+  if ( onFlag(fr, F_FREEING|F_FREED) )
+    return 0;
+
+  SDL_Event ev;
+  SDL_zero(ev);
+  ev.type       = MY_EVENT_FLASH_END;
+  ev.user.data1 = fr;
+  addCodeReference(fr);			/* released by MY_EVENT_FLASH_END handler */
+  SDL_PushEvent(&ev);
+  return 0;				/* one-shot */
+}
+
+void
+ws_redraw_changed_frames(void)
+{ if ( ChangedFrames && !emptyChain(ChangedFrames) )
+  { Cell cell;
+
+    for_cell(cell, ChangedFrames)
+    { FrameObj fr = cell->value;
+#if __WINDOWS__
+      WsFrame wfr = fr->ws_ref;
+      if ( wfr && wfr->hwnd )
+      { DEBUG(NAME_sdl, Cprintf("Invalidate %p\n", wfr->hwnd));
+	InvalidateRect(wfr->hwnd, NULL, FALSE);
+      }
+#else
+      ws_draw_frame(fr);
+#endif
+      deleteChain(ChangedFrames, fr);
+    }
+  }
+}
+
+
+/**
+ * @see https://wiki.libsdl.org/SDL3/SDL_WindowEvent
+ */
+
+bool				/* true when processed */
+sdl_frame_event(SDL_Event *ev)
+{ FrameObj fr = wsid_to_frame(ev->window.windowID);
+
+  if ( fr )
+  { switch(ev->type)
+    { case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
+      { Code msg;
+
+	if ( (msg = checkType(getValueSheet(fr->wm_protocols,
+					    NAME_WM_DELETE_WINDOW),
+			      TypeCode, fr)) )
+	{ return forwardReceiverCode(msg, fr, MainWindow(fr), EAV);
+	} else
+	{ return send(fr, NAME_destroy, EAV);
+	}
+      }
+      case SDL_EVENT_WINDOW_SHOWN:
+	DEBUG(NAME_sdl, Cprintf("Mapped %s\n", pp(fr)));
+	WsFrame wfr = fr->ws_ref;
+	if ( wfr )
+	{ SDL_DisplayID did = SDL_GetDisplayForWindow(wfr->ws_window);
+	  DisplayObj dsp = dsp_id_to_display(did);
+	  if ( dsp && dsp != fr->display )
+	  { DEBUG(NAME_display, Cprintf("Opened %s on %s\n", pp(fr), pp(dsp)));
+	    assign(fr, display, dsp);
+	  }
+	}
+	return frame_displayed(fr, ON);
+      case SDL_EVENT_WINDOW_HIDDEN:
+	//return frame_displayed(fr, OFF);
+	return true;
+      case SDL_EVENT_WINDOW_EXPOSED:
+	RedrawDisplayManager(TheDisplayManager());
+	return ws_draw_frame(fr);
+      case SDL_EVENT_WINDOW_MOVED:
+      { int new_x = ev->window.data1;
+	int new_y = ev->window.data2;
+	Area da = fr->display->area;
+
+	new_x -= valInt(da->x);
+	new_y -= valInt(da->y);
+
+	assign(fr->area, x, toInt(new_x));
+	assign(fr->area, y, toInt(new_y));
+
+	return true;
+      }
+      case SDL_EVENT_WINDOW_RESIZED:
+      { int new_w, new_h;
+
+#if O_HDPX
+	WsFrame f = sdl_frame(fr, false);
+	SDL_GetWindowSizeInPixels(f->ws_window, &new_w, &new_h);
+#else
+	new_w = ev->window.data1;
+	new_h = ev->window.data2;
+#endif
+
+	if ( new_w != valInt(fr->area->w) ||
+	     new_h != valInt(fr->area->h) )
+	{ assign(fr->area, w, toInt(new_w));
+	  assign(fr->area, h, toInt(new_h));
+
+	  send(fr, NAME_resize, EAV);
+	}
+
+	return true;
+      }
+      case SDL_EVENT_WINDOW_FOCUS_GAINED:
+      { PceWindow sw = ws_grabbing_window();
+	if ( sw )
+	{ FrameObj fr2 = getFrameWindow(sw, OFF);
+
+	  DEBUG(NAME_keyboard,
+		Cprintf("Input focus on %s (grabbing=%s on %s)\n",
+			pp(fr), pp(sw), pp(fr2)));
+
+	  if ( fr2 != fr )
+	  { WsFrame wfr = fr->ws_ref;
+	    SDL_StartTextInput(wfr->ws_window);
+	    return true;
+	  }
+	} else
+	{ DEBUG(NAME_keyboard,
+		Cprintf("Input focus on %s (not grabbing)\n",
+			pp(fr)));
+	}
+	return send(fr, NAME_inputFocus, ON, EAV);
+      }
+      case SDL_EVENT_WINDOW_FOCUS_LOST:
+      { PceWindow sw = ws_grabbing_window();
+	DEBUG(NAME_keyboard, Cprintf("Input focus lost for %s (grabbing=%s)\n",
+				     pp(fr), pp(sw)));
+	if ( sw && getFrameWindow(sw, OFF) != fr )
+	{ WsFrame wfr = fr->ws_ref;
+	  SDL_StopTextInput(wfr->ws_window);
+	  return true;
+	}
+	return send(fr, NAME_inputFocus, OFF, EAV);
+      }
+      case SDL_EVENT_WINDOW_DISPLAY_CHANGED:
+      { DisplayObj new_display = dsp_id_to_display(ev->window.data1);
+	DEBUG(NAME_display, Cprintf("%s moved to %s\n",
+				    pp(fr), pp(new_display)));
+	return send(fr, NAME_display, new_display, EAV);
+      }
+    }
+  }
+
+  return false;
+}
+
+/**
+ * Raise the specified frame above other windows.
+ *
+ * @param fr Pointer to the FrameObj to raise.
+ */
+void
+ws_raise_frame(FrameObj fr)
+{ WsFrame wfr = fr->ws_ref;
+  if ( wfr && wfr->ws_window )
+  { ASSERT_SDL_MAIN();
+    SDL_RaiseWindow(wfr->ws_window);
+  }
+}
+
+/**
+ * Set the cursor  shape for the specified window. In  SDL, the cursor
+ * is global for the application, i.e., it is _not_ set for a window.
+ *
+ * @param sw Pointer to the PceWindow object.
+ * @param cursor The CursorObj representing the new cursor shape.
+ */
+void
+ws_frame_cursor(FrameObj fr, CursorObj cursor)
+{ SDL_Cursor *c = pceCursor2SDL_Cursor(cursor);
+  if ( c )
+  { ASSERT_SDL_MAIN();
+    SDL_SetCursor(c);
+  }
+}
+
+/**
+ * Enable/disable the (virtual) keyboard for the window in
+ * which gr is displayed.
+ */
+
+status
+ws_enable_text_input(Graphical gr, BoolObj enable)
+{ FrameObj fr = getFrameGraphical(gr);
+  if ( fr )
+  { WsFrame wfr = fr->ws_ref;
+
+    if ( wfr && wfr->ws_window )
+    { ASSERT_SDL_MAIN();
+      DEBUG(NAME_keyboard,
+	    Cprintf("ws_enable_text_input() %s -> %s: %s\n",
+		    pp(gr), pp(fr), pp(enable)));
+      if ( isOn(enable) )
+	return SDL_StartTextInput(wfr->ws_window);
+      else
+	return SDL_StopTextInput(wfr->ws_window);
+    }
+  }
+
+  fail;
+}
+
+/**
+ * Retrieve the bounding box of the specified frame.
+ *
+ * @param fr Pointer to the FrameObj.
+ * @param x Pointer to store the x-coordinate.
+ * @param y Pointer to store the y-coordinate.
+ * @param w Pointer to store the width.
+ * @param h Pointer to store the height.
+ * @return SUCCEED on success; otherwise, FAIL.
+ */
+status
+ws_frame_bb(FrameObj fr, int *x, int *y, int *w, int *h)
+{ *x = valInt(fr->area->x);
+  *y = valInt(fr->area->y);
+  *w = valInt(fr->area->w);
+  *h = valInt(fr->area->h);
+
+  succeed;
+}
+
+/**
+ * Set the geometry  of the frame using a  specification string.  This
+ * is used by e.g. class `persistent_frame` for restoring the size and
+ * position of a frame.  As SDL does not allow restoring the position,
+ * most of this  is worthless and overly complicated.  We  keep it for
+ * now.   Eventually  we  should   simplify  this  and  modernise  the
+ * interface.
+ *
+ * @param fr Pointer to the FrameObj.
+ * @param spec Name object containing the geometry specification.
+ * @param dsp Display object representing the target monitor.
+ */
+#define MIN_VISIBLE 32			/* pixels that must be visible */
+#define WIN_NOMOVE 0x1
+#define WIN_NOSIZE 0x2
+
+void
+ws_x_geometry_frame(FrameObj fr, Name spec, DisplayObj dsp)
+{ char *s = strName(spec);
+  int x, y, w, h, w0, h0;
+  int eh;
+  int dw, dh;
+  int flags = 0;
+  char signx[10], signy[10];
+  bool ok = false;
+  Int X,Y,W,H;
+  int offX=0;			/* window manager frame offset */
+
+  if ( isDefault(dsp) )
+  { char *e = strchr(s, '@');
+    int n;
+
+    if ( e )
+      n = atoi(e+1);
+    else
+      n = 1;
+
+    if ( !(dsp=getMemberDisplayManager(TheDisplayManager(), toInt(n))) )
+      dsp = fr->display;
+  }
+
+  Area a = dsp->area;		/* work-area seems unreliable */
+  dw = valInt(a->w);
+  dh = valInt(a->h);
+
+  if ( !ws_frame_bb(fr, &x, &y, &w0, &h0) )
+    return;
+
+  x -= valInt(a->x);			/* relative to display origin */
+  y -= valInt(a->y);
+  DEBUG(NAME_geometry,
+	Cprintf("%s at %d,%d,%d,%d on %s\n",
+		pp(fr), x, y, w0, h0, pp(dsp)));
+
+  w = w0;
+  h = h0;
+  eh = h - valInt(fr->area->h);		/* height of decorations */
+
+  switch(sscanf(s, "%dx%d%[+-]%d%[+-]%d", &w, &h, signx, &x, signy, &y))
+  { case 2:
+      /*w += ew; h += eh;*/
+      flags |= WIN_NOMOVE;
+      ok = true;
+      break;
+    case 6:
+      /*w += ew; h += eh;*/
+      if ( signx[1] == '-' )
+	x = -x;
+      if ( signy[1] == '-' )
+	y = -y;
+      if ( signx[0] == '-' )
+	x = dw - x - w - offX;
+      if ( signy[0] == '-' )
+	y = dh - y - h - eh;		/* why not offY */
+      ok = true;
+      break;
+    default:				/* [<Sign>]X<Sign>Y */
+      if ( sscanf(s, "%[+-]%d%[+-]%d", signx, &x, signy, &y) != 4 )
+      { signx[0] = '+';
+	if ( sscanf(s, "%d%[+-]%d", &x, signy, &y) != 3 )
+	  break;
+      }
+
+      DEBUG(NAME_frame,
+	    Cprintf("signx = %s, x = %d, signy = %s,"
+		    "y = %d, w0 = %d, h0 = %d\n",
+		    signx, x, signy, y, w0, h0));
+
+      flags |= WIN_NOSIZE;
+      if ( signx[1] == '-' )
+	x = -x;
+      if ( signy[1] == '-' )
+	y = -y;
+      if ( signx[0] == '-' )
+	x = dw - x - w0 - offX;
+      if ( signy[0] == '-' )
+	y = dh - y - h0 - eh;
+      ok = true;
+      break;
+  }
+
+  if ( ok )
+  { if ( y < 1 )			/* above the screen */
+      y = 1;
+    else if ( y > dh-MIN_VISIBLE )	/* below the screen */
+      y = dh - MIN_VISIBLE;
+    if ( x < 1 )			/* left of the screen */
+      x = 1;
+    else if ( x > dw-MIN_VISIBLE )	/* right of the screen */
+      x = dw - MIN_VISIBLE;
+  }
+
+  X = Y = W = H = (Int)DEFAULT;
+  if ( !(flags & WIN_NOMOVE) )
+  { X = toInt(x);
+    Y = toInt(y);
+    assign(fr, placed, ON);
+  }
+  if ( !(flags & WIN_NOSIZE) )
+  { W = toInt(w);
+    H = toInt(h);
+  }
+
+  send(fr, NAME_set, X, Y, W, H, dsp, EAV);
+}
+
+/**
+ * Set the geometry of the frame using explicit coordinates and dimensions.
+ *
+ * @param fr Pointer to the FrameObj.
+ * @param x X-coordinate position.
+ * @param y Y-coordinate position.
+ * @param w Width of the frame.
+ * @param h Height of the frame.
+ * @param dsp Display object representing the target monitor.
+ */
+status
+ws_geometry_frame(FrameObj fr, Int x, Int y, Int w, Int h, DisplayObj dsp)
+{ WsFrame wsf = fr->ws_ref;
+
+  if ( wsf )
+  { if ( notDefault(w) || notDefault(h) )
+    { int iw = isDefault(w) ? valInt(fr->area->w) : valInt(w);
+      int ih = isDefault(h) ? valInt(fr->area->h) : valInt(h);
+
+#if O_HDPX
+      float scale = ws_pixel_density_display(fr);
+      iw = iw/scale; ih = ih/scale;
+#endif
+      DEBUG(NAME_set,
+	    Cprintf("SDL_SetWindowSize(%s, %d, %d)\n",
+		    pp(fr), iw, ih));
+      ASSERT_SDL_MAIN();
+      if ( !SDL_SetWindowSize(wsf->ws_window, iw, ih) )
+	Cprintf("Could not set size of %s: %s\n",
+		pp(fr), SDL_GetError());
+    }
+
+    if ( notDefault(x) || notDefault(y) )
+    { int ix = isDefault(x) ? valInt(fr->area->x) : valInt(x);
+      int iy = isDefault(y) ? valInt(fr->area->y) : valInt(y);
+
+      if ( notDefault(dsp) )
+      { ix += valInt(dsp->area->x);
+	iy += valInt(dsp->area->y);
+      }
+
+#if O_HDPX
+      float scale = ws_pixel_density_display(fr);
+      ix = ix/scale; iy = iy/scale;
+#endif
+      DEBUG(NAME_set,
+	    Cprintf("SDL_SetWindowPosition(%s, %d, %d)\n",
+		    pp(fr), ix, iy));
+      ASSERT_SDL_MAIN();
+      if ( !SDL_SetWindowPosition(wsf->ws_window, ix, iy) )
+      { DEBUG(NAME_set,
+	      Cprintf("Could not set position of %s: %s\n",
+		      pp(fr), SDL_GetError()));
+      }
+    }
+  }
+
+  succeed;
+}
+
+/**
+ * Set a busy cursor for the specified frame.
+ *
+ * @param fr Pointer to the FrameObj.
+ * @param c Pointer to the CursorObj representing the busy cursor.
+ */
+void
+ws_busy_cursor_frame(FrameObj fr, CursorObj c)
+{
+}
+
+/**
+ * Set the status of the specified frame.
+ *
+ * @param fr Pointer to the FrameObj.
+ * @param Status of the frame.  One of `unmapped`, `hidden`,
+ * `iconic`, `window` or `full_screen`
+ */
+void
+ws_status_frame(FrameObj fr, Name status)
+{ if ( status == NAME_unmapped ||
+       status == NAME_hidden )
+  { ws_uncreate_frame(fr);
+  } else if ( status == NAME_window || status == NAME_fullScreen )
+  { if ( ws_created_frame(fr) )
+    { WsFrame wfr = fr->ws_ref;
+      ASSERT_SDL_MAIN();
+      SDL_SetWindowFullscreen(wfr->ws_window, status == NAME_fullScreen);
+    } else
+    { assign(fr, status, status);
+      ws_create_frame(fr);
+    }
+  }
+}
+
+/**
+ * Set the label for the specified frame.
+ *
+ * @param fr Pointer to the FrameObj.
+ */
+void
+ws_set_label_frame(FrameObj fr)
+{ WsFrame wfr = fr->ws_ref;
+  if ( wfr && wfr->ws_window )
+  { ASSERT_SDL_MAIN();
+    SDL_SetWindowTitle(wfr->ws_window, nameToUTF8(fr->label));
+  }
+}
+
+/**
+ * Recursively composite a window's cairo backing onto a target cairo context.
+ * Mirrors the layout logic of ws_draw_window(), handling WindowDecorator and
+ * subwindows.
+ *
+ * @param cr    Target cairo context (frame-size surface).
+ * @param sw    The window to composite.
+ * @param ox    Accumulated x offset in logical coords (from parent).
+ * @param oy    Accumulated y offset in logical coords (from parent).
+ * @param scale Pixel density multiplier.
+ */
+static void
+composite_window_to_cairo(cairo_t *cr, PceWindow sw,
+			   float ox, float oy, float scale)
+{ WsWindow wsw = sw->ws_ref;
+  if ( !wsw || !wsw->backing )
+    return;
+
+  float wx = (ox + valInt(sw->area->x)) * scale;
+  float wy = (oy + valInt(sw->area->y)) * scale;
+  cairo_surface_flush(wsw->backing);
+  cairo_set_source_surface(cr, wsw->backing, wx, wy);
+  cairo_paint(cr);
+
+  if ( instanceOfObject(sw, ClassWindowDecorator) )
+  { WindowDecorator dw = (WindowDecorator)sw;
+    composite_window_to_cairo(cr, dw->window,
+			      ox + valNum(sw->area->x),
+			      oy + valNum(sw->area->y),
+			      scale);
+  }
+  if ( notNil(sw->subwindows) && !emptyChain(sw->subwindows) )
+  { Cell cell;
+    for_cell(cell, sw->subwindows)
+    { PceWindow sub = cell->value;
+      PceWindow me  = DEFAULT;
+      Int x, y;
+      get_absolute_xy_graphical((Graphical)sub, (Device *)&me, &x, &y);
+      assert(me == sw);
+      composite_window_to_cairo(cr, sub,
+				ox + valNum(sw->area->x) + valNum(x),
+				oy + valNum(sw->area->y) + valNum(y),
+				scale);
+    }
+  }
+}
+
+
+/**
+ * Retrieve the image representation of the specified frame.
+ * Composites all window backing cairo surfaces onto a new frame-size
+ * cairo surface and wraps it in an xpce Image object.
+ *
+ * @param fr Pointer to the FrameObj.
+ * @return Pointer to the Image object representing the frame, or NULL on failure.
+ */
+Image
+ws_image_of_frame(FrameObj fr)
+{ if ( !ws_created_frame(fr) )
+    return NULL;
+
+  WsFrame wfr   = fr->ws_ref;
+  float   scale = SDL_GetWindowPixelDensity(wfr->ws_window);
+  int     fw    = (int)(valInt(fr->area->w) * scale);
+  int     fh    = (int)(valInt(fr->area->h) * scale);
+
+  cairo_surface_t *surf = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, fw, fh);
+  if ( !surf )
+    return NULL;
+
+  d_init_surface(surf, fr->background);
+
+  cairo_t *cr = cairo_create(surf);
+  Cell cell;
+  for_cell(cell, fr->members)
+    composite_window_to_cairo(cr, cell->value, 0.0f, 0.0f, scale);
+  cairo_destroy(cr);
+
+  Image image = newObject(ClassImage, NIL, EAV);
+  if ( !image )
+  { cairo_surface_destroy(surf);
+    return NULL;
+  }
+  assign(image, kind,    NAME_pixmap);
+  assign(image->size, w, toInt(fw));
+  assign(image->size, h, toInt(fh));
+  image->ws_ref = surf;
+
+  return image;
+}

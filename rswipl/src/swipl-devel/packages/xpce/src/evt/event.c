@@ -1,0 +1,1223 @@
+/*  Part of XPCE --- The SWI-Prolog GUI toolkit
+
+    Author:        Jan Wielemaker and Anjo Anjewierden
+    E-mail:        jan@swi-prolog.org
+    WWW:           http://www.swi.psy.uva.nl/projects/xpce/
+    Copyright (c)  1985-2025, University of Amsterdam
+			      SWI-Prolog Solutions b.v.
+    All rights reserved.
+
+    Redistribution and use in source and binary forms, with or without
+    modification, are permitted provided that the following conditions
+    are met:
+
+    1. Redistributions of source code must retain the above copyright
+       notice, this list of conditions and the following disclaimer.
+
+    2. Redistributions in binary form must reproduce the above copyright
+       notice, this list of conditions and the following disclaimer in
+       the documentation and/or other materials provided with the
+       distribution.
+
+    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+    "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+    LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS
+    FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE
+    COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+    INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+    BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+    LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+    CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+    LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
+    ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+    POSSIBILITY OF SUCH DAMAGE.
+*/
+
+#include <h/kernel.h>
+#include <h/graphics.h>
+#include <time.h>
+
+forwards void init_event_tree(void);
+
+extern EventNodeObj getNodeEventTree(EventTreeObj t, Any value);
+
+#define TOINT(x) x
+
+static Int	 last_buttons     = TOINT(ZERO); /* defaults for next event */
+static Any	 last_window      = NIL;
+static Int	 last_x		  = TOINT(ZERO);
+static Int	 last_y		  = TOINT(ZERO);
+static unsigned long last_time	  = 0L;
+
+static Int		 last_down_bts    = ZERO;
+static int		 last_down_x      = -1000; /* multiclick detection */
+static int		 last_down_y	  = -1000;
+static int64_t		 last_down_time   = 0;
+static unsigned int	 multi_click_time = 400;
+static int		 multi_click_diff = 4;
+static int		 last_click_type  = CLICK_TYPE_triple;
+static int		 loc_still_posted = TRUE;
+static int64_t		 host_last_time   = 0;
+static int		 loc_still_time	  = 400;
+
+static status
+initialiseEvent(EventObj e, Name id, Any window,
+		Int x, Int y, Int bts, Int time)
+{ unsigned long t = valInt(time);
+
+  initialiseProgramObject(e);
+
+  EventObj parent = getValueVar(EVENT);
+  if ( notNil(parent) )
+  { if ( isDefault(x) )      x      = parent->x;
+    if ( isDefault(y) )      y      = parent->y;
+    if ( isDefault(bts) )    bts    = parent->buttons;
+    if ( isDefault(window) ) window = parent->window;
+    if ( isDefault(time) )   t      = max(last_time, parent->time);
+  } else
+  { if ( isDefault(x) )      x      = last_x;
+    if ( isDefault(y) )      y      = last_y;
+    if ( isDefault(bts) )    bts    = last_buttons;
+    if ( isDefault(window) ) window = last_window;
+    if ( isDefault(time) )   t      = last_time;
+  }
+
+  host_last_time = mclock();
+  last_time      = t;
+  last_buttons   = bts;			/* save these values */
+  last_x         = x;
+  last_y         = y;
+
+  FrameObj fr;
+  if ( instanceOfObject(window, ClassWindow) )
+    fr = getFrameWindow(window, OFF);
+  else if ( instanceOfObject(window, ClassFrame) )
+    fr = window;
+  else
+  { Cprintf("Event window is nor window nor frame: %s\n", pp(window));
+    fr = NIL;
+  }
+
+  assign(e, frame,      fr);
+  assign(e, window,	window);
+  assign(e, receiver,	window);
+  assign(e, id,		id);
+  assign(e, x,		x);
+  assign(e, y,		y);
+  assign(e, buttons,	bts);
+  e->time = t;
+
+  if ( isDownEvent(e) )
+  { int clt = CLICK_TYPE_single;
+    int px  = valInt(x);
+    int py  = valInt(y);
+
+    DEBUG(NAME_multiclick, Cprintf("t: %ld (%ld), x: %d (%d), y: %d (%d) --> ",
+				   t, last_down_time, px, last_down_x,
+				   py, last_down_y));
+
+    if ( (valInt(e->buttons) & CLICK_TYPE_mask) == CLICK_TYPE_double )
+    { switch( last_click_type )
+      { case CLICK_TYPE_single:	clt = CLICK_TYPE_double; break;
+	case CLICK_TYPE_double:	clt = CLICK_TYPE_triple; break;
+	default:		clt = CLICK_TYPE_single; break;
+      }
+      e->buttons = toInt(valInt(e->buttons) & ~CLICK_TYPE_mask);
+    } else
+    { if ( (t - last_down_time) < multi_click_time &&
+	   abs(last_down_x - px) <= multi_click_diff &&
+	   abs(last_down_y - py) <= multi_click_diff &&
+	   (valInt(last_down_bts)&BUTTON_mask) == (valInt(bts)&BUTTON_mask) &&
+	   last_window == window )
+      { switch( last_click_type )
+	{ case CLICK_TYPE_single:	clt = CLICK_TYPE_double; break;
+	  case CLICK_TYPE_double:	clt = CLICK_TYPE_triple; break;
+	}
+      }
+    }
+
+    last_click_type = clt;
+    assign(e, buttons, toInt(valInt(e->buttons) | clt));
+
+    DEBUG(NAME_multiclick, Cprintf("%s\n", strName(getMulticlickEvent(e))));
+
+    last_down_bts     = bts;
+    last_down_time    = t;
+    last_down_x       = px;
+    last_down_y       = py;
+  } else if ( isUpEvent(e) )
+  { assign(e, buttons, toInt(valInt(e->buttons) | last_click_type));
+  }
+
+  if ( !onFlag(window, F_FREED|F_FREEING) )
+    last_window = window;
+
+  if ( loc_still_posted )
+  { if ( isAEvent(e, NAME_locMove) )
+    { DEBUG(NAME_locStill, Cprintf("Re-enabled loc-still on %s\n", pp(e->id)));
+      loc_still_posted = FALSE;
+    }
+  } else if ( isAEvent(e, NAME_area) ||
+	      isAEvent(e, NAME_deactivateKeyboardFocus) )
+  { DEBUG(NAME_locStill, Cprintf("Disabled loc-still on %s\n", pp(e->id)));
+    loc_still_posted = TRUE;
+  }
+
+  succeed;
+}
+
+		 /*******************************
+		 *	    LOC-STILL		*
+		 *******************************/
+
+void
+considerLocStillEvent()
+{ if ( !loc_still_posted )
+  { int64_t now = mclock();
+
+    if ( now - host_last_time < (int64_t)loc_still_time )
+    { DEBUG(NAME_locStill, Cprintf("TimeDiff = %d (ignored)\n", now - host_last_time));
+      return;
+    }
+
+    if ( !pceMTTryLock() )
+      return;
+    if ( instanceOfObject(last_window, ClassWindow) &&
+	 !onFlag(last_window, F_FREED|F_FREEING) &&
+	 valInt(last_x) > 0 && valInt(last_y) > 0 )
+    { ServiceMode(is_service_window(last_window),
+		  { AnswerMark mark;
+		    EventObj e;
+
+		    markAnswerStack(mark);
+		    e = newObject(ClassEvent,
+				  NAME_locStill, last_window,
+				  last_x, last_y, last_buttons,
+				  toInt(last_time + now - host_last_time), EAV);
+		    addCodeReference(e);
+		    postNamedEvent(e, (Graphical) last_window, DEFAULT, NAME_postEvent);
+		    delCodeReference(e);
+		    freeableObj(e);
+		    rewindAnswerStack(mark, NIL);
+		  })
+    }
+    loc_still_posted = TRUE;
+    pceMTUnlock();
+  }
+}
+
+
+		 /*******************************
+		 *	     WINDOW		*
+		 *******************************/
+
+PceWindow
+WindowOfLastEvent(void)
+{ if ( !isProperObject(last_window) )
+  { Cprintf("Warning: last_window = %s\n", pp(last_window));
+    fail;
+  }
+
+  if ( instanceOfObject(last_window, ClassWindow) )
+    return last_window;
+
+  fail;
+}
+
+
+void
+unlinkedWindowEvent(Any sw)
+{ if ( sw == last_window )
+    last_window = NIL;
+}
+
+
+		/********************************
+		*          CONVERSION		*
+		********************************/
+
+/* convert @default to the current event */
+static EventObj
+getConvertEvent(Class class, Any def)
+{ if ( isDefault(def) )
+  { EventObj ev = getValueVar(EVENT);
+
+    if ( ev && instanceOfObject(ev, ClassEvent) )
+      answer(ev);		/* @event */
+  }
+
+  fail;
+}
+
+
+		/********************************
+		*        TIME MANAGEMENT	*
+		********************************/
+
+unsigned long				/* time-stamp of last event */
+LastEventTime(void)
+{ return last_time;
+}
+
+
+void
+setLastEventTime(unsigned long time)
+{ last_time = time;
+}
+
+
+static Int
+getTimeEvent(EventObj ev, EventObj ev2)
+{ if ( notDefault(ev2) )
+    answer(toInt(ev2->time - ev->time));
+  else
+    answer(toInt(ev->time % PCE_MAX_INT));
+}
+
+
+		/********************************
+		*          EVENT_TYPES		*
+		********************************/
+
+
+status
+isAEvent(EventObj e, Any id)
+{ Name nm;
+  EventNodeObj sb, super;
+
+  if ( isInteger(id) )
+    return e->id == id ? SUCCEED : FAIL;
+
+  if ( isInteger(e->id) )
+  { int c = valInt(e->id);
+
+    if      ( c < 32 || c == 127 )		nm = NAME_control;
+    else if ( c >= 32 && c < META_OFFSET )	nm = NAME_printable;
+    else if ( c >= META_OFFSET   )		nm = NAME_meta;
+    else					fail;
+  } else if ( isName(e->id) )
+  { nm = e->id;
+  } else
+  { fail;
+  }
+
+  TRY( sb    = getNodeEventTree(EventTree, nm) );
+  TRY( super = getNodeEventTree(EventTree, id) );
+
+  return isAEventNode(sb, super);
+}
+
+
+status
+eventName(Name name)
+{ if ( !EventTree )
+    realiseClass(ClassEvent);
+
+  return getNodeEventTree(EventTree, name) ? SUCCEED : FAIL;
+}
+
+		/********************************
+		*             BUTTONS		*
+		********************************/
+
+static status
+allButtonsUpLastEvent(void)
+{ if ( valInt(last_buttons) &
+       (BUTTON_ms_left|BUTTON_ms_middle|BUTTON_ms_right) )
+    fail;
+
+  succeed;
+}
+
+
+status
+allButtonsUpEvent(EventObj e)
+{ if ( valInt(e->buttons) &
+       (BUTTON_ms_left|
+	BUTTON_ms_middle|
+	BUTTON_ms_right|
+	BUTTON_ms_button4|
+	BUTTON_ms_button5) )
+    fail;
+
+  succeed;
+}
+
+
+status
+isUpEvent(EventObj e)
+{ if ( isName(e->id) && (equalName(e->id, NAME_msLeftUp) ||
+			 equalName(e->id, NAME_msMiddleUp) ||
+			 equalName(e->id, NAME_msRightUp) ||
+			 equalName(e->id, NAME_msButton4Up) ||
+			 equalName(e->id, NAME_msButton5Up)) )
+    succeed;
+  fail;
+}
+
+
+status
+isDownEvent(EventObj e)
+{ if ( isName(e->id) && (equalName(e->id, NAME_msLeftDown) ||
+			 equalName(e->id, NAME_msMiddleDown) ||
+			 equalName(e->id, NAME_msRightDown) ||
+			 equalName(e->id, NAME_msButton4Down) ||
+			 equalName(e->id, NAME_msButton5Down)) )
+    succeed;
+  fail;
+}
+
+
+Name
+getButtonEvent(EventObj e)
+{ if ( isAEvent(e, NAME_msLeft) )
+    answer(NAME_left);
+  if ( isAEvent(e, NAME_msMiddle) )
+    answer(NAME_middle);
+  if ( isAEvent(e, NAME_msRight) )
+    answer(NAME_right);
+  if ( isAEvent(e, NAME_msButton4) )
+    answer(NAME_button4);
+  if ( isAEvent(e, NAME_msButton5) )
+    answer(NAME_button5);
+
+  errorPce(e, NAME_noButtonEvent);
+  fail;
+}
+
+
+status
+isDragEvent(EventObj ev)
+{ if ( isAEvent(ev, NAME_msLeftDrag) ||
+       isAEvent(ev, NAME_msMiddleDrag) ||
+       isAEvent(ev, NAME_msRightDrag) ||
+       isAEvent(ev, NAME_msButton4Drag) ||
+       isAEvent(ev, NAME_msButton5Drag) )
+    succeed;
+
+  fail;
+}
+
+
+		/********************************
+		*            MODIFIERS		*
+		********************************/
+
+status
+hasModifierEvent(EventObj ev, Modifier m)
+{
+#define DOWN(b) (valInt(ev->buttons) & b)
+#define UP(b)   (!DOWN(b))
+  if ( notDefault(m->shift) &&
+       ((m->shift == NAME_down && UP(BUTTON_shift)) ||
+	(m->shift == NAME_up   && DOWN(BUTTON_shift))) )
+    fail;
+  if ( notDefault(m->control) &&
+       ((m->control == NAME_down && UP(BUTTON_control)) ||
+	(m->control == NAME_up   && DOWN(BUTTON_control))) )
+    fail;
+  if ( notDefault(m->meta) &&
+       ((m->meta == NAME_down && UP(BUTTON_meta)) ||
+	(m->meta == NAME_up   && DOWN(BUTTON_meta))) )
+    fail;
+  if ( notDefault(m->gui) &&
+       ((m->gui == NAME_down && UP(BUTTON_gui)) ||
+	(m->gui == NAME_up   && DOWN(BUTTON_gui))) )
+    fail;
+#undef UP
+#undef DOWN
+
+  succeed;
+}
+
+
+Name
+getMulticlickEvent(EventObj e)
+{ switch(valInt(e->buttons) & CLICK_TYPE_mask)
+  { case CLICK_TYPE_single:	answer(NAME_single);
+    case CLICK_TYPE_double:	answer(NAME_double);
+    case CLICK_TYPE_triple:	answer(NAME_triple);
+    default:			fail;
+  }
+}
+
+
+Int
+getClickTimeEvent(EventObj e)
+{ answer(toInt(e->time - last_down_time));
+
+  fail;
+}
+
+
+Int
+getClickDisplacementEvent(EventObj e)
+{ int dx = valInt(e->x) - last_down_x;
+  int dy = valInt(e->y) - last_down_y;
+
+  answer(toInt(isqrt(dx*dx + dy*dy)));
+}
+
+
+status
+windowEvent(EventObj ev, PceWindow sw)
+{ if ( ev->window != sw )
+  { int x, y;
+
+    offset_windows(sw, ev->window, &x, &y);
+    assign(ev, x, toInt(valInt(ev->x) - x));
+    assign(ev, y, toInt(valInt(ev->y) - y));
+    assign(ev, window, sw);
+  }
+
+  succeed;
+}
+
+
+		/********************************
+		*            POSITIONS		*
+		********************************/
+
+/* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+Find the position of an  event.  The `x'  and `y' fields  of the event
+indicate  the   position  relative  to the   receiving  window.  These
+functions allow you to find the position relative to:
+
+	Display		The display on which the event occurred
+	Frame		The frame of the window
+	Device		Relative to the origin of the device
+	Graphical	Some graphical in the window in which the
+			event occurred
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+
+static void
+get_xy_event_window(EventObj ev, PceWindow w, BoolObj area, int *rx, int *ry)
+{ int x, y;
+
+  offset_windows(w, ev->window, &x, &y);
+
+  if ( area == ON )
+  { *rx = valInt(ev->x) - x;
+    *ry = valInt(ev->y) - y;
+  } else
+  { offset_window(w, rx, ry);
+    *rx = valInt(ev->x) - x - *rx;
+    *ry = valInt(ev->y) - y - *ry;
+  }
+}
+
+
+static void
+get_xy_event_frame(EventObj ev, FrameObj fr, int *rx, int *ry)
+{ FrameObj fr2;
+  int frx, fry;
+
+  get_xy_event_window(ev, ev->window, ON, rx, ry);
+  DEBUG(NAME_drag, Cprintf("At %d, %d to %s\n", *rx, *ry, pp(ev->window)));
+  frame_offset_window(ev->window, &fr2, &frx, &fry);
+  *rx += frx;
+  *ry += fry;
+  DEBUG(NAME_drag, Cprintf("At %d, %d to %s\n", *rx, *ry, pp(fr2)));
+
+  if ( fr != fr2 )
+  { Area a1 = fr->area;			/* target frame area */
+    Area a2 = fr2->area;		/* area of frame from event */
+
+    *rx += valInt(a2->x) - valInt(a1->x);
+    *ry += valInt(a2->y) - valInt(a1->y);
+  }
+}
+
+
+static void
+get_xy_event_device(EventObj ev, Device dev, int *rx, int *ry)
+{ int ox, oy;
+  PceWindow sw = getWindowGraphical((Graphical) dev);
+
+  if ( !sw )
+  { *rx = 0; *ry = 0;
+    return;				/* generate an error? */
+  }
+
+  get_xy_event_window(ev, sw, OFF, rx, ry);
+  offsetDeviceGraphical(dev, &ox, &oy);
+  *rx -= ox + valInt(dev->offset->x);
+  *ry -= oy + valInt(dev->offset->y);
+}
+
+
+
+static void
+get_xy_event_graphical(EventObj ev, Graphical gr, int *rx, int *ry)
+{ int ox, oy;
+  PceWindow sw = getWindowGraphical(gr);
+
+  if ( !sw )
+    sw = ev->window;
+
+  get_xy_event_window(ev, sw, OFF, rx, ry);
+  offsetDeviceGraphical(gr, &ox, &oy);
+  DEBUG(NAME_inside, Cprintf("At %d,%d: offset %s --> %s is %d,%d\n",
+			     *rx, *ry,
+			     pp(gr), pp(sw), ox, oy));
+  *rx -= ox + valInt(gr->area->x);
+  *ry -= oy + valInt(gr->area->y);
+}
+
+
+static void
+get_xy_event_node(EventObj ev, Node node, int *rx, int *ry)
+{ get_xy_event_graphical(ev, node->image, rx, ry);
+}
+
+
+/**
+ * Get the  X,Y coordinate of  `ev` relative  to `obj`.  If  `area` is
+ * `ON`, get  it relative to  the bounding box  of `obj`, else  get it
+ * relative to the coordinate system of `obj`.
+ *
+ * Given SDL,  we can (in  general) not get  the position of  a frame.
+ * Neither can we force to grab the pointer to a window.  We have some
+ * scenarios:
+ *
+ *   - If `ev->window` is displayed on `ev->frame` and `obj` is inside
+ *     `ev->frame`, all offsets are fine.
+ *   - If `obj` is displayed on `ev->frame`, the X,Y of `ev` are relative
+ *     to `ev->frame`.
+ *   - Otherwise, we do not know.
+ */
+
+status
+get_xy_event(EventObj ev, Any obj, BoolObj area, Int *rx, Int *ry)
+{ int x = 0, y = 0;
+
+  if ( isNil(ev->window) || onFlag(ev->window, F_FREEING|F_FREED) )
+  { *rx = ev->x;
+    *ry = ev->y;
+    succeed;			/* fail? */
+  }
+
+  if ( instanceOfObject(obj, ClassDisplay) )
+  { DEBUG(NAME_event,
+	  Cprintf("Cannot get event location relative to %s\n", pp(obj)));
+    *rx = *ry = toInt(-1);
+    fail;
+  }
+
+  FrameObj objfr;
+  if ( instanceOfObject(obj, ClassFrame) )
+    objfr = obj;
+  else
+    objfr = getFrameGraphical(obj);
+
+  if ( objfr == ev->frame )
+  { if ( instanceOfObject(ev->window, ClassWindow) &&
+	 getFrameWindow(ev->window, OFF) == ev->frame )
+    { if ( instanceOfObject(obj, ClassFrame) )
+	get_xy_event_frame(ev, obj, &x, &y);
+      else if ( instanceOfObject(obj, ClassWindow) )
+	get_xy_event_window(ev, obj, area, &x, &y);
+      else if ( instanceOfObject(obj, ClassDevice) )
+	get_xy_event_device(ev, obj, &x, &y);
+      else if ( instanceOfObject(obj, ClassGraphical) )
+	get_xy_event_graphical(ev, obj, &x, &y);
+      else if ( instanceOfObject(obj, ClassNode) )
+	get_xy_event_node(ev, obj, &x, &y);
+      else
+      { *rx = ev->x;
+	*ry = ev->y;
+	succeed;
+      }
+    } else
+    { if ( instanceOfObject(obj, ClassFrame) )
+      { x = valInt(ev->x);
+	y = valInt(ev->y);
+      } else
+      { PceWindow sw = getWindowGraphical(obj);
+	float ox=0, oy=0;
+	if ( ws_window_frame_position(sw, ev->frame, &ox, &oy) )
+	{ x = valInt(ev->x) - ox;
+	  y = valInt(ev->y) - oy;
+	} else
+	{ Cprintf("Could not get event X,Y of %s relative to %s\n",
+		  pp(ev), pp(obj));
+	  *rx = *ry = toInt(-1);
+	  fail;
+	}
+	if ( obj != sw )
+	{ if ( instanceOfObject(obj, ClassNode) )
+	    obj = ((Node)obj)->image;
+
+	  if ( instanceOfObject(obj, ClassDevice) )
+	  { Device dev = obj;
+	    int ox, oy;
+	    offsetDeviceGraphical(obj, &ox, &oy);
+	    x -= ox + valInt(dev->offset->x);
+	    y -= oy + valInt(dev->offset->y);
+	  } else if ( instanceOfObject(obj, ClassGraphical) )
+	  { Graphical gr = obj;
+	    int ox, oy;
+	    offsetDeviceGraphical(obj, &ox, &oy);
+	    x -= ox + valInt(gr->area->x);
+	    y -= oy + valInt(gr->area->y);
+	  } else
+	  { assert(0);
+	  }
+	}
+      }
+    }
+  } else
+  { DEBUG(NAME_event,
+	  Cprintf("Could not get event X,Y of %s relative to %s\n",
+		  pp(ev), pp(obj)));
+    *rx = *ry = toInt(-1);
+    fail;
+  }
+
+  if ( area == ON &&
+       instanceOfObject(obj, ClassDevice) &&
+       !instanceOfObject(obj, ClassWindow) )
+  { Device dev = (Device) ev->receiver;
+    x -= valInt(dev->area->x) - valInt(dev->offset->x);
+    y -= valInt(dev->area->y) - valInt(dev->offset->y);
+  }
+
+  *rx = toInt(x);
+  *ry = toInt(y);
+
+  succeed;
+}
+
+
+/* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+Return x-y coordinates of  Event.  Normally these  are relative to the
+window  involved, with graphical supplied   they  are  relative to the
+graphicals coordinate system.
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+
+Point
+getPositionEvent(EventObj ev, Any obj)
+{ Int x, y;
+
+  if ( isDefault(obj) )
+    obj = ev->receiver;
+
+  TRY( get_xy_event(ev, obj, OFF, &x, &y) );
+
+  if ( isNil(ev->position) )
+    assign(ev, position, newObject(ClassPoint, x, y, EAV));
+  else
+    setPoint(ev->position, x, y);
+
+  answer(ev->position);
+}
+
+
+Point
+getAreaPositionEvent(EventObj ev, Graphical gr)
+{ Int x, y;
+
+  if ( isDefault(gr) )
+    gr = ev->receiver;
+
+  TRY( get_xy_event(ev, gr, ON, &x, &y) );
+
+  if ( isNil(ev->position) )
+    assign(ev, position, newObject(ClassPoint, x, y, EAV));
+  else
+    setPoint(ev->position, x, y);
+
+  answer(ev->position);
+}
+
+
+Int
+getXEvent(EventObj ev, Any obj)
+{ Int x, y;
+
+  if ( isDefault(obj) )
+    obj = ev->receiver;
+  TRY( get_xy_event(ev, obj, OFF, &x, &y) );
+
+  answer(x);
+}
+
+
+Int
+getYEvent(EventObj ev, Any obj)
+{ Int x, y;
+
+  if ( isDefault(obj) )
+    obj = ev->receiver;
+  TRY( get_xy_event(ev, obj, OFF, &x, &y) );
+
+  answer(y);
+}
+
+
+status
+insideEvent(EventObj ev, Graphical gr)
+{ Int x, y;
+
+  if ( isDefault(gr) )
+    gr = ev->receiver;
+
+  TRY( get_xy_event(ev, gr, ON, &x, &y) );
+  DEBUG(NAME_inside, Cprintf("Event at %d,%d on %s\n",
+			     valInt(x), valInt(y), pp(gr)));
+  if ( instanceOfObject(gr, ClassWindow) )
+  { int vx, vy, vw, vh;
+    PceWindow sw = (PceWindow) gr;
+    int ex = valInt(x);
+    int ey = valInt(y);
+
+    compute_window(sw, &vx, &vy, &vw, &vh);
+    if ( ex >= vx && ex <= vx+vw &&
+	 ey >= vy && ey <= vy+vh )
+      succeed;
+
+    fail;
+  }
+
+  return inEventAreaGraphical(gr, add(gr->area->x, x), add(gr->area->y, y));
+}
+
+
+static Any
+getInsideSubWindow(EventObj ev, Any root)
+{ return ws_event_in_subwindow(ev, root);
+}
+
+
+Int
+getDistanceEvent(EventObj ev1, EventObj ev2)
+{ if ( ev1->window == ev2->window )
+  { int dx = valInt(ev1->x) - valInt(ev2->x);
+    int dy = valInt(ev1->y) - valInt(ev2->y);
+
+    answer(toInt(isqrt(dx * dx + dy * dy)));
+  }
+
+  fail;
+}
+
+
+		/********************************
+		*         GET PARAMETERS        *
+		********************************/
+
+Any
+getIdEvent(EventObj ev)
+{ answer(ev->id);
+}
+
+
+Any
+getReceiverEvent(EventObj ev)
+{ answer(ev->receiver);
+}
+
+
+static Name
+getKeyEvent(EventObj ev)
+{ if ( isAEvent(ev, NAME_keyboard) )
+    answer(characterName(ev));
+  fail;
+}
+
+
+		/********************************
+		*         POSTING EVENTS	*
+		********************************/
+
+#define WindowOfEvent(ev) ((PceWindow)(ev)->window)
+
+status
+postNamedEvent(EventObj ev, Graphical obj, Recogniser rec, Name method)
+{ Graphical old = ev->receiver;
+  status rval;
+
+  addCodeReference(ev);
+
+  DEBUG(NAME_post,
+	if ( ev->id != NAME_locMove &&
+	     !isDragEvent(ev) )
+	{ if ( isDefault(rec) )
+	    Cprintf("Posting %s to %s->%s\n",
+		    pp(ev->id), pp(obj), pp(method));
+	  else
+	    Cprintf("Posting %s to %s->%s (focus on %s)\n",
+		    pp(ev->id), pp(obj), pp(method), pp(rec));
+	});
+
+
+  withLocalVars({ assignVar(EVENT, ev, NAME_local);
+		  assign(ev, receiver, obj);
+
+		  rval = qadSendv(notDefault(rec) ? (Any)rec : (Any)obj,
+				  method, 1, (Any *)&ev);
+
+		  if ( !isFreedObj(ev) && isObject(old) && !isFreedObj(old) )
+		  { if ( rval &&
+			 instanceOfObject(ev->window, ClassWindow) &&
+			 isNil(WindowOfEvent(ev)->focus) &&
+			 isDownEvent(ev) && !allButtonsUpLastEvent() &&
+			 instanceOfObject(obj, ClassGraphical) &&
+			 getWindowGraphical(obj) == WindowOfEvent(ev) )
+		      focusWindow(ev->window, obj, NIL, DEFAULT,
+				  getButtonEvent(ev));
+		    assign(ev, receiver, old);
+		  }
+		});
+
+  if ( !isFreedObj(ev) )
+    delCodeReference(ev);
+
+  DEBUG(NAME_post,
+	if ( ev->id != NAME_locMove &&
+	     !isDragEvent(ev) )
+	  Cprintf("--> post of %s to %s %s\n",
+		  pp(ev->id), pp(obj), rval ? "succeeded" : "failed"));
+
+  return rval;
+}
+
+
+status
+postEvent(EventObj ev, Graphical obj, Recogniser rec)
+{ return postNamedEvent(ev, obj, rec, NAME_event);
+}
+
+
+		/********************************
+		*      REPORTING CONTEXT	*
+		********************************/
+
+Any
+getMasterEvent(EventObj ev)
+{ answer(getMasterGraphical(ev->receiver));
+}
+
+
+		/********************************
+		*         MISCELLANEOUS		*
+		********************************/
+
+DisplayObj
+getDisplayEvent(EventObj ev)
+{ if ( instanceOfObject(ev->window, ClassWindow) )
+    answer(getDisplayGraphical((Graphical) ev->window));
+  else
+    answer(((FrameObj)ev->window)->display);
+}
+
+		 /*******************************
+		 *	     SCROLLING		*
+		 *******************************/
+
+/* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+Deal with scroll-mice and trackpads, mapping   events  with a `rotation`
+attribute to vertical scroll events.  Normally  a mouse scroll wheel has
+tick that are reported as 15 degrees rotations.
+
+@tbd We should also handle horizontal   scrolling  and smooth scrolling.
+As  is,  sdlevent.c  accumulates  fast  precise  scrolling  events  from
+trackpads into 15 degree motion events.
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+
+status
+mapWheelMouseEvent(EventObj ev, Any rec)
+{ if ( ev->id == NAME_wheel )
+  { Name dir, unit;
+    Int count;
+    Int rot_obj = getAttributeObject(ev, NAME_rotation);
+
+    if ( !rot_obj )
+      fail;				/* Error? */
+    intptr_t rot = valInt(rot_obj);
+
+    if ( isDefault(rec) )
+      rec = ev->receiver;
+
+    DEBUG(NAME_wheel,
+	  Cprintf("mapWheelMouseEvent() on %s, rot=%s\n", pp(rec), pp(rot)));
+
+    if ( !hasSendMethodObject(rec, NAME_scrollVertical) )
+      fail;
+
+    if ( rot > 0 )
+    { dir = NAME_backwards;
+    } else
+    { dir = NAME_forwards;
+      rot = -rot;
+    }
+
+    if ( valInt(ev->buttons) & BUTTON_shift )
+    { unit = NAME_line;
+      count = toInt(1);
+    } else if ( valInt(ev->buttons) & BUTTON_control )
+    { unit = NAME_page;
+      count = toInt(900);
+    } else
+    { unit = NAME_line;
+      count = toInt((rot*3)/15);
+    }
+
+    send(rec, NAME_scrollVertical, dir, unit, count, EAV);
+    succeed;				/* Or return? */
+  }
+
+  fail;
+}
+
+
+		 /*******************************
+		 *	 CLASS DECLARATION	*
+		 *******************************/
+
+/* Type declarations */
+
+static char *T_initialise[] =
+        { "id=event_id", "origin=[window|frame]", "x=[int]", "y=[int]", "button_mask=[int]", "time=[int]" };
+static char *T_post[] =
+        { "to=graphical", "recogniser=[recogniser]" };
+
+/* Instance Variables */
+
+static vardecl var_event[] =
+{ IV(NAME_frame, "frame", IV_GET,
+     NAME_context, "Frame that received the event"),
+  IV(NAME_window, "window|frame", IV_GET,
+     NAME_context, "Window or frame that receives the event"),
+  IV(NAME_receiver, "graphical|frame", IV_GET,
+     NAME_context, "Object receiving event"),
+  IV(NAME_id, "event_id", IV_GET,
+     NAME_name, "Id of the event (type of event)"),
+  IV(NAME_buttons, "mask=int", IV_GET,
+     NAME_classify, "Bitmask with status of buttons"),
+  IV(NAME_x, "pixels=int", IV_GET,
+     NAME_position, "X-coordinate, relative to window"),
+  IV(NAME_y, "pixels=int", IV_GET,
+     NAME_position, "Y-coordinate, relative to window"),
+  IV(NAME_position, "point*", IV_NONE,
+     NAME_position, "Last calculated position"),
+  IV(NAME_time, "alien:Time", IV_NONE,
+     NAME_timing, "Window System Time stamp")
+};
+
+/* Send Methods */
+
+static senddecl send_event[] =
+{ SM(NAME_initialise, 6, T_initialise, initialiseEvent,
+     DEFAULT, "Create from type, window, x, y, buttons and time"),
+  SM(NAME_hasModifier, 1, "modifier", hasModifierEvent,
+     NAME_classify, "Test if event meets modifier spec"),
+  SM(NAME_isA, 1, "super=event_id", isAEvent,
+     NAME_classify, "Test if event matches type identifier"),
+  SM(NAME_isDown, 0, NULL, isDownEvent,
+     NAME_classify, "Test if event is a button-down event"),
+  SM(NAME_isDrag, 0, NULL, isDragEvent,
+     NAME_classify, "Test if event is a button-drag event"),
+  SM(NAME_isUp, 0, NULL, isUpEvent,
+     NAME_classify, "Test if event is a button-up event"),
+  SM(NAME_post, 2, T_post, postEvent,
+     NAME_forward, "Deliver the event at the argument"),
+  SM(NAME_inside, 1, "[graphical]", insideEvent,
+     NAME_position, "Test if event is in area of graphical")
+};
+
+/* Get Methods */
+
+static getdecl get_event[] =
+{ GM(NAME_convert, 1, "event", "[any]", getConvertEvent,
+     DEFAULT, "Convert @default into current event (@event)"),
+  GM(NAME_time, 1, "int", "[event]", getTimeEvent,
+     DEFAULT, "Timestamp (relative to argument)"),
+  GM(NAME_distance, 1, "int", "to=event", getDistanceEvent,
+     NAME_calculate, "Rounded integer distance between events"),
+  GM(NAME_button, 0, "button_name", NULL, getButtonEvent,
+     NAME_classify, "Button-name of button-event"),
+  GM(NAME_clickDisplacement, 0, "pixels=int", NULL, getClickDisplacementEvent,
+     NAME_classify, "`up' events: distance since corresponding `down'"),
+  GM(NAME_clickTime, 0, "milliseconds=int", NULL, getClickTimeEvent,
+     NAME_classify, "`up' events: time since corresponding `down'"),
+  GM(NAME_key, 0, "name", NULL, getKeyEvent,
+     NAME_classify, "Key(-binding) description of event"),
+  GM(NAME_multiclick, 0, "{single,double,triple}", NULL, getMulticlickEvent,
+     NAME_classify, "Click type"),
+  GM(NAME_display, 0, "display", NULL, getDisplayEvent,
+     NAME_context, "Display on which the event occurred"),
+  GM(NAME_master, 0, "any", NULL, getMasterEvent,
+     NAME_context, "The <-master of <-receiver"),
+  GM(NAME_name, 0, "event_id", NULL, getIdEvent,
+     NAME_name, "Name of the event (synonym for <-id)"),
+  GM(NAME_areaPosition, 1, "point", "relative_to=[graphical]", getAreaPositionEvent,
+     NAME_position, "Position relative to top-left-corner"),
+  GM(NAME_insideSubWindow, 1, "frame|window", "[display|frame|window]", getInsideSubWindow,
+     NAME_position, "Frame or window event occurred in"),
+  GM(NAME_position, 1, "point", "relative_to=[graphical|frame|display]", getPositionEvent,
+     NAME_position, "Position relative to argument"),
+  GM(NAME_x, 1, "int", "relative_to=[graphical|frame|display]", getXEvent,
+     NAME_position, "X coordinate relative to argument"),
+  GM(NAME_y, 1, "int", "relative_to=[graphical|frame|display]", getYEvent,
+     NAME_position, "Y coordinate relative to argument")
+};
+
+/* Resources */
+
+static classvardecl rc_event[] =
+{ RC(NAME_locStillTime, "int", "400",
+     "Time before generating a loc_still event in milliseconds"),
+  RC(NAME_macosOptionCharacters, "string", "\"€\"",
+     "Characters in addition to 32..126 that must be passed as text")
+};
+
+/* Class Declaration */
+
+static Name event_termnames[] = { NAME_receiver, NAME_name, NAME_position, NAME_buttons, NAME_time };
+
+ClassDecl(event_decls,
+          var_event, send_event, get_event, rc_event,
+          3, event_termnames);
+
+
+status
+makeClassEvent(Class class)
+{ Int t;
+
+  declareClass(class, &event_decls);
+  cloneStyleVariableClass(class, NAME_receiver, NAME_reference);
+  cloneStyleVariableClass(class, NAME_window,   NAME_reference);
+  init_event_tree();
+
+  if ( (t=getClassVariableValueClass(class, NAME_locStillTime)) )
+    loc_still_time = valInt(t);
+
+  succeed;
+}
+
+
+static struct namepair
+{ Name son;
+  Name parent;
+} initial_tree[] =
+{ { NAME_mouse,		NAME_any },
+  { NAME_keyboard,	NAME_any },
+  { NAME_user,		NAME_any },
+					/* Keyboard events */
+  { NAME_ascii,		NAME_keyboard },
+  { NAME_meta,		NAME_keyboard },
+  { NAME_function,	NAME_keyboard },
+  { NAME_control,	NAME_ascii },
+  { NAME_printable,	NAME_ascii },
+  { NAME_functionKey,	NAME_function },
+  { NAME_cursor,	NAME_function },
+  { NAME_namedFunction, NAME_function },
+
+  { NAME_f1,		NAME_functionKey },
+  { NAME_f2,		NAME_functionKey },
+  { NAME_f3,		NAME_functionKey },
+  { NAME_f4,		NAME_functionKey },
+  { NAME_f5,		NAME_functionKey },
+  { NAME_f6,		NAME_functionKey },
+  { NAME_f7,		NAME_functionKey },
+  { NAME_f8,		NAME_functionKey },
+  { NAME_f9,		NAME_functionKey },
+  { NAME_f10,		NAME_functionKey },
+  { NAME_f11,		NAME_functionKey },
+  { NAME_f12,		NAME_functionKey },
+					/* Mouse button events */
+  { NAME_button,	NAME_mouse },
+  { NAME_wheel,		NAME_mouse },
+  { NAME_msLeft,	NAME_button },
+  { NAME_msMiddle,	NAME_button },
+  { NAME_msRight,	NAME_button },
+  { NAME_msButton4,	NAME_button },
+  { NAME_msButton5,	NAME_button },
+  { NAME_msLeftDown,	NAME_msLeft },
+  { NAME_msLeftUp,	NAME_msLeft },
+  { NAME_msLeftDrag,	NAME_msLeft },
+  { NAME_msRightDown,	NAME_msRight },
+  { NAME_msRightUp,	NAME_msRight },
+  { NAME_msRightDrag,	NAME_msRight },
+  { NAME_msMiddleDown,	NAME_msMiddle },
+  { NAME_msMiddleUp,	NAME_msMiddle },
+  { NAME_msMiddleDrag,	NAME_msMiddle },
+  { NAME_msButton4Down,	NAME_msButton4 },
+  { NAME_msButton4Up,	NAME_msButton4 },
+  { NAME_msButton4Drag,	NAME_msButton4 },
+  { NAME_msButton5Down,	NAME_msButton5 },
+  { NAME_msButton5Up,	NAME_msButton5 },
+  { NAME_msButton5Drag,	NAME_msButton5 },
+
+
+  { NAME_select,	NAME_namedFunction },
+  { NAME_print,		NAME_namedFunction },
+  { NAME_execute,	NAME_namedFunction },
+  { NAME_insert,	NAME_namedFunction },
+  { NAME_undo,		NAME_namedFunction },
+  { NAME_redo,		NAME_namedFunction },
+  { NAME_menu,		NAME_namedFunction },
+  { NAME_find,		NAME_namedFunction },
+  { NAME_cancel,	NAME_namedFunction },
+  { NAME_help,		NAME_namedFunction },
+  { NAME_break,		NAME_namedFunction },
+  { NAME_pause,		NAME_namedFunction },
+  { NAME_BS,		NAME_namedFunction }, /* Add node for these ASCII? */
+  { NAME_TAB,		NAME_namedFunction },
+  { NAME_DEL,		NAME_namedFunction },
+  { NAME_ESC,		NAME_namedFunction },
+  { NAME_RET,		NAME_namedFunction },
+
+  { NAME_cursorHome,	NAME_cursor },
+  { NAME_cursorLeft,	NAME_cursor },
+  { NAME_cursorRight,	NAME_cursor },
+  { NAME_cursorUp,	NAME_cursor },
+  { NAME_cursorDown,	NAME_cursor },
+  { NAME_pageUp,	NAME_cursor },
+  { NAME_pageDown,	NAME_cursor },
+  { NAME_begin,		NAME_cursor },
+  { NAME_end,		NAME_cursor },
+
+  { NAME_area,		NAME_mouse },
+  { NAME_areaEnter,	NAME_area },
+  { NAME_areaExit,	NAME_area },
+  { NAME_areaCancel,	NAME_areaExit },
+  { NAME_areaResume,	NAME_areaEnter },
+
+  { NAME_position,	NAME_mouse },
+  { NAME_locMove,	NAME_position },
+  { NAME_locStill,	NAME_position },
+
+  { NAME_focus,				NAME_any },
+  { NAME_deactivateKeyboardFocus,	NAME_focus },
+  { NAME_releaseKeyboardFocus,		NAME_deactivateKeyboardFocus },
+  { NAME_obtainKeyboardFocus,		NAME_focus },
+  { NAME_activateKeyboardFocus,		NAME_obtainKeyboardFocus },
+  { NAME_releaseFocus,			NAME_focus },
+  { NAME_obtainFocus,			NAME_focus },
+
+  { 0,			0 }
+};
+
+
+static void
+add_node(Name n, Name super)
+{ EventNodeObj sn = getNodeEventTree(EventTree, super);
+  EventNodeObj s  = newObject(ClassEventNode, n, EAV);
+
+  send(sn, NAME_son, s, EAV);
+}
+
+
+static void
+init_event_tree(void)
+{ struct namepair *np;
+
+  EventTree = globalObject(NAME_eventTree, ClassEventTree, EAV);
+
+  send(EventTree, NAME_root, newObject(ClassEventNode, NAME_any, EAV), EAV);
+
+  for(np = initial_tree; np->son; np++)
+    add_node(np->son, np->parent);
+}

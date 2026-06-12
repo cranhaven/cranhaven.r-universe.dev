@@ -1,0 +1,57 @@
+/*  Part of XPCE --- The SWI-Prolog GUI toolkit
+
+    Author:        Jan Wielemaker
+    E-mail:        jan@swi-prolog.org
+    WWW:           https://www.swi-prolog.org
+    Copyright (c)  2025, SWI-Prolog Solutions b.v.
+    All rights reserved.
+
+    Redistribution and use in source and binary forms, with or without
+    modification, are permitted provided that the following conditions
+    are met:
+
+    1. Redistributions of source code must retain the above copyright
+       notice, this list of conditions and the following disclaimer.
+
+    2. Redistributions in binary form must reproduce the above copyright
+       notice, this list of conditions and the following disclaimer in
+       the documentation and/or other materials provided with the
+       distribution.
+
+    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+    "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+    LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS
+    FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE
+    COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+    INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+    BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+    DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+    CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+    LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
+    ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+    POSSIBILITY OF SUCH DAMAGE.
+*/
+
+#ifndef SDLUSEREVENT_H
+#define SDLUSEREVENT_H
+#include <SDL3/SDL.h>
+
+typedef enum
+{ FD_READY_DISPATCH = 1,	/* main tty input (shared with SDL dispatch) */
+  FD_READY_STREAM_INPUT,	/* Data arrives on a process or socket */
+  FD_READY_STREAM_ACCEPT,	/* Socket is accepted */
+  FD_READY_TERMINAL,		/* TerminalImage pty received data */
+  FD_ASYNC_WRITE		/* Handle asynchronous writes */
+} fd_ready_codes;
+
+typedef enum
+{ MY_EVENT_CALL = SDL_EVENT_USER+1,
+  MY_EVENT_TIMER,		/* xpce timer, see sdlevent.c */
+  MY_EVENT_FD_READY,		/* see sdlinput.c */
+  MY_EVENT_KEYDOWN_TIMEOUT,	/* Keydown wait period ended */
+  MY_EVENT_ALERT,		/* Cause event dispatching return */
+  MY_EVENT_FLASH_END,		/* Visual flash period expired; data1 = FrameObj */
+  MY_EVENT_HIGHEST		/* for ws_events_queued_display() */
+} pce_user_events;
+
+#endif /* SDLUSEREVENT_H */
