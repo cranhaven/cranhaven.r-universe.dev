@@ -1,0 +1,315 @@
+---
+title: "Variance-Covariance Estimation in `mlmodels`"
+output: 
+  rmarkdown::html_vignette:
+    css: style.css
+vignette: >
+  %\VignetteIndexEntry{Variance-Covariance Estimation in `mlmodels`}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+```{r setup}
+library(mlmodels)
+```
+
+## Introduction
+
+Accurate variance-covariance estimation is essential for statistical inference in maximum likelihood models. The variance-covariance matrix allows us to:
+
+- Compute **standard errors** for parameter estimates
+- Construct **confidence intervals**
+- Perform **hypothesis tests** (Wald, z-tests, etc.)
+- Calculate **p-values** and assess statistical significance
+
+Without a reliable variance-covariance matrix, we cannot make valid inferences about the parameters of our model.
+
+The `mlmodels` package provides a comprehensive set of variance-covariance estimators, through its `vcov()` implementation, ranging from classical information matrix methods to robust and resampling-based approaches. This vignette explains each method, when to use them, and how they relate to each other.
+
+### Why Different Variance Estimators Matter
+
+Different estimators make different assumptions about the model:
+
+- **Classical methods** (`oim`, `opg`) assume the model is correctly specified (the Information Matrix Identity holds).
+- **Robust methods** relax this assumption and are valid under more general conditions.
+- **Resampling methods** (bootstrap, jackknife) make even fewer parametric assumptions and are often the most robust, at the cost of higher computation time.
+
+Choosing the right variance estimator is therefore an important part of responsible statistical practice.
+
+## Classical Information Matrix Estimators
+
+The package provides two classical variance estimators based on the information matrix:
+
+### Observed Information Matrix (`oim`) — Default
+
+The default variance estimator in `mlmodels` is the **Observed Information Matrix** (`type = "oim"`). It is used automatically unless you specify otherwise.
+
+```{r oim}
+data(mroz)
+mroz$incthou <- mroz$faminc / 1000
+
+# Fit a homoskedastic linear model
+fit <- ml_lm(incthou ~ age + I(age^2) + huswage + educ + unem, 
+             data = mroz)
+
+# Summary calls vcov() which uses oim as default.
+summary(fit)
+
+v_oim <- vcov(fit, type = "oim")
+sqrt(diag(v_oim))
+```
+
+Notice how the standard errors shown in `summary()` are identical to those obtained directly from `vcov(fit, type = "oim")`. `summary()` displays the type of variance used clearly, above the coefficient table.
+
+The `oim` estimator is computationally efficient and statistically attractive **when the model is correctly specified** (i.e., the outcome follows the assumed distribution and both the value and scale, if present, equations are appropriate).
+
+### Outer Product of Gradients (`opg`)
+
+An alternative classical estimator is the **Outer Product of Gradients** (also known as BHHH).
+
+When a maximum likelihood estimation model is well specified, the negative Hessian matrix (which is the base for the `oim` variance), and the outer product of the gradients matrix (which is the basis for the `opg` variance) whould be equal. This is what is called the **Information Matrix Identity**.
+
+```{r opg}
+v_opg <- vcov(fit, type = "opg")
+```
+
+When a maximum likelihood model is correctly specified, the **Information Matrix Identity** holds. This means that the negative expected Hessian matrix (basis of the `oim `variance) should be equal (in expectation) to the outer product of the gradients matrix (basis of the `opg` variance).
+
+In practice, you can compare the two estimators to get a sense of model adequacy:
+```{r opg-oim-comp}
+comp <- data.frame(
+  oim = sqrt(diag(v_oim)),
+  opg = sqrt(diag(v_opg))
+)
+
+comp
+```
+
+If the model is well identified and correctly specified, the `oim` and `opg` standard errors should be very similar. Significant differences between them can be an indication of model misspecification or weak identification.
+
+This is one of the reasons `mlmodels` provides more robust variance estimators (`robust`, `boot`, and `jack`) — they do not rely on the Information Matrix Identity holding.
+
+### The "Hessian may be singular" warning
+
+When computing the `oim` variance, you may occasionally see the following warning:
+
+> `! OIM variance may be unreliable due to singularity in the Hessian.`
+
+This warning indicates that the observed information matrix is close to singular (nearly non-invertible). 
+
+**What this means**:  
+It is a **strong diagnostic signal** of model misspecification or numerical instability. Common causes include:
+
+* Multicollinearity among predictors.
+* Overparameterized models.
+* Inappropriate specification of the value or scale equations.
+* Poor identification of some parameters.
+
+**What it does NOT mean**:
+
+* It does **not** automatically mean that all coefficient estimates are meaningless.
+* It does **not** imply that all misspecified models trigger this warning. Only that those that do are very likely misspecified.
+
+#### Example: Heteroskedastic Logit Model
+
+A common situation where this warning appears is when the scale parameters are **counteracting** with the value parameters, creating very different levels of curvature in the log-likelihood.
+
+We illustrate it with a binary logit example:
+
+```{r logt-oim}
+
+fit_het <- ml_logit(inlf ~ age + I(age^2) + huswage + educ + unem,
+                    scale = ~ repwage,
+                    data = mroz)
+
+summary(fit_het, vcov.type = "oim")
+```
+
+In this case, `summary()` triggers the warning. While the package still displays results, you **should not trust** the wald tests, the standard errors, z-statistics, or p-values shown under the `oim` variance when this warning is triggered.
+
+One of the recommendations shown in the warning message is to switch to the `robust` variance estimator. We explore robust and other more flexible variance options in the next section.
+
+## Robust Variance Estimators
+
+The use of **more robust** variance estimators becomes important when the Information Matrix Identity may not hold. The singular Hessian warning we saw in the previous section is one practical indication of this problem. A more formal diagnostic is the **Information Matrix Test** (`IMtest()`), which we cover in the Model Diagnostics vignette.
+
+### Robust (Sandwich / Huber-White) Estimator
+
+The most commonly used robust estimator is the sandwich (or Huber-White) estimator. It is the recommended default when you suspect the model may be misspecified or when you see the singular Hessian warning.
+```{r robust}
+  # summary() with the vcov.type argument
+summary(fit, vcov.type = "robust")
+
+# or vcov() with the type argument
+v_robust <- vcov(fit, type = "robust")
+```
+
+When you specify `vcov.type = "robust"` in `summary()`, the function uses the robust variance not only for the standard errors, z-values, and p-values in the coefficient table, but also for the Wald significance tests shown at the top of the output.
+
+You can also pass a pre-computed variance directly using the `vcov` argument.
+```{r robust-pre}
+summary(fit, vcov = v_robust)
+```
+
+The displayed results will be identical because the variance matrix is the same.
+
+#### Clustering
+
+If you suspect that it is the independence of the observations that is violated, in that observations may be correlated within groups (clusters), then the **cluster-robust** variance is appropriate:
+
+```{r robust-cluster}
+# Suspect that income is correlated among education levels.
+v_rob_clust <- vcov(fit, type = "robust", cl_var = "educ")
+summary(fit, vcov = v_rob_clust)
+```
+
+### Bootstrap and Jackknife Estimators
+
+The package also provides two resampling-based variance estimators:
+
+* `boot` - Bootstrap (with optional clustering).
+* `jack`/`jacknife` - Jackknife (with optional clustering).
+
+**Bootstrap** works by repeatedly resampling the estimation data **with replacement** (default 999 times, but 500 is often sufficient), re-fitting the model on each resampled dataset, and then computing the variance from the resulting matrix of coefficient estimates.
+
+**Jackknife** works by systematically leaving out one observation at a time and re-fitting the model. The number of replications is therefore equal to the sample size.
+
+```{r boot-jack}
+# Bootstrap with 20 repetitions
+v_boot <- vcov(fit, type = "boot", repetitions = 20)
+# Jackknife
+v_jack <- vcov(fit, type = "jack")
+```
+
+In our examples we use 20 repetitions to speed up the illustration, and satisfy CRAN's time requirements. In practice, we recommend that you use at least 500 repetitions in your work.
+
+By default, `vcov()` shows a progress table, with green dots where the iterations' fits are successful, or red crosses where they're not, when `type` equals `boot` or `jack`/`jacknife`. You can stop `vcov()` from displaying it by setting `progress = FALSE`.
+
+When you set `vcov.type` to either `"boot"` or `"jack"` in `summary()`, or other functions that also have a `vcov.type` argument, the progress display is not shown by default (`progress = FALSE` by default).
+
+You can also estimate clustered versions of these variances:
+```{r boot-jack-clust}
+# Bootstrap with 20 repetitions
+v_boot_clust <- vcov(fit, type = "boot", cl_var = "educ",
+               repetitions = 20,
+               progress = FALSE)
+# Jackknife
+v_jack_clust <- vcov(fit, type = "jack", cl_var = "educ",
+               progress = FALSE)
+```
+
+#### Why use resampling methods?
+
+Traditional robust estimators (like the sandwich estimator) still rely on **asymptotic normality** for inference - that is, they assume that the sampling distribution of the parameter estimates becomes approximately normal in large samples.
+
+Bootstrap and jackknife take a more direct approach: they **estimate the sampling distribution** of the parameters empirically from the data itself, without assuming normality. This makes them:
+
+* More robust to violations of model assumptions.
+* Better at capturing the actual variability in finite samples.
+* Particularly useful when the model is complex or the asymptotic approximations are questionable.
+
+#### Asymptotic Equivalence
+
+* The regular bootstrap and jackknife are asymptotically equivalent to the robust (sandwich) estimator.
+* The clustered versions are asymptotically equivalent to the cluster-robust estimator.
+
+Here we compare the standard errors produced by each method.
+
+```{r boot-jack-summary}
+# Robust Comparison
+comp<- data.frame(
+  robust = sqrt(diag(v_robust)),
+  boot = sqrt(diag(v_boot)),
+  jack = sqrt(diag(v_jack))
+)
+comp
+
+# Clustered comparison
+comp <- data.frame(
+  robust = sqrt(diag(v_rob_clust)),
+  boot = sqrt(diag(v_boot_clust)),
+  jack = sqrt(diag(v_jack_clust))
+)
+comp
+```
+
+You can see that the errors are close across methods for each type. Bootstrapped are slightly different from the other two, due to the small number of iterations used. You should see them became closer to the other two if you increase the number of repetitions. Again, the low number of repetitions were used to speed up the illustration, and meet CRAN's requirements.
+
+The benefit of the resampling methods is that they make fewer parametric assumptions, which often leads to better finite-sample performance.
+
+#### Important Feature of Our Implementation
+
+When some bootstrap or jackknife replications fail to converge, our `vcov()` methods compute the variance using **only the successful replications**. This is statistically more appropriate than including failed optimizations (which is what `sandwich::vcovBS()` does).
+
+## Practical Recommendations
+
+Choosing the right variance estimator depends on your goals and concerns about model specification. Here is a practical guide:
+
+### Quick Decision Guide
+
+<table>
+  <thead>
+    <tr>
+      <th style="width: 42%;">Situation</th>
+      <th style="width: 32%;">Recommended Variance</th>
+      <th style="width: 26%;">Why</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>Model is well-specified</td>
+      <td><code>oim</code></td>
+      <td>Most efficient</td>
+    </tr>
+    <tr>
+      <td>OIM singular Hessian warning</td>
+      <td><code>robust</code> / <code>boot</code></td>
+      <td>Robust to violations</td>
+    </tr>
+    <tr>
+      <td>Suspect heteroskedasticity or other violations</td>
+      <td><code>robust</code> / <code>boot</code></td>
+      <td>Robust to violations</td>
+    </tr>
+    <tr>
+      <td>Suspect correlation within groups</td>
+      <td><code>robust</code> / <code>boot</code> + <code>cl_var</code></td>
+      <td>Accounts for dependence</td>
+    </tr>
+  </tbody>
+</table>
+
+### Best Practices
+
+1. **Start with `robust`** -- In most applied work, `vcov.type = "robust"` is expected in journals, even if you're modeling heteroskedasticty.
+2. **Pre-compute expensive variances** -- This is mostly for `boot` and `jack`, although it also applies to the other ones. When you want to use one type of variance for your estimates, predictions, and marginal effects, it is very convenient to store the variance and feed it to the different functions.
+3. **Check model diagnostics** -- Use `IMtest()` to assess whether classical estimators (`oim`, `opg`) are suitable. See the vignette on diagnostics for a discussion about this test and its methods.
+4. **When to prefer bootstrap/jackknife**
+    - Small to moderate sample sizes.
+    - Complex models.
+    - Avoid strong parametric assumptions.
+5. **Reporting** -- Always state which variance estimator, or estimators if you use several, you used in your paper or report.
+
+## Concluding Remarks
+
+The `mlmodels` package produces a comprehensive and coherent suite of variance-covariance estimators through the unified `vcov()` function. From the classical information matrix estimation (`oim`, `opg`), to robust and cluster-robust methods, allowing you to get these via parametric assumptions (`robust`) or via more flexible resampling methods (`boot` and `jack`).
+
+Our design philosophy has been to give you both **power and guidance**:
+
+* Clear informative warnings when OIM estimator may be unreliable.
+* Robust default behavior and sensible options for advanced users.
+* Consistent interfaces for switching between variance stypes is straightforward.
+* Careful handling of edge cases, such as using only successful replications in bootstrap and jackknife procedures.
+
+We built these tools because we observed that other existing packages did not provide this level of detail and/or solid estimation methods. Our goal was to give you the right standard errors for your estimations, predictions, and marginal effects, by simply setting one or two arguments (`type` and `cl_var`).
+
+We hope his vignette helps you understand the strengths and appropriate use of each estimator, so you can conduct your analyses with confidence and transparency.
+
+Happy modeling!

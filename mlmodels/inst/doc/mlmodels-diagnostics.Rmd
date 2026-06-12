@@ -1,0 +1,285 @@
+---
+title: "Diagnostic Tools in `mlmodels`"
+output: 
+  rmarkdown::html_vignette:
+    css: style.css
+vignette: >
+  %\VignetteIndexEntry{Diagnostic Tools in `mlmodels`}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+```{r setup}
+library(mlmodels)
+```
+
+## Introduction
+
+No estimation package would be complete without providing the means to test the validity of its estimates. Tests that practitioners need range from misspecification, to significance of the parameters, as well as model comparison, whether nested or not.
+
+The `mlmodels` package provides a suite of testing functions, several of which are general for all models, and a couple of which that are designed for count data models. In this vignette we explore them.
+
+## Information Matrix Test
+
+With maximum likelihood estimators, the main question that we usually ask ourselves is: **does the information matrix equality hold?** The **information matrix test** -- White (1982) -- attempts to answer this question. Even though it is a test of misspecification, from a practitioner's point of view, it is more a test of how to do inference with your model. If the test rejects the equality, inference should be done using robust methods.
+
+The `mlmodels` `IMtest()` function offers four methods of the test:
+
+* `quad` -- **Analyitical** quadratic orthogonalized (Davidson and MacKinnon, 1992).
+* `boot_quad` -- **Analyitical** quadratic orthogonalized plus bootstrapped <em>p</em>-values.
+* `opg` -- **Analytical** Chesher/Lancester score version of the test (Chesher, 1983; Lancaster, 1984).
+* `boot_opg` -- **Analytical** Chesher/Lancaster score version of the test plus bootstrapped <em>p</em>-values.
+
+Even though both analytical versions of the test are asymptotically equivalent, each has shown practical limitations. The **Chesher/Lancaster (OPG)** version is known for **extreme size distortion**, often rejecting correctly specified models (Horowitz, 1994). The **orthogonalized quadratic version** is more robust to size problems, but its construction can lead to a **loss of power**, failing to detect actual misspecification.
+
+Bootstrapping the tests -- an approach pioneered for the IM test by Horowitz (1994) and further championed by Davidson and MacKinnon (1999) -- bridges these gaps. Rather than relying on asymptotic critical values, our implementation provides bootstrap <em>p</em>-values by estimating the test statistic's distribution directly from the sample data, which significantly improves the reliability of the test in finite samples.
+
+### Implementing the Test
+
+Let's consider a linear model, and how to implement the test.
+
+```{r lin-imtest}
+data(mroz)
+mroz$incthou <- mroz$faminc / 1000
+
+# Fit a homoskedastic linear model
+fit_lm <- ml_lm(incthou ~ age + I(age^2) + huswage + educ + unem, 
+             data = mroz)
+
+# Default is quad (quadratic orthognalized)
+IMtest(fit_lm)
+
+# Let's check the Chesher/Lancaster
+IMtest(fit_lm, method = "opg")
+```
+
+We see that both analytical versions of the test reject the null, and state that the information matrix equality doesn't hold. This is not surprising, the outcome variable is skewed to the right, so that may be what the tests are capturing. Let us check what happens when we add the bootsrapped <em>p</em>-values.
+
+```{r lin-imtest-boot}
+# Bootstrapped quadratic (low repetitions for speed)
+IMtest(fit_lm, method = "boot_quad", repetitions = 20, seed = 123)
+
+# Boot opg (low repetitions for speed)
+IMtest(fit_lm, method = "boot_opg", repetitions = 20, seed = 123)
+```
+
+In these examples, we do the bootstrapping with a low number of repetitions, for faster CRAN processing. For actual research you should consider 500 repetitions or more, depending on the size of your dataset.
+
+Both bootstrapped <em>p</em>-values oppose the analytical test, and tell us that we cannot reject that the model is well specified. Which of the two should we believe? You, actually, should take this as an indication that there is some level of misspecification because both analytical versions rejected the null. From a practical point of view, however, the bootstrap <em>p</em>-values are telling you that you are probably good using the model for predictions. Finally, the contrast between analytic and bootstrapped <em>p</em>-values in both versions should not be ignored, and you should proceed **with robust inference** to be safe.
+
+### Illustrating the Size and Power Problems
+
+Let us fit a Gamma model with the same specification, since the Gamma model is specific for positive outcomes with long right tails, and test it.
+
+```{r gamma-imtest}
+fit_gam <- ml_gamma(incthou ~ age + I(age^2) + huswage + educ + unem, 
+             data = mroz)
+
+IMtest(fit_gam, method = "boot_quad", repetitions = 20, seed = 123)
+
+IMtest(fit_gam, method = "boot_opg", repetitions = 20, seed = 123)
+```
+
+We did the bootstrapped versions of the tests, because they allow us to see the analytical result and the bootstrapped <em>p</em>-values. The <em>p</em>-values of the analytical versions of the test, illustrate clearly the weaknesses of each of the tests.
+
+The model is probably well specified, but a <em>p</em>-value of 0.9996 is very high, and it shows that the quadratic orthogonalized version may be losing power with this model. The opposite <em>p</em>-value is on the analytical Chesher/Lancaster version, showing that it may be strongly rejecting a perhaps valid model (the size problem).
+
+When we add the bootstrapped <em>p</em>-values, the picture becomes clearer. They both fail to reject that the model is well specified. But look at how much more reasonable the bootstrapped <em>p</em>-value for the quadratic orthogonalized model is with respect to its analytical counterpart (0.80 versus 0.9996).
+
+In this case you're probably safe to proceed with `oim` standard errors, but you may want to check the results with `robust` ones as well, to see if there are major differences in significance, just in case.
+
+```{r gamma-results}
+# Show results with oim standard errors
+summary(fit_gam)
+
+summary(fit_gam, vcov.type = "robust")
+```
+
+We see that the bigger differences are in the standard errors for `huswage` and `educ`, but that they're not enough to change the conclusions about the significance of the parameters. For the rest of the coefficients, the standard errors are very close across results. We also see that Wald's overall significance chi-squared has decreased, but the significance of the test statistic hasn't. This confirms our interpretation of the information matrix tests on the model.
+
+## Testing Nested Models
+
+With maximum likelihood estimators, there are two usual ways to test across nested models:
+
+* **Likelihood-ratio** test -- You estimate the unrestricted and the restricted (nested) model, and do the test.
+* **Wald** test -- You only estimate the unrestricted model, and the tests are tests restrictions of the coefficients.
+
+As you can see, in our estimation results we present Wald test(s), not likelihood-ratio test(s), of significance. The reason is that the **likelihood-ratio test is not robust** to the information matrix equality not holding, whereas the **Wald test is**, when it uses the variance that is robust to that equality not holding. Our `summary()` function uses either the type of variance you set in the `vcov.type` argument, which defaults to `oim` when you don't set it, or the variance matrix you pass through the `vcov` argument, to produce the standard errors of the coefficients and to do the Wald test(s). That way it produces consistent and robust tests, as long a you specify an asymptotically consistent type of variance for the model.
+
+The limitation of the likelihood-ratio test is an indication that you should use the insights provided by the information matrix test to guide you in selecting what type of test to do with nested models.
+
+### Likelihood-ratio Test
+
+We fit a gamma model with more predictors, to have the unrestricted model, and then test the nested models using `mlmodels` `lrtest()`:
+
+```{r gamma-lrtest}
+fit_gam_ur <- ml_gamma(incthou ~ age + I(age^2) + huswage + educ + unem + 
+                         kidslt6 + kidsge6, 
+                       data = mroz)
+
+summary(fit_gam_ur)
+
+# The order you enter the models doesn't matter
+lrtest(fit_gam_ur, fit_gam)
+```
+
+In the results we see that the function determines which model is nested in which, so the order that you enter them in the function doesn't matter. The test indicates that can reject the null at the 10\% level, so at least one of the two added variables seems to be significant. Looking at the estimation result, it seems to be `kidslt6`.
+
+### Wald Test
+
+The `waldtest()` function gives you two arguments to perform this same test:
+
+* `coef_names` allows you to pass the vector with the names of the coefficients that you want to test.
+* `indices` allows you to pass the vector with the order indices of the coefficients that you want to test.
+
+Looking at the estimation results, we see that the names are `value::kidslt6` and `value::kidsge6`, and they are in 7<sup>th</sup> and 8<sup>th</sup> position, respectively, in the coefficients' vector.
+
+```{r waldtest-one}
+# Using indices
+waldtest(fit_gam_ur, indices = 7:8)
+
+# Using coef_names
+waldtest(fit_gam_ur, coef_names = c("value::kidslt6", "value::kidsge6"))
+```
+
+We see that both methods return the same result, and that it is consistent with that of the likelihood-ratio test.
+
+The `waldtest()` function also has a `rhs` argument, that defaults to 0, which allows you to specify if you want to test that a coefficient equals something else than 0. If you set it to a single number, it will use that number as the right hand side of the equalities for all the coefficients you pass. If you want to have different right hand side values for different coefficients you pass a vector of the values, in the same order as the vector of coefficients you pass in either `indices` or `coef_names`.
+
+```{r waldtest-two}
+# Testing that age equals .05 and I(age^2) equals 0
+waldtest(fit_gam_ur, coef_names = c("value::age", "value::I(age^2)"), rhs = c(.05, 0))
+
+# Testing age and educ both equal .05
+waldtest(fit_gam_ur, coef_names = c("value::age", "value::educ"), rhs = .05)
+```
+
+This last test allows us to illustrate the use of yet another argument that allows you to setup the restrictions to be tested: `rest_matrix`, the actual **matrix of restrictions**.
+
+This matrix becomes useful when you want to test linear combinations of the coefficients. To do that you have to setup a vector of the values multiplying each of the coefficients in each restriction. Let us illustrate. The last test makes us want to test if `value::age = value::educ`. This is equivalent to `value::age - value::educ = 0`. Even though you don't see them this is the same as `1 * value::age - 1 * value::educ = 0`, and we could extend this to include all other parameters (including `scale::lnnu`) adding them but pre-multiplied by zero. So that means that the coefficients for all other parameters are zero, for `age` it's 1 and for `educ` it's -1. Then all you have to do is form the row vector in matrix form with the coefficients for the parameters in place:
+
+```{r waldtest-three}
+# One restriction, one row in the matrix with the vector.
+R <- rbind(c(0, 1, 0, 0, -1, 0, 0, 0, 0))
+
+# Do the test (rhs is 0, which is the default)
+waldtest(fit_gam_ur, rest_matrix = R)
+
+# Test both that they're both equal and that age equals .05
+R <- rbind(R,                             # age - value (from before)
+           c(0, 1, 0, 0, 0, 0, 0, 0, 0))  # only age
+
+# Don't forget the rhs are different
+waldtest(fit_gam_ur, rest_matrix = R, rhs = c(0, .05))
+```
+
+We should notice that the Chi-squared statistic of the first of these two last tests, since there is only one restriction tested, is the squared of the <em>z</em> statistic you would get for that same test. The <em>p</em>-value is identical, since it's the same test.
+
+Notice, also, how the test statistic and <em>p</em>-value of the second test are both identical to those of the test that both those coefficients were equal to 0.05. That is because, the two tests are testing exactly the same.
+
+Now we illustrate how to replicate the Wald test of joint significance of the parameters in the value equation:
+
+```{r waldtest-four}
+# Get the indices of the coefficients for the value equation and drop the intercept.
+idx <- grep("value::", names(coef(fit_gam_ur)))[-1]
+
+waldtest(fit_gam_ur, indices = idx)
+```
+
+You can see that the Chi-squared and the <em>p</em>-value match those of the overall test of significance in the results of the model. The reason is that it is the same test, because the scale is constant.
+
+This last example illustrates the convenience of having the prefixes in the names of the coefficient, so you can extract them by equation.
+
+Finally, we just show how to do the same test with robust standard errors, to illustrate that you can do the Wald test with any asymptotically correct variance for your models:
+```{r waldtest-five}
+# robust (sandwich) variance
+waldtest(fit_gam_ur, indices = idx, vcov.type = "robust")
+```
+
+## Testing Non-nested Models
+
+What if we want to compare two models that are not nested? Vuong (1989) designed such test. We can use it to test different specifications that are not nested, or even across models. The only issue is that Vuong's test is not robust to the information matrix equality not holding, so you must be fairly certain that the models are well specified.
+
+Since the analytical versions of the information test rejected that the linear model was well specified, even though you can probably do inference with robust standard errors with it, we cannot really use Vuong's test to compare it to the restricted Gamma model we fit. For that reason, we fit a lognormal model, with the same predictors for the value function as that of the linear model. 
+
+```{r vuong}
+fit_ln <- ml_lm(log(incthou) ~ age + I(age^2) + huswage + educ + unem, 
+             data = mroz)
+
+IMtest(fit_ln, method = "boot_quad", repetitions = 20, seed = 123)
+
+vuongtest(fit_gam, fit_ln)
+```
+
+We see that the quadratic orthogonalized version of the information test and its bootstrapped <em>p</em>-value, cannot reject that the lognormal model is well specified. Therefore, we perform Vuong's test against the restricted gamma model we estimated first.
+
+The test is inconclusive and shows that neither model is preferred. If you're interested in a deeper comparison between the lognormal and Gamma models, see the [Gamma versus Lognormal](mlmodels-gamma-lognormal.html) vignette.
+
+## Tests for Count Data Models
+
+The last couple of models that we have implemented in the `mlmodels` package, are specific for count data models. The first one is a test of overdispersion proposed by Cameron and Trivedi (1990). The null hypothesis is that there is no overdispersion, and we test against the two forms of dispersion that our negative binomial estimator models: NB1 and NB2. 
+
+```{r poisson}
+data("docvis")
+fit_poi <- ml_poisson(docvis ~ private + medicaid + age + I(age^2) + educyr + actlim + totchr,
+                      data = docvis)
+
+OVDtest(fit_poi)
+```
+
+We see that the test rejects the null hypothesis of equal dispersion (Poisson) against either of the two versions of dispersion. You should be encouraged to estimate a negative binomial model with any of the two dispersion types: `mlmodels` offers you both in `ml_negbin()`, as well as modeling the actual dispersion parameter for **both** dispersion types, through `scale`.
+
+The second test that we offer for models of count data, is a goodness-of-fit test proposed by Manj&oacute;n and Mart&iacute;nez (2014). This test allows you to select the bins you want to form, to compare the observed proportion of observations whose counts fall in the bin, to the predicted probabilities of the count falling in that bin, and performs the test. Because we report the Pearson statistic for every bin, it not only allows you to test if the model predicts the probabilites well or badly, but also to identify with what particular bins the model has trouble with.
+
+```{r possin-gof}
+# Default bins are individual values from 0 to 5.
+GOFtest(fit_poi)
+```
+
+Clearly, the Poisson model has trouble with most of the bins, due to the overdispersion, but where it really fails is in predicting 0 and 1 counts, as you can see from the Pearson statistic we include.
+
+We don't estimate the negative binomial models in this vignette and test them, but we do that in the [Introduction to Count Data](mlmodels-countintro.html) vignette, that we encourage you to read if you want to learn more about what you can do with `mlmodels` count data models.
+
+## Concluding Remarks
+
+The `mlmodels` package provides a comprehensive suite of diagnostic tools designed to help you assess model adequacy and choose between competing specifications:
+
+* `IMtest()` -- Tests for general model misspecification through the Information Matrix equality.
+* `lrtest()` -- Compares nested models using the likelihood ratio test.
+* `waldtest()` — Tests linear hypotheses about the parameters, which also allow you to test nested models from the unrestricted one.
+* `vuongtest()` -- Compares non-nested models based on their relative fit.
+* `OVDtest()` -- Tests for overdispersion in Poisson models against both NB1 and NB2 alternatives.
+* `GOFtest()` -- Evaluates how well a count model reproduces the observed frequency distribution of counts.
+
+While this collection is not exhaustive of all possible diagnostic procedures available in the literature, it is **flexible and powerful enough** to address the majority of practical diagnostic needs when working with the models included in `mlmodels`.
+
+Used together with the rich set of variance-covariance estimators and post-estimation tools (predictions and marginal effects), these diagnostics give you a solid foundation for responsible and transparent modeling.
+
+Happy modeling!
+
+## References
+
+Cameron, A. C., & Trivedi, P. K. (1990). Regression-based tests for overdispersion in the Poisson model. *Journal of Econometrics*, 46(3), 347-364. https://doi.org/10.1016/0304-4076(90)90014-K
+
+Chesher, A. (1983). The information matrix test: Simplified calculation via a score test interpretation. *Econometric Letters*, 13(1), 45--48. https://doi.org/10.1016/0165-1765(83)90009-5
+
+Davidson, R., & MacKinnon, J. G. (1992). A New Form of the Information Matrix Test. *Econometrica*, 60(1), 145--157. https://doi.org/10.2307/2951680
+
+Davidson, R., & MacKinnon, J. G. (1999). The Size Distortion of Bootstrap Tests. *Econometric Theory*, 15(3), 361-376. https://www.jstor.org/stable/3533339
+
+Horowitz, J. L. (1994). Bootstrap-based critical values for the information matrix test. *Journal of Econometrics*, 61(2), 395--411. https://doi.org/10.1016/0304-4076(94)90092-2
+
+Lancaster, T. (1984). The covariance matrix of the information matrix test. *Econometrica*, 52(4), 1051--1053. https://doi.org/10.2307/1911198
+
+Manj&oacute;n, M., & Mart&iacute;nez, O. (2014). The chi-squared goodness-of-fit test for count-data models. *The Stata Journal*, 14(4), 798–816. https://doi.org/10.1177/1536867X1401400406
+
+Vuong, Q. H. (1989). Likelihood Ratio Tests for Model Selection and Non-Nested Hypotheses. *Econometrica*, 57(2), 307-333. https://doi.org/10.2307/1912557
+
+White, H. (1982). Maximum likelihood estimation of misspecified models. *Econometrica*, 50(1), 1--25. https://doi.org/10.2307/1912526

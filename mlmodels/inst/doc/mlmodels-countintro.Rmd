@@ -1,0 +1,258 @@
+---
+title: "Introduction to Count Data"
+output: 
+  rmarkdown::html_vignette:
+    css: style.css
+vignette: >
+  %\VignetteIndexEntry{Introduction to Count Data}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+```{r setup}
+library(mlmodels)
+```
+
+## Introduction
+
+Count data — non-negative integers such as the number of doctor visits, patents filed, or accidents — are common in economics, health, and social sciences.
+
+The `mlmodels` package provides a consistent, flexible framework for Poisson and negative binomial models. A key advantage is the ability to model heteroskedasticity in the dispersion parameter for both NB1 and NB2 specifications.
+
+To illustrate the functionality of our modeling functions for these type of data, we take on reproducing the examples in chapter 20 of *Microeconometrics Using Stata 2nd ed.* (Cameron and Trivedi, 2022), while demonstrating additional capabilities, most notably heteroskedastic NB1 estimation and unified post-estimation tools.
+
+## The Data
+
+The data come from a cross-sectional sample of the U.S. Medical Expenditure Panel Survey (MEPS) for the year 2003.  This dataset is supplied with the book and is available on the [Stata Press website](https://www.stata-press.com/data/mus2.html). We have included it in the `mlmodels` package under the name `docvis`.
+```{r load-data}
+  data("docvis", package = "mlmodels")
+```
+
+## Poisson Model
+
+The first model we estimate is the Poisson regression. All count models in this vignette share the same mean specification, so we store the formula once for convenience.
+
+```{r}
+  mean_for <- docvis ~ private + medicaid + age + I(age^2) + educyr + actlim + totchr
+  pois <- ml_poisson(mean_for, data = docvis)
+```
+The first estimation results in the chapter are the estimates of this Poisson model using the default Original Information Matrix standard errors.
+```{r}
+  # oim standard errors are the default in summary
+  summary(pois)
+```
+A useful set of statistics appears under the header **Count Diagnostics**. These include the Pearson index of dispersion and a comparison between the actual and predicted number of zeros.
+
+For a model that correctly captures dispersion, the Pearson index should be close to 1. Here we see a value of approximately 6.3, which clearly indicates that the Poisson model is not handling the overdispersion present in the data.
+
+The second statistic evaluates the model's ability to predict the number of zeros. The Poisson model severely underpredicts the number of zeros (401 observed vs. only about 27 predicted), highlighting its poor fit in this dimension as well.
+
+Notice also the two pseudo R-squared measures reported by `summary()`:
+
+* **Cor.Sq.** (squared correlation between predicted and observed values) is provided consistently across all models in `mlmodels`. This is the only R-squared-like measure that is directly comparable between linear and non-linear models.
+
+* **McFadden** is the more traditional pseudo R-squared for discrete choice and count models.
+
+Cameron and Trivedi had to calculate the correlated squared R-squared by hand. We provide it automatically for every model.
+
+Because the Poisson model shows clear signs of overdispersion, Cameron and Trivedi recommend using robust standard errors with Poisson regressions. 
+
+In `mlmodels` you do not need to re-estimate the model. Simply request the desired variance type when calling `summary()`:
+
+```{r poisson-robust}
+summary(pois, vcov.type = "robust")
+```
+Notice that switching to robust standard errors not only changes the standard errors, z-statistics, and p-values of the individual coefficients, but also updates the Wald joint significance tests at the top of the table to use the robust variance-covariance matrix, or whichever variance you select to use.
+
+This makes it extremely easy to compare different variance-covariance estimators (Original Information Matrix, robust, bootstrap, jackknife, clustered, etc.) without refitting the model. See the vignette on variance types for more details.
+
+## Test of Overdispersion
+
+One of the key concerns with the Poisson model is overdispersion. Cameron and Trivedi present a regression-based test of overdispersion (against the NB2 parameterization) and provide code to implement it.
+
+In `mlmodels` we have implemented this test in a convenient function that compares the Poisson model against **both** NB1 and NB2 forms of overdispersion:
+
+```{r overdispersion-test}
+  OVDtest(pois)
+```
+The output shows strong evidence of overdispersion in both specifications (highly significant t-statistics for both NB1 and NB2). 
+
+This confirms two important points:
+
+- If you are only interested in inference about the **mean** parameters, using robust standard errors with this Poisson model is sufficient, and needed.
+- However, if you also care about correctly modeling the **variance** or making accurate **probability predictions** (e.g., P(Y=0), P(Y=k), etc.), this Poisson model is inadequate. If this is the case, moving to a negative binomial model is more appropriate.
+
+## Average Marginal Effects
+
+To produce average marginal effects, we have made `mlmodels` compatible with the leading package for these estimates: [`marginaleffects`](https://marginaleffects.com/). 
+
+Thanks to this integration, you can now compute marginal effects and average marginal effects directly on any model estimated with `mlmodels`. For example:
+```{r ames}
+  library(marginaleffects)
+  avg_slopes(pois, vcov = "robust")
+```
+Even though the order of the variables differs from the book (they are sorted alphabetically by `marginaleffects`), the estimates match exactly. 
+
+You can also see how `marginaleffects` automatically identifies discrete variables (showing contrast `1 - 0`) versus continuous variables (showing contrast `dY/dX`).
+
+For more information about predictions and our integration with `marginaleffects`, see the dedicated vignette: **[Predictions and marginaleffects integration](mlmodels-predictions.html)**.
+
+## Negative Binomial Estimation
+
+Cameron and Trivedi focus primarily on the NB2 parameterization, which is the most commonly used negative binomial model in the literature. 
+
+In `mlmodels` it is very easy to estimate both NB1 and NB2 models using the same mean specification. This allows us to directly compare how well each form of overdispersion fits the data.
+
+```{r nb-estimation}
+# NB1 (linear variance)
+nb1 <- ml_negbin(mean_for, data = docvis, dispersion = "NB1")
+summary(nb1, vcov.type = "robust")
+
+# NB2 (quadratic variance — default)
+nb2 <- ml_negbin(mean_for, data = docvis)
+summary(nb2, vcov.type = "robust")
+```
+
+## Predictions of the Mean: Poisson vs Negative Binomial
+
+Before comparing the two negative binomial models, it is useful to examine whether the Poisson model already provides reasonable predictions for the **mean** (the quantity of primary interest in many applications).
+
+```{r mean-comp}
+mpoi <- predict(pois, vcov.type = "robust", se.fit = TRUE)
+mnb1 <- predict(nb1, vcov.type = "robust", se.fit = TRUE)
+mnb2 <- predict(nb2, vcov.type = "robust", se.fit = TRUE)
+
+comp <- data.frame(
+  poi_mean = mpoi$fit,
+  poi_se   = mpoi$se.fit,
+  nb1_mean = mnb1$fit,
+  nb1_se   = mnb1$se.fit,
+  nb2_mean = mnb2$fit,
+  nb2_se   = mnb2$se.fit
+)
+
+comp[1:10, ]
+```
+The individual predicted means and their standard errors are very close across the three models.
+
+We can also look at the average predicted value across the sample:
+
+```{r avg-mean}
+avg_predictions(pois, vcov = "robust")
+avg_predictions(nb1, vcov = "robust")
+avg_predictions(nb2, vcov = "robust")
+```
+
+The average predictions (and their standard errors) are even closer to each other.
+
+Even the **average marginal effects** on the mean are very similar across the three models:
+
+```{r avg-slopes}
+avg_slopes(pois, vcov = "robust")
+avg_slopes(nb1, vcov = "robust")
+avg_slopes(nb2, vcov = "robust")
+```
+
+This illustrates the important practical point we made earlier: **if you are primarily interested in inference about the conditional mean**, the Poisson model with robust standard errors often performs quite well, even when overdispersion is present. 
+
+The negative binomial models become more valuable when you also care about correctly modeling the **variance** or making accurate **probability predictions**, as we shall see.
+
+## Model Comparison: NB1 versus NB2
+
+Looking at the estimation results, the NB1 model appears to fit these data better than the NB2 model. The log-likelihood is higher for NB1 (−10,531.05 versus −10,589.34), which also produces lower values of both AIC and BIC. 
+
+In addition, the Pearson dispersion ratio is closer to 1 under NB1, the predicted number of zeros is much closer to the observed count, and both pseudo R-squared measures (Cor.Sq. and McFadden) are higher for the NB1 specification.
+
+To formally test whether this difference in fit is statistically significant, we use Vuong’s (1989) test for non-nested models:
+
+```{r nb-vuong}
+vuongtest(nb1, nb2)
+```
+The test confirms that the NB1 model is preferred over the NB2 model for this particular specification.
+
+## Comparing Predicted Probabilities
+
+Cameron and Trivedi compare predicted probabilities across models using a couple of community-supplied packages: `countfit` (Long and Freese 2014) and `chi2gof` (Manj&oacute;n and Mart&iacute;nez 2014). 
+
+We have implemented Manj&oacute;n and Mart&iacute;nez&rsquo;s approach, which allows flexibility in the choice of bins and performs an asymptotically correct goodness-of-fit test. In addition, we also report the **Pearson contribution of each bin** — a feature present in `countfit` but not in the original `chi2gof`. This extra information makes it much easier to identify which specific bins are contributing most to any lack of fit.
+
+```{r gof}
+# Default bins are 0 to 5
+GOFtest(pois)
+GOFtest(nb1)
+GOFtest(nb2)
+```
+A quick look at the results shows that all three models fail the goodness-of-fit test at conventional significance levels. However, the test statistic is smallest for the NB1 model, suggesting it fits the data relatively better than the Poisson or NB2 models.
+
+Beyond the overall test statistic, the table we provide makes it easy to identify **which specific counts** each model struggles to predict. 
+
+- The **Poisson model** has difficulty predicting almost all counts, with the notable exception of 3. This pattern is typical when overdispersion is present and was one of the main reasons we recommended moving to a negative binomial specification.
+- The **NB1 model** performs poorly mainly at counts of 1 and 4.
+- The **NB2 model** struggles particularly with counts of 0 and 1. Although its Pearson contributions are generally higher than those of NB1 (indicating worse fit), it does slightly better at counts of 4 and 5.
+
+These detailed diagnostics help us understand not just *whether* a model fits poorly, but *where* the misfit occurs.
+
+## Heteroskedastic Negative Binomial Models
+
+The last Maximum Likelihood specification in Cameron and Trivedi’s chapter is a heteroskedastic NB2 model, where they model the natural log of the dispersion parameter as a function of two binary variables: `female` and `bh` (black and Hispanic).
+
+In `mlmodels` we can easily estimate heteroskedastic versions of **both** NB1 and NB2 models using the same syntax:
+
+```{r nb-hetero}
+nb1_het <- ml_negbin(mean_for, 
+                     scale = ~ female + bh, 
+                     dispersion = "NB1", 
+                     data = docvis)
+
+nb2_het <- ml_negbin(mean_for, 
+                     scale = ~ female + bh, 
+                     data = docvis)
+
+summary(nb1_het, vcov.type = "robust")
+summary(nb2_het, vcov.type = "robust")
+```
+**Important note:** The dispersion parameters are not directly comparable across NB1 and NB2 specifications because they represent different functional forms. However, the statistical significance of the coefficients in the scale equation is directly comparable.
+
+We see that both `female` and `bh` are statistically significant (at least at the 5% level) in the scale equations of both models. The Wald tests for the scale parameters (shown at the top of the coefficient tables) confirm that the two variables are jointly significant in explaining dispersion in both specifications.
+
+```{r nb-het-test}
+vuongtest(nb1_het, nb2_het)
+GOFtest(nb1_het)
+GOFtest(nb2_het)
+```
+Even after allowing for heteroskedasticity in the dispersion parameter, the different tests continue to favor the NB1 model. Interestingly, modeling dispersion has a larger impact on improving the goodness-of-fit for the NB2 model, which is consistent with `bh` being more significant in its scale equation.
+
+## Concluding Remarks
+
+This vignette has illustrated the core count data models available in `mlmodels`: Poisson, NB1, and NB2, both in their homoskedastic and heteroskedastic forms. 
+
+A consistent finding across diagnostics (log-likelihood, AIC, BIC, Pearson dispersion, goodness-of-fit tests, and Vuong tests) is that the **NB1 parameterization** provides a better fit for the `docvis` data than the more commonly used NB2 model. Allowing the dispersion to vary with covariates further improves model fit, particularly for NB2, but the overall preference for NB1 remains.
+
+The `mlmodels` package offers several practical advantages:
+
+- A unified, consistent interface across all models
+- Straightforward modeling of heteroskedasticity in the dispersion parameter for both NB1 and NB2
+- Easy switching between variance estimators without refitting the model
+- Built-in overdispersion and detailed goodness-of-fit tests with per-bin diagnostics
+- Seamless integration with `marginaleffects` for post-estimation analysis
+
+We hope this introduction helps you explore count data modeling more flexibly and transparently in R.
+
+Happy modeling!
+
+## References
+
+Cameron, A. C., & Trivedi, P. K. (2022). *Microeconometrics Using Stata: Volumes I and II* (2nd ed.). Stata Press.
+
+Long, J. S., & Freese, J. (2014). *Regression Models for Categorical Dependent Variables Using Stata* (3rd ed.). Stata Press.
+
+Manj&oacute;n, M., & Mart&iacute;nez, O. (2014). 'The chi-squared goodness-of-fit test for count-data models.' *The Stata Journal*, 14(4), 798–816. https://doi.org/10.1177/1536867X1401400406
+
+Vuong, Q. H. (1989). Likelihood ratio tests for model selection and non-nested hypotheses. *Econometrica*, 57(2), 307–333. https://doi.org/10.2307/1912557
