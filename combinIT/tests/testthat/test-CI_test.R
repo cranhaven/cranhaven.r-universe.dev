@@ -1,0 +1,12 @@
+x <- CI_test(RDWW, nsim = 1000, Elapsed_time = FALSE)
+test_that("CI_test works", {
+  expect_true(x$Piepho_pvalue<0.05)
+  expect_true(x$Boik_pvalue<0.05)
+  expect_true(x$KKM_pvalue<0.05)
+  expect_true(x$KKSA_pvalue<0.05)
+  expect_true(x$Franck_pvalue<0.05)
+  expect_true(x$Bonferroni<0.05)
+  expect_true(x$Sidak<0.05)
+  expect_true(x$Jacobi<0.05)
+  expect_true(x$GC<0.05)
+})

@@ -1,0 +1,29 @@
+#' The mean values of growth hormone (MVGH).
+#'
+#' This data set are about the mean values of growth hormone for the levels of zinc and thyroid hormone obtained by Freake et al. (2001).
+#' This data set has been previously analyzed by Alin and Kurt (2006). There three levels of zinc:
+#' Zinc deficient, Pair-fed, and Control. There are also  three levels of thyroid hormone: Hypothyroid, Euthyroid, and Hyperthyroid.
+#' The test of interaction between the zinc and thyroid hormone is of interest.
+#'
+#' @name MVGH
+#' @format A matrix with three rows (Thyroid levels) and three columns (Zinc levels):
+#' \describe{
+#'   \item{Row1}{Hypothyroid}
+#'   \item{Row2}{Euthyroid}
+#'   \item{Row3}{Hyperthyroid}.
+#'   \item{Column1}{Zinc deficient}
+#'   \item{Column2}{Pair-fed}
+#'   \item{Column3}{Control}
+#' }
+#' @references
+#' \enumerate{
+#' \item
+#'   Alin, A., Kurt, S. (2006). Testing non-additivity (interaction) in two-way ANOVA tables with no replication,
+#'   \emph{Statistical Methods in Medical Research} \strong{15}: 63–85.
+#' \item
+#'   Freake,  H. C., Govoni,  K. E., Guda, K., Huang, C, Zinn, S. A. (2001).
+#'   Actions and interactions of thyroid hormone and zinc status in growing rats.
+#'   Journal of Nutrition 131:1135–41.
+#' }
+#'
+NULL
