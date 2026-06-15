@@ -1,0 +1,488 @@
+---
+title: "Valuing American and Real Options Through Least-Squares Monte Carlo Simulation"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Valuing American and Real Options through Least-Squares Monte Carlo Simulation}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  fig.width = 7,
+  fig.height = 6,
+  fig.align = 'center'
+)
+```
+
+```{r setup}
+library(LSMRealOptions)
+set.seed(1)
+```
+
+# 1. Introduction
+
+The 'LSMRealOptions' package provides functions that apply the well-known least-squares Monte Carlo simulation (LSM) method to value American-style options; options with early exercise opportunities. LSM simulation was first presented in the study of Longstaff and Schwartz (2001) titled: "Valuing American Options by Simulation: A Simple Least-Squares Approach". LSM simulation is a popular method for the approximation of the value of options with early-exercise and path dependent features due to its relative ease of use and ability to value options accurately under high dimension settings.
+
+'LSMRealOptions' is designed to value American-style financial options and capital investment projects through real options analysis (ROA). 'LSMRealOptions' provides flexibility in the stochastic processes followed by underlying assets, the number of state variables, basis functions and general underlying asset characteristics to allow a broad range of assets to be valued through the LSM simulation method. 'LSMRealOptions' also allows for the consideration of operational flexibility in investment projects, allowing an invested project to temporarily suspend or permanently abandon operations.
+
+The purpose of this vignette is to present worked examples of the functions available in the 'LSMRealOptions' package, with an emphasis on valuing capital investment projects through ROA, calculating critical values of investment, considering operational flexibility in investment projects and allowing for different stochastic assumptions in underlying assets. The remainder of this vignette is structured as follows. Section 2 presents the LSM Simulation method. Section 3 describes an application of the 'LSM_american_option' function to value vanilla American put options. Section 4 presents an application of the 'LSM_real_option' function to perform ROA on an arbitrary investment project example, subsequently allowing for temporary suspension and permanent abandonment in the investment project, with a brief discussion on how this has influenced investment decisions. Section 5 presents an algorithm to find the roots of the waiting option value, thus calculating critical values of underlying uncertainties at which immediate investment into a project is optimal. Section 6 presents several examples of valuing investment projects with differing assumptions in the processes and number of stochastic underlying variables.
+
+# 2. The Least-Squares Monte Carlo Simulation Method:
+
+The LSM simulation method approximates the value of American-style options by discretising the dynamics of underlying assets using an Euler scheme, considering the early exercise of the option at discrete observation points. LSM simulation thus values Bermudan-style options, options where exercise is possible on specified exercise dates, with the value of these options approaching American option values as the discrete time step approaches zero.
+
+The LSM simulation method solves for the value of American-style options through a backwards induction process, evaluating at each discrete time point the optimal decision between immediate exercise and payoff of the option and the discounted expected continuation value, calculated as the fitted values of a least-squares regression of basis functions. See Longstaff and Schwartz (2001) for more details and a worked example of the LSM simulation methods and backwards induction solution process.
+
+The convergence properties of the LSM simulation function state that the American option value calculated by the LSM simulation method converges to the true value as the number of simulations and basis functions increase (Longstaff and Schwartz, 2001; Clément, Lamberton and Protter, 2002). LSM simulation can be a computationally expensive process, with processing times increasing as a function of the number of simulations used, the number of discrete time steps and the degree of the orthogonal polynomial that is applied.
+
+# 3. Valuing Vanilla American Put Options:
+
+An American put option gives the investor the right, but not necessarily the obligation, to sell a security at any time before option maturity. The following section presents the valuation of American put options through LSM simulation and the 'LSM_american_option' function. The put option examples presented follow those first presented in table 1 of Longstaff and Schwartz (2001).
+
+## 3.1 American Put Option Example:
+
+Consider an American put option on a stock, with option expiry in 1 year and a strike price of $40. Assume the risk-free interest rate is .06. Furthermore, consider 10,000 simulations (of which 50% are antithetic) and an exercise opportunity of 50 times per year. 
+
+The stock price is assumed to follow a geometric Brownian motion (GBM) process that grows at the risk free rate with an initial price of $36 and an instantaneous volatility of 20%. The first step in the LSM simulation method is to simulate the state variable (the stock price) through Monte Carlo simulation. GBM processes can be simulated through the 'GBM_simulate' function:
+
+```{r}
+# Step 1 - Simulate stock prices:
+stock_prices <- GBM_simulate(n = 1e4, t = 1, mu = 0.06, sigma = 0.2, S0 = 36, dt = 1/50)
+```
+
+This example has considered only 10,000 simulated price paths, however more price paths to ensure the American-style option value converges is recommended. The computational time of the LSM simulation method increases as the number of simulated price paths are considered. The convergence of the calculated value can be evaluated by considering the standard error of the option value.
+
+LSM simulation can be used to value the American put option using simulated state variables. Because there is only one state variable (the stock price) the argument for 'state_variables' and 'payoff' in the 'LSM_american_option' function are identical.
+
+```{r}
+# Step 2 - Value American put option:
+put_option_value <- LSM_american_option(state_variables = stock_prices,
+                                  payoff = stock_prices,
+                                  K = 40,
+                                  dt = 1/50,
+                                  rf = 0.06,
+                                  verbose = TRUE)
+print(round(unlist(put_option_value[1:5]),4))
+```
+
+when argument 'verbose' is set to 'TRUE', additional information is returned by the 'LSM_american_option' function, as shown above.
+
+## 3.2 American call option on the maximum of two assets:
+
+More exotic American-style options can be valued through the 'LSM_american_option' function. Consider an American-style call option on the maximum price of two assets, with exercise opportunities 50 times per year and an option expiry of 1 year.
+
+Let the two assets follow a GBM process, and for simplicity assume that their pricing developments are independent. Both are considered to grow at the risk free rate (.06) with instantaneous volatilities of .2 and .3 respectively. The initial prices of the assets are \$38 and \$35 respectively. The strike price of the option is \$40.
+
+```{r}
+# Step 1 - Simulate asset prices:
+asset_prices <- array(dim = c(51, 1e3, 2))
+for(i in seq_len(2)) {
+  asset_prices[,,i] <- GBM_simulate(n = 1e3, t = 1, mu = 0.06, 
+                                  sigma = c(0.2, 0.3)[i], S0 = c(38, 35)[i], dt = 1/50)}
+```
+
+Simulated asset prices are provided as the underlying stochastically evolving state variables, and the maximum of the two asset prices are provided as the payoff at time $t$ for price path $i$:
+```{r}
+# Step 2 - Value American-style option:
+OptionValue <- LSM_american_option(state_variables = asset_prices,
+                                  payoff = pmax(asset_prices[,,1], asset_prices[,,2]),
+                                  K = 40,
+                                  dt = 1/50,
+                                  rf = 0.06,
+                                  verbose = TRUE,
+                                  cross_product = TRUE,
+                                  orthogonal = "Laguerre",
+                                  degree = 9)
+print(round(unlist(OptionValue[1:5]),4))
+```
+
+The basis functions used in the least-squares approximation in the scenario are the two asset prices, the first 9 degrees of the 'Laguerre' orthogonal polynomial of both of these asset prices and the cross product of the asset prices.
+
+## 3.3 Replicate table 1 of Longstaff and Schwartz (2001):
+
+The work of Longstaff and Schwartz (2001) presents a table of calculated vanilla American put option values under differing levels of strike prices, annual volatility of the underlying asset and option maturity (table 1). The corresponding calculated values under the LSM simulation method through the 'LSM_american_option' function are presented below:
+
+```{r}
+## Exercise opportunities per year:
+dt <- 1/50
+## strike price :
+K <- 40
+## short-term interest rate:
+rf <- 0.06
+## 100,000 simulations (50% antithetic):
+n_simulations <- 1e5
+## Stock price volatility:
+sigma <- rep(c(rep(0.2,2),rep(0.4,2)),5)
+## Stock price:
+S0 <- sort(rep(seq(36,44,2),4))
+## Option maturity:
+TTM <- rep(1:2, 10)
+
+LSM_output <- matrix(0, 20, 2, dimnames = list(NULL, c("Simulated American", "(s.e)")))
+
+## Cycle through the rows of the table:
+for(i in 1:20){
+
+simulated_values <- GBM_simulate(n = n_simulations, t = TTM[i], 
+                                 mu = rf, sigma = sigma[i], S0 = S0[i], dt = dt)
+
+## American option pricing through LSM Simulation
+output <- LSM_american_option(state_variables = simulated_values,
+                   payoff = simulated_values,
+                   call = FALSE,
+                   K = K,
+                   dt = dt,
+                   rf = rf,
+                   verbose = TRUE,
+                   orthogonal = "Laguerre",
+                   degree = 3
+                   )
+LSM_output[i,1] <- output$Value
+LSM_output[i,2]  <- output$`Standard Error`
+}
+
+## Compile and print results:
+LnS_table1 <- cbind.data.frame(S = S0, sigma = sigma, T = TTM, LSM_output)
+print(round(LnS_table1,3))
+```
+
+As stated by Longstaff and Schwartz (2001), the first three Laguerre polynomials (i.e. degree = 3) is sufficient to obtain effective convergence of the algorithm in this scenario. Approximation of American option values are dependent on the number of basis functions used, the number of simulations and the size of the discrete time step of observations.
+
+# 4. Real Options Analysis - Valuing Capital Investment Projects:
+
+Real options analysis is generally more difficult than valuing American call or put options on assets such as stocks for several reasons. The time to expiration during real options analysis is generally far longer than that on securities, often spanning into decades of forecasting, which can greatly increase the spread of simulated price paths. Real options analysis often features case specific or path dependent characteristics of investment, increasing the complexity of the analysis required. Finally, multiple stochastic underlying assets can impact the cash flows resulting from investment, increasing the dimensionality of the option valuation problem. The LSM simulation method is able to consider each of these aspects of the investment problem.
+
+The LSM simulation method evaluates investment under stochastic price uncertainty, determining at each time point the optimal investment decision between immediate investment, exercising the right to all future cash flows at a price of the initial investment cost, or to delay investment. 
+
+## 4.1 Example 1 - Project Value Of One Underlying Asset:
+
+The following example is a relatively simple, arbitrary scenario of consideration into a capital investment project, evaluating the value of the option to invest through real options analysis. Real options analysis is performed through the 'LSM_real_options' function, and treats investment as an optimal stopping problem.
+
+The following example considers a capital investment project, where operating costs of the project are fixed, but revenues are dependent upon a stochastically evolving underlying asset that follows a GBM process. The project can be invested at the beginning of each month (i.e. dt = 1/12) of the year. Cash flows are delivered at the end of each month. There is a construction time of 6 months considered in this investment project, which means there is 6 months between the initial capital investment and when net cash flows of the project are accrued. The initial capital investment cost also decreases exponentially at a rate of 1% p.a. to allow research and development into the project to reduce the cost of investment.
+
+The cash flows accrued at each discrete time point $t$ are dependent upon the simulated stochastic price paths. We assume that there are variable and fixed cash flows in this investment project:
+
+```{r}
+# Step 1 - Simulate the underlying asset price:
+
+## Initial underlying price:
+initial_price <- 36
+
+## discrete time step:
+dt <- 1/12
+
+## Project lifetime (in years):
+project_lifetime <- 10
+forecasting_periods <- seq(0, project_lifetime, dt)
+
+revenue_prices <- GBM_simulate(n = 2e4, t = project_lifetime, mu = 0.06, 
+                              sigma = 0.2, S0 = initial_price, dt = dt)
+
+# Step 2 - Evaluate cash flows:
+
+## Fixed cash flow:
+# FCF <- 1e4 * initial_price
+FCF <- 1e4 * 36
+
+## Net cash flow is equal to variable cash flows subtract fixed cash flows:
+NCF <- (1e4 * revenue_prices - FCF) * dt
+
+## Financial Parameters:
+construction <- 0.5 / dt
+rf <- 0.05
+
+## Initial capital investment:
+learning_rate <- 0.01
+CAPEX <- 1e5 * exp(- learning_rate * dt * (1:nrow(revenue_prices)-1))
+
+# Step 3 - Evaluate Project Value through Real Options Analysis:
+
+project_value <- LSM_real_option(state_variables = revenue_prices,
+                              NCF = NCF,
+                              CAPEX = CAPEX,
+                              dt = dt,
+                              rf = rf,
+                              construction = construction,
+                              verbose = TRUE)
+print(format(unlist(project_value[1:6]), big.mark = ","))
+
+```
+
+The 'ROV' is also often referred to as the real option net present value (RO NPV) and is the average discounted payoffs of each price path when investment is exercised at the optimal time calculated through the backward induction process. The NPV is the average of the discounted payoffs considering immediate investment and is a numeric approximation of the standard NPV approach. The 'WOV' is the waiting option value, which is the difference between the 'ROV' and the 'NPV'. The 'WOV' is considered the value of the option to delay initial investment, allowing for future uncertainty in price paths to reveal themselves. When the 'WOV' is greater than zero, the optimal investment decision is to delay investment, as immediate investment would result in the loss of the 'WOV'.
+
+## 4.2 Example 2 - Project Value Of One Underlying Asset With operational Flexibility:
+
+The following example expands the investment scenario of section 4.1 by further allowing for the investment project to consider operational flexibility after investment into the project has occurred. 
+
+Consider the capital investment project of example 1. Assume that it now can be temporarily suspended at a cost of 30% of the initial capital investment cost. Whilst suspended, it accrues annual costs of 5% of the initial capital investment to keep the project "mothballed". Restarting the operations takes 10% of the initial investment and abandoning the project costs 50% of the initial capital investment to decommission equipment, pay severance to existing workers, etc.
+
+Operational flexibilities are path dependent problems and greatly increase the computational complexity of the LSM simulation function, resulting in slower processing times:
+
+```{r}
+## Evaluate Project Value with OF through ROA:
+project_value_OF <- LSM_real_option_OF(state_variables = revenue_prices,
+                              NCF = NCF,
+                              CAPEX = CAPEX,
+                              dt = dt,
+                              rf = rf,
+                              construction = construction,
+                              suspend_CAPEX = 0.1 * CAPEX[1],
+                              suspend_OPEX = 0.05 * CAPEX[1] * dt,
+                              resume_CAPEX = 0.1 * CAPEX[1],
+                              abandon_CAPEX = 0.2 * CAPEX[1],
+                              save_states = TRUE,
+                              verbose = TRUE,
+                              debugging = TRUE
+                              )
+
+print(format(unlist(project_value_OF[1:7]), big.mark = ","))
+
+```
+
+Allowing for operational flexibility has increased both the ROV and the NPV of a project that can suspend, resume and shut down. The waiting option value is now negative, meaning that contrary to example 1, the optimal decision is to invest immediately. This has shown that allowing for additional assumptions and flexibility into the investment project can lead to different investment decisions.
+
+## 4.3 Plot the cumulative probability of investment:
+
+The cumulative proportion of invested paths is returned by the 'LSM_real_option' and 'LSM_real_option_OF' functions when 'verbose = TRUE'. 
+
+```{r}
+matplot(forecasting_periods, cbind(project_value$`Cumulative Investment Prob`, 
+        project_value_OF$`Cumulative Investment Prob`), type = 'l', ylim = c(0,1), 
+        xlab = "Forecasting Horizon", ylab = "Cumulative Investment Proportion", 
+        main = "Cumulative Investment Prop. over Forecasting Horizon")
+legend("right", c("ROV", "ROV + OF"),cex=0.8, col = 1:2, fill = 1:2)
+```
+
+The proportion of invested paths is higher when considering operational flexibility due to the addition to the project value resulting from the options to suspend and abandon operations.
+
+## 4.3 Plot the Operating States of the Investment Project:
+
+The proportion of simulated price paths in each available operating state at each discrete time point is returned by the 'LSM_real_option_OF' function when 'save_states = TRUE'. These states can be plotted using the package 'ggplot2' (Wickham, 2009):
+
+```{r, warning = FALSE}
+states_list <- apply(matrix(colnames(project_value_OF$`Project States`)), 1, 
+                     FUN = function(x) cbind.data.frame(x, project_value_OF$`Project States`[,x], 
+                                                        forecasting_periods))
+
+states_ggplot <- suppressWarnings(dplyr::bind_rows(states_list))
+states_ggplot[,1] <- factor(states_ggplot[,1], levels = rev(colnames(project_value_OF$`Project States`)))
+colnames(states_ggplot) <- c("state", "count", "time")
+
+library(ggplot2)
+
+ggplot(states_ggplot, aes(x = time, y = count, fill = state)) + 
+geom_bar(position = "fill", stat = "identity", width = 1) + 
+scale_y_continuous(labels = scales::percent, breaks = seq(0,1,0.1)) + 
+scale_x_continuous(breaks = seq(0, project_lifetime, 1)) + 
+ggtitle("Proportion of Project States over Project Planning Horizon") + xlab("Planning Horizon (Years)")
+```
+
+In general, the suspension operating state is less prolific as the residual lifetime of the investment project decreases, as the value of being suspended with the potential to resume operations becomes less valuable and suspended states may instead become abandoned. The abandonment and suspension operating states generally make up a low proportion of simulated operating states, with the cost of switching and maintaining the suspended state greatly influencing the propensity to suspend and abandon operations respectively. The additional value of the investment project when the cost of switching operating modes is equal to zero can be considered the upper limit to the added value of the investment project that considering operating flexibility can have.
+
+The plot above could be an ideal result to present to the management of an investment project, as it can be interpreted as the likelihood of project success after initial investment has occurred. Project Managers are likely to be less inclined to consider investment projects that are shown to have a high possibility of being "mothballed" or abandoned at a net operating loss.
+
+## 5. Real Options Analysis - Calculating Investment Trigger Values:
+
+A key result of real options analysis is the ability to consider the critical "trigger" values of underlying, stochastically evolving assets at which immediate investment into the project is the optimal decision. Investment trigger values can be calculated by finding the root of the WOV of an investment project, i.e. the value of the state variable that results in the WOV of an investment project being approximately equal to zero, indicating that immediate investment into the project is the optimal investment decision at time $t=0$. This can be effectively calculated by recursively running the 'LSM.OptionValue' function for different initial values of the state variable until the root of the WOV is found. The secant method is a root-finding algorithm that is functionally a finite-difference approximation of the well known Newton's method that can efficiently converge to the root of the WOV. The secant recurrence relation is:
+
+$$x_n = x_{n-1} - f(x_{n-1})\frac{x_{n-1}. - x_{n-2}}{f(x_{n-1}) - f(x_{n-2})} $$
+The critical value of the project according to the NPV criterion (i.e. the critical value where $NPV=0$) of the project can generally be calculated after 2 iterations as it is a linear function of the starting price. 
+
+The following section provides a worked solution of obtaining the critical trigger values of investment for the example presented in section 4.1:
+
+```{r}
+# Instantiate iterations:
+it <- 0
+current_price <- initial_price
+  
+# Begin Investment Trigger Value Calculate:
+repeat{
+  
+  # Step 1: Calculate the ROV using real options analysis
+  LSM_results <- LSM_real_option(state_variables = revenue_prices,
+                                NCF = NCF,
+                                CAPEX = CAPEX,
+                                dt = dt,
+                                rf = rf,
+                                construction = construction)
+
+  NPV <- LSM_results$NPV
+  WOV <- LSM_results$WOV
+
+  # Step 2: Evaluate the next initial asset price through the 'secant' method:
+
+  ## For the first iteration, use an arbitrary initial price multiplier of 2
+  if(it == 0){
+    multiplier = 2
+    new_price = current_price * multiplier
+  }
+  if(it > 0){
+
+    ## NPV - a linear function of initial prices, so we can find it exactly after two iterations:
+    NPV_gradient = (NPV - NPV_old) / (current_price - old_price)
+    NPV_new_price = current_price + (0 - NPV)/NPV_gradient
+    if(it == 2) NPV_crit_value = NPV_new_price     
+
+    ## ROV -  Secant Method:
+    new_price = current_price - WOV * ((current_price - old_price) / (WOV - WOV_old))
+
+    ## Which is a multiple of:
+    multiplier = new_price / current_price
+
+    ## The WOV does not have to be exactly zero. Having it within a tolerance value 
+    ## can be adequate and decrease processing time:
+    WOV_tolerance <- abs(WOV) < 100
+    ## If the price is identical within one cent, this can be considered the critical value:
+    price_tolerance <- round(new_price,2)==round(current_price, 2)
+    ## If the underlying asset impacts costs, and the iteration has pushed the price of the asset
+    ## below zero, it's never optimal to invest immediately:
+    negative_price <- new_price < 0
+    ## Recursion break to ensure infinite loop does not occur:
+    loop_break <- it > 20
+    ##Approximate the root of WOV to 2 significant figures:
+    if(price_tolerance || WOV_tolerance || negative_price || loop_break){
+      ROV_crit_value = new_price
+      break
+    } 
+    }
+  # Step 3: Update values:
+
+  ## Updating simulated prices:
+  revenue_prices <- revenue_prices * multiplier
+  ## Updating the NCF of each period:
+  NCF <- (1e4 * revenue_prices - FCF) * dt
+  
+  ## Updating values
+  old_price <- current_price
+  current_price <- new_price
+  WOV_old <- WOV
+  NPV_old <- NPV
+
+  # Step 4: Re-iterate:
+  it <- it + 1
+}
+
+print(round(c(NPV = NPV_crit_value, ROV = ROV_crit_value),2))
+
+```
+
+The 'ROV' value considers the value of the option to delay investment over the 'NPV' value. The 'ROV' is always consequently greater than, or equal to, NPV. This also means that the critical value of investment under the ROV is always greater than that under the NPV criterion. Calculating critical values can be appealing because it is easy to interpret and communicate these results, it provides a clear signal for when investment should be triggered and finally the waiting option value (WOV) is generally calculated with a greater level of certainty (i.e. lower standard error) than the real option value or net present value, providing greater certainty in results when interpreting them through critical values (Aspinall et al., 2020).
+
+# 6. Real Options Analysis - Two-Factor Stochastic Process:
+
+In this section, the application of the 'LSM_real_options' function to perform real options analysis on an oil investment is considered. The oil asset is assumed to follow the two-factor short-term/long-term stochastic process first presented in the prolific work of Schwartz and Smith (2000), simulated using the 'NFCP' package (Aspinall et al., 2021). A worked example of evaluating real option value and trigger prices of investment is presented.
+
+## 6.1 The Two-factor stochastic process:
+
+The two-factor stochastic model first presented by Schwartz and Smith (2000) decomposes the logarithm of the spot price of oil into the sum of two correlated underlying state variables: short-term deviations and long-run equilibrium prices.
+
+$$S_t = exp(x_{1,t} + x_{2,t})$$
+Where:
+
+$$dx_{1,t} = \mu^*dt + \sigma_{1} dw_{1}t $$
+
+$$ dx_{2,t} = - (\lambda_{2} + \kappa_{2}x_{2,t})dt + \sigma_{2} dw_{2}t $$
+
+Where the first factor is a Brownian motion representing long-run changes to the equilibrium of oil prices, and the second factor is an Ornstein-Uhlenbeck process representing short-term deviations from this equilibrium, typically driven through supply and demand. The intuition behind this model is that over time deviations between the two-factors will tend towards zero. The ability of the model to explain the price behavior of commodities is well documented (Schwartz and Smith, 2000; Aspinall et al, 2020).
+
+Simulating the two-factor stochastic process is available through the 'NFCP' package (Aspinall et al., 2021). This package allows the spot price of a commodity to follow N correlated factors (with the two-factor model being a special case of this framework). See the relevant documentation of this 'NFCP' for more details of N-factor (and the 2-factor) models.
+
+Consider a proposed investment project where the revenue of this project is dependent upon current oil prices, where oil is assumed to follow a two-factor stochastic process. The two-factor model parameters used are:
+
+```{r}
+print(NFCP::SS_oil$two_factor[2:7])
+```
+
+Assume that the initial price of oil is $60/bbl USD. Further assume that short-term deviations are at zero.
+
+```{r}
+# Step 1 - List project parameters:
+
+## Initial Price:
+initial_oil_price <- 60
+## Initial State vector:
+initial_state_vector <- c(log(initial_oil_price), 0)
+
+## discrete time step:
+dt <- 1/12
+
+## Project lifetime (in years):
+project_lifetime <- 10
+forecasting_periods <- seq(0, project_lifetime, dt)
+
+# Financial Parameters:
+
+## Capital investment:
+CAPEX <- 1e4
+
+## Fixed cash flow:
+FCF <- 5e4 * initial_oil_price
+
+## Construction - 6 months:
+construction <- 0.5 / dt
+
+## Risk-free interest rate:
+rf <- 0.05
+
+# Step 1 - Simulate spot prices:
+
+## 10,000 antithetic simulations of one year of monthly observations
+simulated_oil_prices <- NFCP::spot_price_simulate(
+  x_0 = initial_state_vector,
+  parameters = NFCP::SS_oil$two_factor,
+  t = 10,
+  dt = dt,
+  N_simulations = 1e4,
+  antithetic = TRUE,
+  verbose = TRUE)
+
+
+oil_revenue <- simulated_oil_prices$spot_prices
+
+state_variables = array(dim = c(dim(simulated_oil_prices$spot_prices), 3))
+state_variables[,,1:2] = simulated_oil_prices$state_variables
+## Include the price as a state variable:
+state_variables[,,3] = simulated_oil_prices$spot_prices
+
+## Net cash flow of simulated price paths:
+NCF <- (1e5 * oil_revenue - FCF) * dt
+
+```
+
+The basis functions used in this example are the state variables, the first 9 of the Laugerre orthogonal polynomial for each state variable, their exponential sum (i.e. the price), and the cross products of state variables.
+
+```{r}
+project_value <- LSM_real_option(state_variables = state_variables,
+                              NCF = NCF,
+                              CAPEX = CAPEX,
+                              dt = dt,
+                              rf = rf,
+                              construction = construction,
+                              orthogonal = "Laguerre",
+                              degree = 9,
+                              verbose = T)
+print(format(round(unlist(project_value[1:6]),2), big.mark = ","))
+```
+
+According to the real option analysis, this project should be invested immediately. 
+
+The calculation of critical values of the underlying, stochastically evolving, asset is possible through the iterative procedure presented in section 5. Under consideration of a two-factor (and the more general N-factor) model, finding the critical value of factor 1 (i.e. the equilibrium value) of the asset would provide the critical equilibrium price at which immediate investment is optimal, rather than the price itself. This could have the potential to avoid investment in a project as a result of price fluctuations that are not expected to persist passing above the critical value of investment.
+
+The 'LSM_real_option' was easily able to consider a two-factor stochastic process. Other exotic stochastic processes, such as jump-diffusion stochastic processes as well as considering multiple stochastic underlying uncertainties can be considered throughout the 'LSMRealOptions' package provided they are first simulated through Monte Carlo methods.
+
+# References:
+
+Schwartz, E. S., and J. E. Smith, (2000). Short-Term Variations and Long-Term Dynamics in Commodity Prices. Manage. Sci., 46, 893-911.
+
+Longstaff, F. A., and E. S. Schwartz, (2001). Valuing American options by simulation: a simple least-squares approach. The review of financial studies, 14(1), 113-147.
+
+Clément, E., D. Lamberton, and P. Protter, (2002). An analysis of a least-squares regression method for American option pricing. Finance and stochastics, 6(4), 449-471.
+
+Wickham, H. ggplot2: Elegant Graphics for Data Analysis. Springer-Verlag New York, 2009.
+
+Aspinall, T., A. Gepp, G. Harris, S. Kelly, C. Southam, and B. Vanstone, (2020). Estimation of a term structure model of carbon prices through state space methods: The European Union emissions trading scheme. Accounting & Finance.
+
+Aspinall, T., A. Gepp, G. Harris, S. Kelly, C. Southam, and B. Vanstone, (2020). NFCP:  N-Factor Commodity Pricing Through Term Structure Estimation. R package version 0.1.0. https://CRAN.R-project.org/package=NFCP
