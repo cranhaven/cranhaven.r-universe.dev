@@ -1,0 +1,6 @@
+library(SheetReader)
+options(stringsAsFactors = FALSE)
+data <- read_xlsx(system.file("extdata", "multi-test.xlsx", package = "SheetReader"), skip_rows=1, skip_columns=2, headers=FALSE)
+stopifnot(colnames(data) == paste0("Column", 0:5))
+stopifnot(data[1, "Column0"] == -234.7239)
+stopifnot(is.na(data[1, "Column5"]))
