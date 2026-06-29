@@ -1,0 +1,2037 @@
+\documentclass[oneside,12pt]{book}
+%\VignetteIndexEntry{Efficient linkage map construction using R/ASMap}
+%\VignetteEngine{knitr::knitr}
+
+\usepackage[knit]{SAGI}
+\usepackage{tabu}
+\usepackage[normalem]{ulem}
+
+%% SAGI style must be preloaded first
+
+\makeindex
+
+%% knitr setup
+
+\newcommand{\doi}[1]{\href{http://dx.doi.org/#1}{\normalfont\texttt{doi:#1}}}
+\renewcommand{\baselinestretch}{1}
+\newcommand\T{\rule{0pt}{2.6ex}}
+\newcommand\B{\rule[-2.5ex]{0pt}{0pt}}
+
+<<setup, include=FALSE, cache=FALSE>>=
+library(knitr)
+library(formatR)
+# set global chunk options
+options(formatR.arrow=FALSE)
+opts_chunk$set(fig.path='figure/Rplots-',fig.align='center',fig.show='hold',comment=NA,background='white',highlight=FALSE,tidy=TRUE,size="small",continue=" ")
+knit_hooks$set(source=function(x,options){
+    prp <- c("R> ")
+    if(!options$prompt) prp <- ""
+    wd <- getOption("width")
+    if(!is.null(width <- options$tidy.opts$width))
+        options(width = width)
+    x <- strwrap(x, width = getOption("width"))
+    lenx <- length(x)
+    pl <- unlist(sapply(gregexpr("\\(", x), function(el){
+        if((length(el) == 1))
+            if(unique(el) == -1) 0 else 1
+        else length(el)}))
+    pr <- unlist(sapply(gregexpr("\\)", x), function(el){
+        if((length(el) == 1))
+            if(unique(el) == -1) 0 else 1
+        else length(el)}))
+    wp <- rep(prp, length(x))
+    if(length(x) > 1){
+        xns <- gsub(" ","",x)
+        op <- gregexpr("\\+|-|\\*|\\|=",x)
+        ct <- sapply(1:(length(x) - 1), function(i, xns, op)
+                     (nchar(x[i]) %in% op[[i]]) | (1 %in% op[[i + 1]]), xns,op)
+        for(i in 2:length(x)){
+            if((sum(pl[1:(i-1)]) != sum(pr[1:(i-1)])) | ct[i - 1])
+                wp[i] <- paste(options$continue, "   ", sep = "")
+        }
+    }
+    options(width = wd)
+    paste(c("\\begin{Rinput}",paste(wp, x, sep= ""), "\\end{Rinput}",""), collapse = "\n")
+},  output=function(x,options){
+     if(all(gregexpr("begin\\{tabu|begin\\{longtab",x)[[1]] > 0)) x
+     else paste(c("\\begin{Routput}\n",x, "\\end{Routput}\n"), sep = "")
+ })
+@
+
+%% end knitr set up
+
+\begin{document}
+
+\frontmatter
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% start titlepage
+
+\thispagestyle{empty}
+\vspace*{15mm}
+\begin{flushright}
+\HRule\\[5mm]
+
+%%% logos go here ...
+
+\begin{tabular}{lcr}
+\includegraphics[height = 1.8cm]{SAGI-STH} & \includegraphics[height = 1.8cm]{UoA} &
+\includegraphics[height = 1.8cm]{GRDC}
+\end{tabular}\\[5mm]
+
+\huge
+\textcolor{blue}{\sbf Statistics for the Australian\\
+Grains Industry \\ Technical Report Series}\\[10mm]
+{\sbf Efficient linkage map construction using R/ASMap
+ }\\[10mm]
+
+
+ \sf\normalsize
+Julian Taylor\\
+Research Scientist, SAGI\\
+School of Food, Agriculture \& Wine\\
+University of Adelaide, Waite Campus\\
+PMB 1, Glen Osmond, SA, 5064\\
+email: julian.taylor@adelaide.edu.au\\[8mm]
+
+\begin{tabu} to \textwidth {lXr}
+\includegraphics[height = 1.5cm]{UoA}  & & \today
+\end{tabu}\\[5mm]
+\HRule
+\end{flushright}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% end titlepage
+
+\clearpage
+\pagestyle{plain}
+\setcounter{page}{1}
+\tableofcontents
+
+%% other lists of tbales or figures
+
+%\listoftables
+%\addcontentsline{toc}{chapter}{List of Tables}
+%\listoffigures
+%\addcontentsline{toc}{chapter}{List of Figures}
+
+\mainmatter
+
+\pagestyle{fancy}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% Start document
+
+<<setup-lib, include=FALSE, cache=FALSE>>=
+library(ASMap)
+@
+
+\chapter{Introduction}
+
+\section{Background}
+
+Genetic linkage maps are widely used in the biological research
+community to explore the underlying DNA of populations. They generally
+consist of a set of polymorphic
+genetic markers spanning the entire genome of a population generated from a specific
+cross of parental lines. This exploration may involve the dissection of the linkage map itself to
+understand the genetic landscape of the population or, more
+commonly, it is used to conduct gene-trait associations such as
+quantitative trait loci (QTL) analysis or genomic selection (GS).
+For QTL analysis, the interpretation of significant genomic locations
+is enhanced if the linkage map contains markers that have been assigned and optimally ordered
+within chromosomal groups. This can be achieved algorithmically by
+using linkage map construction techniques that utilise assumptions of
+Mendelian genetics.
+
+In the R statistical computing environment \citep{rsoft14} there is
+only a handful of packages that can perform linkage map
+construction. A popular package is the linkage map construction and
+QTL analysis package R/qtl \citep{br14}. Since its inception in late
+2001 it has grown considerably and incorporates functionality
+for a wide set of populations. These include a simple Backcross (BC),
+Doubled Haploid (DH), intercrossed F2 (F2) and 4-way crosses. More
+recently, the authors have added functionality for additional
+populations generated from advanced Recombinant Inbred Lines (RIL)
+as well as populations generated from multiple backcrossing and
+selfing processes. The package offers an almost complete
+set of tools to construct, explore and manipulate genetic linkage maps
+for each population. To complement the package the authors have also
+publihed a comptrehensive book \citep{brosen09}. A more recent available addition to the contributed package
+list in R is R/onemap \citep{one14}. This package provides a suite of
+tools for genetic linkage map construction for BC, DH and RIL inbred populations and also has
+functionality for outcrossing populations.
+
+Both packages contain functions that perform moderately well at clustering markers into
+homogeneous linkage groups. Unfortunately, the functions in R/qtl and
+R/onemap used to perform optimal marker ordering within
+linkage groups are tediously slow. In both
+packages there are functions that compute initial orders using non-exhaustive methods
+such as SERIATION \citep{ser87} and RECORD \citep{rec05}. As these
+methods may not return an optimal order, a second stage antiquated brute force
+approach is used that checks all order combinations within a marker
+window. This is known throughout the linkage map construction community
+as ``rippling''. For linkage groups with large numbers of markers
+and a moderate sized window (eight markers), rippling can be very
+computationally cumbersome and also may need to be performed several
+times before an optimal order is reached.
+
+In an attempt to circumvent these computational issues the R/ASMap
+package was developed \citep{tb14}. The package contains linkage map
+construction functions that utilise the MSTmap
+algorithm derived in \cite{mst08} and computationally implemented as C++ source code
+freely available at \url{http://alumni.cs.ucr.edu/~yonghui/mstmap.html}.
+The algorithm uses the minimum spanning tree of a graph \citep{ct76} to cluster markers into linkage
+groups as well as find the optimal marker order within each linkage group
+in a very computationally efficient manner. In contrast to R/qtl and
+R/onemap, genetic linkage maps are constructed using a one-stage approach.
+The algorithm is restricted to linkage map construction with Backcross
+(BC), Doubled Haploid (DH) and Recombinant Inbred (RIL)
+populations. For RIL populations, the level of self pollination can
+also be given and consequently the algorithm can handle selfed F2, F3,
+$\ldots$, Fn populations where $n$ is the level of selfing. Advanced
+RIL populations are also allowed as they are treated like a bi-parental for the
+purpose of linkage map construction.
+
+The R/ASMap package uses an R/qtl format for the structure of its
+genetic objects. Once the class of the object is appropriately set, both
+R/ASMap and R/qtl functions can be used synergistically to construct, explore and
+manipulate the object. To complement the efficient MSTmap linkage map construction
+functions the R/ASMap package also contains a function that ``pulls''
+markers of different types from the linkage map and places them
+aside. A complementary ``push'' function also exists to push the
+markers back to linkage groups ready for construction or
+reconstruction. There are also several numerical and graphical
+diagnostic tools to efficiently check the quality of the constructed
+map. This includes the ability to simultaneously graphically display multiple panel
+profiles of linkage map statistics for the set of genotypes
+used. Additionally, profile marker/interval statistics can be
+simultaneously displayed for the entire genome or subsetted to
+pre-defined linkage groups. In tandem, these fast graphical diagnostic
+tools and efficient linkage map construction assist in
+providing a rapid turnaround time in linkage map construction and
+diagnosis.
+
+The vignette is set out in chapters. The final section of the
+introduction provides a brief technical explanation of the components
+of the MSTmap algorithm. In the second chapter the functions of
+R/ASMap are discussed in detail and examples are provided, where
+appropriate, using a data set integrated into the package. Chapter
+3 contains a completely worked example of a barley Backcross population
+including pre-construction diagnostics, linkage map construction,
+and post-construction diagnostics using the available R/ASMap
+functions. The chapter also discusses how R/ASMap can be used for post
+construction linkage map improvement through techniques such as fine
+mapping or combining linkage maps. The last chapter presents some
+additional useful information on aspects of the MSTmap algorithm
+learnt through detailed exploration of the linkage map construction
+functions in this package.
+
+\section{MSTmap}
+\label{sec:mst}
+
+It is important to understand some of the technical features of the
+MSTmap algorithm as they are contained in the two linkage map
+construction functions that are available with the R/ASMap
+package.
+
+Following the notation of \cite{mst08} consider a Doubled
+Haploid population of $n$ individuals genotyped across a set of $t$
+markers where each $(i,j)$th entry of the $n \times t$ matrix $\vec{M}$
+is either an $A$ or a $B$ representing the two parental
+homozygotes in the population. Let $\vec{P}_{jk}$ be the probability
+of a recombination event between the markers $(\vec{m}_j,
+\vec{m}_k)$ where $0 \leq \vec{P}_{jk} < 0.5$. MSTmap uses two
+possible weight objective functions based on recombination
+probabilities between the markers
+\begin{align}
+  w_p(j,k) &= \vec{P}_{jk} \label{eq:weight1}\\
+  w_{ml}(j, k) &= -\bigl(\vec{P}_{jk}\log\,\vec{P}_{jk} + (1 -
+  \vec{P}_{jk})\log(\,1 - \vec{P}_{jk})\bigr) \label{eq:weight2}
+\end{align}
+In general $\vec{P}_{jk}$ is not known and so it is replaced by an
+estimate, $d_{jk}/n$ where $d_{jk}$ corresponds to the hamming
+distance between $\vec{m}_j$ and $\vec{m}_k$ (the number of
+non-mathcing alleles between the two markers). This estimate, $d_{jk}/n$,
+is also the maximum likelihood estimate for $\vec{P}_{jk}$ for the two
+weight functions defined above.
+
+\subsection{Clustering}
+\label{sec:clust}
+
+If markers $\vec{m}_j$ and $\vec{m}_k$ belong to two different linkage
+groups then $\vec{P}_{jk} = 0.5$ and the hamming distance between them
+has the property $E(d_{jk}) = n/2$. A simple thresholding mechanism to
+determine whether markers belong to the same linkage group can be
+calculated using Hoeffdings inequality,
+\begin{align}
+ P(d_{jk} < \delta) \leq \mbox{exp}(-2(n/2 - \delta)^2/n)
+ \label{eq:hoff}
+ \end{align}
+for $\delta < 0.5$. For a given $P(d_{jk} < \delta) = \epsilon$ and
+$n$, the equation $-2(n/2 - \delta)^2/n = \mbox{log}\,\epsilon$ is
+solved to determine an appropriate hamming distance threshold,
+$\hat{\delta}$. \cite{mst08} indicate that the choice of $\epsilon$ is not
+crucial when attempting to form linkage groups. However, the equation
+that requires solving is highly dependent on the number of individuals
+in the population. For example, for a DH populationm, Figure
+\ref{fig:threshold} shows the profiles of the
+$-\log 10 \epsilon$ against the number of individuals in the
+population for four threshold minimum cM distances $(25, 30, 35,
+40)$. MSTmap uses a default of $\epsilon = 0.00001$ which would work
+universally well for population sizes of $n \sim 150\, \mbox{to}\, 200$. For larger
+numbers of individuals, for example 350, the plot indicates an
+$\epsilon = 1.0e^{-12}$ to $1.0e^{-15}$ would use a conservative minimum threshold of 30-35
+cM before linking markers between clusters. If the default $\epsilon =
+0.00001$ is given in this instance this threshold is dropped to $\sim 45$
+cM and consequently distinct clusters of markers will appear
+linked. For this reason, Figure \ref{fig:threshold} should always initially
+be checked before linkage map construction to ensure an appropriate p-value is
+given to the MSTmap algorithm.
+
+To cluster the markers MSTmap uses an edge-weighted undirected complete graph,
+for $\vec{M}$ where the individual markers are
+vertices and the edges between any two markers $\vec{m}_j$ and
+$\vec{m}_k$ is the pairwise hamming distance $d_{jk}$. Edges
+with weights greater than $\hat{\delta}$ are then removed. The remaining
+connected components allow the marker set $\vec{M}$
+to be partitioned into $r$ linkage groups, $\vec{M} =
+[\vec{M}_1,\ldots,\vec{M}_r]$.
+
+\begin{figure}
+  \centering
+\includegraphics[width = 13cm]{pval}
+\caption{Negative log10 $\epsilon$ versus the number of genotypes in
+  the population for four threshold cM distances.}
+\label{fig:threshold}
+\end{figure}
+
+\subsection{Marker Ordering}
+\label{sec:ord}
+
+For simplicity, consider the $n \times t$ matrix of markers $\vec{M}$
+belongs to the same linkage group. Preceding marker ordering, the
+markers are ``binned'' into groups where, within each group,
+the pairwise distance between any two markers is zero. The markers within
+each group have no recombinations between them and are said to be
+co-locating at the same genomic location for the $n$ genotypes used to
+construct the linkage map. A representative marker is then chosen from each
+of the bins and used to form the reduced $n \times t^*$ marker set
+$\vec{M}^*$.
+
+For the reduced matrix $\vec{M}^*$, consider the complete set of entries $(j, k)
+\in (1, \ldots, t^*)$ for either weight function (\ref{eq:weight1}) or
+(\ref{eq:weight2}). These complete set of entries can be viewed as the
+upper triangle of a symmetric weight matrix $\vec{W}$. MSTmap views all
+these entries as being connected edges in an undirected graph where
+the individual markers are vertices. A marker order for the set $\vec{M}^*$,
+also known as a travelling salesman path (TSP), can be
+determined by visiting each marker once and summing the weights from
+the connected edges. To find a minimum weight (TSP$_{min}$), MSTmap uses a minimum
+spanning tree (MST) algorithm \citep{ct76}, such as Prims algorithm
+\citep{prim57}. If the TSP$_{min}$ is unique then the MST is the
+correct order for the markers. For cases where the data contains
+genotyping errors or lower numbers of individuals the MST may not be a
+complete path and contain markers or small sets of markers as
+individual nodes connected to the path. In these cases, MSTmap uses the
+longest path in the MST as the backbone and employs several efficient local
+optimization techniques such as K-opt, node-relocation and
+block-optimize \citep[see][]{mst08} to improve the current minimum
+TSP. By integrating these local optimization techniques into the
+algorithm, MSTmap provides users with a true one stage marker ordering
+algorithm.
+
+One excellent feature of the MSTmap algorithm is the utilisation of an
+EM type algorithm for the imputation of missing allele scores that is
+tightly integrated with the ordering algorithm for the markers. To
+achieve this the marker matrix $\vec{M}^*$ is converted to a
+matrix, $\vec{A}$, where the entries represent the
+probabilistic certainty of the allele being A. For the $j$th marker and
+$i$th individual then
+\begin{align}
+  \vec{A}(i,j) = \left\{\begin{array}{ll}
+          1 & \quad \mbox{if $\vec{M}^*(i,j)$ is the A allele}\\
+          0 & \quad \mbox{if $\vec{M}^*(i,j)$ is the B allele}\\
+          \frac{(1 - \hat{\vec{P}}_{j - 1,j})(1 - \hat{\vec{P}}_{j,j+1})}
+          {(1 - \hat{\vec{P}}_{j,j+1})(1 - \hat{\vec{P}}_{j,j+1})
+           + \hat{\vec{P}}_{j-1,j} \hat{\vec{P}}_{j,j+1}} & \quad \mbox{if
+           $\vec{M}^*(i,j)$ is missing} \end{array}\right.\label{eq:rf}
+\end{align}
+where $\hat{\vec{P}}_{j,j-1}$ and $\hat{\vec{P}}_{j,j+1}$ are
+estimated recombination fractions between the $(j-1)$th and $j$th
+marker and $j$th and $(j+1)$th marker respectively. The equation on
+the right hand side is the posterior probability of the missing value in
+marker $j$ being the A allele for genotype $i$ given the current
+estimate. The ordering algorithm begins by initially calculating
+pairwise normalized distances between all markers in
+$\vec{M}^*$ and deriving an initial weight matrix, $\vec{W}$. An
+undirected graph is formed using the markers as vertices and the upper triangular
+entries of $\vec{W}$ as connected edges. An MST of the undirected
+graph is then found to establish an initial order for the
+markers of the linkage group. For the current order at the $(j - 1, j,
+j + 1)$th markers the E-step of algorithm requires updating the
+missing observation at marker $j$ by updating the estimates
+$\hat{\vec{P}}_{j-1,j} = \hat{d}_{j-1,j}/n$ and $\hat{\vec{P}}_{j,j+1} =
+    \hat{d}_{j,j+1}/n$ in (\ref{eq:rf}). The M-step then re-estimates the
+    pairwise distances between all markers in $\vec{M}^*$ where, for
+    the $j$th and $k$th marker, is
+\begin{align}
+\hat{d}_{jk} = \sum_{i = 1}^{t^*}\vec{A}(i,j)(1 - \vec{A}(i, k)) + \vec{A}(i,k)(1 - \vec{A}(i, j))
+\label{eq:dist}
+\end{align}
+and the weight matrix $\vec{W}$ is recalculated. An undirected graph
+is formed with the markers as vertices and the upper triangular
+entries of $\vec{W}$ as connected edges. A new order of the markers is
+derived by obtaining an MST of the undirected graph and the algorithm is repeated to
+convergence. Although this requires several iterations to converge,
+the computational time for the ordering algorithm remains
+expedient. However, an increase in the number of
+missing values will increase computation time.
+
+If required, the MSTmap algorithm also detects and removes genotyping
+errors as well as integrates this process into the ordering
+algorithm. The technique involves using a weighted average of nearby
+markers to determine the expected state of the allele. For individual
+$i$ and marker $j$ the expected value of the allele is calculated
+using
+\begin{align}
+\mbox{E}[\vec{A}(i, j)] = \sum_{j \neq
+    k}d_{j,k}^{-2}\vec{A}(i,k)\bigg/\sum_{j \neq k}d_{j,k}^{-2}
+\label{eq:err}
+\end{align}
+In this equation the weights are the inverse square of the distance from
+marker $j$ to its nearby markers. MSTmap only uses a small set of
+nearby markers during each iteration and the observed allele is
+considered suspicious if $|\mbox{E}[\vec{A}(i, j)] - \vec{A}(i, j)| >
+0.75$.  If an observation is detected as suspicious it is treated as
+missing and imputed using the EM algorithm discussed previously. The
+removal of the suspicious allele has the effect of reducing the number
+of recombinations between the marker containing the suspicious observation and the
+neighbouring markers. This has an influential effect on
+the genetic distance between markers and the overall length of the
+linkage group.
+
+The complete algorithm used to initially cluster the markers into
+linkage groups and optimally order markers within each linkage group,
+including imputing missing alleles and error detection, is known as
+the MSTmap algorithm.
+
+\chapter{A closer look at R/ASMap functions}
+
+This chapter explores the R/ASMap functions in greater depth and
+shows how they can be used to efficiently explore, manipulate and
+construct genetic linkage maps. It will also showcase the graphical
+tools that will allow efficient diagnosis of linkage map problems post
+construction.
+
+The package contains multiple data sets listed as follows
+\begin{description}
+\item[\textbf{mapDH}]: A constructed genetic linkage map for
+  a Doubled Haploid population in the form of an R/qtl object. The
+  genetic linkage map contains a total of 599 markers spanning 23
+  linkage groups genotyped across 218 individuals. The
+  linkage map contains a small set of co-located markers and a
+  small set of markers with excessive segregation distortion
+\item[\textbf{mapDHf}]: An unconstructed version of \code{mapDH} in
+  the form a data frame. The data frame has dimensions 599 $\times$
+  218 and the rows (markers) have been randomized.
+\item[\textbf{mapBCu}]: An unconstructed set of markers for a
+  backcross population in the form of an R/qtl object. The marker set
+  contains a total of 3023 markers genotyped on 326
+  individuals. This marker set can be used in conjunction with the
+  detailed process presented in chapter \ref{chap:work} to construct a
+  genetic linkage map.
+\item[\textbf{mapBC}]: A constructed linkage map of \code{mapBCu}
+  in the form of an R/qtl object. The linkage map contains a total of
+  3019 markers genotyped on 300 individuals.
+\item[\textbf{mapF2}]: A simulated linkage map for a self-pollinated F2 population
+  consisting of 700 markers spanning 7 linkage groups genotyped across
+  250 individuals.
+\end{description}
+Each of these data sets is accessible using commands similar to
+<<data0, eval = TRUE, echo = TRUE,prompt = TRUE>>=
+data(mapDHf, package = "ASMap")
+data(mapDH, package = "ASMap")
+data(mapBCu, package = "ASMap")
+@
+
+\section{Map construction functions}
+
+The R/ASMap package contains two linkage map construction functions
+that allow users to fully utilize the MSTmap parameters listed at
+\url{http://alumni.cs.ucr.edu/~yonghui/mstmap.html}. Some additional
+information on aspects of the MSTmap algorithm and the
+appropriate use of the arguments \code{mvest.bc} and
+\code{detectBadData} is given in Chapter \ref{chap:asp}.
+
+\subsection{\texttt{mstmap.data.frame()}}
+
+The first of these functions allows users to input a data frame of genetic markers
+ready for construction. For a more detailed explanation of
+the arguments users should consult the help documentation found by typing
+\code{?mstmap.data.frame} in R.
+
+<<mst-df,eval=FALSE,echo=TRUE,prompt=FALSE>>=
+mstmap.data.frame(object, pop.type = "DH", dist.fun = "kosambi",
+      objective.fun = "COUNT", p.value = 1e-06, noMap.dist = 15,
+      noMap.size = 0, miss.thresh = 1, mvest.bc = FALSE, detectBadData = FALSE,
+      as.cross = TRUE, return.imputed = TRUE, trace = FALSE, ...)
+@
+The explicit form of the data frame \code{object} is borne from the
+syntax of the marker file required for using the stand alone MSTmap
+software. It must have markers in rows and genotypes in
+columns. Marker names are required to be in the \code{rownames} component of
+the object with genotype names residing in the \code{names}. Spaces in
+any of the marker or genotype names should be avoided but will be
+replaced with a ``-'' if found. Each of the columns of the data frame must be of class
+\code{"character"} (not factors). If converting from a matrix, this can
+easily be achieved by using the \code{stringAsFactors = FALSE} argument
+for any \code{data.frame} method.
+
+The available populations that can be passed to \code{pop.type} are \code{"BC"}
+Backcross, \code{"DH"} Doubled Haploid, \code{"ARIL"} Advanced Recombinant Inbred and
+\code{"RILn"} Recombinant Inbred with n levels of selfing. The allelic
+content of the markers in the \code{object} must be explicitly adhered
+to. For \code{pop.type} \code{"BC"}, \code{"DH"} or \code{"ARIL"} the two allele types should
+be represented as (\code{"A"} or \code{"a"}) and (\code{"B"} or
+\code{"b"}). Thus for \code{pop.type = "ARIL"} it is assumed the minimal number of
+heterozygotes have been set to missing. For non-advanced RIL
+populations (\code{pop.type = "RILn"}) phase unknown heterozygotes should be represented as
+\code{"X"}. For all populations, missing marker scores should be represented
+as (\code{"U"} or \code{"-"}).
+
+Users need to be aware that the \code{p.value} argument plays an
+important role in determining the clustering of markers to distinct
+linkage groups. Section \ref{sec:clust} shows the separation of
+marker groups is highly dependent on the the number of individuals in
+the population. For this reason, some trial and error may be required
+to determine an appropriate \code{p.value} for the linkage map being
+constructed.
+
+Although this function contains arguments that utilize the complete
+set of available MSTmap parameters it is less flexible than its sister
+function \code{mstmap.cross()} (see section \ref{sec:mstc}) that
+uses the flexible structure of an R/qtl \code{"cross"}
+object. For this reason, it is recommended that users set
+\code{as.cross = TRUE} to ensure the constructed object is returned as a
+R/qtl cross object with an appropriate class structure. For
+population types \code{"BC"} and \code{"DH"} the class of the
+constructed object is given \code{"bc"} and \code{"dh"} respectively. For \code{"RILn"}
+the \pkg{qtl} package conversion function \code{convert2bcsft} is used
+to ensure the class of the object is assigned \code{"bcsft"}
+with arguments \code{F.gen = n} and \code{BC.gen =
+  0}. For \code{"ARIL"} populations the constructed object is given the
+class \code{"riself"}. The correct assignation of these classes
+ensures the objects can be used synergistically with the suite of
+functions available in the R/qtl package as well as other functions in
+the R/ASMap package.
+
+The R/ASMap package contains an unconstructed Doubled Haploid marker
+set \code{mapDHf} with 599 markers genotyped across 218
+individuals. The marker set is formatted correctly for input into the
+\code{mstmap.data.frame()} function.
+<<datadf,eval=TRUE,echo=TRUE,prompt=TRUE>>=
+testd <- mstmap(mapDHf, dist.fun = "kosambi", trace = TRUE, as.cross = TRUE)
+nmar(testd)
+chrlen(testd)
+@
+As \code{as.cross = TRUE} the usual functions available in the R/qtl
+package are available for use on the returned object.
+
+\subsection{\texttt{mstmap.cross()}}
+\label{sec:mstc}
+
+The second linkage map construction function allows users to input an unconstructed or
+constructed linkage map in the form of an R/qtl cross object. See \code{?mstmap.cross}
+for a more detailed description.
+
+<<mst-cr,eval = FALSE,echo=TRUE>>=
+mstmap.cross(object, chr, id = "Genotype", bychr = TRUE,
+       suffix = "numeric", anchor = FALSE, dist.fun = "kosambi",
+       objective.fun = "COUNT", p.value = 1e-06, noMap.dist = 15,
+       noMap.size = 0, miss.thresh = 1, mvest.bc = FALSE, detectBadData =
+       FALSE, return.imputed = FALSE, trace = FALSE, ...)
+@
+The cross \code{object} needs to inherit
+from one of the allowable classes available in the R/qtl package,
+namely \code{"bc","dh","riself","bcsft"} where \code{"bc"} is a
+Backcross \code{"dh"} is Doubled Haploid, \code{"riself"} is an advanced
+Recombinant Inbred and \code{"bcsft"} is a Backcross/Self.
+
+It is important to understand how these classes are encoded into the
+object for the specific populations. If \code{read.cross()} is used to read in any bi-parental
+populations it will be given the class \code{"bc"}. Doubled Haploid
+populations can be changed to \code{"dh"} just by changing the class.
+For the purpose of linkage map construction, both classes \code{"bc"}
+and \code{"dh"} will produce equivalent results. For non-advanced
+Recombinant Inbred populations markers are required to be fully informative (i.e. contain
+3 distinct allele types such as AA, BB for parental homozygotes and AB
+for phase unknown heterozygotes) and the use of \code{read.cross()}
+will result in the cross object being given a class \code{"f2"}. The level of selfing
+is required to be encoded into the object by applying one of the two conversion
+functions available in the R/qtl package. For a
+population that has been generated by selfing $n$ times, the conversion
+function \code{convertbcsft} can be used by setting the arguments
+\code{F.gen = n} and \code{BC.gen = 0}. This will attach a class
+\code{"bcsft"} to the object. Populations that are genuine
+advanced RILs can be converted using the \code{convert2riself}
+function. This function will replace any remaining heterozygosity, if
+it exists, with missing values and attach the class \code{"riself"} to
+the object.
+
+Similar to the \code{mstmap.data.frame()} function, users need to be aware
+that the \code{p.value} argument is highly dependent on the number of
+individuals in the population and may require some trial and error to
+ascertain an appropriate value. After construction the cross object is
+returned with an identical class structure as the inputted object. All
+R/qtl and R/ASMap package functions can be used synergistically with
+this object.
+
+\subsubsection{Examples}
+
+The constructed linkage map \code{mapDH} available in the
+R/ASMap package will be used to showcase the flexibility of this
+function. Before attempting re-construction, some preliminary output
+of \code{mapDH} is presented.
+<<data, eval = TRUE, echo = TRUE, prompt = TRUE>>=
+nmar(mapDH)
+pull.map(mapDH)[[4]]
+@
+The output shows that there are 23 groups that have been
+appropriately been assigned linkage group or chromosome names. The
+markers within each linkage group have been named according to the
+order of the markers.
+
+\textbf{\sffamily Example 1: Completely construct or reconstruct a linkage map.}
+
+To completely re-construct this map set the argument \code{bychr =
+  FALSE}. This will bulk the genetic data from all linkage groups,
+re-cluster the markers into groups and then optimally order the
+markers within each linkage group. This linkage map is small so these
+two tasks happen almost instantaneously.
+<<mst1,eval=TRUE,echo=TRUE,prompt=TRUE>>=
+mapDHa <- mstmap(mapDH, bychr = FALSE, dist.fun = "kosambi", trace = TRUE)
+nmar(mapDHa)
+pull.map(mapDHa)[[4]]
+@
+The reconstructed map contains 24 linkage groups with the extra
+linkage group coming from a minor split in 4A. As the linkage map is
+constructed from scratch, it assumed that former linkage group names
+are no longer required. A standard ``L.'' prefix is provided for the
+new linkage group names. This example also indicates that MSTmap by
+default does not respect the inputted marker order.
+
+\textbf{\sffamily Example 2: Optimally order markers within linkage groups of an
+  established map.}
+
+It may be necessary to only perform marker ordering within already
+established linkage groups. This can be achieved by setting
+\code{bychr = TRUE}. In some cases it also be preferable to ensure the
+marker orders of the linkage groups are
+respected and this can be achieved by setting \code{anchor = TRUE.}
+<<mst2,eval=TRUE,echo=TRUE,prompt=TRUE>>=
+mapDHb <- mstmap(mapDH, bychr = TRUE, dist.fun = "kosambi", anchor = TRUE, trace = TRUE)
+nmar(mapDHb)
+@
+This map is identical to \code{mapDH} with the exception that
+chromosome 4A has been split into two linkage groups. As \code{bychr =
+  TRUE} the function understands the origin of the linkage
+group was 4A and consequently uses it as a prefix in the naming of the
+two new linkage groups.
+
+\textbf{\sffamily Example 3: Optimally order markers within linkage groups of an
+  established map without breaking linkage groups.}
+
+The splitting of the linkage groups in the last example only occurred
+due to choice of default \code{p.value = 1e-06} set in the function. A
+slight change to this \code{p.value} will ensure that 4A remains
+linked during the algorithm.
+<<mst3,eval=TRUE,echo=TRUE,prompt=TRUE>>=
+mapDHc <- mstmap(mapDH, bychr = TRUE, dist.fun = "kosambi", anchor = TRUE, trace = TRUE, p.value = 1e-04)
+nmar(mapDHc)
+@
+An identical result can be achieved by setting \code{p.value = 2} or
+any number greater than 1. Doing this instructs the MSTmap algorithm
+to not split linkage groups regardless of how weak the linkages
+are between markers within any group. Users should be aware that if
+this latter method is used then linkage groups that contain groups of
+markers separated by a substantial distance (i.e. very weak linkages)
+may suffer from local orientation problems.
+
+\textbf{\sffamily Example 4: Reconstruct map within predefined linkage groups of
+  an established map.}
+
+There may only be a need to reconstruct a predefined set of linkage
+groups. By setting the \code{chr} argument and \code{bychr = FALSE}
+users can determine which linkage groups require the complete
+reconstruction using MSTmap.
+<<mst4,eval=TRUE,echo=TRUE,prompt=TRUE>>=
+mapDHd <- mstmap(mapDH, chr = names(mapDH$geno)[1:3], bychr = FALSE, dist.fun = "kosambi", trace = TRUE, p.value = 1e-04)
+nmar(mapDHd)
+@
+Again, the algorithm assumes that the original linkage group names are
+no longer necessary and defines new ones. An obvious extension of this
+example is to set \code{bychr = TRUE} and then the algorithm will
+order markers within the predefined linkage groups stipulated by
+\code{chr}. Similar to the previous example, an appropriate choice of
+\code{p.value} will ensure that linkage groups remain unbroken.
+
+\section{Pulling and pushing markers}
+\label{sec:pp}
+
+Often in linkage map construction, some pruning of the markers occurs
+before initial construction. This may be the removal of markers with a
+proportion of missing values higher than some desired threshold as
+well as markers that are significantly distorted from their expected
+Mendelian segregation patterns. Often the removal is permanent and the
+possible importance of some of these markers is overlooked. A
+preferable system would be to identify and place the problematic markers aside with
+the intention of checking their usefulness at a later stage of the
+construction process.
+
+The R/ASMap package contains two functions that allow you to do
+this. The first is the function \code{pullCross()} which provide users
+with a mechanism to ``pull'' markers of certain types from a linkage
+map and place them aside. The complementary function
+\code{pushCross()} then allows users to ``push'' markers back into the
+linkage map at any stage of the construction process. These
+can be seen as helper functions for more efficient construction of
+linkage maps (see \code{?pullCross} and \code{?pushCross} for complete details).
+<<pp1,eval=FALSE,echo=TRUE>>=
+pullCross(object, chr, type = c("co.located","seg.distortion","missing"),
+               pars = NULL, replace = FALSE, ...)
+pushCross(object, chr, type = c("co.located","seg.distortion","missing","unlinked"),
+               unlinked.chr = NULL, pars = NULL, replace = FALSE, ...)
+pp.init(seg.thresh = 0.05, seg.ratio = NULL, miss.thresh = 0.1, max.rf =
+             0.25, min.lod = 3)
+@
+In the current version of the package, the helper functions share
+three types of markers that can be ``pulled/pushed'' from linkage
+maps. These include markers that are co-located with
+other markers, markers that have some defined segregation distortion
+and markers with a defined proportion of missing values. If the
+argument \code{type} is \code{"seg.distortion"} or \code{"missing"}
+then the initialization function \code{pp.init} is used to determine
+the appropriate threshold parameter setting (\code{seg.thresh}, \code{seg.ratio},
+\code{miss.thresh}) that will be used to pull/push markers from the
+linkage map. Users can set their own parameters by setting the
+\code{pars} argument (see examples below). For each of the
+different types, \code{pullCross()} will pull markers from the map and
+place them in separate elements of the cross object. Within the elements, vital
+information is kept that can be accessed by \code{pushCross()} to push
+the markers back at a later stage of linkage map construction.
+
+The function \code{pushCross()} also contains another marker type
+called \code{"unlinked"} which, in conjunction with the argument
+\code{unlinked.chr}, allows users to push markers from an unlinked
+linkage group in the \code{geno} element of the \code{object} into
+established linkage groups. This mechanism becomes vital, for example,
+when pushing new markers into an established linkage map. An example
+of this is presented in section \ref{sec:pm}.
+
+Again, the constructed linkage map \code{mapDH} will be used to
+showcase the power of \code{pullCross()} and
+\code{pushCross()}. Markers are pulled from the map that are
+co-located with other markers, have significant segregation distortion
+with a p-value less than 0.02 and have a missing value proportion
+greater than 0.03.
+<<pp2,eval=TRUE,echo=TRUE,prompt=TRUE>>=
+mapDHs <- pullCross(mapDH, type = "co.located")
+mapDHs <- pullCross(mapDHs, type = "seg.distortion", pars = list(seg.thresh = 0.02))
+mapDHs <- pullCross(mapDHs, type = "missing", pars = list(miss.thresh = 0.03))
+names(mapDHs)
+names(mapDHs$co.located)
+@
+The cross object now contains three new elements named by the marker
+types that are pulled from the map. In each of the elements there are
+two elements, a table of information for the markers that are pulled
+and the actual marker data in genotype by marker format (i.e. exactly
+the same as the data contained in the linkage groups themselves).
+<<pp3,eval=TRUE,echo=TRUE,prompt=TRUE>>=
+mapDHs$seg.distortion$table
+@
+The table element of each of the marker types \code{"missing"} and
+\code{"seg.distortion"} consists of a summary of positional information as
+well as information from \code{geno.table()} in the R/qtl package.
+<<pp4,eval=TRUE,echo=TRUE,prompt=TRUE>>=
+head(mapDHs$co.located$table)
+@
+The table element for the marker type \code{"co.located"} contains information on
+the markers that are co-located and the group or bin they belong
+to. In each group the first marker is the reference marker that remains in the
+linkage map and the remaining markers are pulled from the map and
+placed aside.
+
+Suppose now the map is undergone a construction or re-construction
+process so that the linkage groups are artificially renamed. To do this we
+will re-run MSTmap with \code{bychr = FALSE}.
+<<pp5,eval=TRUE,echo=TRUE,prompt=TRUE>>=
+mapDHs <- mstmap(mapDHs, bychr = FALSE, dist.fun = "kosambi", trace = TRUE, anchor = TRUE)
+nmar(mapDHs)
+@
+
+The markers can now be pushed back into the linkage map using
+\code{pushCross()}. The complete set of co.located markers are pushed
+back as well as markers that have significant segregation distortion
+with p-values greater than 0.001 and markers that have a missing value
+proportion less than 0.05.
+<<pp6,eval=TRUE,echo=TRUE,prompt=TRUE>>=
+mapDHs <- pushCross(mapDHs, type = "co.located")
+mapDHs <- pushCross(mapDHs, type = "seg.distortion", pars = list(seg.thresh = 0.001))
+mapDHs <- pushCross(mapDHs, type = "missing", pars = list(miss.thresh = 0.05))
+names(mapDHs)
+@
+With the above parameter settings all markers from each marker type
+are pushed back into the map and the marker type elements are removed
+from the \code{object}.
+<<pp7,eval=TRUE,echo=TRUE,prompt=TRUE>>=
+pull.map(mapDHs)[[4]]
+pull.map(mapDHs)[[21]]
+@
+For co-located markers the reference marker for each group is used as a guide to place
+the set of co-locating markers back into the linkage map adjacent to
+the reference marker. For example, the co-locating marker
+\code{1D.m.4} on 1D appears adjacent to its reference marker
+\code{1D.m.3}. Markers from the \code{"seg.distortion"} and
+\code{"missing"} elements are pushed back to the end of the linkage
+groups ready for the map to be re-constructed by chromosome. For
+example the distorted marker \code{6D.m.12} is pushed to the end of
+6D. A final run of MSTmap within each linkage group will
+produce the desired map with all markers in their optimal position.
+<<pp8,eval=TRUE,echo=TRUE,prompt=TRUE>>=
+mapDHs <- mstmap(mapDHs, bychr = TRUE, dist.fun = "kosambi", trace = TRUE, anchor = TRUE, p.value = 2)
+@
+
+\section{Improved heat map}
+\label{sec:heat}
+
+A visual diagnostic that is very useful for checking how well a
+linkage map is constructed is a heat map that combines the estimates
+of the pairwise recombination fraction (RF) between markers as well as
+LOD scores reflecting the the strength of linkage between each
+pair. Let the estimate of RF between marker $i$ and $j$ be $r_{ij}$
+then the LOD score is a test of no linkage ($r_{ij} = 0.5$). Higher LOD
+scores indicate that the hypothesis of no linkage is rejected and the
+strength of the connection between the pair of markers is strong.
+
+In R/qtl users can plot the heat map of pairwise linkage between
+markers using \code{plot.rf()}. The \code{plot.rf()} version of \code{mapDH} is
+given in Figure \ref{fig:heat1}. In this plot strong pairwise linkages
+between markers are represented as ``hot'' or red areas
+and weak pairwise linkages between markers are displayed as ``cold'' or
+blue areas.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=16cm]{plotrfDH}
+\caption{Heat map of the constructed linkage map mapDH using \texttt{plot.rf()}.}
+\label{fig:heat1}
+\end{figure}
+
+Unfortunately the plot contains some inadequacies that are mostly
+pointed out in the documentation (see \code{?plot.rf}). ``Recombination fractions are
+transformed by -4(log2(r)+1) to make them on the same sort of scale as LOD scores.
+Values of LOD or the transformed recombination fraction that are above
+12 are set to 12.'' This transformation and the arbitrary threshold
+induce multiple restrictions on the visualization of the heat
+map. Firstly, the LOD score is highly dependent on the number of
+individuals in the population and the upper limit of 12 may be a
+vastly inadequate representation of the pairwise linkage between some
+markers. In Figure \ref{fig:heat1} this latter inadequacy is displayed as
+red or hot areas of linkage between markers that should otherwise be cooler
+colours. Additionally, the actual estimated recombination fractions are
+not displayed in the upper triangle of the heat map and colour legends
+matching the numerical LOD and RF's are not present. From a visual
+standpoint, it is well known the rainbow colour spectrum is perceptually inadequate for
+representing diverging numerical data.
+
+R/ASMap contains an improved version of the heat map called
+\code{heatMap()} that rectifies the numerical and visual issues of the
+\pkg{qtl} heat map.
+<<heat1,eval=FALSE,echo=TRUE>>=
+heatMap(x, chr, mark, what = c("both", "lod", "rf"), lmax = 12,
+             rmin = 0, markDiagonal = FALSE, color = rev(rainbow(256, start =
+             0, end = 2/3)), ...)
+@
+The function independently plots the LOD score on the bottom triangle of the
+heatmap as well as the actual estimated recombination fractions on the
+upper triangle. The function also releases the arbitrary threshold on
+the LOD score and recombination fractions by providing a user defined
+\code{lmax} and \code{rmin} argument that is adjustable to suit the
+population size and any requirements of the plot required. For
+example, Figure \ref{fig:heat2} shows the \code{heatMap()} equivalent of
+\code{plot.rf()} for the linkage map \code{mapDH} made with the call
+
+<<heat2,echo=TRUE,eval=FALSE,prompt=TRUE>>=
+heatMap(mapDH, lmax = 50)
+@
+
+The instantly visual difference between the figures is the chosen
+colour palette. R/ASMap uses a diverging colour palette \code{"Spectral"}
+from the default color palettes of \pkg{RColorBrewer}. The palette
+softens the plot and provides a gentle dinstinction between strongly
+linked and weakly linked markers. The plot also includes a legend for the LOD score
+and recombination fractions on either side of Figure \ref{fig:heat2}. As the
+estimated recombination fractions are being freely plotted without
+transformation, the complete scale is included in the heat map. This
+scale also includes estimated recombination fractions that are above
+the theoretical threshold of 0.5. By increasing this scale beyond 0.5, potential
+regions where markers out of phase with other markers can be
+recognised. The key to obtaining an ``accurate'' heat map is to match
+the heat of the LOD scores to the heat of the estimated recombination
+fractions and setting \code{lmax = 50} achieves this goal. Similar to
+\code{plot.rf()}, the \code{heatMap()} function allows subsetting of the linkage map by
+\code{chr}. In addition, users can further subset
+the linkage groups using the argument \code{mark} by indexing a set of
+markers within linkage groups defined by \code{chr}.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=16cm]{heatmapDH}
+\caption{Heat map of the constructed linkage map mapDH using \texttt{heatMap()}.}
+\label{fig:heat2}
+\end{figure}
+
+\section{Genotype and marker/interval profiling}
+\label{sec:prof}
+
+To provide a complete system for efficient linkage map construction
+and diagnosis the R/ASMap package contains functions that calculate
+linkage map statistics across the markers for every genotype as
+well as across the markers/intervals of the genome. These statistics can
+then be profiled across simultaneous R/lattice panels for quick
+diagnosis of linkage map attributes.
+<<prof1, eval = FALSE>>=
+statGen(cross, chr, bychr = TRUE, stat.type = c("xo", "dxo", "miss"), id = "Genotype")
+profileGen(cross, chr, bychr = TRUE, stat.type = c("xo", "dxo", "miss"), id = "Genotype", xo.lambda = NULL, ...)
+statMark(cross, chr, stat.type = c("marker", "interval"), map.function = "kosambi")
+profileMark(cross, chr, stat.type = "marker", use.dist = TRUE, map.function = "kosambi", crit.val = NULL, display.markers = FALSE, mark.line = FALSE, ...)
+@
+The \code{statGen()} and \code{profileGen()} are
+functions for calculation and profiling of the statistics for the
+genotypes across the chosen marker set defined by
+\code{chr}. Specifically, \code{profileGen()} actually calls \code{statGen()}
+to obtain the statistics for profiling and also returns the
+statistics invisibly after plotting. Setting \code{bychr = TRUE}
+will also ensure that the genotype profiles are plotted individually
+for each linkage groups given \code{chr}. The current statistics that
+can be calculated for each genotype include
+\begin{list}{$\bullet$}{\setlength{\itemsep}{1ex}\setlength{\parsep}{0ex}}
+\item \texttt{"xo"} : number of crossovers
+\item \texttt{"dxo"} : number of double crossovers
+\item \texttt{"miss"} : number of missing values
+\end{list}
+The two statistics \code{"xo"} and \code{"dxo"} are obviously only useful for
+constructed linkage maps. However, from my experience, they represent
+the most vital two statistics for determining a linkage maps
+quality. Inflated crossover or double crossover rates of any
+genotypes indicate a lack of adherence to Mendelian genetics. For
+example, it can be quickly calculated for a Doubled Haploid wheat
+population of size 100, one recombination is approximately
+1cM. Consequently, under Mendelian genetics, a chromosome of length 200 cM would expect
+to have 200 random crossovers with each genotype having an expected
+recombination rate of 2. Wheat is a hexaploid, so for excellent coverage over the whole genome
+the expected recombination rate of any genotype is $\sim$42. This
+number will obviously be reduced if the coverage of the genome is
+incomplete. Significant recombination rates can be checked by manually
+inputting a median recombination rate in the argument \code{xo.lambda}
+of \code{profileGen()}. As an example, the genotype profiles of the
+\code{mapDH} can be displayed using the command below and the resultant plot
+is given in Figure \ref{fig:prof2}.
+
+<<prof2,fig.width = 15,fig.height = 8,fig.pos = "t",fig.env="figure",fig.scap="NA",fig.cap = "Genotype profiles of missing values, double recombinations and recombinations for \\texttt{mapDH}.",prompt=TRUE>>=
+profileGen(mapDH, bychr = FALSE, stat.type = c("xo", "dxo", "miss"), id = "Genotype", xo.lambda = 25, layout = c(1,3), lty = 2)
+@
+
+The plot neatly displays, the number of missing values, double
+crossovers and crossovers for each genotype in the order represented
+in \code{mapDH}. The plot was aesthetically enhanced by including
+graphical arguments \code{layout = c(1,3)} and \code{lty = 2} which
+are passed to the high level lattice function \code{xyplot()}. Plotting these statistics simultaneously allows the
+users to quickly recognize genotypes that may be problematic and worth
+further investigation. For example, in Figure \ref{fig:prof2} the line
+DH218 was identified as having an inflated recombination rate and
+removing it may improve the quality of the linkage map.
+
+The \code{statMark()} and \code{profileMark()} functions are
+commands for the calculation and profiling of statistics associated
+with the markers or intervals of the linkage map. \code{profileMark()}
+calls \code{statMark()} and graphically profiles user given statistics
+and will also return them invisibly after plotting. The current
+marker statistics that can be profiled are
+\begin{list}{$\bullet$}{\setlength{\itemsep}{1ex}\setlength{\parsep}{0ex}}
+ \item \texttt{"seg.dist"}: -log10 p-value from a test of segregation distortion
+  \item \texttt{"miss"}: proportion of missing values
+  \item \texttt{"prop"}: allele proportions
+  \item \texttt{"dxo"}: number of double crossovers
+\end{list}
+The current interval statistics that can be profiled are
+\begin{list}{$\bullet$}{\setlength{\itemsep}{1ex}\setlength{\parsep}{0ex}}
+  \item \texttt{"erf"}: estimated recombination fractions
+  \item \texttt{"lod"}: LOD score for the test of no linkage
+  \item \texttt{"dist"}: interval map distance
+  \item \texttt{"mrf"}: map recombination fraction
+  \item \texttt{"recomb"}: number of recombinations.
+\end{list}
+The function allows any or all of the statistics to be plotted
+simultaneously on a multi-panel lattice display. This includes
+combinations of marker and interval statistics. There is a \code{chr}
+argument to subset the linkage map to user defined linkage groups. If
+\code{crit.val = "bonf"} then markers that have significant
+segregation distortion greater than the family wide alpha level of
+0.05/no.of.markers will be annotated in marker panels. Similarly, intervals
+that have a significantly weak linkage from a test of the
+recombination fraction of $r = 0.5$ will also be annotated in the
+interval panels. Similar to \code{profileGen()}, graphical arguments
+can be used in \code{profileMark()} and are passed to the high level
+lattice function \code{xyplot()}. A plot of the segregation
+distortion, double crossovers, estimated recombination fractions and
+LOD scores for the whole genome of \code{mapDH} is given in Figure \ref{fig:prof3} and
+created with the command
+<<prof3,fig.width = 15,fig.height = 8,fig.pos = "t",fig.env="figure",fig.scap="NA",fig.cap = "Marker and interval profiles of segregation distortion, double crossovers, estimated recombination fractions and LOD scores for \\texttt{mapDH}.",prompt=TRUE, warning = FALSE>>=
+profileMark(mapDH, stat.type = c("seg.dist", "dxo", "erf", "lod"), id = "Genotype", layout = c(1,4), type = "l")
+@
+All linkage groups are highlighted in a different colours to ensure
+they can be identified clearly. The lattice panels ensure that marker
+and interval statistics are seamlessly plotted together so problematic
+regions or markers can be identified efficiently. In this command, the
+\code{layout = c(1,4)} and \code{type = "l"} arguments are passed directly to the
+high level \code{xyplot()} lattice function to ensure a more
+aesthetically pleasing graphic.
+
+\section{Miscellaneous additional R/qtl functions}
+
+\subsection{Genetic clones}
+\label{sec:genc}
+
+In my experience, the assumptions of how the individuals of the
+population are genetically related is rarely checked throughout the
+construction process. Too often unconstructed or constructed
+linkage maps contain individuals that are far too closely related beyond the simple
+assumptions of the population. For example, in a DH population, the
+assumption of independence would indicate that any two individuals
+will, by chance, share half of their alleles. Any pairs of individuals
+that significantly breach this assumption should be deemed suspicious and queried.
+
+The R/ASMap package contains a function for the detection and
+reporting of the relatedness between individuals as well as a
+function for forming consensus genotypes if genuine clones are found.
+<<clones01,eval=FALSE,echo=TRUE,prompt=TRUE>>=
+genClones(object, chr, tol = 0.9, id = "Genotype")
+fixClones(object, gc, id = "Genotype", consensus = TRUE)
+@
+The \code{genClones()} function uses the power of \code{comparegeno()}
+from the R/qtl package to perform the relatedness
+calculations. It then provides a numerical breakdown of the
+relatedness between pairs of individuals that share a proportion of
+alleles greater than \code{tol}. This breakdown also includes the
+clonal group the pairs of individuals belong to. The complete set of
+statistics allows users to make an informed decision about the
+connectedness of the pairs of individuals. For example, using the
+constructed map \code{mapDH} the list of clones can be found using
+
+<<clones02,eval=TRUE,echo=TRUE,prompt=TRUE>>=
+gc <- genClones(mapDH, tol = 0.9)
+gc$cgd
+@
+The reported information shows five pairs of clones that are, with the
+exception of missing values, identical.
+
+If clones are found then \code{fixClones()} can be used to form
+consensus genotypes for each of the clonal groups. By default it will
+intelligently collapse the allelic information of the clones within
+each group (see Table \ref{tab:cons}) to obtain a single
+consensus genotype. Setting \code{consensus = FALSE} will choose a genotype with
+the smallest proportion of missing values as the representative
+genotype for the clonal group. In both cases genotypes names are given
+an elongated name containing all genotype names of the clonal group
+separated by an underscore.
+
+<<clones03,eval=TRUE,echo=TRUE,prompt=TRUE>>=
+mapDHg <- fixClones(mapDH, gc$cgd, consensus = TRUE)
+levels(mapDHg$pheno[[1]])[grep("_", levels(mapDHg$pheno[[1]]))]
+@
+
+\begin{table}
+\centering
+\caption{Consensus genotype outcomes for 3 clones across 8 markers in a DH
+  population.}
+\begin{tabular}{lcccccccc}
+\hline
+\T Genotype  & M1 & M2 & M3 & M4 & M5 & M6 & M7 & M8 \\
+\hline
+\hline
+G1    & AA & BB & AA & BB & AA & BB & NA & AA\\
+G2    & AA & BB & NA & NA & NA & NA & NA & BB\\
+G3    & AA & BB & AA & BB & NA & NA & NA & AA\\
+\hline
+Cons. & AA & BB & AA & BB & AA & BB & NA & NA\\
+\hline
+\end{tabular}
+\label{tab:cons}
+\end{table}
+
+\subsection{Breaking and merging linkage groups}
+
+During the linkage map construction process there may be a requirement to
+break or merge linkage groups. R/ASMap provides two functions to
+achieve this.
+<<mb1, eval = FALSE>>=
+breakCross(cross, split = NULL, suffix = "numeric", sep = ".")
+mergeCross(cross, merge = NULL, gap = 5)
+@
+The \code{breakCross()} function allows users to break linkage groups
+in a variety ways. The \code{split} argument takes a list with
+elements named by the linkage group names that require splitting and
+containing the markers that immediately proceed where the splits are to be made. For example, a
+split of the linkage group 3B and 6A linkage map \code{mapDH} after the seventh and fifteenth
+marker respectively can be easily made using
+<<mb2, eval = TRUE,prompt=TRUE>>=
+mapDHb1 <- breakCross(mapDH, split = list("3B" = "3B.m.7","6A" = "6A.m.15"))
+nmar(mapDHb1)
+@
+The \code{split} argument is flexible and can handle multiple linkage
+groups as well as multiple markers within linkage groups. The default
+use of the \code{suffix} argument produces a numerical suffix
+attachment to the original linkage groups being split with a
+separated by \code{sep}. Users can also provide their own complete names for the new
+split linkage groups by explicitly naming them in the \code{suffix} argument.
+<<mb3, eval = TRUE,prompt=TRUE>>=
+mapDHb2 <- breakCross(mapDH, split = list("3B" = "3B.m.7"), suffix = list("3B" = c("3B1","3B2")))
+nmar(mapDHb2)
+@
+The \code{mergeCross()} function provides a method for merging linkage
+groups. Its argument \code{merge} requires a list with elements named
+by the proposed linkage group names required and containing the
+linkage groups to be merged. For the linkage map
+\code{mapDHb1} containing split linkage groups 3B and 6A created by a
+call to \code{breakCross()} the call to \code{mergeCross()} would be
+<<mb4,eval=TRUE,prompt=TRUE>>=
+mapDHm <- mergeCross(mapDHb1, merge = list("3B" = c("3B.1","3B.2"),"6A" = c("6A.1","6A.2")))
+nmar(mapDHm)
+@
+It should be noted that this function places an artificial genetic distance gap
+between the merged linkage groups set by the \code{gap}
+argument. Accurate distance estimation would require a separate map
+estimation procedure after the merging has taken place.
+
+\subsection{Rapid genetic distance estimation}
+\label{sec:est}
+
+The linkage map estimation function in R/qtl called
+\code{est.map()} can be invoked individually or can be applied
+through \code{read.cross()} when setting the argument
+\code{estimate.map = TRUE}. The function applies the multi-locus hidden Markov model
+technology of \cite{lg87} to perform its calculations. Unfortunately
+this technology is computationally cumbersome if there are many markers on a linkage group and
+becomes more so if there are many missing allele calls and
+genotyping errors present.
+
+R/ASMap contains a small map estimation function that circumvents this
+computational burden.
+<<quick1,eval=FALSE>>=
+quickEst(object, chr, map.function = "kosambi", ...)
+@
+The function makes use of another function in R/qtl called
+\code{argmax.geno()}. This function is also a multi-locus hidden
+Markov algorithm that uses the observed markers present in a linkage
+group to impute pseudo-markers at any chosen cM genetic distance. In this
+case, we only require a reconstruction or imputation at the
+markers themselves. For the most accurate imputation to occur there
+needs to be an estimate of genetic distance already in place. To
+obtain an initial estimate of distance \code{est.rf()} is called
+within each linkage group defined by \code{chr} and recombination
+fractions are converted to genetic distances based on
+\code{map.function}. Unlike \code{est.map()} the \code{quickEst()}
+function lives up to its namesake by providing the quickest genetic
+distance calculations for large linkage maps.
+
+<<quick2,fig.width = 7,fig.height = 5,fig.pos = "t",fig.env="figure",fig.scap="NA",fig.cap = "Comparison of \\texttt{mapDH} using \\texttt{est.map} and \\texttt{quickEst}.",prompt=TRUE>>=
+map1 <- est.map(mapDH, map.function = "kosambi")
+map1 <- subset(map1, chr = names(nmar(map1))[6:15])
+map2 <- quickEst(mapDH, map.function = "kosambi")
+map2 <- subset(map2, chr = names(nmar(map2))[6:15])
+plot.map(map1, map2)
+@
+
+The linkage map \code{mapDH} was re-estimated using \code{est.map()}
+and \code{quickEst()} and a comparison of the resulting maps
+are given in Figure \ref{fig:quick2}. The graphic indicates that there
+negligible changes in marker placement and overall linkage group
+distances between the two linkage maps.
+
+\subsection{Subsetting in R/ASMap}
+
+The functions \code{pullCross()} and \code{pushCross()} described in
+  section \ref{sec:pp} are used to create and manipulate extra list
+  elements \code{"co.located"}, \code{"seg.distortion"} and
+\code{"missing"} associated with different marker types. Each element
+contains a data element consisting of a marker matrix
+equivalent in row dimension to the marker elements of the linkage
+map they were pulled from. Unfortunately, these
+list elements are not recognized by the native R/qtl functions. If the
+R/qtl function \code{subset.cross()} is used to subset the object to a
+reduced number of individuals then the data component of each of these
+elements will not be subsetted accordingly. In addition, the
+statistics in the table component of the elements
+\code{"seg.distortion"} and \code{"missing"} will be incorrect for the
+newly subsetted linkage map.
+
+The \code{subsetCross()} function available
+in the R/ASMap package contains identical functionality to
+\code{subset.cross} but also ensures the data components
+of the extra list elements \code{"co.located"}, \code{"seg.distortion"} and
+\code{"missing"} are subsetted to match the linkage map. In addition,
+for elements \code{"seg.distortion"} and \code{"missing"} it also
+updates the table components to reflect the newly subsetted
+map. This update ensures that \code{pushCross()} uses the most
+accurate information when deciding which markers to push back into
+the linkage map.
+
+Using the default \code{seg.thresh = 0.05} for the linkage map \code{mapDH},
+distorted markers are pulled from the map
+<<sc,eval=TRUE,prompt=TRUE>>=
+mapDH.s <- pullCross(mapDH, type = "seg.distortion")
+mapDH.s <- subsetCross(mapDH.s, ind = 3:218)
+dim(mapDH.s$seg.distortion$data)[1]
+@
+In this example the use of \code{subsetCross()} ensures that the data
+component of the \code{"seg.distortion"} element is the same dimension
+as the map. The table element is also updated to ensure the statistics
+are correct for the reduced subset of lines.
+
+\subsection{Combining maps}
+\label{sec:comb}
+
+Over the period of time that I have been involved in linkage map
+construction there has been many occasions where I have required a
+function that could merge R/qtl cross objects together in an
+intelligent manner. For example, the merging of two linkage maps from
+the same population that were independently built with markers from
+two different platforms. This idea was the motivation behind the \code{combineMap()}
+function in the R/ASMap package. The aim of the function was to
+merge linkage maps based on map information, readying the combined
+linkage groups for reconstruction through an efficient linkage map
+construction process such as \code{mstmap.cross()}.
+<<comb1, eval = FALSE>>=
+combineMap(..., id = "Genotype", keep.all = TRUE)
+@
+The function takes an unlimited number of maps through the \code{...}
+argument. The linkage maps must all have the same cross class
+structure and contain the same genotype identifier \code{id}. At the
+current stage of writing this vignette the function required unique
+maker names across all linkage maps. This is expected to be relaxed at
+a later date so linkage maps that share markers, such as nested
+association mapping populations, can be merged effectively.
+
+The merging of the maps happens intelligently using several
+components of the map. Firstly the linkage maps are merged based on
+commonality between the genotypes. If \code{keep.all = TRUE} the new
+combined linkage map is ``padded out'' with missing values where
+genotypes are not shared. If \code{keep.all= FALSE} the combined
+map is reduced to genotypes that are shared among all linkage
+maps. Secondly, if linkage group names are shared between maps then
+the markers from the shared linkage groups are merged. To exemplify
+its use a duplicate of \code{mapDH} is made and 10 linkage group names
+have been altered, with the marker names inside each of the linkage
+groups also altered to ensure they are unique.
+
+<<comb2,eval=TRUE,prompt=TRUE>>=
+mapDH1 <- mapDH
+names(mapDH1$geno)[5:14] <- paste("L",1:10, sep = "")
+mapDH1$geno <- lapply(mapDH1$geno, function(el){
+  names(el$map) <- dimnames(el$data)[[2]] <- paste(names(el$map), "A", sep = "")
+  el})
+mapDHc <- combineMap(mapDH, mapDH1)
+nmar(mapDHc)
+@
+The resulting combined map includes a combined marker set for the
+linkage groups that shared the same name and distinct linkage groups
+for unshared names. Again, note the function only merges the linkage
+maps and does not reconstruct the final combined linkage map.
+
+The advantages of this function may not be obvious at a first
+glance. If an attempt is made to completely reconstruct the
+super set of linkage maps, rather than combine them first, the identification of linkage groups
+is lost. This function serves to preserve the important identity
+of linkage groups. More examples of its use in common map construction
+procedures will be explored in section chapter \ref{sec:aui} of the
+next chapter.
+
+\chapter{Worked example}
+\label{chap:work}
+
+This chapter involves the complete linkage map construction process
+for a barley Backcross population that contains 3024 markers genotyped
+on 326 individuals in an unconstructed marker set formatted as an R/qtl object with class
+\code{"bc"}. The data is available from the R/ASMap package by typing
+<<ex1, eval = FALSE>>=
+data(mapBCu, package = "ASMap")
+@
+
+\section{Pre-construction}
+
+The construction of a linkage map does not usually just involve
+applying a construction algorithm to a supplied set of genetic marker
+data. It is always prudent to go through a pre-construction checklist
+to ensure that the best quality genotypes/markers are being used to
+construct the linkage map.
+
+A non-exhaustive ordered checklist for an unconstructed marker set could be
+\begin{enumerate}
+ \item Check missing allele scores across markers for each genotype
+   as well as across genotypes for each marker. Markers or genotypes
+   with a high proportion of missing information could indicate
+   problems with the physical genotyping.
+ \item Check for genetic clones or individuals that have
+   a high proportion of matching allelic information between them.
+\item Check markers for excessive segregation distortion. Highly
+   distorted markers may not map to unique locations.
+ \item Check markers for switched alleles. These markers will not
+  cluster or link well with other markers during the construction
+  process and it is therefore preferred to repair their alignment before
+  proceeding.
+ \item Check for co-locating markers. For large linkage maps it would
+   be more computationally efficient from a construction standpoint to
+   temporarily omit markers that are co-located with other markers.
+\end{enumerate}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width = 16cm]{missBCu}
+\caption{Plot of the missing allele scores for the unconstructed map mapBCu}
+\label{fig:miss1}
+\end{figure}
+
+R/qtl provides a very simple graphical tool for checking the structure of
+missing allele score across the genotypes and the markers.
+
+<<ex3,eval=FALSE,echo=TRUE,prompt=TRUE>>=
+plot.missing(mapBCu)
+@
+
+Figure \ref{fig:miss1} shows the resulting plot for this command. The
+darkest lines on the plot indicate there are some genotypes with large
+amounts of missing data. This could indicate poor physical genotyping
+of these lines and they should be removed before proceeding. The plot
+also reveals the markers have a large number of typed allele
+values across the range of genotypes. The R/ASMap function
+\code{statGen()} can be used to identify the genotypes with a
+certain number of missing values. These genotypes are then omitted using
+the usual functions available in R/qtl.
+
+<<ex4,echo=TRUE,prompt=TRUE>>=
+sg <- statGen(mapBCu, bychr = FALSE, stat.type = "miss")
+mapBC1 <- subset(mapBCu, ind = sg$miss < 1600)
+@
+
+From a map construction point of view, highly related individuals can enhance segregation
+distortion of markers. It is therefore wise to determine a course of
+action such as removal of individuals or the creation of consensus genotypes before proceeding
+with any further pre-construction diagnostics. The R/ASMap function
+\code{genClones()} discussed in section \ref{sec:genc} can be used to identify and report genetic clones.
+<<ex5,eval=TRUE,echo=TRUE,prompt=TRUE>>=
+gc <- genClones(mapBC1, tol = 0.95)
+gc$cgd
+@
+The table shows 13 groups of genotypes that share a proportion of their
+alleles greater than 0.95. The supplied additional statistics show that
+the first group contains three pairs of genotypes that had matched
+pairs of alleles from 1620 markers or less. These pairs also ~ 1400
+markers where an allele was present for one genotype and missing for
+another. Based on this, there is not enough evidence to suspect these
+pairs may be clones and they are removed from the table. The
+\code{fixClones()} function can then be used to form consensus
+genotypes for the remaining groups of clones in the table.
+
+<<ex6,eval=TRUE,echo=TRUE,prompt=TRUE>>=
+cgd <- gc$cgd[-c(1,4,5),]
+mapBC2 <- fixClones(mapBC1, cgd, consensus = TRUE)
+levels(mapBC2$pheno[[1]])[grep("_", levels(mapBC2$pheno[[1]]))]
+@
+
+<<ex7,eval=FALSE,echo=TRUE,prompt=TRUE>>=
+profileMark(mapBC2, stat.type = c("seg.dist", "prop", "miss"), crit.val = "bonf", layout = c(1,4), type = "l", cex = 0.5)
+@
+
+At this juncture it is wise to check the segregation distortion
+statistics of the markers. Segregation distortion is phenomenon where the observed allelic
+frequencies at a specific locus deviate from expected allelic
+frequencies due to Mendelian genetics. It is well known that this
+distortion can occur from physical laboratorial processes or it may
+also occur in local genomic regions from underlying biological and
+genetic mechanisms \citep{lytt91}.
+
+The level of segregation distortion, the allelic proportions and the
+missing value proportion across the genome can be graphically
+represented using the marker profiling function
+\code{profileMark()} and the result is displayed in Figure \ref{fig:seg1}.
+
+Setting \code{crit.val = "bonf"} annotates the markers that have a p-value for the test of
+segregation distortion lower than the family wide bonferroni adjusted
+alpha level of 0.05/no.of.markers on each of the
+figures in each panel. Additional plotting parameters \code{layout =
+  c(1,4)}, \code{type="p"} and \code{cex = 0.5} are passed to the high
+level lattice plotting function \code{xyplot()} to provide a more
+aesthetically pleasing plot. The plot indicates there are numerous markers that are
+considered to be significantly distorted with three highly distorted
+markers. The plot also indicates that
+the missing value proportion of the markers does not exceed 20\%.
+
+\begin{figure}[t]
+<<ex8,echo=FALSE,fig.width=17,fig.height=10,warning=FALSE>>=
+profileMark(mapBC2, stat.type = c("seg.dist", "prop", "miss"), crit.val = "bonf", layout = c(1,4), type = "l", cex = 0.5)
+@
+\caption{For individual markers, the negative log10 p-value for the test of
+  segregation distortion, the proportion of each contributing allele
+  and the proportion of missing values.}
+\label{fig:seg1}
+\end{figure}
+
+The highly distorted markers can easily be dropped using
+<<ex9,eval=TRUE,echo=TRUE,prompt=TRUE>>=
+mm <- statMark(mapBC2, stat.type = "marker")$marker$AB
+mapBC3 <- drop.markers(mapBC2, c(markernames(mapBC2)[mm > 0.98],markernames(mapBC2)[mm < 0.2]))
+@
+
+Without a constructed map it is impossible to determine the origin of
+the segregation distortion. However, the blind use of distorted markers may also
+create linkage map construction problems. It may
+be more sensible to place the distorted markers aside and construct
+the map with less problematic markers. Once the linkage map is constructed the
+more problematic markers can be introduced to determine whether they
+have a useful or deleterious effect on the map. The R/ASMap functions
+\code{pullCross()} and \code{pushCross()} are designed to take
+advantage of this scenario. To showcase their use in this example,
+they are also used to pull markers with 10-20\% missing values as well
+as co-located markers.
+
+<<ex10,eval=TRUE,echo=TRUE,prompt=TRUE>>=
+mapBC3 <- pullCross(mapBC3, type = "missing", pars = list(miss.thresh = 0.1))
+mapBC3 <- pullCross(mapBC3, type = "seg.distortion", pars = list(seg.thresh = "bonf"))
+mapBC3 <- pullCross(mapBC3, type = "co.located")
+names(mapBC3)
+sum(ncol(mapBC3$missing$data),ncol(mapBC3$seg.dist$data),ncol(mapBC3$co.located$data))
+@
+A total of 847 markers are removed and placed aside in their
+respective elements and the map is now constructed with the remaining 2173 markers.
+
+\section{MSTmap construction}
+
+The curated genetic marker data in \code{mapBC3} can now be constructed using the
+\code{mstmap.cross} function available in R/ASMap.
+
+<<ex11,eval=TRUE,echo=TRUE,prompt=TRUE,cache=TRUE>>=
+mapBC4 <- mstmap(mapBC3, bychr = FALSE, trace = TRUE, dist.fun = "kosambi", p.value = 1e-12)
+chrlen(mapBC4)
+@
+By setting \code{bychr = FALSE} the complete set of marker data from
+\code{mapBC3} is bulked and constructed from scratch. This
+construction involves the clustering of markers to linkage groups and
+then the optimal ordering of markers within each linkage group. An
+initial check of Figure \ref{fig:threshold}, indicates for
+a population size of 309 the \code{p.value} should be set to \code{1e-12}
+to ensure a 30cM threshold when clustering markers to linkage groups.
+The newly constructed linkage map contains 9 linkage groups each
+containing markers that are optimally ordered. The performance of the
+MSTmap construction can be checked by plotting the heat map of
+pairwise recombination fractions between markers and their pairwise
+LOD score of linkage using the R/ASMap function \code{heatMap()}
+<<ex12,eval=FALSE,echo=TRUE,prompt=TRUE>>=
+heatMap(mapBC4, lmax = 70)
+@
+As discussed in section \ref{sec:heat}, an aesthetic heat map is
+attained when the heat on the upper triangle of the plot used for
+the pairwise estimated recombination fractions matches the heat of the
+pairwise LOD scores. Figure \ref{fig:heat3} displays the heat map and
+shows this was achieved by setting \code{lmax = 70}.
+The heat map also shows consistent heat across the markers within linkage
+groups indicating strong linkage between nearby markers. The linkage
+groups appear to be very distinctly clustered.
+
+\begin{figure}[t]
+ \centering
+\includegraphics[width = 16cm]{heatmap}
+\caption{Heat map of the constructed linkage map mapBC4.}
+\label{fig:heat3}
+\end{figure}
+
+Although the heat map is indicating the construction process was
+successful it does not highlight subtle problems that may be existing
+in the constructed linkage map. As stated in section \ref{sec:prof}
+one of the key quality characteristics of a well constructed linkage
+map is an appropriate recombination rate of the the genotypes. For
+this barley Backcross population each line is considered to be
+independent with an expected recombination rate of ~ 14 across the
+genome. The current linkage map contains linkage groups that exceed the
+theoretical cutoff of 200cM indicating there may be genotypes with
+inflated recombination rates. This can easily be ascertained from the
+\code{profileGen()} function available in R/ASMap.
+
+<<ex14,eval=FALSE,echo=TRUE,prompt=TRUE>>=
+pg <- profileGen(mapBC4, bychr = FALSE, stat.type = c("xo","dxo","miss"), id = "Genotype", xo.lambda = 14, layout = c(1,3), lty = 2, cex = 0.7)
+@
+
+\begin{figure}[t]
+<<ex15,echo=FALSE,fig.width=17,fig.height=10,warning=FALSE>>=
+pg <- profileGen(mapBC4, bychr = FALSE, stat.type = c("xo","dxo","miss"), id = "Genotype", xo.lambda = 14, layout = c(1,3), lty = 2, cex = 0.7)
+@
+\caption{For individual genotypes, the number of recombinations,
+  double recombinations and missing values for mapBC4}
+\label{fig:genex1}
+\end{figure}
+
+Figure \ref{fig:genex1} show the number of recombinations, double recombination
+and missing values for each of 309 genotypes. The plot also annotates
+the genotypes that have recombination rates significantly above the expected
+recombination rate of 14. A total of seven lines have recombination
+rates above 20 and the plots also show that these lines have
+excessive missing values. To ensure the extra list elements
+\code{"co.located"}, \code{"seg.distortion"} and
+\code{"missing"} of the object are subsetted and updated appropriately, the offending
+genotypes are removed using the R/ASMap function
+\code{subsetCross()}. The linkage map is then be reconstructed.
+
+<<ex16,eval=TRUE,echo=TRUE,cache = TRUE,prompt=TRUE>>=
+mapBC5 <- subsetCross(mapBC4, ind = !pg$xo.lambda)
+mapBC6 <- mstmap(mapBC5, bychr = TRUE, dist.fun = "kosambi", trace = TRUE, p.value = 1e-12)
+chrlen(mapBC6)
+@
+
+Users can check the recombination rates of the remaining genotypes
+in the re-constructed map are now within respectable limits. As a
+result the lengths of the linkage groups have dropped
+dramatically.
+
+It is also useful to graphically display statistics of
+the markers and intervals of the current constructed linkage map. For
+example, Figure \ref{fig:pm1} shows the marker profiles of the -log10 p-value
+for the test of segregation distortion, the allele proportions and the
+number of double crossovers. It also displays the interval profile of
+the number of recombinations occurring between adjacent markers. This
+plot reveals many things that are useful for the next phase of the
+construction process.
+<<ex17,eval=FALSE,echo=TRUE,prompt=TRUE>>=
+profileMark(mapBC6, stat.type = c("seg.dist","prop","dxo","recomb"), layout = c(1,5), type = "l")
+@
+
+\begin{figure}[t]
+<<ex18,echo=FALSE,fig.width=17,fig.height=12,warning=FALSE>>=
+profileMark(mapBC6, stat.type = c("seg.dist","prop","dxo","recomb"), layout = c(1,5), type = "l")
+@
+\caption{Marker profiles of the -log10 p-value for the test of
+  segregation distortion, allele proportions and the number of double
+  of crossovers as well as the interval profile of the number of
+  recombinations between adjacent markers in mapBC6.}
+\label{fig:pm1}
+\end{figure}
+
+The plot instantly reveals the success of the map construction process
+with no more than one double crossover being found at any marker and
+very few being found in total. The plot also reveals the extent of the
+biological distortion that can occur within a linkage group. A close look at the segregation
+distortion and allele proportion plots shows the linkage group
+L.3 and the short linkage group L.5 have profiles that could be joined
+if the linkage groups were merged. In addition, L.8 and L.9 also have
+profiles that could be joined if the linkage groups were
+combined. This will be discussed in more detail in the next section.
+
+\section{Pushing back markers}
+
+In this section the markers that were originally placed aside in the
+pre-construction of the linkage map will be pushed back into the
+constructed linkage map and the map carefully re-diagnosed. To begin
+the 515 external markers that have between 10\% and 20\% missing
+values residing in the list element \code{"missing"} are pushed
+back in using \code{pushCross()}
+<<ex19,eval=TRUE,echo=TRUE,prompt=TRUE>>=
+mapBC6 <- pushCross(mapBC6, type = "missing", pars = list(miss.thresh = 0.22, max.rf = 0.3))
+@
+The parameter \code{miss.thresh = 0.22} is used to ensure that all
+markers with a threshold less 0.22 are pushed back into the linkage
+map. Note, this pushing mechanism is not re-constructing the map and
+only assigns the markers to the most suitable linkage group. At this
+point it is worth re-plotting the heatmap to check whether the push
+has been successful. In this vignette we will confine the graphic to
+linkage groups L.3, L.5, L.8 and L.9 to determine whether the extra
+markers have provided useful additional information about the possible
+merging of the groups. The resulting heat map is given in Figure \ref{fig:heat4}.
+<<ex20,eval=FALSE,echo=TRUE,prompt=TRUE>>=
+heatMap(mapBC6, chr = c("L.3","L.5","L.8","L.9"), lmax = 70)
+@
+
+\begin{figure}[t]
+<<ex21,echo=FALSE,fig.width=14,fig.height=8,warning=FALSE,cache=TRUE>>=
+heatMap(mapBC6, chr = c("L.3","L.5","L.8","L.9"), lmax = 70)
+@
+\caption{Heat map of the constructed linkage map mapBC6.}
+\label{fig:heat4}
+\end{figure}
+It is clear from the heat map that there are genuine linkages between
+L.3 and L.5 as well as L.8 and L.9. These two sets of linkage groups
+can be merged using \code{mergeCross()} and the linkage group names
+are renamed to form the optimal 7 linkage groups that are required for
+the barley genome.
+
+<<ex22,eval=TRUE,echo=TRUE,prompt=TRUE,cache=TRUE>>=
+mapBC6 <- mergeCross(mapBC6, merge = list("L.3" = c("L.3","L.5"), "L.8" = c("L.8","L.9")))
+names(mapBC6$geno) <- paste("L.", 1:7, sep = "")
+mapBC7 <- mstmap(mapBC6, bychr = TRUE, trace = TRUE, dist.fun = "kosambi", p.value = 2)
+chrlen(mapBC7)
+@
+
+As the optimal number of linkage groups have been identified the
+re-construction of the map is performed by linkage group only
+through setting the \code{p.value = 2}. At this point there is no need to
+anchor the map during construction as orientation of linkage groups
+has not been formally identified. The linkage group lengths of L.1,
+L.2 and L.4 are slightly elevated indicating excessive recombination
+across these groups. The reason for this inflation is quickly understood by checking the
+profile of the genotypes again using \code{profileGen()}
+<<ex23,eval=FALSE,echo=TRUE,prompt=TRUE>>=
+pg1 <- profileGen(mapBC7, bychr = FALSE, stat.type = c("xo","dxo","miss"), id = "Genotype", xo.lambda = 14, layout = c(1,3), lty = 2, cex = 0.7)
+@
+
+\begin{figure}[t]
+<<ex24,echo=FALSE,fig.width=17,fig.height=10,warning=FALSE>>=
+pg1 <- profileGen(mapBC7, bychr = FALSE, stat.type = c("xo","dxo","miss"), id = "Genotype", xo.lambda = 14, layout = c(1,3), lty = 2, cex = 0.7)
+@
+\caption{For individual genotypes, the number of recombinations,
+  double recombinations and missing values for mapBC7.}
+\label{fig:genex2}
+\end{figure}
+
+Figure \ref{fig:genex2} shows the genotype profiles for the 302 barley
+lines. The introduction of the markers with missing value proportions between
+10\% and 20\% into the linkage map has highlighted two more
+problematic lines that have a high proportion of missing values across
+the genome. Again, these should be removed using
+\code{subsetCross()} and the map reconstructed.
+<<ex25,eval=TRUE,echo=TRUE,cache = TRUE,prompt=TRUE>>=
+mapBC8 <- subsetCross(mapBC7, ind = !pg1$xo.lambda)
+mapBC9 <- mstmap(mapBC8, bychr = TRUE, dist.fun = "kosambi", trace = TRUE, p.value = 2)
+chrlen(mapBC9)
+@
+The removal of these two lines will not have a deleterious effect on the number
+of linkage groups and therefore the linkage map should be
+reconstructed by linkage group only. The length of most linkage groups
+has now been appreciably reduced. Figure \ref{fig:pm2} displays the segregation distortion
+and allele proportion profiles for the markers from using
+\code{profileMark()} again.
+<<ex26,eval=FALSE,echo=TRUE,prompt=TRUE>>=
+profileMark(mapBC9, stat.type = c("seg.dist","prop","dxo","recomb"), layout = c(1,5), type = "l")
+@
+
+\begin{figure}[t]
+<<ex27,echo=FALSE,fig.width=17,fig.height=10,warning=FALSE>>=
+profileMark(mapBC9, stat.type = c("seg.dist","prop"), layout = c(1,3), type = "l")
+@
+\caption{Marker profiles of the -log10 p-value for the test of
+  segregation distortion, allele proportions for mapBC9}
+\label{fig:pm2}
+\end{figure}
+
+The plot indicates a spike of segregation distortion on L.2 that does
+not appear to be biological and should be removed. The plot also
+indicates the significant distortion regions on L.3, L.6 and
+L.7 indicating some of the markers with missing value proportions
+between 10\% and 20\% pushed back into the linkage map also had some
+degree of segregation distortion. The marker positions on the x-axis of the
+plot suggests these regions are sparse. The 295 external markers in the
+list element \code{"seg.distortion"} may hold the key to this
+sparsity and are pushed back to determine their effect on the linkage
+map.
+<<ex28,eval=TRUE,echo=TRUE,prompt=TRUE>>=
+dm <- markernames(mapBC9, "L.2")[statMark(mapBC9, chr = "L.2", stat.type = "marker")$marker$neglog10P > 6]
+mapBC10 <- drop.markers(mapBC9, dm)
+mapBC11 <- pushCross(mapBC10, type = "seg.distortion", pars = list(seg.ratio = "70:30"))
+mapBC12 <- mstmap(mapBC11, bychr = TRUE, trace = TRUE, dist.fun = "kosambi", p.value = 2)
+round(chrlen(mapBC12) - chrlen(mapBC9), 5)
+nmar(mapBC12) - nmar(mapBC10)
+@
+After checking the table element of the \code{"seg.distortion"}
+element, a 70:30 distortion ratio was chosen to ensure all the
+markers were pushed back into the linkage map. After the pushing was
+complete, the linkage map was reconstructed and linkage group lengths
+only changed negligibly from the previous version of the map with distorted markers
+removed. This suggests the extra markers have been inserted
+successfully with nearly all distorted markers being pushed into
+L.3, L.6 and L.7.
+
+To finalise the map the 39 co-locating markers residing in the
+\code{"co.located"} list element of the object are pushed back into
+the linkage map and placed adjacent to the markers they were co-located
+with. Note that all external co-located markers have an immediate linkage group assignation.
+<<ex29,eval=TRUE,echo=TRUE,prompt=TRUE>>=
+mapBC <- pushCross(mapBC12, type = "co.located")
+names(mapBC)
+@
+A check of the final structure of the object shows the extra
+list elements have been removed and only the \code{"pheno"}
+and \code{"geno"} list elements remain. Users can graphically plot the
+genotypes and marker/interval profiles to diagnostically assess the
+final linkage map. These plots have been omitted from this report for
+brevity. The final linkage map has statistics given in Table \ref{tab:stats}.
+
+\small{
+\begin{table}[t]
+\centering
+\caption{Table of statistics for the final linkage map, mapBC}
+\begin{tabular}{lrrrrrrrrr}
+  \hline
+ & L.1 & L.2 & L.3 & L.4 & L.5 & L.6 & L.7 & Total & Ave. \\
+  \hline
+  \hline
+No. of markers & 681 & 593 & 335 & 679 & 233 & 279 & 219 & 3019 & 431 \\
+Lengths & 225.9 & 224.4 & 157.6 & 205.5 & 195.1 & 145.5 & 142.9 & 1297.2 & 185.3 \\
+Ave. interval & 0.33 & 0.39 & 0.48 & 0.31 & 0.84 & 0.53 & 0.66 &  & 0.51 \\
+   \hline
+\end{tabular}
+\label{tab:stats}
+\end{table}}
+
+\section{Post-construction linkage map development}
+\label{sec:aui}
+
+After a linkage map is constructed it is very common to attempt
+linkage map development through the insertion of additional
+markers. This may be a simple fine mapping exercise
+where the linkage group is known in advance for an additional set of markers or
+it may be a more complex tasks such as the insertion of markers
+from an older linkage map into a newly constructed map. The procedure
+to successfully achieve either of these can be problematic. For
+example, there may need to be external manipulation, such as removal of
+non-concurrent genotypes, before the additional set of markers
+is inserted into the map. Additionally, in some cases, the
+linkage map may need to be partially or completely reconstructed. An
+unfortunate result of this reconstruction process is the possible loss of known
+linkage group identities.
+
+R/ASMap provides functionality to insert additional markers
+into an established linkage map without losing important
+linkage group identification. The methods applied in this section
+assume the additional markers, as well as the constructed linkage
+map, are R/qtl cross objects of the same class. The methods are best described by
+presenting several examples that mimic common post-construction
+linkage map development tasks. In these examples
+additional markers will be obtained by randomly selecting markers
+from the final linkage map, \code{mapBC}.
+<<add1,eval=TRUE,echo=TRUE,prompt=TRUE>>=
+set.seed(123)
+add1 <- drop.markers(mapBC, markernames(mapBC)[sample(1:3019, 2700, replace = FALSE)])
+mapBCs <- drop.markers(mapBC, markernames(add1))
+add3 <- add2 <- add1
+add2 <- subset(add2, chr = "L.1")
+add3$geno[[1]]$data <- pull.geno(add1)
+add3$geno[[1]]$map <- 1:ncol(add3$geno[[1]]$data)
+names(add3$geno[[1]]$map) <- markernames(add1)
+names(add3$geno)[1] <- "ALL"
+add3 <- subset(add3, chr = "ALL")
+@
+
+\subsection{Combining two linkage maps of the same population}
+
+Many populations that are currently being researched have been
+genotyped on multiple platforms and separate maps constructed for one
+or both of the populations. For example, a linkage map may have been
+constructed from markers genotyped on the new Illumina 90K SNP (Single
+Nucleotide Polymorphism) array but the population may also have a
+legacy linkage map constructed from markers stemming from SSRs (Single Sequence Repeats) or DaRTs
+(Diversity Array Technology). The \code{add1} R/qtl object mimics an
+older map of \code{mapBC} with 319 markers spanning the seven linkage
+groups. As the linkage groups are known between maps there is only a
+requirement to combine the maps in a sensible manner and
+reconstruct. This can be done efficiently in R/ASMap without external
+manipulation and loss of linkage group information.
+<<add2,eval=TRUE,echo=TRUE,prompt=TRUE,cache=TRUE>>=
+add1 <- subset(add1, ind = 2:300)
+full1 <- combineMap(mapBCs, add1, keep.all = TRUE)
+full1 <- mstmap(full1, bychr = TRUE, trace = TRUE, anchor = TRUE, p.value = 2)
+@
+This example is a classic use of the R/ASMap function \code{combineMap()} described in section
+\ref{sec:comb}. The two maps are first
+merged on their matching genotypes and, as the first genotype in
+\code{add1} has been removed, there are missing cells placed in
+the first genotype of \code{mapBCs} for the markers in
+\code{add1}. The \code{combineMap()} function also understands that
+both linkage maps share common linkage group names and places the
+markers from shared linkage groups together. The map is then
+reconstructed by linkage group using \code{p.value = 2} in
+the \code{mstmap.cross()} call, ensuring the important
+identity of linkage groups are retained. In addition, setting \code{anchor = TRUE}
+will ensure that the orientation of the larger linkage map
+\code{mapBCs} is preserved.
+
+\subsection{Fine mapping}
+
+In marker assisted selection breeding programmes it is common to
+increase the density of markers in a specific genomic region of a
+linkage group for the purpose of more accurately identifying the
+position of quantitative trait loci (QTL). This is known as fine
+mapping. For example, the \code{add2} object contains only
+markers from the L.1 linkage group of \code{mapBCs}. When the linkage
+group for the additional markers is known in advance and matches a
+linkage group in the constructed map, the insertion of
+the new markers is very similar to the previous section.
+<<add3,eval=TRUE,echo=TRUE,prompt=TRUE,cache=TRUE>>=
+add2 <- subset(add2, ind = 2:300)
+full2 <- combineMap(mapBCs, add2, keep.all = TRUE)
+full2 <- mstmap(full2, chr = "L.1", bychr = TRUE, trace = TRUE, anchor = TRUE, p.value = 2)
+@
+Again, the removal of the first genotype of \code{add2} will cause
+missing values to be added in the first genotype of \code{full2} for
+the markers that were in \code{add2}. The \code{mstmap.cross()} call
+is also similar to the previous section with the exception that only
+the first linkage group L.1 needs optimal ordering.
+
+\subsection{Unknown linkage groups}
+\label{sec:pm}
+
+There may be occasions when the linkage group identification of the
+additional markers is not known in advance. For example, an incomplete
+set of markers was used to construct the map or a secondary set of
+markers is available that come from an unconstructed linkage map.
+These additional markers can be pushed into a constructed linkage
+map efficiently using the functions available in R/ASMap. In this
+example the \code{add3} R/qtl object consists of one linkage group
+called \code{ALL} that contains all the markers that spanned the seven
+linkage groups in \code{add1}.
+<<add4,eval=TRUE,echo=TRUE,prompt=TRUE,cache=TRUE>>=
+add3 <- subset(add3, ind = 2:300)
+full3 <- combineMap(mapBCs, add3, keep.all = TRUE)
+full3 <- pushCross(full3, type = "unlinked", unlinked.chr = "ALL")
+full3 <- mstmap(full3, bychr = TRUE, trace = TRUE, anchor = TRUE, p.value = 2)
+@
+Again, \code{combineMap()} is used to merge the linkage maps to avoid the
+hassle of having to manually match the dimensions of the marker sets.
+The R/ASMap function \code{pushCross()} can then be used to
+push the additional markers into the constructed linkage map. By
+choosing the marker type argument \code{type = "unlinked"} and
+providing the \code{unlinked.chr = "ALL"} the function recognises that
+the markers require pushing back into the remaining linkage groups of
+\code{full3}. Again, the \code{mstmap.cross()} call only requires
+optimal ordering of the markers within linkage groups.
+
+\chapter{Aspects of the MSTmap algorithm}
+\label{chap:asp}
+
+This chapter presents miscellaneous additional information associated
+within the MSTmap algorithm and the arguments supplied to the R/ASMap
+functions \code{mstmap.data.frame()} and \code{mstmap.cross()}.
+
+\section{MSTmap and distance calculations}
+
+After close scrutiny and experience with the MSTmap algorithm it
+appears there may be circumstances where the algorithm produces
+inflated genetic distances. This is especially prevalent when the
+linkage map being constructed contains genotypes with many missing
+values. In these cases the constructed linkage map is likely to contain
+runs of missing values for these genotypes. For example, this phenomenon
+can be seen in Figure \ref{fig:dist1} (the dark lines) for the initial
+constructed linkage map \code{mapBC4} of the previous chapter. Seven
+of these genotypes were eventually removed for having excess
+recombinations across the genome but their missing value structure has
+also contributed substantially to the inflated distances of the
+linkage groups.
+<<dist1,eval=FALSE,echo=TRUE,prompt=TRUE>>=
+plot.missing(mapBC4)
+@
+
+\begin{figure}[t]
+\centering
+\includegraphics[width = 16cm]{missBC4}
+\caption{Plot of the missing allele scores for the constructed map mapBC4}
+\label{fig:dist1}
+\end{figure}
+
+This problem is easier to explain by presenting various outputs of the
+linkage map \code{mapBC4}. Firstly, the map is reconstructed but with
+\code{return.imputed = TRUE} added to the call to ensure the imputed
+marker probability matrix for the linkage groups is added to the
+returned cross object.
+<<dist3,eval=TRUE,echo=TRUE,prompt=TRUE,cache=TRUE>>=
+mapBC4i <- mstmap(mapBC3, bychr = FALSE, trace = TRUE, dist.fun = "kosambi", p.value = 1e-12, return.imputed = TRUE)
+mapBC4i$geno[[1]]$map[1:14]
+mapBC4i$imputed.geno[[1]]$map[1:5]
+@
+To exemplify the problem the markers on L.1 are used. The first 14
+markers of L.1 contain the first two co-locating sets of
+markers and have been calculated to be 0.76 cM apart. The imputed map
+for L.1 is a reduced version of the linkage map from L.1 that contains all
+unique markers and one member from each co-locating set. Markers
+mark246 and mark391 have been chosen as the members for the first two
+co-locating sets. It can be quickly calculated how many pairs of
+alleles are observed between the two markers and how many observed
+recombinations there were across these pairs.
+<<dist4,echo = TRUE,prompt=TRUE>>=
+len <- apply(mapBC4$geno[[1]]$data[,c(1,5)], 1, function(el)
+             length(el[!is.na(el)]))
+length(len[len > 1])
+bca <- apply(mapBC4i$geno[[1]]$data[,c(1,5)], 1, function(el){
+    el <- el[!is.na(el)]
+    sum(abs(diff(el)))})
+bca[bca > 0]
+@
+One genuine recombination from 281 observed pairs creates a 0.35
+cM distance between the markers, falling short of 0.76 cM. The reason
+behind this shortfall becomes clear when the imputed marker
+probability data is printed for the first five markers of the seven
+genotypes with excessive missing values
+<<dist5,echo=TRUE,prompt=TRUE>>=
+mapBC4i$imputed.geno[[1]]$data[pg$xo.lambda,1:5]
+@
+Genotype BC061 has an extended set of missing values across the first
+four co-located sets of markers. Using the distance formula in the
+M-step of the EM algorithm given in (\ref{eq:dist}), the estimates of
+probability for the two missing allele scores in the first two markers
+for BC061 adds another 1/2 a recombination or $~$0.15 cM distance between
+the markers. Genotype BC061 will add a similar distance
+between the second and third marker set and the third and fourth
+marker sets due the imputed probabilities being close to 0.5 for the run of missing
+values across the four co-located sets. If there are multiple runs of
+missing values for genotypes, these small distances accumulate quickly
+and linkage group lengths appear inflated.
+
+There are two solutions to this problem. The obvious first solution is
+to remove the genotypes regardless off their usefulness in the genetic
+map. The second less obvious solution is to use the R/ASMap function
+\code{quickEst()} to re-estimate the genetic distances (see section
+\ref{sec:est}). As the function imputes the missing values in the
+linkage map with actual allele calls it circumvents the uncertain probabilities
+that MSTmap uses to form its genetic distances.
+<<dist6,echo=TRUE,prompt=TRUE>>=
+mapBC4e <- quickEst(mapBC4)
+chrlen(mapBC4)
+chrlen(mapBC4e)
+@
+The difference in the lengths of the linkage groups for the two
+linkage maps is dramatic with an 80+ cM reduction in L.1 and 60+ cM
+reductions in L.2 and L.4.
+
+In summary, if a linkage map is constructed with genotypes containing
+many missing values then the missing value structure of the
+constructed object should be checked. If runs of missing values are
+detected then the lengths of linkage groups are most likely
+inflated and estimation of genetic distances should be checked using \code{quickEst()}.
+
+\section{Use of the argument \texttt{mvest.bc}}
+
+The inflated distances caused by excessive missing values across the
+marker set for a subset of genotypes can be further exacerbated by an injudicious use of the
+argument \code{mvest.bc} in the R/ASMap construction functions
+\code{mstmap.data.frame()} and \code{mstmap.cross()}.
+
+To understand how this is possible, there is
+a requirement to understand how the MSTmap algorithm determines
+co-segregating or co-locating markers. In the initial stages of the
+algorithm two markers are deemed co-located if the pairwise
+distance is zero with this calculation occurring only from
+pairs of alleles that are observed in both markers. For each
+co-locating set a marker is chosen as the representative marker and
+the remaining markers in the set are placed aside with a knowledge of
+their direct link to the representative marker. The linkage map is
+then constructed with only the representative markers. This scenario
+is equivalent to setting \code{mvest.bc = FALSE}.
+
+If \code{mvest.bc = TRUE} then missing
+allele calls contained in each marker are estimated to have probability 0.5 of being an A
+allele \textit{before} clustering of the markers has occurred. This has an
+obvious advantage of involving the complete set of genotypes when
+calculating pairwise information between markers. However, for
+any two markers where there is some proportion of unobserved allele pairs,
+the pairwise distance between the markers becomes non-zero and they are deemed
+to be not co-located. This results in a larger set of markers being
+involved in the linkage map construction with the original
+missing allele calls being continually imputed as part of the marker
+ordering algorithm (see section \ref{sec:ord}). For situations where there is an
+increased number of missing values across a set of markers for a
+subset of genotypes, the cumulative distances between adjacent markers
+quickly increases.
+
+To illustrate this problem, the barley backcross marker set
+\code{mapBC3} is constructed using the function \code{mstmap.cross()} with the
+argument \code{mvest.bc = TRUE}.
+<<mvest1,eval=TRUE,echo=TRUE,prompt=TRUE,cache=TRUE>>=
+mapBC4a <- mstmap(mapBC3, bychr = FALSE, trace = TRUE, dist.fun = "kosambi", p.value = 1e-12, mvest.bc = TRUE)
+nmar(mapBC4)
+@
+The clustering algorithm produces an identical number of linkage
+groups with the same markers within each linkage group. However, the
+number of uniquely located markers within each linkage group increases
+dramatically between \code{mapBC4} and \code{mapBC4a}. This increase
+in the number of uniquely located markers also increases the length of each
+linkage group.
+<<mvest2,eval=TRUE,echo=TRUE,prompt=TRUE>>=
+sapply(mapBC4a$geno, function(el) length(unique(round(el$map, 4)))) - sapply(mapBC4$geno, function(el) length(unique(round(el$map, 4))))
+chrlen(mapBC4a)
+@
+Again, the solution to this problem is to use the efficient distance estimation
+function \code{quickEst()} to provide an estimate of the genetic
+distances of the markers in each of the linkage groups.
+<<mvest3,eval=TRUE,echo=TRUE,prompt=TRUE>>=
+mapBC4b <- quickEst(mapBC4a)
+chrlen(mapBC4b)
+@
+
+\section{Use of the argument \texttt{detectBadData}}
+
+The last two sections discussed constructed linkage map scenarios
+where the genetic distance calculations became inflated due to an
+excessive number of missing values being present for a subset of
+genotypes in the marker set. If this situation is not present and the
+linkage group distances are inflated then it is most likely caused by
+an increased recombination rate in some or all of the genotypes. This
+is easily checked using the appropriate call to \code{statGen()} or
+\code{profileGen()} after an initial linkage map is constructed. If
+there is an increased recombination rate in a small subset of genotypes they
+can be removed before further linkage map construction. If there
+appears to be a general inflation in the recombination rate across a
+large set or all of the genotypes then there may be genotyping errors
+that have occurred in the physical process used to obtain the allele
+calls for the markers. Consequently, reduction of the linkage group
+lengths becomes more problematic.
+
+To circumvent this issue, the construction functions \code{mstmap.data.frame()} and
+\code{mstmap.cross()} in the R/ASMap package contain an argument
+called \code{detectBadData} that, if set to \code{TRUE}, instructs
+MSTmap to detect suspiciously called alleles (see equation \ref{eq:err} of section
+\ref{sec:ord} for more details). If suspicious allele calls are found they are set to missing
+and imputed using the EM algorithm detailed in section
+\ref{sec:ord}. This creates a reduction in the number
+of recombinations between adjacent markers. The consequence of this is
+a possibly dramatic reduction in the distances between adjacent
+markers and overall linkage group lengths.
+
+To exemplify the use of \code{detectBadData}, simulated genotyping
+errors are added to the final barley backcross linkage map
+\code{mapBC} by randomly switching singular allele calls in the data
+for each linkage group.
+<<dbd1,eval=TRUE,echo=TRUE,prompt=TRUE>>=
+mapBCd <- mapBC
+mapBCd$geno <- lapply(mapBCd$geno, function(el){
+    ns <- sample(1:ncol(el$data), ncol(el$data)/2, replace = TRUE)
+    ns <- cbind(sample(1:nrow(el$data), ncol(el$data)/2, replace = TRUE), ns)
+    el$data[ns] <- abs(1 - el$data[ns])
+    el$data[el$data == 0] <- 2
+    el})
+mapBCd <- quickEst(mapBCd)
+chrlen(mapBCd)
+@
+The function \code{quickEst()} will not ignore the genotyping errors
+that have been added to the data and linkage groups will appear
+inflated.
+<<dbd2,eval=TRUE,echo=TRUE,prompt=TRUE,cache=TRUE>>=
+mapBCda <- mstmap(mapBCd, bychr = TRUE, trace = TRUE, dist.fun = "kosambi", p.value = 1e-12, detectBadData = TRUE)
+chrlen(mapBCda)
+@
+A judicious use of the \code{detectBadData = TRUE} in the
+\code{mstmap.cross()} call instructs the algorithm to detect and
+ignore these errors during the marker ordering algorithm of
+MSTmap. This deflates the linkage group distances to similar lengths
+as the linkage groups lengths of the final linkage map \code{mapBC}.
+
+\addcontentsline{toc}{chapter}{Bibliography}
+\bibliographystyle{biometrika}
+\bibliography{ref}
+
+%% insert bib file
+
+\end{document}
+
