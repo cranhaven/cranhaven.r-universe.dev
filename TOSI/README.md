@@ -1,0 +1,2 @@
+# TOSI
+This package provides a general framework of two directional simultaneous inference(TOSI) for high-dimensional  as well as the fixed dimensional models with manifest variable or latent variable structure, such as high-dimensional mean models, high-dimensional sparse regression models, and high-dimensional latent factor models.
