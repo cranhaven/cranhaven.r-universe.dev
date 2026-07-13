@@ -1,0 +1,258 @@
+---
+title: "03 Caching `SpaDES` simulations"
+author:
+  - "Eliot J. B. McIntire"
+date: '`r strftime(Sys.Date(), "%B %d %Y")`'
+output:
+  rmarkdown::html_vignette:
+    fig_width: 7
+    number_sections: yes
+    self_contained: yes
+    toc: yes
+vignette: >
+  %\VignetteIndexEntry{03 Caching `SpaDES` simulations}
+  %\VignetteEncoding{UTF-8}
+  %\VignetteEngine{knitr::rmarkdown}
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+# Packages used in this vignette
+vignette_pkgs <- c("knitr", "RColorBrewer", "SpaDES.tools")
+
+# Check availability without attaching
+has_pkgs <- function(pkgs) all(vapply(pkgs, requireNamespace, quietly = TRUE, FUN.VALUE = logical(1)))
+
+# CRAN sets NOT_CRAN = "false"; devtools sets it to "true" locally
+not_cran <- identical(Sys.getenv("NOT_CRAN"), "true")
+
+# Evaluate chunks only if NOT_CRAN and all vignette packages are available
+knitr::opts_chunk$set(
+  eval = not_cran && has_pkgs(vignette_pkgs),
+  message = FALSE,
+  warning = FALSE
+)
+
+options(
+  spades.moduleCodeChecks = FALSE,
+  spades.useRequire = FALSE
+)
+
+```
+
+
+As part of a reproducible work flow, caching of various function calls is a critical component.
+Down the road, it is likely that an entire work flow from raw data to publication, decision support, report writing, presentation building etc., could be built and be reproducible anywhere, on demand.
+The `reproducible::Cache` function is built to work with any R function. 
+However, it becomes very powerful in a `SpaDES` context because we can build large, powerful applications that are transparent and tied to the raw data that may be *many* conceptual steps upstream in the workflow. 
+To do this, we have built several customizations within the `SpaDES` package. 
+Important to this is dealing correctly with the `simList`, which is an object that has slot that is an environment. 
+
+# Caching as part of `SpaDES`
+
+Some of the details of the `simList`-specific features of this `Cache` function include:
+
+- The function converts all elements that have an environment as part of their attributes into a format that has no unique environment attribute, using `format` if a function, and `as.list` in the case of the `simList` environment.
+
+- When used within `SpaDES` modules, `Cache` (capital C) does not require that the argument `cachePath` be specified.
+`Cache` will use the `cachePath` argument from a call to `cachePath(sim)`, taking the `sim` from the call stack.
+Similarly, if no `cachePath` argument is specified, then it will use `getOption("reproducible.cachePath")`.
+
+In a `SpaDES` context, there are several levels of caching that can be used as part of a reproducible workflow.
+Each level can be used to a modeller's advantage; and, all can be -- and are often -- used concurrently.
+
+## At the `spades` level
+
+And entire call to `spades` can be cached.
+This will have the effect of eliminating any stochasticity in the model as the output will simply be the cached version of the `simList`.
+This is likely most useful in situations where reproducibility is more important than "new" stochasticity (*e.g.*, building decision support systems, apps, final version of a manuscript).
+
+```{r examples, echo=TRUE, message=FALSE}
+library(terra)
+library(reproducible)
+library(SpaDES.core)
+
+mySim <- simInit(
+  times = list(start = 0.0, end = 3.0),
+  params = list(
+    .globals = list(stackName = "landscape", burnStats = "testStats"),
+    randomLandscapes = list(.plotInitialTime = NA),
+    fireSpread = list(.plotInitialTime = NA)
+  ),
+  modules = list("randomLandscapes", "fireSpread"),
+  paths = list(modulePath = getSampleModules(tempdir()))
+)
+```
+
+This functionality can be achieved within a `spades` call.
+
+```{r spades}
+# compare caching ... run once to create cache
+system.time({
+  outSim <- spades(Copy(mySim), cache = TRUE, notOlderThan = Sys.time())
+})
+```
+
+Note that if there were any visualizations (here we turned them off with `.plotInitialTime = NA` above) they will happen the first time through, but not the cached times.
+
+```{r spades-cached}
+# faster 2nd time
+system.time({
+  outSimCached <- spades(Copy(mySim), cache = TRUE)
+})
+all.equal(outSim, outSimCached)
+```
+
+## Module-level caching
+
+If the parameter `.useCache` in the module's metadata is set to `TRUE`, then *every* event in the module will be cached.
+That means that every time that module is called from within a `spades()` call, `Cache` will be called. 
+Only the objects inside the `simList` that correspond to the `inputObjects` or the `outputObjects` from the module metadata will be assessed for caching. 
+For general use, module-level caching would be mostly useful for modules that have no stochasticity, such as data-preparation modules, GIS modules etc.
+
+In this example, we will use the cache on the `randomLandscapes` module.
+This means that each subsequent call to spades will result in identical outputs from the `randomLandscapes` module (only!).
+This would be useful when only one random landscape is needed simply for trying something out, or putting into production code (*e.g.*, publication, decision support, etc.).
+
+```{r module-level, echo=TRUE}
+# Module-level
+params(mySim)$randomLandscapes$.useCache <- TRUE
+system.time({
+  randomSim <- spades(Copy(mySim), .plotInitialTime = NA,
+                      notOlderThan = Sys.time(), debug = TRUE)
+})
+
+# faster the second time
+system.time({
+  randomSimCached <- spades(Copy(mySim), .plotInitialTime = NA, debug = TRUE)
+})
+```
+
+Test that only layers produced in `randomLandscapes` are identical, not `fireSpread`.
+
+```{r test-module-level}
+layers <- list("DEM", "forestAge", "habitatQuality", "percentPine", "Fires")
+same <- lapply(layers, function(l) {
+  identical(randomSim$landscape[[l]], randomSimCached$landscape[[l]])
+})
+names(same) <- layers
+print(same) # Fires is not same because all non-init events in fireSpread are not cached
+```
+
+## Event-level caching
+
+If the parameter `.useCache` in the module's metadata is set to a *character or character vector*, then that or those event(s), identified by their name, will be cached.
+That means that every time the event is called from within a `spades` call, `Cache` will be called.
+Only the objects inside the `simList` that correspond to the `inputObjects` or the `outputObjects` as defined in the module metadata  will be assessed for caching inputs or outputs, respectively.
+The fact that all and only the named `inputObjects` and `outputObjects` are cached and returned may be inefficient (*i.e.*, it may cache more objects than are necessary) for individual events.
+
+Similar to module-level caching, event-level caching would be mostly useful for events that have no stochasticity, such as data-preparation events, GIS events etc.
+Here, we don't change the module-level caching for `randomLandscapes`, but we add to it a cache for only the "init" event for `fireSpread`.
+
+```{r event-level, echo=TRUE}
+params(mySim)$fireSpread$.useCache <- "init"
+system.time({
+  randomSim <- spades(Copy(mySim), .plotInitialTime = NA,
+                      notOlderThan = Sys.time(), debug = TRUE)
+})
+
+# faster the second time
+system.time({
+  randomSimCached <- spades(Copy(mySim), .plotInitialTime = NA, debug = TRUE)
+})
+```
+
+## Function-level caching
+
+Function-level caching is provided by `reproducible::Cache()` and is
+documented there; see `?reproducible::Cache` for the full set of arguments
+and behaviour. Any call can be wrapped in `Cache()` so that re-running it
+returns the stored result instead of recomputing:
+
+```{r function-level, echo=TRUE}
+obj <- system.time({rnorm(3e6) |> mean()} |> Cache())
+```
+
+## Working with the Cache manually
+
+Since the cache is simply a `DBI` database table, all `DBI` functions will work as is.
+In addition, there are several helpers in the `reproducible` package, including `showCache`, `keepCache` and `clearCache`, and the more advanced `createCache`, `loadFromCache`, `rmFromCache`, and `saveToCache` that may be useful.
+Also, one can access cached items manually (rather than simply rerunning the same `Cache` function again).
+
+```{r manual-cache}
+## cache something, then retrieve it manually rather than re-running Cache()
+Cache(rnorm(10), cachePath = cachePath(mySim), userTags = "manualExample")
+cacheDB <- showCache(mySim, userTags = "manualExample")
+loadFromCache(cacheId = cacheDB$cacheId, cachePath = cachePath(mySim))
+```
+
+# Reproducible Workflow
+
+In general, we feel that a liberal use of `Cache` will make a reusable and reproducible work flow.
+`shiny` apps can be made, taking advantage of `Cache`. 
+Indeed, much of the difficulty in managing data sets and saving them for future use, can be accommodated by caching.
+
+## Nested Caching
+
+- Imagine we have large model with many modules
+- To run this would have a nested structure with the following functions:
+
+```{r, eval=FALSE, echo=TRUE}
+simInit() --> many .inputObjects calls
+
+spades() call --> many module calls --> many event calls --> many function calls
+```
+
+Lets say we start to introduce caching to this structure.
+We start from the "inner" most functions that we could imaging Caching would be useful. Lets say there are some GIS operations, like `raster::projectRaster`, which operates on an input shapefile.
+We can Cache the `projectRaster` call to make this much faster, since it will always be the same result for a given input raster. 
+
+If we look back at our structure above, we see that we still have LOTS of places that are not Cached.
+That means that the `spades()` call will still spawn many module calls, and many event calls, just to get to the one `Cache(projectRaster)` call which is cached.
+This function will likely be called many times.
+This is good, but **`Cache` does take some time**.
+So, even if `Cache(projectRaster)` takes only 0.02 seconds, calling it hundreds of times means maybe 4 seconds.
+If we are doing this for many functions, then this will be too slow for some purposes. 
+
+We can start putting `Cache` all up the sequence of calls.
+Unfortunately, the way we use Cache at each of these levels is a bit different, so we need a slightly different approach for each. 
+
+#### Cache the `spades` call 
+
+`spades(cache = TRUE)`
+
+This will cache the `spades` call, causing stochasticity/randomness to be frozen.
+
+#### Cache a whole module
+
+Pass `.useCache = TRUE` as a parameter to the module, during the `simInit`
+
+Some modules are inherently non-random, such as GIS modules, or parameter fitting statistical modules.
+We expect these to be identical results each time, so we can safely cache the entire module.
+
+```{r, eval=FALSE, echo=TRUE}
+parameters = list(
+  FireModule = list(.useCache = TRUE)
+)
+mySim <- simInit(..., params = parameters)
+mySimOut <- spades(mySim)
+```
+
+The messaging should indicate the caching is happening on every event in that module.
+
+***Note: This option REQUIRES that the metadata in inputs and outputs be exactly correct, i.e., all `inputObjects` and `outputObjects` must be correctly identified and listed in the `defineModule` metadata***
+
+***If the module is cached, and there are errors when it is run, it almost is guaranteed to be a problem with the `inputObjects` and `outputObjects` incorrectly specified.***
+
+#### Cache individual functions
+
+`Cache(<functionName>, <other arguments>)`
+
+This will allow fine scale control of individual function calls.
+
+## Data-to-decisions
+
+Once nested Caching is used all the way up to the `experiment` (see `SpaDES.experiment` package) level and even further up (e.g., if there is a `shiny` module), then even very complex models can be put into a complete workflow. 
+
+The current vision for `SpaDES` is that it will allow this type of "data to decisions" complete workflow that allows for deep, robust models, across disciplines, with easily accessible front ends, that are quick and responsive to users, yet can handle data changes, module changes, etc.
