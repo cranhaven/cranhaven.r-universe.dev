@@ -1,0 +1,1681 @@
+utils::globalVariables(c(
+  ".", "artifact", "createdDate", "deeperThan3", "differs", "fun", "hash",
+  "i.hash", "iden", "N", "tag", "tagKey", "tagValue"
+))
+
+.reproEnv <- new.env(parent = asNamespace("reproducible"))
+
+#' Saves a wide variety function call outputs to disk and optionally RAM, for recovery later
+#'
+#' @description
+#' \if{html}{\figure{lifecycle-maturing.svg}{options: alt="maturing"}}
+#'
+#' A function that can be used to wrap around other functions to cache function calls
+#' for later use. This is normally most effective when the function to cache is
+#' slow to run, yet the inputs and outputs are small. The benefit of caching, therefore,
+#' will decline when the computational time of the "first" function call is fast and/or
+#' the argument values and return objects are large. The default setting (and first
+#' call to Cache) will always save to disk. The 2nd call to the same function will return
+#' from disk, unless `options("reproducible.useMemoise" = TRUE)`, then the 2nd time
+#' will recover the object from RAM and is normally much faster (at the expense of RAM use).
+#'
+#' @details
+#'
+#' There are other similar functions in the R universe.
+#' This version of Cache has been used as part of a robust continuous workflow approach.
+#'  As a result, we have tested it with many "non-standard" R objects (e.g., `RasterLayer`,
+#' `Spat*` objects) and environments (which are always unique, so do not cache readily).
+#'
+#' This version of the `Cache` function accommodates those four special,
+#' though quite common, cases by:
+#' \enumerate{
+#'   \item converting any environments into list equivalents;
+#'   \item identifying the dispatched S4 method (including those made through
+#'         inheritance) before hashing so the correct method is being cached;
+#'   \item by hashing the linked file, rather than the raster object.
+#'         Currently, only file-backed `Raster*` or `Spat*` objects are digested
+#'         (e.g., not `ff` objects, or any other R object where the data
+#'         are on disk instead of in RAM);
+#'   \item Uses [digest::digest()]
+#'         This is used for file-backed objects as well.
+#'   \item Cache will save arguments passed by user in a hidden environment. Any
+#'         nested Cache functions will use arguments in this order: 1) actual arguments
+#'         passed at each Cache call; 2) any inherited arguments from an outer Cache
+#'         call; 3) the default values of the Cache function. See section on *Nested Caching*.
+#' }
+#'
+#' `Cache` will add a tag to the entry in the cache database called `accessed`,
+#' which will assign the time that it was accessed, either read or write.
+#' That way, cached items can be shown (using `showCache`) or removed (using
+#' `clearCache`) selectively, based on their access dates, rather than only
+#' by their creation dates. See example in [clearCache()].
+#'
+#' @section Nested Caching:
+#' Commonly, Caching is nested, i.e., an outer function is wrapped in a `Cache`
+#' function call, and one or more inner functions are also wrapped in a `Cache`
+#' function call. A user *can* always specify arguments in every Cache function
+#' call, but this can get tedious and can be prone to errors. The normal way that
+#' \R handles arguments is it takes the user passed arguments if any, and
+#' default arguments for all those that have no user passed arguments. We have inserted
+#' a middle step. The order or precedence for any given `Cache` function call is
+#' 1. user arguments, 2. inherited arguments, 3. default arguments. At this time,
+#' the top level `Cache` arguments will propagate to all inner functions unless
+#' each individual `Cache` call has other arguments specified, i.e., "middle"
+#' nested `Cache` function calls don't propagate their arguments to further "inner"
+#' `Cache` function calls.  See example.
+#'
+#' `userTags` is unique of all arguments: its values will be appended to the
+#' inherited `userTags`.
+#'
+#' @section quick:
+#' The `quick` argument is attempting to sort out an ambiguity with character strings:
+#' are they file paths or are they simply character strings. When `quick = TRUE`,
+#' `Cache` will treat these as character strings; when `quick = FALSE`,
+#' they will be attempted to be treated as file paths first; if there is no file, then
+#' it will revert to treating them as character strings. If user passes a
+#' character vector to this, then this will behave like `omitArgs`:
+#' `quick = "file"` will treat the argument `"file"` as character string.
+#'
+#' The most often encountered situation where this ambiguity matters is in arguments about
+#' filenames: is the filename an input pointing to an object whose content we want to
+#' assess (e.g., a file-backed raster), or an output (as in saveRDS) and it should not
+#' be assessed. If only run once, the output file won't exist, so it will be treated
+#' as a character string. However, once the function has been run once, the output file
+#' will exist, and `Cache(...)` will assess it, which is incorrect. In these cases,
+#' the user is advised to use `quick = "TheOutputFilenameArgument"` to
+#' specify the argument whose content on disk should not be assessed, but whose
+#' character string should be assessed (distinguishing it from `omitArgs =
+#' "TheOutputFilenameArgument"`, which will not assess the file content nor the
+#' character string).
+#'
+#' This is relevant for objects of class `character`, `Path` and
+#' `Raster` currently. For class `character`, it is ambiguous whether
+#' this represents a character string or a vector of file paths. If it is known
+#' that character strings should not be treated as paths, then `quick =
+#' TRUE` is appropriate, with no loss of information. If it is file or
+#' directory, then it will digest the file content, or `basename(object)`.
+#' For class `Path` objects, the file's metadata (i.e., filename and file
+#' size) will be hashed instead of the file contents if `quick = TRUE`. If
+#' set to `FALSE` (default), the contents of the file(s) are hashed. If
+#' `quick = TRUE`, `length` is ignored. `Raster` objects are
+#' treated as paths, if they are file-backed.
+#'
+#' @section Caching Speed:
+#' Caching speed may become a critical aspect of a final product. For example,
+#' if the final product is a shiny app, rerunning the entire project may need
+#' to take less then a few seconds at most.
+#' There are 3 arguments that affect `Cache` speed: `quick`, `length`, and `algo`.
+#' `quick` is passed to `.robustDigest`, which currently
+#' only affects `Path` and `Raster*` class objects.
+#' In both cases, `quick` means that little or no disk-based information will be assessed.
+#'
+#'
+#' @section Filepaths:
+#' If a function has a path argument, there is some ambiguity about what should be
+#' done. Possibilities include:
+#' \enumerate{
+#'   \item hash the string as is (this will be very system specific, meaning a
+#'         `Cache` call will not work if copied between systems or directories);
+#'   \item hash the `basename(path)`;
+#'   \item hash the contents of the file.
+#' }
+#' If paths are passed in as is (i.e,. character string), the result will not be predictable.
+#' Instead, one should use the wrapper function `asPath(path)`, which sets the
+#' class of the string to a `Path`, and one should decide whether one wants
+#' to digest the content of the file (using `quick = FALSE`),
+#' or just the filename (`(quick = TRUE)`). See examples.
+#'
+#' @section Stochasticity or randomness:
+#' In general, it is expected that caching will only be used when randomness is not
+#' desired, e.g., `Cache(rnorm(1))` is unlikely to be useful in many cases. However,
+#' `Cache` captures the call that is passed to it, leaving all functions unevaluated.
+#' As a result `Cache(glm, x ~ y, rnorm(1))` will not work as a means of forcing
+#' a new evaluation each time, as the `rnorm(1)` is not evaluated before the call
+#' is assessed against the cache database. To force a new call each time, evaluate
+#' the randomness prior to the Cache call, e.g., `ran = rnorm(1)` then pass this
+#' to `.cacheExtra`, e.g., `Cache(glm, x ~ y, .cacheExtra = ran)`
+#'
+#' @section `drv` and `conn`:
+#' By default, `drv` uses an SQLite database. This can be sufficient for most cases.
+#' However, if a user has dozens or more cores making requests to the Cache database,
+#' it may be insufficient. A user can set up a different database backend, e.g.,
+#' PostgreSQL that can handle multiple simultaneous read-write situations. See
+#' \url{https://github.com/PredictiveEcology/SpaDES/wiki/Using-alternate-database-backends-for-Cache}.
+#'
+#'
+#' @section `useCache`:
+#' Logical or numeric. If `FALSE` or `0`, then the entire Caching
+#' mechanism is bypassed and the
+#' function is evaluated as if it was not being Cached. Default is
+#' `getOption("reproducible.useCache")`), which is `TRUE` by default,
+#' meaning use the Cache mechanism. This may be useful to turn all Caching on or
+#' off in very complex scripts and nested functions. Increasing levels of numeric
+#' values will cause deeper levels of Caching to occur (though this may not
+#' work as expected in all cases). The following is no longer supported:
+#' Currently, only implemented
+#' in `postProcess`: to do both caching of inner `cropInputs`, `projectInputs`
+#' and `maskInputs`, and caching of outer `postProcess`, use
+#' `useCache = 2`; to skip the inner sequence of 3 functions, use `useCache = 1`.
+#' For large objects, this may prevent many duplicated save to disk events.
+#'
+#' If `useCache = "overwrite"`
+#' (which can be set with `options("reproducible.useCache" =
+#' "overwrite")`), then the function invoke the caching mechanism but will purge
+#' any entry that is matched, and it will be replaced with the results of the
+#' current call.
+#'
+#' If `useCache = "devMode"`: The point of this mode is to facilitate using the Cache when
+#' functions and datasets are continually in flux, and old Cache entries are
+#' likely stale very often. In `devMode`, the cache mechanism will work as
+#' normal if the Cache call is the first time for a function OR if it
+#' successfully finds a copy in the cache based on the normal Cache mechanism.
+#' It *differs* from the normal Cache if the Cache call does *not* find a copy
+#' in the `cachePath`, but it does find an entry that matches based on
+#' `userTags`. In this case, it will delete the old entry in the `cachePath`
+#' (identified based on matching `userTags`), then continue with normal `Cache`.
+#' For this to work correctly, `userTags` must be unique for each function call.
+#' This should be used with caution as it is still experimental. Currently, if
+#' `userTags` are not unique to a single entry in the cachePath, it will
+#' default to the behaviour of `useCache = TRUE` with a message. This means
+#' that `"devMode"` is most useful if used from the start of a project.
+#'
+#' @section `useCloud`:
+#' This is experimental and there are many conditions under which this is known
+#' to not work correctly. This is a way to store all or some of the local Cache in the cloud.
+#' Currently, the only cloud option is Google Drive, via \pkg{googledrive}.
+#' For this to work, the user must be or be able to be authenticated
+#' with `googledrive::drive_auth`. The principle behind this
+#' `useCloud` is that it will be a full or partial mirror of a local Cache.
+#' It is not intended to be used independently from a local Cache. To share
+#' objects that are in the Cloud with another person, it requires 2 steps. 1)
+#' share the `cloudFolderID$id`, which can be retrieved by
+#' `getOption("reproducible.cloudFolderID")$id` after at least one Cache
+#' call has been made. 2) The other user must then set their  `cacheFolderID` in a
+#' `Cache\(..., reproducible.cloudFolderID = \"the ID here\"\)` call or
+#' set their option manually
+#' `options\(\"reproducible.cloudFolderID\" = \"the ID here\"\)`.
+#'
+#' If `TRUE`, then this Cache call will download
+#'   (if local copy doesn't exist, but cloud copy does exist), upload
+#'   (local copy does or doesn't exist and
+#'   cloud copy doesn't exist), or
+#'   will not download nor upload if object exists in both. If `TRUE` will be at
+#'   least 1 second slower than setting this to `FALSE`, and likely even slower as the
+#'   cloud folder gets large. If a user wishes to keep "high-level" control, set this to
+#'   `getOption("reproducible.useCloud", FALSE)` or
+#'   `getOption("reproducible.useCloud", TRUE)` (if the default behaviour should
+#'   be `FALSE` or `TRUE`, respectively) so it can be turned on and off with
+#'   this option. NOTE: *This argument will not be passed into inner/nested Cache calls.*)
+#'
+#' Two character values are also accepted, intended for separating developer
+#' and user roles when sharing a cloud-cache folder:
+#'
+#' - `"push"` is equivalent to `TRUE` (developer role) -- bidirectional;
+#'   downloads on a cloud hit, uploads on a miss.
+#' - `"pull"` is read-only (user role) -- downloads on a cloud hit, but never
+#'   uploads. If the local cache already has the object, the cloud is not
+#'   consulted at all (the Google Drive listing is deferred until after the
+#'   local lookup fails). When neither local nor cloud has the object, the
+#'   call falls back to a normal local-only Cache run.
+#'
+#' @section Object attributes:
+#' Users should be cautioned that object attributes may not be preserved, especially
+#' in the case of objects that are file-backed, such as `Raster` or `SpatRaster` objects.
+#' If a user needs to keep attributes, they may need to manually re-attach them to
+#' the object after recovery. With the example of `SpatRaster` objects, saving
+#' to disk requires `terra::wrap` if it is a memory-backed object. When running
+#' `terra::unwrap` on this object, any attributes that a user had added are lost.
+#'
+#' @section `sideEffect`:
+#' This feature is now deprecated. Do not use as it is ignored.
+#'
+#'
+#'
+#' @note As indicated above, several objects require pre-treatment before
+#' caching will work as expected. The function `.robustDigest` accommodates this.
+#' It is an S4 generic, meaning that developers can produce their own methods for
+#' different classes of objects. Currently, there are methods for several types
+#' of classes. See [.robustDigest()].
+#'
+#' @include cache-helpers.R
+#' @include robustDigest.R
+#'
+#' @param FUN Either a function (e.g., `rnorm`), a function call (e.g., `rnorm(1)`),
+#'             or an unevaluated function call (e.g., using `quote()`).
+#'
+#' @param ... Arguments passed to `FUN`, if `FUN` is not an expression.
+#'
+#' @param .objects Character vector of objects to be digested. This is only applicable
+#'                if there is a list, environment (or similar) with named objects
+#'                within it. Only this/these objects will be considered for caching,
+#'                i.e., only use a subset of
+#'                the list, environment or similar objects. In the case of nested list-type
+#'                objects, this will only be applied outermost first.
+#'
+#' @param .cacheExtra A an arbitrary R object that will be included in the `CacheDigest`,
+#'       but otherwise not passed into the `FUN`. If the user supplies a named list, then
+#'       `Cache` will report which individual elements of `.cacheExtra` have changed
+#'       when `options("reproducible.showSimilar" = TRUE)`. This can allow a user
+#'       more control and understanding for debugging.
+#'
+#' @param .cacheChaining A logical or a the name of a function. If `TRUE`, then
+#'   the current `Cache` call will evaluate the function "outside" the `Cache` call
+#'   (via `sys.function(-1)`) and
+#'   attach the `digest` of that outer function to the entry for this `Cache` call. This
+#'   will then be used by any subsequent `Cache` call within the same function.
+#'   If the outer function is unchanged, and there is one or more objects that had
+#'   been returned by a previous `Cache` call,
+#'   then those objects will not be digested; rather their `cacheId` tag will be used
+#'   in place of a new `digest`. This *should* cause no change in Caching outcomes,
+#'   and it should be faster in cases where there are several `Cache` calls within
+#'   the same function. If `FALSE` (current default), then this feature is
+#'   not used. If set to `NULL` (i.e., unset, the current default), then it will
+#'   not use cache chaining, but it will attach more information to the Cache entries
+#'   for each `cacheId`, as well as new entries for `"surroundingFunction"` digest,
+#'   so that if a user switches to `.cacheChaining = TRUE`, then it will be able
+#'   to begin using cache chaining without needing to rerun the calls again. Can be set by an `option`.
+#' @param .functionName A an arbitrary character string that provides a name that is different
+#'       than the actual function name (e.g., "rnorm") which will be used for messaging. This
+#'       can be useful when the actual function is not helpful for a user, such as `do.call`.
+#'
+#' @param outputObjects Optional character vector indicating which objects to
+#'                      return. This is only relevant for list, environment (or similar) objects
+#'
+#' @param algo The digest algorithm to use. Default `xxhash64` (see [digest::digest()] for others).
+#'
+#' @param cacheRepo Same as `cachePath`, but kept for backwards compatibility.
+#'
+#' @param cachePath A repository used for storing cached objects.
+#'                  This is optional if `Cache` is used inside a SpaDES module.
+#' @param length Numeric. If the element passed to Cache is a `Path` class
+#'        object (from e.g., `asPath(filename)`) or it is a `Raster` with
+#'        file-backing, then this will be
+#'        passed to `digest::digest`, essentially limiting the number of bytes
+#'        to digest (for speed). This will only be used if `quick = FALSE`.
+#'        Default is `getOption("reproducible.length")`, which is set to `Inf`.
+#'
+#' @param compareRasterFileLength Being deprecated; use `length`.
+#'
+#' @param omitArgs Optional. A character vector of argument names in `FUN` to
+#'   omit from the cache digest, or `TRUE` to omit *every* captured argument
+#'   (the digest is then based on `FUN` itself -- including its body, so a
+#'   meaningful edit to the function source still busts the cache -- and on
+#'   `.cacheExtra`). Useful when the developer wants the cache to be
+#'   insensitive to the function's inputs and pin freshness via `.cacheExtra`
+#'   instead.
+#'
+#' @param classOptions Optional list. This will pass into `.robustDigest` for
+#'        specific classes. Should be options that the `.robustDigest` knows what
+#'        to do with.
+#'
+#' @param debugCache Character or Logical. Either `"complete"` or `"quick"` (uses
+#'        partial matching, so "c" or "q" work). `TRUE` is equivalent to `"complete"`.
+#'        If `"complete"`, then the returned object from the Cache
+#'        function will have two attributes, `debugCache1` and `debugCache2`,
+#'        which are the entire `list(...)` and that same object, but after all
+#'        `.robustDigest` calls, at the moment that it is digested using
+#'        `digest`, respectively. This `attr(mySimOut, "debugCache2")`
+#'        can then be compared to a subsequent call and individual items within
+#'        the object `attr(mySimOut, "debugCache1")` can be compared.
+#'        If `"quick"`, then it will return the same two objects directly,
+#'        without evalutating the `FUN(...)`.
+#'
+#' @param makeCopy Now deprecated. Ignored if used.
+#'
+#' @param userTags A character vector with descriptions of the Cache function call. These
+#'   will be added to the Cache so that this entry in the Cache can be found using
+#'   `userTags` e.g., via [showCache()].
+#'
+#' @param notOlderThan A time. Load an object from the Cache if it was created after this.
+#'
+#' @param quick Logical or character. If `TRUE`,
+#'        no disk-based information will be assessed, i.e., only
+#'        memory content. See Details section about `quick` in [Cache()].
+#'
+#' @param verbose Numeric, -1 silent (where possible), 0 being very quiet,
+#'        1 showing more messaging, 2 being more messaging, etc.
+#'        Default is 1. Above 3 will output much more information about the internals of
+#'        Caching, which may help diagnose Caching challenges. Can set globally with an
+#'        option, e.g., `options('reproducible.verbose' = 0) to reduce to minimal`
+#'
+#' @param cacheId Character string. If passed, this will override the calculated hash
+#'        of the inputs, and return the result from this `cacheId` in the `cachePath`.
+#'        Setting this is equivalent to manually saving the output of this function, i.e.,
+#'        the object will be on disk, and will be recovered in subsequent
+#'        This may help in some particularly finicky situations
+#'        where `Cache` is not correctly detecting unchanged inputs. This will guarantee
+#'        the object will be identical each time; this may be useful in operational code.
+#'
+#' @param useCache Logical, numeric or `"overwrite"` or `"devMode"`. See details.
+#'
+#' @param useCloud Logical (`TRUE` / `FALSE` / `NULL`) or one of `"pull"` /
+#'   `"push"`. See Details.
+#' @param cacheSaveFormat Character string: currently either `qs` or `rds`. Defaults to
+#'    `getOption("reproducible.cacheSaveFormat")`. `qs` may be faster but appears to have
+#'    narrower range of conditions that work; `rds` is safer, and may be slower.
+#'
+#' @param cloudFolderID A googledrive dribble of a folder, e.g., using `drive_mkdir()`.
+#'   If left as `NULL`, the function will create a cloud folder with name from last
+#'   two folder levels of the `cachePath` path, :
+#'   `paste0(basename(dirname(cachePath)), "_", basename(cachePath))`.
+#'   This `cloudFolderID` will be added to `options("reproducible.cloudFolderID")`,
+#'   but this will not persist across sessions. If this is a character string, it will
+#'   treat this as a folder name to create or use on GoogleDrive.
+#'
+#' @param showSimilar A logical or numeric. Useful for debugging.
+#'        If `TRUE` or `1`, then if the Cache
+#'        does not find an identical archive in the `cachePath`, it will report (via message)
+#'        the next most recent similar archive, and indicate which argument(s) is/are different.
+#'        If a number larger than `1`, then it will report the N most recent similar archived
+#'        objects.
+#'
+#' @param drv If using a database backend, `drv` must be an object that
+#'   inherits from `DBIDriver` (e.g., `RSQLite::SQLite`).
+#' @param conn an optional `DBIConnection` object, as returned by `dbConnect()`.
+#'
+#' @return Returns the value of the
+#' function call or the cached version (i.e., the result from a previous call
+#' to this same cached function with identical arguments).
+#'
+#' @seealso [showCache()], [clearCache()], [keepCache()],
+#'   [CacheDigest()] to determine the digest of a given function or expression,
+#'   as used internally within `Cache`, [movedCache()], [.robustDigest()], and
+#'   for more advanced uses there are several helper functions,
+#'   e.g., [rmFromCache()], [CacheStorageDir()]
+#'
+#' @author Eliot McIntire
+#' @importFrom digest digest
+#' @importFrom data.table setDT := setkeyv .N .SD
+#' @importFrom utils object.size tail
+#' @importFrom methods formalArgs
+#' @export
+#' @rdname Cache
+#'
+#' @example inst/examples/example_Cache.R
+#'
+CacheV2 <-
+  function(FUN, ..., notOlderThan = NULL,
+           .objects = NULL, .cacheExtra = NULL, .functionName = NULL,
+           outputObjects = NULL, # nolint
+           algo = "xxhash64", cacheRepo = NULL,
+           cachePath = NULL,
+           length = getOption("reproducible.length", Inf),
+           compareRasterFileLength, userTags = c(),
+           omitArgs = NULL,
+           classOptions = list(), debugCache = character(),
+           # sideEffect = FALSE,
+           makeCopy = FALSE,
+           quick = getOption("reproducible.quick", FALSE),
+           verbose = getOption("reproducible.verbose", 1), cacheId = NULL,
+           useCache = getOption("reproducible.useCache", TRUE),
+           useCloud = FALSE,
+           cloudFolderID = NULL,
+           showSimilar = getOption("reproducible.showSimilar", FALSE),
+           drv = getDrv(getOption("reproducible.drv", NULL)),
+           conn = getOption("reproducible.conn", NULL)) {
+
+    .Defunct("Cache")
+  }
+
+#' @keywords internal
+.formalsCache <- formals(Cache)[-(1:2)]
+
+#' @keywords internal
+.formalscache2 <- formals(cache2)[-(1:2)]
+
+#' @keywords internal
+.formalsCache[c("compareRasterFileLength", "digestPathContent")] <- NULL
+
+#' @keywords internal
+.namesCacheFormals <- names(.formalsCache)[]
+
+#' @keywords internal
+.namescache2Formals <- names(.formalscache2)[]
+
+#' @keywords internal
+.namesPostProcessFormals <- function() {
+  c(
+    "x", "filename1", "writeTo", "studyArea", "rasterToMatch",
+    "overwrite", "useSAcrs", "useCache", "verbose"
+  )
+}
+
+
+#' @keywords internal
+.namesCacheFormalsSendToBoth <- intersect("verbose", names(.formalsCache)[])
+
+
+#' @keywords internal
+.unlistToCharacter <- function(l, max.level = 1) {
+  if (max.level > 0) {
+    lapply(l, function(l1) {
+      if (is.character(l1)) {
+        l1
+      } else {
+        if (is.list(l1)) {
+          .unlistToCharacter(l1, max.level = max.level - 1)
+        } else {
+          "not list"
+        }
+      }
+    })
+  } else {
+    if (is.list(l)) {
+      unlist(l)
+    } else {
+      "not list2"
+    }
+    # unlist(l)
+  }
+}
+
+
+
+#' Write to cache repository, using `future::future`
+#'
+#' This will be used internally if `options("reproducible.futurePlan" = TRUE)`.
+#' This is still experimental.
+#'
+#' @param written Integer. If zero or positive then it needs to be written still.
+#'                Should be 0 to start.
+#' @param outputToSave The R object to save to repository
+#' @param cachePath The file path of the repository
+#' @param userTags Character string of tags to attach to this `outputToSave` in
+#'                 the `CacheRepo`
+#'
+#' @export
+#' @inheritParams Cache
+#' @inheritParams saveToCache
+#' @return
+#' Run for its side effect.
+#' This will add the `objectToSave` to the cache located at `cachePath`,
+#' using `cacheId` as its id, while
+#' updating the database entry. It will do this using the future package, so it is
+#' written in a future.
+writeFuture <- function(written, outputToSave, cachePath, userTags,
+                        drv = getDrv(getOption("reproducible.drv", NULL)),
+                        conn = getOption("reproducible.conn", NULL),
+                        cacheId, linkToCacheId = NULL,
+                        verbose = getOption("reproducible.verbose")) {
+  counter <- 0
+  if (!CacheIsACache(cachePath = cachePath, drv = drv, conn = conn, verbose = verbose)) {
+    stop("That cachePath does not exist")
+  }
+
+  if (missing(cacheId)) {
+    cacheId <- .robustDigest(outputToSave)
+  }
+  output <- saveToCache(
+    cachePath = cachePath, drv = drv, userTags = userTags,
+    conn = conn, obj = outputToSave, cacheId = cacheId,
+    linkToCacheId = linkToCacheId
+  )
+  saved <- cacheId
+
+  return(saved)
+}
+
+
+isDollarSqBrPkgColon <- function(args) {
+  ret <- FALSE
+  if (length(args) == 3 || length(args) == 1) { # i.e., only possible if it is just b$fun or stats::runif, not stats::runif(1) or b$fun(1)
+    ret <- isTRUE(any(try(grepl("^\\$|\\[|\\:\\:", args)[1], silent = TRUE)))
+  }
+  ret
+}
+
+isPkgColon <- function(args) {
+  ret <- FALSE
+  if (length(args) == 3) { # i.e., only possible if it is just b$fun or stats::runif, not stats::runif(1) or b$fun(1)
+    ret <- isTRUE(any(try(grepl("\\:\\:", args)[1], silent = TRUE)))
+  }
+  ret
+}
+
+isDollarOnlySqBr <- function(args) {
+  ret <- FALSE
+  if (length(args) == 3) { # i.e., only possible if it is just b$fun or stats::runif, not stats::runif(1) or b$fun(1)
+    ret <- isTRUE(any(try(grepl("^\\$|\\[", args)[1], silent = TRUE)))
+  }
+  ret
+}
+
+recursiveEvalNamesOnly <- function(args, envir = parent.frame(), outer = TRUE, recursive = TRUE) {
+
+  needsEvaling <- (length(args) > 1) || (length(args) == 1 && is.call(args)) # second case is fun() i.e., no args
+  if (isTRUE(needsEvaling)) {
+    if (is.call(args[[1]])) { # e.g., a$fun, stats::runif
+      args[[1]] <- eval(args[[1]], envir)
+    }
+
+    isStandAlone <- FALSE
+    if (length(args) == 3) { # e.g., status::runif or fun(1, 2); second case requires subsequent efforts
+      if (!is.function(args[[1]])) { # this removes fun(1, 2) case
+        isStandAlone <- isDollarSqBrPkgColon(args[[1]])
+      }
+    } else if (length(args[[1]]) == 3) {
+      isStandAlone <- isDollarSqBrPkgColon(args[[1]])
+    }
+
+    if (identical(quote(`function`), args[[1]])) # if it is function definition, then leave the inside unevaluated
+      isStandAlone <- TRUE
+
+    if (identical(as.name("<-"), args[[1]])) {
+      args <- as.list(args[-(1:2)])[[1]]
+    }
+
+    if (identical(quote(parse), args[[1]])) {
+      args <- eval(args)
+    }
+
+    if (!isTRUE(recursive)) {
+      isStandAlone <- TRUE
+    }
+
+    if (!any(isStandAlone)) {
+      out <- lapply(args, function(xxxx) {
+        if (is.name(xxxx)) {
+          # exists(xxxx, envir = envir, inherits = FALSE)
+          if (exists(xxxx, envir)) { # looks like variables that are in ... in the `envir` are not found; would need .whereInStack
+            evd <- try(eval(xxxx, envir), silent = TRUE)
+            isPrim <- is.primitive(evd)
+            if (isPrim) {
+              eval(xxxx)
+            } else {
+              isQuo <- is(evd, "quosure")
+              if (isQuo) {
+                evd <- rlang::eval_tidy(evd)
+              }
+              if (is(evd, "list")) {
+                evd <- recursiveEvalNamesOnly(evd, envir, outer = FALSE)
+              }
+              evd
+            }
+          } else {
+            ret <- xxxx
+            ret
+          }
+        } else {
+          if (is.call(xxxx)) {
+            if (identical(quote(eval), xxxx[[1]])) { # basically "eval" should be evaluated
+              message(
+                "There is an `eval` call in a chain of calls for Cache; ",
+                "\n  eval is evaluated before Cache which may be undesired. ",
+                "\n  Perhaps use `do.call` if the evaluation should not occur prior to Cache"
+              )
+              ret <- eval(xxxx, envir = envir)
+            } else {
+              ret <- recursiveEvalNamesOnly(xxxx, envir, outer = FALSE)
+            }
+          } else {
+            ret <- xxxx
+          }
+          ret
+        }
+      })
+
+
+
+      args <- as.call(out)
+      # args <- if (isTRUE(outer)) try(as.call(out)) else out
+      if (is.function(args[[1]])) {
+        args <- match_call_primitive(args[[1]], args, expand.dots = FALSE, envir = envir)
+        args[[1]] <- getMethodAll(args, envir)
+      }
+    } else {
+      # paths$inputPath comes here to be evaluated to its path
+      args <- eval(args, envir)
+    }
+  } else {
+    if (length(args) == 1 && is.name(args)) {
+      args <- eval(args, envir)
+    }
+  }
+  args
+}
+
+
+matchCall <- function(FUNcaptured, envir = parent.frame(), fnName) {
+  if (length(FUNcaptured) > 1) {
+    FUN <- FUNcaptured[[1]]
+    args <- as.list(FUNcaptured[-1])
+    if (is.call(FUN)) FUN <- eval(FUN, envir)
+    if (is.function(FUN)) {
+      forms <- if (is.primitive(FUN)) formals(args(FUN)) else formals(FUN)
+      if (length(forms) == 0) {
+        mc <- list(FUN)
+      } else {
+        if (is.primitive(FUN)) {
+          # Must test for "non-normal non-positional matching", like round and round.POSIXt, ... see ?match.call
+          #  can't tell a priori that a primitive doesn't have methods, so must test first.
+          #  These will always be in base, so can just get0 directly, which is WAY faster than any other way
+          nonPrimMeth <- NULL
+          if (!is.null(fnName)) {
+            cls <- is(args[[1]])
+            # use for loop, so can break out if a method is found quickly
+            for (classHere in cls) {
+              nonPrimMeth <- get0(paste0(fnName, ".", classHere))
+              if (!is.null(nonPrimMeth)) break
+            }
+          }
+          if (length(nonPrimMeth)) {
+            args2 <- formals(nonPrimMeth)
+          } else {
+            args2 <- forms
+          }
+          args2[seq(args)] <- args
+          args2 <- args2[seq_along(args)] # chop off any trailing args
+          mc <- append(list(FUN), args2)
+        } else {
+          mc <- match.call(FUN, FUNcaptured)
+        }
+      }
+    } else {
+      mc <- FUNcaptured
+    }
+  } else {
+    mc <- list(FUNcaptured)
+  }
+  mc
+}
+
+#' @importFrom methods .S4methods
+#' @importFrom utils getFromNamespace
+getMethodAll <- function(FUNcaptured, callingEnv) {
+  FUN <- FUNcaptured[[1]]
+  if (!is.function(FUN))
+    FUN <- tryCatch(eval(FUN, envir = callingEnv),
+                    error = function(FU) eval(parse(text = FUN), envir = callingEnv))
+  if (isS4(FUN)) {
+    functionName <- FUN@generic
+    # Not easy to selectMethod -- can't have trailing "ANY" -- see ?selectMethod last
+    #  paragraph of "Using findMethod()" which says:
+    # "Notice also that the length of the signature must be what the corresponding
+    #  package used. If thisPkg had only methods for one argument, only length-1
+    # signatures will match (no trailing "ANY"), even if another currently loaded
+    # package had signatures with more arguments.
+    numArgsInSig <- try(
+      {
+        suppressWarnings({
+          info <- attr(methods::.S4methods(functionName), "info") # from hadley/sloop package s3_method_generic
+          # info <- attr(utils::methods(functionName), "info")# from hadley/sloop package s3_method_generic
+        })
+        max(unlist(lapply(strsplit(rownames(info), split = ","), length)) - 1)
+      },
+      silent = TRUE
+    )
+    matchOn <- FUN@signature[seq(numArgsInSig)]
+
+    argsClassesList <- lapply(FUNcaptured, function(x) class(x))
+    # argsClasses <- unlist(argsClassesList)#[1]))
+    argsClasses <- unlist(unname(argsClassesList[names(argsClassesList) %in% matchOn]))
+    missingArgs <- matchOn[!(matchOn %in% names(argsClassesList))]
+
+    missings <- rep("missing", length(missingArgs))
+    names(missings) <- missingArgs
+    argsClasses <- c(argsClasses, missings)
+
+    argClassesAreCall <- argsClasses %in% "call" # maybe wasn't evaluated enough to know what it is; force eval
+    if (any(argClassesAreCall)) {
+      argsClasses <- "ANY"
+      #whAreCall <- names(argsClasses[argClassesAreCall])
+      #argsClasses <- Map(wac = whAreCall, function(wac) is(eval(FUNcaptured[[wac]], envir = callingEnv)))
+    } else {
+      FUN <- selectMethod(functionName, signature = argsClasses)
+    }
+    updatedFUN <- TRUE
+  } else {
+    isS3 <- isS3stdGeneric(FUN)
+    if (!is.null(names(isS3))) {
+      fnNameInitAlt <- names(isS3)
+    }
+    if (isS3) {
+      updatedFUN <- TRUE
+      classes <- is(FUNcaptured[[2]])
+      for (cla in classes) {
+        FUNposs <- utils::getS3method(fnNameInitAlt, cla, optional = TRUE) # S3 matches on 1st arg: FUNcaptured[[2]]
+        if (!is.null(FUNposs)) {
+          break
+        }
+      }
+
+      # if generic fn was not exported, then getS3method won't find it above; try directly in NS
+      if (is.null(FUNposs)) {
+        envNam <- environmentName(environment(FUN))
+        FUNpossGen <- get0(fnNameInitAlt, envir = asNamespace(envNam))
+        for (cla in classes) {
+          possMeth <- paste0(fnNameInitAlt, ".", cla)
+          FUNposs <- try(getFromNamespace(possMeth, ns = envNam), silent = TRUE)
+          if (!is(FUNposs, "try-error")) {
+            break
+          } else {
+            FUNposs <- NULL
+          }
+        }
+        if (is.null(FUNposs)) {
+          FUNposs <- FUNpossGen
+        }
+      }
+
+      if (is.null(FUNposs)) {
+        FUNposs <- get0(fnNameInitAlt, envir = callingEnv)
+        if (is.null(FUNposs) || isS4(FUNposs)) { # there are cases e.g., print that are both S4 & S3; this forces S3
+          FUNposs <- get0(paste0(fnNameInitAlt, ".default"), envir = callingEnv)
+        }
+      }
+      FUN <- FUNposs
+    }
+  }
+  FUN
+}
+
+formals2 <- function(FUNcaptured) {
+  modifiedDots <- as.list(FUNcaptured[-1])
+  FUN <- FUNcaptured[[1]]
+  modifiedDots <- formals3(FUN, modifiedDots, removeNulls = TRUE)
+  modifiedDots
+}
+
+
+formals3 <- function(FUN, modifiedDots = list(), removeNulls = FALSE) {
+  forms1 <- formals(FUN) # primitives don't have formals
+  if (!is.null(forms1)) {
+    forms1 <- forms1[setdiff(names(forms1), "...")]
+    if (NROW(forms1)) {
+      defaults <- setdiff(names(forms1), names(modifiedDots))
+      if (removeNulls) {
+        theNulls <- unlist(lapply(forms1[defaults], is.null))
+        if (any(theNulls)) {
+          defaults <- defaults[!theNulls]
+        }
+      }
+
+      if (NROW(defaults)) { # there may be some arguments that are not specified
+
+        # get the values of args that are eg. coming from options
+        forms1[defaults] <- lapply(forms1[defaults], function(xxx) {
+          yyy <- "default"
+          if (length(xxx) > 0) {
+            if (length(xxx) == 1) {
+              if (isTRUE(nchar(xxx) == 0)) {
+                yyy <- NULL
+              }
+            }
+          }
+          if (!is.null(yyy)) {
+            # Some are used by other args, yet are undefined in the args ... because "missing"
+            # ex is seq.default() # by is (from - to)/(length.out - 1), but length.out is NULL in args
+            # so need try
+            yyy <- try(eval(xxx, envir = modifiedDots), silent = TRUE)
+            if (is(yyy, "try-error")) {
+              yyy <- NULL
+            }
+          }
+          yyy
+        })
+      }
+
+      # Have to get rid of NULL because CacheDigest
+      if (removeNulls) {
+        forms1 <- forms1[!unlist(lapply(forms1, is.null))]
+      }
+      modifiedDots <- modifyList(forms1, modifiedDots)
+      forms <- names(forms1)
+    }
+  }
+  modifiedDots
+}
+
+# This is taken from Rdpack::S4formals
+formals4reproducible <- function (fun, ...) {
+  if (!is(fun, "MethodDefinition"))
+    fun <- getMethod(fun, ...)
+  fff <- fun@.Data
+  funbody <- body(fff)
+  if (length(funbody) == 3 && identical(funbody[[1]], as.name("{")) &&
+      length(funbody[[2]]) == 3 && identical(funbody[[c(2,
+                                                        1)]], as.name("<-")) && identical(funbody[[c(2, 2)]],
+                                                                                          as.name(".local")) && is.function(funbody[[c(2, 3)]])) {
+    formals(funbody[[c(2, 3)]])
+  }
+  else {
+    formals(fff)
+  }
+}
+
+getFunctionName2 <- function(mc) {
+  if (length(mc) > 1) {
+    if (identical(as.name("<-"), mc[[1]])) {
+      mc <- mc[-(1:2)]
+    }
+    coloncolon <- .grepSysCalls(list(mc), "^\\$|\\[|\\:\\:")
+    coloncoloncolon <- .grepSysCalls(list(mc), "^\\$|\\[|\\:\\:\\:")
+    if (length(coloncolon)) { # stats::runif -- has to be first one, not some argument in middle
+      if (length(coloncolon) && length(mc) != 3 || length(coloncoloncolon)) { # stats::runif
+
+        #if (any(grepl("^\\$|\\[|\\:\\:", mc)[1])) { # stats::runif -- has to be first one, not some argument in middle
+        #  if (any(grepl("^\\$|\\[|\\:\\:", mc[[1]])) && length(mc) != 3) { # stats::runif
+        fnNameInit <- deparse(mc[[1]])
+      } else {
+        fnNameInit <- deparse(mc)
+      }
+    } else {
+      fnNameInit <- deparse(as.list(mc[[1]])[[1]]) # fun() and fun could both be here in first slot
+    }
+  } else {
+    fnNameInit <- deparse(mc)
+  }
+  fnNameInit
+}
+
+#' @importFrom utils modifyList isS3stdGeneric methods
+.fnCleanup <- function(FUN, ..., callingFun, FUNcaptured = NULL, CacheMatchedCall,
+                       .functionName = NULL, callingEnv = parent.frame(2), .fnCleanup,
+                       omitArgs = "") {
+  if (is.null(FUNcaptured)) {
+    FUNcaptured <- substitute(FUN)
+  }
+
+  FUNcapturedOrig <- FUNcaptured
+
+  whCharName <- is.function(FUNcaptured) # this is bad; it means that it was not captured. Happens when user
+  #  erroneously does do.call(Cache, args)
+  if (all(whCharName %in% TRUE)) {
+    stop(
+      "It looks like Cache is called incorrectly, possibly something like do.call(Cache, args); \n",
+      "Cache should be the outermost function. See examples for correct ways to use Cache"
+    )
+  }
+  # Remove `quote`
+  isQuoted <- any(grepl("^quote", FUNcaptured)[1]) # won't work for complicated quote
+  if (isQuoted) {
+    FUNcaptured <- FUNcaptured[[2]]
+  }
+
+  dotsCaptured <- substitute(list(...))
+  dotsCaptured <- as.list(dotsCaptured[-1]) # need to remove the `list` on the inside of the substitute
+
+  # Backward compatibility; has no effect now
+  userTagsOtherFunctions <- NULL
+
+  if (isDollarSqBrPkgColon(FUNcaptured)) {
+    if (isPkgColonFn(FUNcaptured)) {
+      FUNcaptured <- eval(FUNcaptured, envir = callingEnv)
+    } else if (isPkgColon(FUNcaptured)) { # this is TRUE ONLY if it is *just* b$fun or stats::runif, i.e., not b$fun(1)
+      FUNcaptured[[1]] <- eval(FUNcaptured[[1]], envir = callingEnv)
+    } else if (isDollarOnlySqBr(FUNcaptured)) {
+      FUNcaptured <- eval(FUNcaptured, envir = callingEnv)
+    }
+  }
+
+  if (length(FUNcaptured) > 1) { # this will cover the cases where previous misses, e.g.,
+    if (isDollarSqBrPkgColon(FUNcaptured[[1]])) { # this is TRUE ONLY if it is *just* b$fun(1), stats::runif(1)
+      FUNcaptured[[1]] <- eval(FUNcaptured[[1]], envir = callingEnv)
+    }
+  }
+
+  if (!is.call(FUNcaptured)) { # isDollarSqBrPkgColon(FUNcaptured)) { # turn the rnorm, 1, 2 into rnorm(1, 2)
+    FUNcaptured <- as.call(append(list(FUNcaptured), dotsCaptured))
+  }
+
+  whCharName <- unlist(lapply(FUNcaptured, function(x) is.call(x) || is.name(x) || is.function(x) || is.character(x)))
+  isDoCall <- if (any(whCharName)) {
+    isTRUE(grepl("^do\\.call", FUNcaptured[whCharName])[[1]]) ||
+      identical(do.call, FUNcaptured[[1]])
+  } else {
+    FALSE
+  }
+  needRmList <- FALSE
+  fnNameInit <- NULL
+  if (isDoCall) {
+    mc <- match.call(do.call, FUNcaptured)
+    fnNameInit <- deparse(mc$what)
+    if (length(mc$args) > 1) {
+      argsForWhat <- mc$args[-1]
+    } else {
+      needRmList <- TRUE
+      argsForWhat <- mc$args # mc$args will be a list; needs to be evaluated to be unlisted; do below
+    }
+    FUNcaptured <- try(as.call(append(list(mc$what), as.list(argsForWhat))))
+  }
+
+  isSquiggly <- FALSE
+  if (!is.function(FUNcaptured[[1]])) { # e.g., just the name, such as rnorm --> convert to the actual function code
+    if (is(FUNcaptured[[1]], "(")) {
+      fnNameInit <- "headless"
+    }
+    FUNcaptured[[1]] <- eval(FUNcaptured[[1]], envir = callingEnv)
+  }
+
+  if (length(FUNcaptured) > 1) isSquiggly <- identical(`{`, FUNcaptured[[1]])
+
+  if (isSquiggly) {
+    # Get rid of squiggly
+    FUNcaptured <- as.list(FUNcaptured[-1]) # [[1]] ... if it has many calls... pipe will be just one; but others will be more
+    if (length(FUNcaptured) > 1) {
+      stop("Cache can only handle curly braces if all internal code uses base pipe |>; see examples")
+    }
+    FUNcaptured <- FUNcaptured[[1]]
+    FUNcapturedNamesEvaled <- recursiveEvalNamesOnly(FUNcaptured, envir = callingEnv) # deals with e.g., stats::rnorm, b$fun, b[[fun]]
+    mc1 <- matchCall(FUNcaptured, envir = callingEnv, fnName = fnNameInit)
+    if (is.null(fnNameInit)) {
+      fnNameInit <- getFunctionName2(mc1[[1]])
+    }
+    FUNcapturedNamesEvaled <- matchCall(FUNcapturedNamesEvaled, envir = callingEnv, fnName = fnNameInit)
+  } else {
+    if (is.null(fnNameInit)) {
+      fnNameInit <- getFunctionName2(FUNcapturedOrig)
+    }
+    if (length(FUNcaptured) > 1) {
+      # The next line works for any object that is NOT in a ..., because the
+      #   object never shows up in the environment; it is passed through
+      # mced <- names(CacheMatchedCall)
+
+      # if (!is.null(unlist(argsToKeep))) {
+      FUNcapturedList <- as.list(FUNcaptured[-1])
+      nams <- names(FUNcapturedList)
+      if (is.null(nams))
+        nams <- sapply(seq_along(FUNcapturedList), function(x) paste0(sample(LETTERS, 14), collapse = ""))
+      FUNcapturedArgs <- Map(
+        ee = FUNcapturedList, nam = nams, function(ee, nam) {
+
+            out <- try(eval(ee, envir = callingEnv), silent = TRUE)
+            if (is(out, "try-error")) {
+              if (identical(as.name("..."), ee)) {
+                out <- "..."
+              } else {
+                env2 <- try(if (isDollarSqBrPkgColon(ee)) {
+                  .whereInStack(ee[[2]])
+                } else {
+                  .whereInStack(ee)
+                }, silent = TRUE)
+                if (is(env2, "try-error")) {
+                  out <- try(paste(format(ee$destinationPath), collapse = " "), silent = TRUE)
+                  if (is(out, "try-error"))
+                    stop(env2)
+                } else {
+                  out <- try(eval(ee, envir = env2), silent = TRUE)
+                  if (is(out, "try-error")) {
+                    out <- as.character(parse(text = ee))
+                  }
+                }
+              }
+            }
+          # }
+
+          out
+        }) # may be slow as it is evaluating the args
+      if (needRmList) { # it has one too many list elements # not sure about the length(out) == 1
+        FUNcapturedArgs <- FUNcapturedArgs[[1]]
+      }
+      # }
+
+      FUNcapturedNamesEvaled <- as.call(append(list(FUNcaptured[[1]]), FUNcapturedArgs))
+      FUNcapturedNamesEvaled <- matchCall(FUNcapturedNamesEvaled, callingEnv, fnName = fnNameInit)
+                             } else { # this is a function called with no arguments
+                               FUNcapturedNamesEvaled <- FUNcaptured
+    }
+  }
+
+
+
+  # Now FUNcaptured will always have at least 1 element, because it is a call
+
+
+  FUN <- FUNcapturedNamesEvaled[[1]] # This will be wrong if a fn has no args
+  if (is.call(FUN)) { # This will only happen if there are no args to FUN e.g., fun()... anything else is a name fun(1)
+    FUN <- FUN[[1]]
+    FUNcapturedNamesEvaled[[1]] <- FUN
+  }
+
+  fnDetails <- list(
+    functionName = fnNameInit,
+    .FUN = FUN,
+    nestLevel = 1
+  )
+
+  modifiedDots <- as.list(FUNcapturedNamesEvaled[-1]) # this is prior to filling in with defaults
+  if (is.function(FUN)) {
+    FUN <- getMethodAll(FUNcapturedNamesEvaled, callingEnv)
+    forms <- if (is.primitive(FUN)) formals(args(FUN)) else formals(FUN)
+    FUNcapturedNamesEvaled[[1]] <- FUN # may be same if it was a primitive or just a function
+    fnDetails$.FUN <- FUN
+
+    if (!is.primitive(FUN) && (length(forms) > 0)) {
+      modifiedDots <- formals2(FUNcapturedNamesEvaled) # this gets default values for methods;
+    }
+  } else {
+    # This comes from `CacheDigest(something$something)`
+    FUNcapturedNamesEvaled <- append(list(NULL), FUNcaptured) # the first arg is supposed to be a function below; put NULL as placeholder
+    forms <- names(FUNcapturedNamesEvaled[-1])
+  }
+
+  FUNcapturedNamesEvaled <- checkOverlappingArgs(CacheMatchedCall, forms, dotsCaptured,
+                                                 functionName = fnDetails$functionName, FUNcapturedNamesEvaled)
+
+  # # Check for args that are passed to both Cache and the FUN -- if any overlap; pass to both
+  # possibleOverlap <- names(formals(args(Cache)))
+  # possibleOverlap <- intersect(names(CacheMatchedCall), possibleOverlap)
+  # actualOverlap <- intersect(names(forms), possibleOverlap)
+  # if (length(actualOverlap) && !identical(list(), dotsCaptured)) { # e.g., useCache, verbose; but if not in dots, then OK because were separate already
+  #   message(
+  #     "The following arguments are arguments for both Cache and ", fnDetails$functionName, ":\n",
+  #     paste0(actualOverlap, collapse = ", "),
+  #     "\n...passing to both. If more control is needed, pass as a call, e.g., ",
+  #     "Cache(", fnDetails$functionName, "(...))"
+  #   )
+  #   overlappingArgsAsList <- as.list(CacheMatchedCall)[actualOverlap]
+  #   FUNcapturedNamesEvaled <- as.call(append(as.list(FUNcapturedNamesEvaled), overlappingArgsAsList))
+  # }
+
+  if (!is.null(.functionName)) {
+    fnDetails$functionName <- .functionName
+  }
+
+  return(append(fnDetails, list(
+    FUN = FUN, matchedCall = FUNcapturedNamesEvaled,
+    modifiedDots = modifiedDots, # isDoCall = isDoCall,
+    formalArgs = forms,
+    userTags = userTagsOtherFunctions
+  )))
+}
+
+
+#' Set subattributes within a list by reference
+#'
+#' Sets only a single element within a list attribute.
+#' @param object An arbitrary object
+#' @param attr The attribute name (that is a list object) to change
+#' @param subAttr The list element name to change
+#' @param value The new value
+#'
+#' @return
+#' This sets or updates the `subAttr` element of a list that is located at
+#' `attr(object, attr)`, with the `value`. This, therefore, updates a sub-element
+#'  of a list attribute and returns that same object with the updated attribute.
+#'
+#' @export
+#' @rdname setSubAttrInList
+.setSubAttrInList <- function(object, attr, subAttr, value) {
+  .CacheAttr <- attr(object, attr)
+  if (is.null(.CacheAttr)) .CacheAttr <- list()
+  .CacheAttr[[subAttr]] <- value
+  attr(object, attr) <- .CacheAttr
+  object
+}
+
+#' The exact digest function that `Cache` uses
+#'
+#' This can be used by a user to pre-test their arguments before running
+#' `Cache`, for example to determine whether there is a cached copy.
+#'
+#'
+#' @param ... passed to `.robustDigest`.
+#' @param objsToDigest A list of all the objects (e.g., arguments) to be digested
+#' @param calledFrom a Character string, length 1, with the function to
+#'    compare with. Default is "Cache". All other values may not produce
+#'    robust CacheDigest results.
+#'
+#' @inheritParams Cache
+#'
+#' @return
+#' A list of length 2 with the `outputHash`, which is the digest
+#' that Cache uses for `cacheId` and also `preDigest`, which is
+#' the digest of each sub-element in `objsToDigest`.
+#'
+#' @export
+#'
+#' @examples
+#' data.table::setDTthreads(2)
+#' a <- Cache(rnorm, 1)
+#'
+#' # like with Cache, user can pass function and args in a few ways
+#' CacheDigest(rnorm(1)) # shows same cacheId as previous line
+#' CacheDigest(rnorm, 1) # shows same cacheId as previous line
+#'
+CacheDigest <- function(objsToDigest, ..., algo = "xxhash64", calledFrom = "CacheDigest",
+                        .functionName = NULL, quick = FALSE) {
+  FUNcaptured <- substitute(objsToDigest)
+  # origFUN <- quote(objsToDigest)
+  fromCache <- identical(FUNcaptured, as.name("toDigest"))
+  dots <- list(...)
+  forms <- .formalsNotInCurrentDots(.robustDigest, dots = dots)
+  if (is(FUNcaptured, "call") || # as in rnorm(1) ... but also list(outputToSave) needs to be avoided
+    (NROW(dots) > 0 && # if not an function with call, then it has to have something there
+      # ... so not "just" an object in objsToDigest
+      (NROW(forms) > 1 || is.null(forms)))) { # can be CacheDigest(rnorm, 1)
+    fnDetails <- .fnCleanup(
+      FUN = objsToDigest, callingFun = "Cache", ..., FUNcaptured = FUNcaptured,
+      .functionName = .functionName, CacheMatchedCall = match.call(CacheDigest)
+    )
+    modifiedDots <- fnDetails$modifiedDots
+    modifiedDots$.FUN <- fnDetails$.FUN
+    objsToDigest <- modifiedDots
+  }
+
+  if (!is(objsToDigest, "list")) {
+    objsToDigest <- list(objsToDigest)
+  }
+
+  if (identical("Cache", calledFrom)) {
+    namesOTD <- names(objsToDigest)
+    lengthChars <- nchar(namesOTD)
+    if (!any(namesOTD %in% "FUN")) {
+      zeroLength <- which(lengthChars == 0)
+      alreadyHasDotFun <- dotFunTxt %in% namesOTD
+      if (sum(zeroLength) > 0 && !alreadyHasDotFun) {
+        names(objsToDigest)[zeroLength[1]] <- dotFunTxt
+      }
+    }
+  }
+
+  # need to omit arguments that are in Cache function call
+  defaults <- names(objsToDigest) %in% .defaultCacheOmitArgs
+  if (sum(defaults)) {
+    objsToDigest[defaults] <- NULL
+  }
+
+  if (is.character(quick) || isTRUE(quick)) {
+    quickObjs <- if (isTRUE(quick)) {
+      rep(TRUE, length(objsToDigest))
+    } else {
+      if (is.null(names(objsToDigest))) {
+         rep(FALSE, length(objsToDigest))
+      } else {
+        names(objsToDigest) %in% quick
+      }
+
+    }
+    objsToDigestQuick <- objsToDigest[quickObjs]
+    objsToDigest <- objsToDigest[!quickObjs]
+    preDigestQuick <- .robustDigest(objsToDigestQuick, algo = algo, quick = TRUE, ...)
+    # preDigestQuick <- lapply(objsToDigestQuick, function(x) {
+    #   # remove the "newCache" attribute, which is irrelevant for digest
+    #   if (!is.null(attr(x, ".Cache")$newCache)) {
+    #     x <- .setSubAttrInList(x, ".Cache", "newCache", NULL)
+    #     if (!identical(attr(x, ".Cache")$newCache, NULL)) stop("attributes are not correct 1")
+    #   }
+    #   .robustDigest(x, algo = algo, quick = TRUE, ...)
+    # })
+  }
+
+  # if (!is(objsToDigest, "list"))
+  preDigest <- .robustDigest(objsToDigest, algo = algo, quick = FALSE, ...)
+  # preDigest <- Map(x = objsToDigest, i = seq_along(objsToDigest), function(x, i) {
+  #   # remove the "newCache" attribute, which is irrelevant for digest
+  #   if (!is.null(attr(x, ".Cache")$newCache)) {
+  #     x <- .setSubAttrInList(x, ".Cache", "newCache", NULL)
+  #     if (!identical(attr(x, ".Cache")$newCache, NULL)) stop("attributes are not correct 1")
+  #   }
+  #   withCallingHandlers({
+  #     .robustDigest(x, algo = algo, quick = FALSE, ...)
+  #   }, error = function(e) {
+  #     nam <- names(objsToDigest)
+  #     if (!is.null(nam))
+  #       messageCache("Error occurred during .robustDigest of ", nam[i], " in ", .functionName)
+  #   })
+  # })
+
+
+  # if (!isTRUE(all.equal(.orderDotsUnderscoreFirst(preDigest), .orderDotsUnderscoreFirst(preDigest2[names(preDigest)]))))
+  if (is.character(quick) || isTRUE(quick)) {
+    preDigest <- append(preDigest, preDigestQuick)
+  }
+
+  # preDigest <- .robustDigest(preDigest) # add the ._list
+  # preDigest[["._list"]] <- NULL # don't need this for CacheDigest
+
+  # don't unname -- Eliot Jan 13, 2025 -- this keeps the outputHash
+  if (getOption("reproducible.digestV3", TRUE)) {
+    res <- .doDigest(preDigest, algo = algo, ...)
+  } else {
+    res <- .robustDigest(unname(sort(unlist(preDigest))), algo = algo, quick = TRUE, ...)
+    # res <- .robustDigest(.sortDotsUnderscoreFirst(unlist(preDigest)), algo = algo, quick = TRUE, ...)
+  }
+  list(outputHash = res, preDigest = preDigest)
+}
+
+
+
+
+#' @keywords internal
+.defaultCacheOmitArgs <- c(
+  "useCloud", "checksumsFileID", "cloudFolderID",
+  "notOlderThan", ".objects", "outputObjects", "algo", "cachePath",
+  "length", "compareRasterFileLength", "userTags", "digestPathContent",
+  "omitArgs", "classOptions", "debugCache", "sideEffect", "makeCopy",
+  "quick", "verbose", "cacheId", "useCache", "showSimilar", "cl"
+)
+
+
+
+verboseDF0 <- function(verbose, functionName, startHashTime, endTime) {
+  if (verbose > 3) {
+    if (missing(endTime))
+      endTime <- Sys.time()
+    verboseDF <- data.frame(
+      functionName = functionName,
+      component = "Hashing",
+      elapsedTime = as.numeric(difftime(endTime, startHashTime, units = "secs")),
+      units = "secs",
+      stringsAsFactors = FALSE
+    )
+    verboseAppendOrCreateDF(verboseDF)
+  }
+  # if (exists("verboseTiming", envir = .reproEnv, inherits = FALSE)) {
+  #   verboseDF$functionName <- paste0("  ", verboseDF$functionName)
+  #   .reproEnv$verboseTiming <- rbind(.reproEnv$verboseTiming, verboseDF)
+  # } else {
+  #   .reproEnv$verboseTiming <- verboseDF
+  # }
+}
+
+#' @keywords internal
+verboseDF1 <- function(verbose, functionName, startRunTime, endTime) {
+  if (verbose > 3) {
+    if (missing(endTime))
+      endTime <- Sys.time()
+    verboseDF <- data.frame(
+      functionName = functionName,
+      component = paste("Running", functionName),
+      elapsedTime = as.numeric(difftime(endTime, startRunTime, units = "secs")),
+      units = "secs",
+      stringsAsFactors = FALSE
+    )
+
+    if (exists("verboseTiming", envir = .reproEnv)) {
+      .reproEnv$verboseTiming <- rbind(.reproEnv$verboseTiming, verboseDF)
+    }
+  }
+}
+
+#' @keywords internal
+verboseDF2 <- function(verbose, functionName, startSaveTime, endTime) {
+  if (verbose > 3) {
+    if (missing(endTime))
+      endTime <- Sys.time()
+    verboseDF <-
+      data.frame(
+        functionName = functionName,
+        component = "Saving to cachePath",
+        elapsedTime = as.numeric(difftime(endTime, startSaveTime, units = "secs")),
+        units = "secs",
+        stringsAsFactors = FALSE
+      )
+
+    if (exists("verboseTiming", envir = .reproEnv)) {
+      .reproEnv$verboseTiming <- rbind(.reproEnv$verboseTiming, verboseDF)
+    }
+  }
+}
+
+
+#' @keywords internal
+verboseDF3 <- function(verbose, functionName, startCacheTime, endTime) {
+  if (verbose > 3) {
+    if (missing(endTime))
+      endTime <- Sys.time()
+    verboseDF <- data.frame(
+      functionName = functionName,
+      component = "Whole Cache call",
+      elapsedTime = as.numeric(difftime(endTime, startCacheTime,
+        units = "secs"
+      )),
+      units = "secs",
+      stringsAsFactors = FALSE
+    )
+
+    if (exists("verboseTiming", envir = .reproEnv)) {
+      .reproEnv$verboseTiming <- rbind(.reproEnv$verboseTiming, verboseDF)
+    }
+  }
+}
+
+#' @keywords internal
+
+getCacheRepos <- function(cachePath, modifiedDots, verbose = getOption("reproducible.verbose", 1)) {
+  if (is.null(cachePath)) {
+    cachePath <- .checkCacheRepo(modifiedDots, create = TRUE, verbose = verbose)
+  } else {
+    if (any(!dir.exists(unlist(cachePath))))
+      cachePath <- lapply(cachePath, function(repo) {
+        if (!dir.exists(repo))
+          repo <- checkPath(repo, create = TRUE)
+        repo
+      })
+  }
+  return(cachePath)
+}
+
+
+cloudFolderFromCacheRepo <- function(cachePath) {
+  paste0(basename2(dirname(cachePath)), "_", basename2(cachePath))
+}
+
+.defaultUserTags <- c(
+  "function", "class", "object.size", "accessed", "inCloud", "fromDisk",
+  otherFunctions, "preDigest", "file.size", "cacheId",
+  "elapsedTimeDigest", "elapsedTimeFirstRun", "resultHash", "elapsedTimeLoad"
+)
+
+.defaultOtherFunctionsOmit <- c(
+  "(test_", "with_reporter", "force", "Restart", "with_mock",
+  "eval", "::", "\\$", "\\.\\.", "standardGeneric",
+  "Cache", "tryCatch", "doTryCatch", "withCallingHandlers",
+  "FUN", "capture", "withVisible)"
+)
+
+isPkgColonFn <- function(x) {
+  identical(x[[1]], quote(`::`))
+}
+
+evalTheFun <- function(FUNcaptured, isCapturedFUN, matchedCall, envir = parent.frame(),
+                       verbose = getOption("reproducible.verbose"), ...) {
+  .message$IndentUpdate()
+  withCallingHandlers(
+    {
+      out <- eval(FUNcaptured, envir = envir)
+      if (is.function(out)) { # if is wasn't "captured", then it is just a function, so now use it on the ...
+        out <- out(...)
+      }
+    },
+    warning = function(w) {
+      asch <- format(w$call[[1]])
+      warning("In ", format(matchedCall), ": ", w$message, call. = FALSE)
+      invokeRestart("muffleWarning")
+      #    }
+    }
+  )
+
+  out
+}
+
+searchInRepos <- function(cachePaths, outputHash, drv, conn, verbose = getOption("reproducible.verbose")) {
+  dbTabNam <- NULL
+  tries <- 1
+  while (tries <= length(cachePaths)) {
+    repo <- cachePaths[[tries]]
+    if (useDBI()) {
+      if (is.list(conn))
+        conn <- conn[[cachePaths[1]]]
+      dbTabNam <- CacheDBTableName(repo, drv = drv)
+
+      isInRepo <- getHashFromDB(tries, conn, drv, repo, dbTabNam, outputHash)
+      # if (tries > 1) {
+      #   DBI::dbDisconnect(conn)
+      #   conn <- dbConnectAll(drv, cachePath = repo)
+      # }
+      # qry <- glue::glue_sql("SELECT * FROM {DBI::SQL(glue::double_quote(dbTabName))} where \"cacheId\" = ({outputHash})",
+      #   dbTabName = dbTabNam,
+      #   outputHash = outputHash,
+      #   .con = conn
+      # )
+      # res <- retry(
+      #   retries = 15, exponentialDecayBase = 1.01,
+      #   quote(DBI::dbSendQuery(conn, qry))
+      # )
+      # isInRepo <- setDT(DBI::dbFetch(res))
+      # DBI::dbClearResult(res)
+    } else {
+      # The next line will find it whether it is qs2, rds or other; this is necessary for "change cacheSaveFormat"
+      csf <- CacheStoredFile(cachePath = repo, cacheId = outputHash, cacheSaveFormat = "check")
+
+      if (all(file.exists(csf))) {
+        dtFile <- CacheDBFileSingle(cachePath = repo, cacheId = outputHash)
+
+        if (!file.exists(dtFile)) { # check first for wrong rds vs qs2
+          dtFile <- CacheDBFileSingle(cachePath = repo, cacheId = outputHash, cacheSaveFormat = "check")
+          fe <- file.exists(dtFile)
+          if (isTRUE(!(fe))) { # still doesn't == means it is broken state
+            warning(
+              "The Cache file exists for ", outputHash, ", but there is no database entry for it; removing ",
+              "the file and rerunning the call"
+            )
+            unlink(csf)
+            dtFile <- NULL
+          } else if (length(fe) > 1) { # has both the qs2 and rds dbFile
+            browser()
+          }
+        }
+
+        isInRepo <- if (!is.null(dtFile)) {
+          loadFile(dtFile,
+                   cacheId = outputHash, cachePath = repo, # in case it needs swapCacheFormat
+                   drv = drv, conn = conn, verbose = verbose)
+        } else {
+          NULL
+        }
+      } else {
+        isInRepo <- data.table::copy(.emptyCacheTable)
+      }
+    }
+    fullCacheTableForObj <- isInRepo
+    if (NROW(isInRepo) > 1) isInRepo <- isInRepo[NROW(isInRepo), ]
+    if (NROW(isInRepo) > 0) {
+      # browser(expr = exists("._Cache_4"))
+      cachePath <- repo
+      break
+    }
+    tries <- tries + 1
+  }
+  list(
+    isInRepo = isInRepo, dbTabName = dbTabNam, fullCacheTableForObj = fullCacheTableForObj,
+    cachePath = repo
+  )
+}
+
+
+
+
+#' Search for objects in the call stack
+#'
+#' Normally, this is only used in special, advanced uses. The standard approach
+#' to getting an object from an environment in the call stack is to explicitly
+#' pass it into the function.
+#'
+#' @param obj Character string. The object name to search.
+#' @param startingEnv An environment to start searching in.
+#'
+#' @return The environment in which the object exists. It will return the
+#' first environment it finds, searching outwards from where the function is used.
+#' @export
+.whereInStack <- function(obj, startingEnv = parent.frame()) {
+  foundStarting <- FALSE
+  snf <- sys.nframe()
+  for (i in 1:snf) {
+    testEnv <- sys.frame(-i)
+    if (!foundStarting) {
+      if (identical(testEnv, startingEnv)) {
+        foundStarting <- TRUE
+      } else {
+        next
+      }
+    }
+    fn <- if (R.version$minor < "1.0" && R.version$major <= "4") { # faster than any other approach
+      get0(as.character(parse(text = obj)), testEnv, inherits = FALSE)
+    } else {
+      get0(obj, testEnv, inherits = FALSE) # much faster; only works R >= 4.1
+    }
+    if (!is.null(fn)) {
+      break
+    }
+  }
+  if (identical(testEnv, .GlobalEnv) && identical(i, snf))
+    testEnv <- NULL
+  return(testEnv)
+}
+
+browserCond <- function(expr) {
+  any(startsWith(ls(.GlobalEnv), expr))
+}
+
+spatVectorNamesForCache <- c("x", "type", "atts", "crs")
+
+
+addCacheAttr <- function(output, .CacheIsNew, outputHash, FUN) {
+  output <- .setSubAttrInList(output, ".Cache", "newCache", .CacheIsNew)
+  attr(output, "tags") <- paste0("cacheId:", outputHash)
+  attr(output, callInCache) <- ""
+  if (!identical(attr(output, ".Cache")$newCache, .CacheIsNew)) {
+    stop("attributes are not correct 3")
+  }
+  if (!identical(attr(output, callInCache), "")) {
+    stop("attributes are not correct 4")
+  }
+  if (!identical(attr(output, "tags"), paste0("cacheId:", outputHash))) {
+    stop("attributes are not correct 5")
+  }
+
+  if (isS4(FUN)) {
+    attr(output, "function") <- FUN@generic
+    if (!identical(attr(output, "function"), FUN@generic)) {
+      stop("There is an unknown error 03")
+    }
+  }
+  output
+}
+
+
+.objectSizeMinForBig <- 5e6
+
+cacheIdCheckInCache <- function(cacheId, calculatedCacheId, .functionName,
+                                verbose) {
+  sc <- NULL
+  if (!is.null(cacheId)) {
+    if  (identical(cacheId, "previous")) {
+      sc <- getPreviousEntryInCache(.functionName, cacheId, verbose)
+    } else {
+      outputHashManual <- cacheId
+      sc <- list(1)
+      if (identical(outputHashManual, calculatedCacheId)) {
+        messageCache(.message$cacheIdSameTxt, verbose = verbose)
+      } else {
+        if (!is.null(calculatedCacheId)) {
+          messageCache(.message$cacheIdNotSameTxt(cacheId), verbose = verbose)
+        } else {
+          messageCache(.message$cacheIdNotAssessed(cacheId), verbose = verbose)
+        }
+      }
+      attr(sc, "cacheId") <- cacheId
+      if (NROW(sc) == 0)
+        sc <- NULL
+
+    }
+  }
+
+  sc
+
+}
+
+
+checkOverlappingArgs <- function(CacheMatchedCall, forms, dotsCaptured, functionName,
+                                 FUNcapturedNamesEvaled, whichCache = "Cache") {
+  # Check for args that are passed to both Cache and the FUN -- if any overlap; pass to both
+  possibleOverlap <- if (identical(whichCache, "Cache")) .namesCacheFormals else .namescache2Formals # names(formals(args(Cache)))
+  if (!is.call(CacheMatchedCall[["FUN"]])) {
+    possibleOverlap <- intersect(names(CacheMatchedCall), possibleOverlap)
+    actualOverlap <- intersect(names(forms), possibleOverlap)
+    if (length(actualOverlap) && !identical(list(), dotsCaptured)) { # e.g., useCache, verbose; but if not in dots, then OK because were separate already
+      message(
+        "The following arguments are arguments for both Cache and ", functionName, ":\n",
+        paste0(actualOverlap, collapse = ", "),
+        "\n...passing to both. If more control is needed, pass as a call, e.g., ",
+        "Cache(", functionName, "(...))"
+      )
+      overlappingArgsAsList <- as.list(CacheMatchedCall)[actualOverlap]
+      FUNcapturedNamesEvaled <- as.call(append(as.list(FUNcapturedNamesEvaled), overlappingArgsAsList))
+    }
+  }
+  FUNcapturedNamesEvaled
+}
+
+
+
+verboseAppendOrCreateDF <- function(verboseDF) {
+  if (exists("verboseTiming", envir = .reproEnv, inherits = FALSE)) {
+    verboseDF$functionName <- paste0("  ", verboseDF$functionName)
+    .reproEnv$verboseTiming <- rbind(.reproEnv$verboseTiming, verboseDF)
+  } else {
+    .reproEnv$verboseTiming <- verboseDF
+  }
+}
+
+
+
+checkConns <- function(cachePaths, conn) {
+  conns <- list()
+  if (!is.null(conn)) { # if the conn was passed by user
+    if (!is.list(conn)) {
+      conn <- list(conn)
+    }
+    if (!identical(length(cachePaths), length(conn))) {
+      stop("conn and cachePath are both provided, but are different lengths which is not allowed")
+    }
+    names(conn) <- cachePaths
+    conns <- conn
+  }
+}
+
+
+createConns <- function(cachePath, conns, drv,
+                        verbose = getOption("reproducible.verbose")) {
+  if (useDBI()) {
+    drv <- getDrv(drv)
+    if (is.null(conns[[cachePath]])) {
+      conns[[cachePath]] <- dbConnectAll(drv, cachePath = cachePath)
+      RSQLite::dbClearResult(RSQLite::dbSendQuery(conns[[cachePath]], "PRAGMA busy_timeout=5000;"))
+      RSQLite::dbClearResult(RSQLite::dbSendQuery(conns[[cachePath]], "PRAGMA journal_mode=WAL;"))
+    }
+  }
+
+  isIntactRepo <- CacheIsACache(
+    cachePath = cachePath, drv = drv, create = TRUE,
+    conn = conns[[cachePath]], verbose = verbose
+  )
+  if (any(!isIntactRepo)) {
+    ret <- createCache(cachePath,
+                       drv = drv, conn = conns[[cachePath]],
+                       force = isIntactRepo
+    )
+  }
+  conns
+}
+
+getHashFromDB <- function(tries, conn, drv, repo, dbTabNam, outputHash) {
+  if (tries > 1) {
+    DBI::dbDisconnect(conn)
+    conn <- dbConnectAll(drv, cachePath = repo)
+  }
+  qry <- glue::glue_sql("SELECT * FROM {DBI::SQL(glue::double_quote(dbTabName))} where \"cacheId\" = ({outputHash})",
+                        dbTabName = dbTabNam,
+                        outputHash = outputHash,
+                        .con = conn
+  )
+  res <- retry(
+    retries = 15, exponentialDecayBase = 1.01,
+    quote(DBI::dbSendQuery(conn, qry))
+  )
+  isInRepo <- setDT(DBI::dbFetch(res))
+  DBI::dbClearResult(res)
+  isInRepo
+}
+
+getPreviousEntryInCache <- function(.functionName, verbose, data.table, setorderv, tagKey, cacheId) {
+  sc <- showCache(fun = .functionName, verbose = -2)
+  if (NROW(sc)) {
+    messageCache("cacheId is 'previous' meaning it will recover the most recent ",
+                 "cache item (accessed) that matches on .functionName: ",
+                 .messageFunctionFn(.functionName), "\nPlease ensure ",
+                 "the function name is precise enough for this behaviour", verbose = verbose)
+    outputHashNew <- data.table::setorderv(sc[tagKey == "accessed"], "tagValue", order = -1L)
+    outputHash <- outputHashNew$cacheId[1]
+    sc <- sc[cacheId %in% outputHash, ]
+    attr(sc, "cacheId") <- outputHash
+    # sc <- showCacheFast(cacheId = outputHash)
+  } else {
+    sc <- NULL
+  }
+}
+
+callInCache <- "callInCache"
+dotFunTxt <- ".FUN"
