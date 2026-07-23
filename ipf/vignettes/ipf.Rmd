@@ -1,0 +1,246 @@
+---
+title: "Getting Started with ipf"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Getting Started with ipf}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = '#>'
+)
+
+```
+
+## Overview
+
+Survey samples rarely match the population perfectly on key demographics.
+**Raking** (iterative proportional fitting) adjusts case weights so that the weighted sample margins match known population targets.
+`ipf` makes this fast by using Rust to perform all computations.
+
+This vignette walks through a complete raking workflow using the bundled `anes24` dataset, which is taken from a subset of the 2024 American National Election Study <https://electionstudies.org/data-center/2024-time-series-study/>.
+
+## Setup
+
+```{r setup}
+library(ipf)
+library(tibble)
+data(anes24)
+```
+
+The data contains `r nrow(anes24)` respondents from the ANES 2024 face-to-face sample:
+
+```{r data-overview}
+anes24
+```
+
+## Inspect data
+
+Before writing targets, inspect the levels in your sample and see where values are missing:
+
+```{r levels-and-missing}
+table(anes24$sex, useNA = 'ifany')
+table(anes24$race, useNA = 'ifany')
+table(anes24$income, useNA = 'ifany')
+```
+
+When you define targets, the target names must match the data values exactly.
+By default, `NA` values are ignored for that variable during raking.
+If you use `na_method = 'bucket'`, `ipf` treats missing values as an implicit extra category and preserves their total weight while rescaling the named targets to the remaining nonmissing weight mass.
+
+## Define population targets
+
+Targets are a named list of named numeric vectors.
+Each vector's names must match the levels in your data, and the values should be proportions summing to 1.
+
+```{r targets}
+targets <- list(
+  sex = c(Male = 0.472, Female = 0.528),
+  race = c(
+    White = 0.706,
+    Black = 0.121,
+    Hispanic = 0.107,
+    Asian = 0.047,
+    Other = 0.019
+  ),
+  income = c(
+    'Under $50k' = 0.151,
+    '$50k-$100k' = 0.294,
+    'Over $100k' = 0.555
+  )
+)
+```
+
+If your targets don't sum to 1, `ipf` will normalize them automatically with a warning.
+
+## Rake
+
+The main function is `rake()`:
+```{r rake-basic}
+result <- rake(anes24, targets, cap = NULL)
+result
+```
+
+`result` is an `ipf_rake` object containing the weights and diagnostics.
+
+If you want missing values in a raking variable to act like their own implicit category, use `na_method = 'bucket'`:
+
+```{r bucket}
+bucketed <- rake(anes24, targets, cap = NULL, na_method = 'bucket')
+bucketed
+```
+
+If you already have design weights, pass them through `base_weights`:
+
+```{r base-weights}
+base_w <- ifelse(anes24$sex == 'Female', 1.1, 0.9)
+base_w[is.na(base_w)] <- 1
+
+base_weighted <- rake(anes24, targets, base_weights = base_w, cap = NULL)
+base_weighted
+```
+
+## Inspect results
+
+### Design effect
+
+The design effect measures how much the weighting inflates variance.
+A deff of 1.0 means no inflation (uniform weights).
+Higher values mean less effective data.
+
+```{r deff}
+design_effect(result$weights)
+```
+
+### Per-variable diagnostics
+
+`summary()` shows a full diagnostic report:
+
+```{r summary}
+summary(result)
+```
+
+The **residual discrepancy** column shows how close the weighted distribution is to the target.
+
+### Tidy output
+
+For programmatic use, the `broom`-style methods return `tibble`s:
+
+```{r tidy}
+# One row per variable-level
+tidy(result)
+
+# One-row summary
+glance(result)
+```
+
+### Augmenting the data
+
+To use the weights in downstream analyses, attach them to your data:
+
+```{r augment}
+weighted_data <- augment(result)
+head(weighted_data)
+```
+
+The `.weight` column can then be used in downstream analyses.
+
+For example, you can compare an estimate before and after weighting:
+
+```{r presidential-comparison}
+presidential_data <- subset(weighted_data, !is.na(presidential))
+
+presidential_unweighted <- prop.table(table(presidential_data$presidential))
+
+presidential_weighted <- aggregate(
+  .weight ~ presidential,
+  presidential_data,
+  sum
+)
+presidential_weighted$weighted_pct <- presidential_weighted$.weight /
+  sum(presidential_weighted$.weight)
+
+presidential_compare <- tibble::tibble(
+  presidential = presidential_weighted$presidential,
+  unweighted_pct = as.numeric(presidential_unweighted[
+    presidential_weighted$presidential
+  ]),
+  weighted_pct = presidential_weighted$weighted_pct
+)
+
+presidential_compare
+```
+
+## Advanced options
+
+### Weight bounding
+
+By default, weights are capped at 5.
+Tighter bounds reduce extreme weights but can leave more residual mismatch.
+
+```{r cap}
+# Unbounded fit from above
+range(result$weights)
+design_effect(result$weights)
+
+# Default cap
+default_bounded <- rake(anes24, targets)
+range(default_bounded$weights)
+design_effect(default_bounded$weights)
+
+# Tighter cap
+tight <- rake(anes24, targets, cap = 3)
+range(tight$weights)
+design_effect(tight$weights)
+
+# Or specify both min and max bounds
+bounded <- rake(anes24, targets, bounds = c(0.3, 3))
+range(bounded$weights)
+```
+
+### Variable selection
+
+With many potential raking variables, you can let `ipf` select only the most discrepant ones:
+
+```{r var-selection}
+targets_many <- list(
+  sex = c(Male = 0.472, Female = 0.528),
+  race = c(
+    White = 0.706,
+    Black = 0.121,
+    Hispanic = 0.107,
+    Asian = 0.047,
+    Other = 0.019
+  ),
+  income = c('Under $50k' = 0.151, '$50k-$100k' = 0.294, 'Over $100k' = 0.555),
+  married = c(
+    Married = 0.58,
+    Widowed = 0.06,
+    Divorced = 0.10,
+    Separated = 0.01,
+    'Never married' = 0.25
+  )
+)
+
+# Only rake on variables where discrepancy exceeds 5%
+result_pct <- rake(anes24, targets_many, type = 'pctlim', pctlim = 0.05)
+result_pct$vars_used
+```
+
+Use `type = 'nlim'` to select the top N most discrepant variables, or `iterate = TRUE` to re-check after each round and add newly discrepant variables.
+
+### Checking discrepancies directly
+
+You can inspect raw discrepancy scores without raking:
+
+```{r discrepancy}
+find_discrepant_vars(
+  anes24,
+  targets_many,
+  weights = rep(1, nrow(anes24)),
+  choosemethod = 'total'
+)
+```
