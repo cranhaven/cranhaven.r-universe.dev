@@ -1,0 +1,2 @@
+resetPlot <- function()
+    grid.newpage()
