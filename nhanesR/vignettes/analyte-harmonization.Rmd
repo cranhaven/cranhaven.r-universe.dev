@@ -1,0 +1,646 @@
+---
+title: "Navigating Variable Name Changes and Analyte Gaps in NHANES"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Navigating Variable Name Changes and Analyte Gaps in NHANES}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment  = "#>",
+  eval     = FALSE
+)
+```
+
+## The problem
+
+### The quality gap in published NHANES research
+
+NHANES is one of the most accessible large-scale epidemiological datasets in
+existence, and that accessibility has generated a publication explosion.
+Suchak et al. (2025) analysed 341 NHANES single-factor analyses published
+over the past decade and documented a sharp acceleration: from an average of
+four papers per year in 2014–2021 to 190 papers in 2024 alone, with 92% of
+manuscripts in 2021–2024 carrying a primary author affiliation in China and a
+median publishing journal impact factor of 3.6. NCHS — the agency that
+produces NHANES — responded in January 2026 with an explicit quality
+framework whose opening statement acknowledges that "an exponential rise in
+NHANES-based studies has raised concerns about the publication of low-quality
+studies driven by freely available data and new artificial intelligence tools"
+(NCHS 2026).
+
+The methodological failures Suchak et al. documented are consistent: analyses
+restricted to a narrow date range without justification, failure to apply
+survey weights or specify complex survey design variables (PSU and strata),
+single-factor exposure models that treat a multifactorial outcome as if one
+variable explains it, and no correction for multiple comparisons. NCHS's six
+quality criteria map directly onto these failures — correct weight application,
+incorporation of survey design variables, use of bridging equations for
+cross-cycle laboratory method changes, and justification for any restricted
+date range.
+
+The barrier to meeting these criteria is partly technical: NHANES data are
+distributed as hundreds of separate SAS transport files with inconsistent
+variable naming across cycles, and correctly pooling even a handful of
+analytes across the full available date range requires resolving dozens of
+file-variable pairs before writing a single line of analysis code. That
+navigation burden is what makes it easier to grab a single recent cycle
+with a convenient variable name than to assemble the full longitudinal record
+the dataset supports. `nhanesR` is designed to remove that barrier.
+
+### Two structural barriers to full-cycle, properly-weighted analyses
+
+NHANES releases data in two-year cycles. Each cycle is a separate file with a
+separate name, and the variables inside those files are not guaranteed to be
+named consistently from one cycle to the next. At the same time, not every
+analyte is measured in every cycle: some are added partway through a survey
+programme, some are dropped when funding changes, and some are present in
+most cycles but missing from one or two for reasons that are not always
+documented.
+
+A researcher building a multi-cycle analytic dataset therefore faces two
+interleaved problems:
+
+1. **Name drift.** The variable recording a given measurement may be named
+   differently across cycles — sometimes a prefix change (`LBXS` → `LBDS`),
+   sometimes a case change (`MCQ160L` → `MCQ160l`), sometimes a completely
+   different name for what is conceptually the same question.
+
+2. **Availability gaps.** An analyte that is present in seven of eight cycles
+   looks like complete data in any individual cycle but requires careful
+   bookkeeping when cycles are pooled. Assuming an analyte is present and
+   merging on `SEQN` alone will silently produce `NA` for the missing cycle
+   rather than an error.
+
+Together, these problems mean that pooling even four to eight NHANES cycles
+for a multi-analyte analysis requires manually inspecting dozens of data
+dictionaries, tracking which file each variable lives in for each cycle, and
+writing separate harmonisation code for each problematic transition. For a
+suite of eight analytes spanning eight cycles this amounts to checking and
+reconciling roughly 64 file-variable pairs before writing a single line of
+analysis code.
+
+This vignette shows how `nhanesR` addresses both problems using a realistic
+example drawn from a multi-cycle hepatic biomarker mortality analysis.
+
+### A pragmatic, hypothesis-first approach
+
+The package is designed around a simple workflow philosophy: formulate the
+scientific hypothesis first, then retrieve exactly the variables that hypothesis
+requires. The alternative — downloading a comprehensive set of NHANES files
+first and then deciding what to analyse — forces the researcher to navigate the
+full complexity of the NHANES catalogue before asking a single epidemiological
+question. In practice, most analyses require a handful of analytes from a
+defined set of cycles. `nhanesR` is optimised for that case: a researcher who
+needs GGT, AST, and ALP for a hepatic mortality study should be able to
+download exactly those analytes for exactly the relevant cycles in a handful of
+function calls, without first building a general-purpose NHANES database.
+
+This philosophy also shapes how the package handles naming ambiguity.
+Researchers who formulate their hypothesis in clinical terms ("I need alkaline
+phosphatase") benefit more from a search-by-description interface than from
+one that requires knowing in advance whether the variable is named `LBXSAPSI`
+or `LBDSAPSI` in a given cycle. The examples below are structured accordingly:
+start with a clinical or scientific question, use `nhanes_search_variables()`
+to resolve the NHANES representation, then download.
+
+---
+
+## The analytic panel
+
+The analysis tracks eight biomarkers across the ten NHANES cycles from
+1999–2018 that contain linked mortality follow-up:
+
+| Analyte | Primary variable | Cycles available | Known complication |
+|---|---|---|---|
+| GGT | LBXSGTSI | 10 (1999–2018) | **CDC catalog gap: 1999-2002 absent from variable search; download Lab18/L40_B directly** |
+| ALT | LBXSATSI | 10 (1999–2018) | Same CDC catalog gap as GGT |
+| AST | LBXSASSI | 9 (1999–2018 excl. 2007–2008) | Same catalog gap; also **missing from 2007–2008** |
+| ALP | LBXSAPSI / LBDSAPSI | 6 (1999–2004, 2013–2018) | Same catalog gap for 1999-2002; **prefix change; missing 2005–2012** |
+| Total cholesterol | LBXTC | 10 (1999–2018) | Consistent |
+| Albumin | LBXSAL | 10 (1999–2018) | Consistent |
+| Total bilirubin | LBXSTB | 10 (1999–2018) | Consistent |
+| Serum creatinine | LBXSCR | 10 (1999–2018) | Consistent |
+| Liver disease (ever) | MCQ160L / MCQ160l | 8 (2003–2018) | **Case changes at 2011–2012** |
+| Liver disease (current) | MCQ170L / MCQ170l | 8 (2003–2018) | **Case changes at 2011–2012** |
+
+### The CDC catalog gap for 1999–2002 BIOPRO data
+
+`nhanes_variable_map()` and `nhanes_search_variables()` scrape the CDC online
+variable catalog, which does not list `LBXSGTSI`, `LBXSATSI`, `LBXSASSI`, or
+`LBXSAPSI` for the 1999-2000 (Lab18) and 2001-2002 (L40_B) cycles — even
+though those variables are present in the XPT files. The catalog instead
+returns `LB2SGTSI` (a reliability-substudy variable from a second blood draw),
+which `nhanes_variable_map()` correctly filters out as a duplicate-participant
+file.
+
+The consequence is that a naive call to `nhanes_download_analyte("glutamyl")`
+will retrieve GGT for 2003–2018 only, silently omitting the 1999–2002 data.
+For GGT and ALT this represents approximately 9,800 additional participants
+with complete follow-up — the longest follow-up in the dataset.
+
+The workaround is to download the two early files directly:
+
+```{r early-biopro}
+library(haven)
+
+lab18 <- read_xpt(url(
+  "https://wwwn.cdc.gov/Nchs/Data/Nhanes/Public/1999/DataFiles/Lab18.xpt"))
+l40b  <- read_xpt(url(
+  "https://wwwn.cdc.gov/Nchs/Data/Nhanes/Public/2001/DataFiles/L40_B.xpt"))
+
+early_df <- rbind(
+  data.frame(SEQN = as.character(lab18$SEQN),
+             GGT  = lab18$LBXSGTSI,
+             ALT  = lab18$LBXSATSI,
+             AST  = lab18$LBXSASSI,
+             ALP  = lab18$LBXSAPSI),
+  data.frame(SEQN = as.character(l40b$SEQN),
+             GGT  = l40b$LBXSGTSI,
+             ALT  = l40b$LBXSATSI,
+             AST  = l40b$LBXSASSI,
+             ALP  = l40b$LBDSAPSI)   # prefix change: LBDS- not LBXS-
+)
+```
+
+Note that L40_B already embeds the cycle suffix (`_B`) in its file name; the
+nhanesR URL builder would append `_B` a second time, producing `L40_B_B.xpt`
+(HTTP 404). The direct URL is required.
+
+Without a harmonisation layer, a researcher would need to locate each of these
+variables in each cycle's data dictionary, note the file it lives in, and
+write cycle-specific download and rename code. The following sections show
+what that discovery and download process looks like with `nhanesR`.
+
+---
+
+## Step 1: Discovering where an analyte lives
+
+`nhanes_variable_map()` takes a variable name (or a keyword) and returns a
+table showing every cycle in which it appears and the file that contains it.
+
+### Example 1: A well-behaved analyte
+
+```{r map-ggt}
+library(nhanesR)
+
+nhanes_variable_map("LBXSGTSI")
+```
+
+GGT (`LBXSGTSI`) appears in all eight cycles under the same name in the
+`BIOPRO` family of files. This is the easy case: a single call to
+`nhanes_download_analyte()` with `cycles = "all"` will retrieve it without
+any further bookkeeping.
+
+### Example 2: A variable with a prefix change
+
+```{r map-alp}
+nhanes_variable_map("LBXSAPSI")
+nhanes_variable_map("LBDSAPSI")
+```
+
+Alkaline phosphatase (ALP) illustrates the prefix-change problem. The primary
+variable `LBXSAPSI` is present in some cycles; `LBDSAPSI` appears in others.
+Neither call alone retrieves the full picture. A researcher who downloads only
+`LBXSAPSI` will silently obtain `NA` for any cycle where `LBDSAPSI` is the
+recorded name.
+
+`nhanes_search_variables()` resolves this by searching on the conceptual
+description rather than the exact variable name:
+
+```{r search-alp}
+nhanes_search_variables("alkaline phosphatase", component = "Laboratory")
+```
+
+This returns both `LBXSAPSI` and `LBDSAPSI` with their respective cycle
+coverage, making the naming transition visible before any data is downloaded.
+When `nhanes_download_analyte()` is called with the search term, it
+automatically applies both names and returns a harmonised column regardless
+of which prefix the underlying file uses.
+
+### Example 3: An analyte missing from one cycle
+
+```{r map-ast}
+nhanes_variable_map("LBXSASSI")
+```
+
+AST (`LBXSASSI`) is present in seven of the eight GGT-era cycles but absent
+from 2007–2008. The variable map makes the gap explicit: the 2007–2008 row
+is simply not returned. A researcher who builds a pooled dataset assuming AST
+is universally available will find that all 2007–2008 participants have `NA`
+for AST — which is correct behaviour, but only interpretable if the gap is
+known in advance.
+
+### Example 4: An analyte confined to a few cycles
+
+```{r map-pth}
+nhanes_variable_map("LBXPT21")
+```
+
+Parathyroid hormone (`LBXPT21`) was measured in only two NHANES cycles:
+2003–2004 and 2005–2006. The variable map returns exactly two rows. Any
+analysis requiring PTH is therefore limited to those two cycles, and any
+attempt to merge PTH with ALP (available in 1999–2004 and 2013–2018)
+will yield a single-cycle overlap (2003–2004) — a constraint
+that is immediately visible from the two variable maps but would otherwise
+require manually checking both data dictionaries.
+
+### Example 5: A questionnaire variable with a case change
+
+```{r search-liver}
+nhanes_search_variables("liver condition", component = "Questionnaire")
+```
+
+The self-reported liver disease question (`MCQ160L`: "Has a doctor ever told
+you that you had any kind of liver condition?") changes case at the 2011–2012
+cycle: `MCQ160L` (uppercase L) in 2003–2010, `MCQ160l` (lowercase l) in
+2011–2018. Both names appear in the search results, each with its own set of
+cycles. `nhanes_search_variables()` treats them as two distinct records,
+making the transition explicit and allowing the researcher to download both
+and stack them under a unified column name.
+
+---
+
+## Step 2: Downloading with automatic harmonisation
+
+`nhanes_download_analyte()` takes a search term or variable name and a vector
+of cycles, locates the correct file and variable for each cycle, downloads
+(or reads from cache), and returns a named list of data frames — one per
+cycle — each containing `SEQN`, the cycle label, and the harmonised analyte
+column.
+
+### Downloading ALP across all available cycles
+
+```{r download-alp}
+alp_cycles <- c("1999-2000", "2001-2002", "2003-2004",
+                "2013-2014", "2015-2016", "2017-2018")
+
+alp_list <- nhanes_download_analyte(
+  "alkaline phosphatase",
+  cycles    = alp_cycles,
+  component = "Laboratory"
+)
+
+# Each element is a data frame for one cycle
+lapply(alp_list, head, 3)
+```
+
+Internally, `nhanes_download_analyte()` resolves the `LBXSAPSI` /
+`LBDSAPSI` prefix ambiguity for each cycle independently. The returned column
+is named `ALP` (or whichever canonical name was found first) regardless of
+which prefix the underlying file uses. The researcher never needs to know
+which prefix applies to which cycle.
+
+```{r harmonise-alp}
+alp_df <- do.call(rbind, lapply(alp_list, function(df) {
+  # Identify whichever column was returned — LBXSAPSI or LBDSAPSI
+  v <- intersect(c("LBXSAPSI", "LBDSAPSI"), names(df))
+  data.frame(
+    SEQN = as.character(df$SEQN),
+    ALP  = df[[v[1]]],
+    stringsAsFactors = FALSE
+  )
+}))
+
+cat("ALP rows:", nrow(alp_df), "  non-NA:", sum(!is.na(alp_df$ALP)), "\n")
+```
+
+### Downloading ALT across all available cycles
+
+ALT (`LBXSATSI`) is the cleanest case in this panel: a single variable name
+in the BIOPRO family of files across all eight GGT-era cycles (2003–2018),
+with no prefix change and no gaps.
+
+```{r download-alt}
+alt_cycles <- c("2003-2004", "2005-2006", "2007-2008", "2009-2010",
+                "2011-2012", "2013-2014", "2015-2016", "2017-2018")
+
+alt_list <- nhanes_download_analyte(
+  "alanine",
+  cycles    = alt_cycles,
+  component = "Laboratory"
+)
+
+alt_df <- do.call(rbind, lapply(alt_list, function(df) {
+  data.frame(SEQN = as.character(df$SEQN), ALT = df$LBXSATSI,
+             stringsAsFactors = FALSE)
+}))
+
+cat("ALT rows:", nrow(alt_df), "  non-NA:", sum(!is.na(alt_df$ALT)), "\n")
+```
+
+Note that 1999–2002 participants lack ALT entirely (the BIOPRO-format
+comprehensive metabolic panel was not introduced until the 2003 redesign).
+Merging `alt_df` into a dataset that spans 1999–2018 will correctly produce
+`NA` for those earlier rows.
+
+### Downloading AST across its available cycles
+
+```{r download-ast}
+# Explicitly exclude 2007-2008: nhanes_variable_map showed no coverage there
+ast_cycles <- c("2003-2004", "2005-2006", "2009-2010", "2011-2012",
+                "2013-2014", "2015-2016", "2017-2018")
+
+ast_list <- nhanes_download_analyte(
+  "aspartate",
+  cycles    = ast_cycles,
+  component = "Laboratory"
+)
+
+ast_df <- do.call(rbind, lapply(ast_list, function(df) {
+  v <- intersect(c("LBXSASSI", "LBDSASSI"), names(df))
+  data.frame(SEQN = as.character(df$SEQN), AST = df[[v[1]]],
+             stringsAsFactors = FALSE)
+}))
+```
+
+By passing only the seven cycles where AST is known to exist, the download
+skips 2007–2008 cleanly. Merging this `ast_df` into the analytic base by
+`SEQN` will produce `NA` for 2007–2008 participants — which is the correct
+representation of the gap, not missing data due to a merge error.
+
+### Downloading the questionnaire variable with a case change
+
+Because `nhanes_search_variables()` returns `MCQ160L` and `MCQ160l` as
+separate records, they must be downloaded separately and then combined:
+
+```{r download-liver}
+# Early cycles: uppercase L
+mcq_early <- nhanes_download_analyte(
+  "MCQ160L",
+  cycles    = c("2003-2004", "2005-2006", "2007-2008", "2009-2010"),
+  component = "Questionnaire"
+)
+df_early <- do.call(rbind, lapply(mcq_early, function(df) {
+  data.frame(SEQN          = as.character(df$SEQN),
+             liver_ever    = df$MCQ160L,
+             liver_current = df$MCQ170L,
+             stringsAsFactors = FALSE)
+}))
+
+# Late cycles: lowercase l
+mcq_late <- nhanes_download_analyte(
+  "MCQ160l",
+  cycles    = c("2011-2012", "2013-2014", "2015-2016", "2017-2018"),
+  component = "Questionnaire"
+)
+df_late <- do.call(rbind, lapply(mcq_late, function(df) {
+  data.frame(SEQN          = as.character(df$SEQN),
+             liver_ever    = df$MCQ160l,
+             liver_current = df$MCQ170l,
+             stringsAsFactors = FALSE)
+}))
+
+mcq_df <- rbind(df_early, df_late)
+cat("Liver disease history rows:", nrow(mcq_df), "\n")
+cat("Ever reported (code 1):",
+    sum(mcq_df$liver_ever == 1, na.rm = TRUE), "\n")
+```
+
+The stacking of `df_early` and `df_late` under a common `liver_ever` column
+name produces a single consistent variable spanning all eight cycles, with the
+case-change transition completely hidden from the downstream analysis.
+
+### Example 6: Disambiguation by component — serum versus urine albumin
+
+A subtler naming problem arises when a generic search term matches variables
+from conceptually different specimen types. Searching for "albumin" without
+specifying a component returns results from both the laboratory and examination
+files:
+
+```{r search-albumin}
+nhanes_search_variables("albumin")
+```
+
+The results include at minimum:
+
+| Variable | Description | Component |
+|---|---|---|
+| `LBXSAL` | Albumin, serum (g/dL) | Laboratory |
+| `URXUMA` | Albumin, urine (mg/L) | Examination |
+
+These measure fundamentally different things. Serum albumin (`LBXSAL`) reflects
+hepatic synthetic capacity and nutritional status; it is the variable relevant
+to liver function panels and MELD-score work. Urinary albumin (`URXUMA`)
+reflects glomerular filtration integrity; it is the variable relevant to
+diabetic nephropathy and CKD screening. A data scientist or research assistant
+unfamiliar with clinical laboratory practice may not recognise that these are
+distinct assays on distinct specimen types returned under the same generic
+search term.
+
+Specifying `component = "Laboratory"` narrows the results:
+
+```{r search-albumin-lab}
+nhanes_search_variables("albumin", component = "Laboratory")
+```
+
+This returns only `LBXSAL`, eliminating the urine variable from consideration.
+The component argument is therefore not merely a performance optimisation — it
+is a clinical guard against inadvertently merging the wrong albumin into a
+hepatic or renal endpoint analysis.
+
+---
+
+## Step 3: Assembling the multi-analyte base
+
+With each analyte downloaded and harmonised, all are merged into the analytic
+base by `SEQN`:
+
+```{r assemble}
+base_full <- readRDS("~/Documents/R.code/nhanesR/analytic_survival.rds")
+
+# Standard eligibility filters
+base <- base_full[
+  !is.na(base_full$statin)   & !base_full$statin        &
+  !is.na(base_full$ELIGSTAT) & base_full$ELIGSTAT == 1  &
+  !is.na(base_full$time)     & base_full$time > 2, ]
+base$time_lm   <- base$time - 2
+base$WTMEC_adj <- base$WTMEC2YR / 8   # 8 post-Census-2000 cycles
+
+# Merge each analyte; all.x = TRUE preserves all base rows
+base <- merge(base, alt_df,  by = "SEQN", all.x = TRUE)
+base <- merge(base, ast_df,  by = "SEQN", all.x = TRUE)
+base <- merge(base, alp_df,  by = "SEQN", all.x = TRUE)
+base <- merge(base, mcq_df,  by = "SEQN", all.x = TRUE)
+
+# Verify availability by cycle
+cat("\nAST availability by cycle:\n")
+print(table(base$cycle, !is.na(base$AST)))
+
+cat("\nALP availability by cycle:\n")
+print(table(base$cycle, !is.na(base$ALP)))
+```
+
+The cycle-by-availability table makes the gap structure immediately visible:
+AST shows `FALSE` for all 2007–2008 rows; ALP shows `FALSE` for the four
+cycles in which it was not measured. These are expected, documented absences
+— not merge failures.
+
+---
+
+## Step 4: Derived variables
+
+Once the base is assembled, derived variables can be computed in a single
+pass:
+
+```{r derived}
+# De Ritis ratio (requires both AST and ALT)
+base$de_ritis <- base$AST / base$ALT
+
+# MELD-XI (no INR required; bilirubin and creatinine already in base)
+# Convention: floor both inputs at 1.0 before log-transform
+base$creat_meld <- pmin(pmax(base$creatinine, 1.0), 4.0)
+base$bili_meld  <- pmax(base$bilirubin, 1.0)
+base$MELD_XI <- 5.11 * log(base$bili_meld) +
+               11.76 * log(base$creat_meld) + 9.44
+
+cat("De Ritis ratio: median",
+    round(median(base$de_ritis, na.rm = TRUE), 2),
+    " IQR", paste(round(quantile(base$de_ritis, c(0.25, 0.75), na.rm = TRUE), 2),
+                  collapse = "–"), "\n")
+
+cat("MELD-XI: 90th percentile",
+    round(quantile(base$MELD_XI, .90, na.rm = TRUE), 1), "\n")
+```
+
+---
+
+## What the manual approach looks like
+
+To illustrate the value of the harmonisation layer, consider what the
+equivalent manual workflow requires for ALP alone:
+
+1. Visit the [NHANES variable search page](https://wwwn.cdc.gov/nchs/nhanes/search/variablelist.aspx)
+   and search for "alkaline phosphatase."
+2. Note that results span two variable names (`LBXSAPSI`, `LBDSAPSI`) and
+   four files (`L40_C`, `BIOPRO_H`, `BIOPRO_I`, `BIOPRO_J`).
+3. Determine which name appears in which file for each of the four cycles.
+4. Download each file separately (or use `foreign::read.xport()` / `haven::read_xpt()`
+   on each SAS transport file after manually constructing the CDC URL).
+5. Subset each downloaded data frame to `SEQN` plus whichever ALP column
+   exists in that file.
+6. Rename the column to a common name in each subset.
+7. `rbind()` the four subsets.
+
+For an eight-analyte panel spanning eight cycles, this process is repeated
+for every analyte, with a separate check for every file-variable combination.
+The total manual effort is roughly 30–40 file inspections, 8–16 download
+calls, and 8 harmonisation code blocks before writing a single line of
+analysis code. A typo in any variable name produces silent `NA` rather than
+an error.
+
+With `nhanesR`, the same panel is assembled in eight `nhanes_download_analyte()`
+calls and eight `merge()` calls, with `nhanes_variable_map()` and
+`nhanes_search_variables()` providing explicit documentation of every naming
+transition and availability gap before any data moves.
+
+---
+
+## Using nhanesR with AI coding assistants
+
+The harmonisation layer described in this vignette removes the file-navigation
+burden, but the researcher still needs to translate a clinical question into
+the right sequence of `nhanes_variable_map()`, `nhanes_download_analyte()`,
+and merge calls — and then interpret the results, iterate on thresholds, and
+draft the analytic narrative. This is where AI coding assistants such as
+[Claude Code](https://claude.ai/code) make a practical difference.
+
+The hepatic biomarker analysis that motivates this vignette — eight analytes,
+eight cycles, cross-tabulations of ALT × AST × GGT, MELD-XI derivation, and
+cause-specific mortality decomposition — was developed interactively using
+Claude Code alongside `nhanesR`. The combination compresses a workflow that
+would conventionally take weeks of variable-chasing, file-by-file downloads,
+and iterative recoding into a session measured in hours. The reasons it works
+well are structural:
+
+- **Consistent function interfaces.** `nhanes_download_analyte()` and
+  `nhanes_variable_map()` have predictable signatures. An AI assistant can
+  generate correct calls from a plain-language description of the analyte
+  ("alkaline phosphatase, laboratory component, 2003–2018") without needing
+  to know the underlying file names.
+
+- **Transparent availability.** Because `nhanes_variable_map()` returns a
+  data frame that explicitly lists every cycle and file, an AI assistant can
+  read the output directly, identify gaps (AST absent in 2007–2008, ALP
+  absent in 2005–2006 through 2011–2012), and adjust the cycle vectors in
+  subsequent calls without the researcher having to manually inspect the CDC
+  data catalogue.
+
+- **Cached downloads.** Once a file is cached locally, re-running any step
+  is nearly instantaneous. This makes iterative exploration — trying a
+  different set of cycles, adding a new analyte, re-checking a threshold —
+  fast enough to do interactively within a conversation.
+
+- **Readable output.** The cross-tabulations, quantile summaries, and
+  distributional checks produced by the code in this vignette are plain text
+  that an AI assistant can read, interpret, and use to draft analytic
+  commentary — closing the loop between computation and narration in the same
+  session.
+
+The practical result is that the bottleneck shifts from data assembly to
+scientific thinking. Variable name drift, cycle gaps, and harmonisation
+bookkeeping — the problems this vignette addresses — are resolved at the
+function level by `nhanesR` and at the code-generation level by the AI
+assistant, leaving the researcher's attention for the epidemiological and
+clinical questions that motivated the analysis.
+
+---
+
+## Further reading
+
+**Quality framework and methodological context**
+
+- NCHS. *Guidelines for High Quality Analyses of NHANES Data.* January 2026.
+  <https://wwwn.cdc.gov/nchs/nhanes/QualityAnalysesGuidelines.aspx> —
+  NCHS's own six-criterion quality framework; directly addresses the survey
+  weight and design-variable failures documented in the literature.
+
+- Suchak T, Aliu AE, Harrison C, et al. Explosion of formulaic research
+  articles, including inappropriate study designs and false discoveries, based
+  on the NHANES US national health database. *PLoS Biol.* 2025;23(5):e3003152.
+  doi:10.1371/journal.pbio.3003152 — systematic analysis of 341 NHANES
+  single-factor analyses; key findings: 190 papers published in 2024 alone
+  (vs 4/year 2014–2021); systematic failures in survey weighting, cycle
+  selection, and multifactorial adjustment.
+
+- NHANES analytic guidelines (2013):
+  <https://wwwn.cdc.gov/nchs/nhanes/analyticguidelines.aspx>
+
+- NHANES tutorials — weighting module (multi-cycle weight construction):
+  <https://wwwn.cdc.gov/nchs/nhanes/tutorials/weighting.aspx>
+
+- CDC mortality linkage documentation:
+  <https://www.cdc.gov/nchs/linked-data/about/index.html>
+
+**Related R packages**
+
+- `nhanesA` (Endres et al., CRAN): general NHANES retrieval; no mortality
+  linkage; does not resolve variable names across early cycles (1999–2004).
+  doi:10.32614/CRAN.package.nhanesA
+
+- `nhanesdata` (Grealis et al., CRAN, February 2026): cloud-stored harmonised
+  NHANES 1999–2023; no mortality linkage.
+  doi:10.32614/CRAN.package.nhanesdata
+
+---
+
+## Summary of functions used
+
+| Function | Purpose |
+|---|---|
+| `nhanes_variable_map(var)` | Show every cycle and file containing a given variable name |
+| `nhanes_search_variables(term)` | Search variable descriptions; returns all matching names across all cycles |
+| `nhanes_download_analyte(term, cycles, component)` | Download, cache, and return a harmonised list of per-cycle data frames |
+| `nhanes_harmonize()` | Stack a list of per-cycle data frames into a single data frame with unified column names |
+| `nhanes_survival_prep()` | Merge analytic data with NCHS mortality linkage and compute follow-up times |
+
+---
+
+## Session information
+
+```{r session}
+sessionInfo()
+```
