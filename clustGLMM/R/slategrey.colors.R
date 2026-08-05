@@ -1,0 +1,1 @@
+slategrey.colors <- slategray.colors
