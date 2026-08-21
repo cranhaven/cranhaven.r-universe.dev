@@ -1,0 +1,35 @@
+#' Economic data from West Germany
+#'
+#' The data was retrieved from the E1 file of Luetkepohl (2007) and contains quarterly, seasonally adjusted data
+#' for fixed investment, disposable income, and consumption expenditures in billions of DM (Deutsche Mark, West German currency before the Euro)
+#' from the first quarter of 1960 until the fourth quarter of 1982 for West Germany.
+#' The raw data is available at \url{http://www.jmulti.de/download/datasets/e1.dat}.
+#'
+#' @docType data
+#' @keywords datasets
+#'
+#'
+#' @format A data frame with 92 rows and 10 variables:
+#'
+#' \describe{
+#'   \item{investment}{fixed investment.}
+#'   \item{income}{disposable income.}
+#'   \item{consumption}{consumption expenditures.}
+#'   \item{qtr}{time vector in quarterly intervals.}
+#'   \item{linvestment}{log of fixed investment.}
+#'   \item{dlinvestment}{first difference of the log of fixed investment.}
+#'   \item{lincome}{log of disposable income.}
+#'   \item{dlincome}{first difference of the log of disposable income.}
+#'   \item{lconsumption}{log of consumption expenditures.}
+#'   \item{dlconsumption}{first difference of the log of consumption expenditures.}
+#' }
+#'
+#' @name lutkepohl_e1
+#' @usage data(lutkepohl_e1)
+#'
+#'
+#' @references
+#'
+#' Luetkepohl, (2006). \emph{New introduction to multiple time series analysis} (2nd ed.). Berlin: Springer.
+#'
+"lutkepohl_e1"
