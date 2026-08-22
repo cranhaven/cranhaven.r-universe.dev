@@ -1,0 +1,46 @@
+
+#' @title Adaptive smoothing spline estimator for the function-on-function linear regression model
+#' @details
+#'
+#'\tabular{ll}{
+#'Package: \tab adass\cr
+#'Type: \tab Package\cr
+#'Version: \tab `r packageVersion("adass")` \cr
+#'Date: \tab  `r Sys.Date()` \cr
+#'License: \tab `r packageDescription("adass", fields="License")`\cr
+#'}
+#'
+#' @author Fabio Centofanti, Antonio Lepore, Alessandra Menafoglio, Biagio Palumbo, Simone Vantini
+#' @references
+#' Centofanti, F., Lepore, A., Menafoglio, A., Palumbo, B., Vantini, S. (2023).
+#' Adaptive Smoothing Spline Estimator for the Function-on-Function Linear Regression Model.
+#' \emph{Computational Statistics 38(1), 191–216}.
+#' @seealso \code{\link{adass.fr}},  \code{\link{adass.fr_eaass}}
+#' @examples
+#' \donttest{
+#' library(adass)
+#' data<-simulate_data("Scenario HAT",n_obs=100)
+#' X_fd=data$X_fd
+#' Y_fd=data$Y_fd
+#' basis_s <- fda::create.bspline.basis(c(0,1),nbasis = 10,norder = 4)
+#' basis_t <- fda::create.bspline.basis(c(0,1),nbasis = 10,norder = 4)
+#' mod_smooth <-adass.fr(Y_fd,X_fd,basis_s = basis_s,basis_t = basis_t,tun_par=c(10^-6,10^-6,0,0,0,0))
+#' grid_s<-seq(0,1,length.out = 10)
+#' grid_t<-seq(0,1,length.out = 10)
+#' beta_der_eval_s<-fda::eval.bifd(grid_s,grid_t,mod_smooth$Beta_hat_fd,sLfdobj = 2)
+#' beta_der_eval_t<-fda::eval.bifd(grid_s,grid_t,mod_smooth$Beta_hat_fd,tLfdobj = 2)
+#' mod_adsm<-adass.fr_eaass(Y_fd,X_fd,basis_s,basis_t,
+#'                         beta_ders=beta_der_eval_s, beta_dert=beta_der_eval_t,
+#'                         rand_search_par=list(c(-8,4),c(-8,4),c(0,0.1),c(0,4),c(0,0.1),c(0,4)),
+#'                         grid_eval_ders=grid_s, grid_eval_dert=grid_t,
+#'                         popul_size = 2,ncores=1,iter_num=1)
+#'
+#' mod_opt <-adass.fr(Y_fd, X_fd, basis_s = basis_s, basis_t = basis_t,
+#'                   tun_par=mod_adsm$tun_par_opt,beta_ders = beta_der_eval_s,
+#'                   beta_dert = beta_der_eval_t,grid_eval_ders=grid_s,grid_eval_dert=grid_t )
+#' plot(mod_opt)
+#' }
+"_PACKAGE"
+
+
+
