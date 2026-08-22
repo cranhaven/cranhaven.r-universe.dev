@@ -1,0 +1,230 @@
+#' Get assemblages from the ROAD database
+#'
+#' The \strong{\code{road_get_assemblages}} function retrieves data on assemblages from the ROAD database.
+#' The ROAD table assemblage contains information about classes of finds. An assemblage is
+#' defined as a collected find consisting of grouped classes of materials, for example:
+#' archaeological finds (including raw material, typology, technology, function, organic tools,
+#' symbolic artifacts, feature and miscellaneous finds), human remains, faunal remains or
+#' botanical remains. An assemblage comes from a single geological layer or several
+#' geological layers of a locality, whether the nature of the locality is geological,
+#' archaeological or paleontological. Each physical object contained in any assemblage
+#' can appear only once in this table.
+#' 
+#' Use parameters to filter search results by location, type, culture, assemblage
+#' category, age or omit them to have a broader result set.
+#' All parameters are optional and should be omitted or set to NULL when not used.
+#'
+#' @param continent specifies the continent(s) (e.g. Africa, Europe, Asia).
+#' Run \code{road_list_argument_values("continent")} to display possible values.
+#' The argument \code{continent} is a string (one item) or vector of strings
+#' (one or more items); defaults to NULL.
+#' @param subcontinent specifies the continental region(s) (e.g. Southern Europe).
+#' Run \code{road_list_argument_values("subcontinent")} to display possible values.
+#' The argument \code{subcontinent} is a string (one item) or vector of strings
+#' (one or more items); defaults to NULL.
+#' @param country specifies the name of the country where a locality is situated
+#' (e.g. Germany, Kenya, Saudi Arabia). Run \code{road_list_argument_values("country")}
+#' to display possible values.
+#' The argument \code{country} is a string (one item) or vector of strings
+#' (one or more items); defaults to NULL.
+#' @param locality_type specifies the type of locality (e.g. cave, rockshelter, open air).
+#' Run \code{road_list_argument_values("locality_type")} to display possible values.
+#' The argument \code{locality_type} is a string (one item) or vector of strings
+#' (one or more items); defaults to NULL.
+#' @param cultural_period specifies the main cultural epoch(s) and includes the
+#' Eurasian Paleolithic (Lower, Middle, Upper, Epi-) and the African Stone Age
+#' (Earlier, Middle, Later). Run \code{road_list_argument_values("cultural_period")}
+#' to display possible values. The argument \code{cultural_period} is a string
+#' (one item) or vector of strings (one or more items); defaults to NULL.
+#' @param technocomplex specifies an archaeological culture or named stone tool
+#' industry (e.g. Oldowan, Acheulean, Mousterian).
+#' Run \code{road_list_argument_values("technocomplex")} to display possible values.
+#' The argument \code{technocomplex} is a string (one item) or vector of strings
+#' (one or more items); defaults to NULL.
+#' @param category specifies the assemblage category with the classes
+#' human remains, raw material, typology, technology, function, organic tools,
+#' symbolic artifacts, feature, miscellaneous finds, paleofauna, animal remains,
+#' plant remains. The argument \code{category} is a string (one item) or
+#' vector of strings (one or more items); defaults to NULL.
+#' @param age_min specifies the minimum age in years before present, using 1950 CE
+#' as the baseline. If possible the argument \code{age_min} will be converted to an integer; defaults to NULL.
+#' @param age_max specifies the maximum age in years before present, using 1950 CE
+#' as the baseline. If possible the argument \code{age_max} will be converted to an integer; defaults to NULL.
+#'
+#' @return A data frame with assemblage information. Rows represent individual assemblages, columns contain:
+#' @return \code{locality_id}: The unique identifier for the locality where the assemblage was found.
+#' @return \code{continent}, \code{subcontinent}, \code{country}: The attributes specify the geopolitical information of the locality.
+#' @return \code{locality_type}: The attribute specifies the type of locality (e.g. cave, rockshelter, open air).
+#' @return \code{coord_x}, \code{coord_y}: The attributes specify the geographic coordinates (longitude and latitude) of the locality.
+#' @return \code{coordinate_source}: The source of the geographic coordinates.
+#' @return \code{assemblage_id}: The unique identifier for the assemblage.
+#' @return \code{assemblage_name}: The name or designation of the assemblage.
+#' @return \code{category}: The assemblage category (e.g., human remains, raw material, typology, paleofauna, plant remains).
+#' @return \code{age_min}: The minimum age of the assemblage in years before present (BP), based on associated geological stratigraphy.
+#' @return \code{age_max}: The maximum age of the assemblage in years before present (BP), based on associated geological stratigraphy.
+#' @return \code{geolayers}: The name(s) of the geological layer(s) associated with the assemblage.
+#' @return \code{archlayers}: The name(s) of the archaeological layer(s) associated with the assemblage.
+#' @return \code{cultural_period}: The cultural period(s) associated with the assemblage (e.g., Lower Paleolithic, Middle Stone Age).
+#' @return \code{technocomplex}: The archaeological culture(s) or stone tool industry/industries associated with the assemblage (e.g., Acheulean, Mousterian).
+#' @return \code{is_systematic}: Description of the collection method quality (excavation, survey, or opportunistic collection).
+#' @return \code{human_remains}: Logical value indicating whether the assemblage contains human remains.
+#' @return \code{paleofauna}: Logical value indicating whether the assemblage contains paleofauna.
+#' @return \code{archaeology}: Logical value indicating whether the assemblage contains archaeological finds.
+#' @return \code{plant_remains}: Logical value indicating whether the assemblage contains plant remains.
+#'
+#' @export
+#'
+#' @examples
+#' \donttest{road_get_assemblages(country = c("Germany", "France"), age_min = 300000,
+#'                      category = c("miscellaneous finds"))}
+#' \donttest{road_get_assemblages(subcontinent = c("Caucasus"), category = "human remains",
+#'                      age_max = 100000)}
+road_get_assemblages <- function(
+    continent = NULL,
+    subcontinent = NULL,
+    country = NULL,
+    locality_type = NULL,
+    cultural_period = NULL,
+    technocomplex = NULL, 
+    category = NULL,
+    age_min = NULL,
+    age_max = NULL
+)
+{
+  if (!is.null(age_min)) {
+    age_min <- as.integer(age_min)
+    if (is.na(age_min)) stop("Parameter 'age_min' could not be converted to integer.")
+  }
+  if (!is.null(age_max)) {
+    age_max <- as.integer(age_max)
+    if (is.na(age_max)) stop("Parameter 'age_max' could not be converted to integer.")
+  }
+  if (!is.null(age_min) && !is.null(age_max) && age_min > age_max)
+    stop("Parameter 'age_min' can not be bigger than 'age_max'.")
+
+  localities <- road_get_localities_internal(continent = continent,
+                                    subcontinent = subcontinent,
+                                    country = country,
+                                    locality_type = locality_type,
+                                    cultural_period = cultural_period,
+                                    technocomplex = technocomplex)
+
+  query_localities <- paste(
+    sapply(localities[cm_locality_idlocality], function(x) paste0("'", x, "'")),
+    collapse = ", "
+  )
+
+  # select fields
+  select_fields <- c(
+    paste0("assemblage.locality_idlocality AS ", cm_assemblages_locality_idlocality),
+    paste0("assemblage.idassemblage AS ", cm_assemblages_idassemblage),
+    paste0("assemblage.name AS ", cm_assemblages_name),
+    paste0("assemblage.category AS ", cm_assemblages_category),
+    paste0("MIN(geological_stratigraphy.age_min) AS ", cm_geological_stratigraphy_age_min),
+    paste0("MAX(geological_stratigraphy.age_max) AS ", cm_geological_stratigraphy_age_max),
+    paste0("STRING_AGG(DISTINCT assemblage_in_geolayer.geolayer_name, ', ') AS ", cm_assemblage_in_geolayer_geolayer_name),
+    paste0("STRING_AGG(DISTINCT assemblage_in_archlayer.archlayer_name, ', ') AS ", cm_assemblage_in_archlayer_archlayer_name),
+    paste0("STRING_AGG(DISTINCT archaeological_stratigraphy.cultural_period, ', ') AS ", cm_cultural_period),
+    paste0("STRING_AGG(DISTINCT archaeological_stratigraphy.technocomplex, ', ') AS ", cm_technocomplex)
+  )
+
+  # combine query parts
+  query <- paste(
+    # SELECT
+    "SELECT DISTINCT",
+    paste(select_fields, collapse = ", "),
+    ",",
+    "CASE",
+    "WHEN (is_systematic = 3) THEN 'the assemblage was collected from an excavation or a controlled collection procedure (e.g., dry sieving, wet screening, pollen retrieval)'",
+    "WHEN (is_systematic = 2) THEN 'the assemblage results from a survey where exact x,y-coordinates of the locality are known'",
+    "WHEN (is_systematic = 1) THEN 'the assemblage results from opportunistic or random surface collections without context'",
+    "ELSE NULL",
+    "END AS", cm_is_systematic, ", ",
+    "CASE",
+    "WHEN (assemblage.locality_idlocality, assemblage.idassemblage) IN (SELECT assemblage_idlocality, assemblage_idassemblage FROM humanremains) 
+       THEN true",
+    "ELSE false",
+    "END AS human_remains,",
+    "CASE",
+    "WHEN category LIKE '%paleofauna%' THEN true",
+    "ELSE false",
+    "END AS paleofauna,",
+    "CASE",
+    "WHEN category ~ 'raw material|symbolic artifacts|technology|typology|miscellaneous finds|feature|organic tools|function' THEN true",
+    "ELSE false",
+    "END AS archaeology,",
+    "CASE",
+    "WHEN category LIKE '%plant remains%' THEN true",
+    "ELSE false",
+    "END AS plant_remains",
+    # FROM
+    "FROM assemblage",
+    "LEFT JOIN assemblage_in_geolayer ON",
+    "assemblage.locality_idlocality = assemblage_in_geolayer.assemblage_idlocality",
+    "AND assemblage.idassemblage = assemblage_in_geolayer.assemblage_idassemblage",
+    "LEFT JOIN geostrat_desc_geolayer ON",
+    "assemblage.locality_idlocality = geostrat_desc_geolayer.geolayer_idlocality",
+    "AND geostrat_desc_geolayer.geolayer_name = assemblage_in_geolayer.geolayer_name",
+    "LEFT JOIN geological_stratigraphy ON",
+    "geostrat_desc_geolayer.geostrat_idgeostrat = geological_stratigraphy.idgeostrat",
+    "LEFT JOIN assemblage_in_archlayer ON",
+    "assemblage.locality_idlocality = assemblage_in_archlayer.assemblage_idlocality",
+    "AND assemblage.idassemblage = assemblage_in_archlayer.assemblage_idassemblage",
+    "LEFT JOIN archaeological_layer ON",
+    "assemblage_in_archlayer.archlayer_idlocality = archaeological_layer.locality_idlocality",
+    "AND assemblage_in_archlayer.archlayer_name = archaeological_layer.name",
+    "LEFT JOIN archaeological_stratigraphy ON",
+    "archaeological_layer.archstratigraphy_idarchstrat = archaeological_stratigraphy.idarchstrat",
+    # WHERE
+    "WHERE assemblage.locality_idlocality IN (", query_localities, ")",
+    query_check_intersection("AND ", category, "assemblage.category"),
+    parameter_to_query("AND ", age_min, " <= geological_stratigraphy.age_max"),
+    parameter_to_query("AND ", age_max, " >= geological_stratigraphy.age_min"),
+    parameter_to_query(
+      "AND (assemblage.locality_idlocality, assemblage.idassemblage) IN (
+        SELECT DISTINCT assemblage_in_archlayer.assemblage_idlocality, assemblage_in_archlayer.assemblage_idassemblage
+        FROM archaeological_layer
+        LEFT JOIN assemblage_in_archlayer ON
+          assemblage_in_archlayer.archlayer_idlocality = archaeological_layer.locality_idlocality
+          AND archaeological_layer.name = assemblage_in_archlayer.archlayer_name
+        LEFT JOIN archaeological_stratigraphy ON
+          archaeological_layer.archstratigraphy_idarchstrat = archaeological_stratigraphy.idarchstrat
+        WHERE archaeological_stratigraphy.cultural_period IN (", cultural_period, "))"
+    ),
+    parameter_to_query(
+      "AND (assemblage.locality_idlocality, assemblage.idassemblage) IN (
+        SELECT DISTINCT assemblage_in_archlayer.assemblage_idlocality, assemblage_in_archlayer.assemblage_idassemblage
+        FROM archaeological_layer
+        LEFT JOIN assemblage_in_archlayer ON
+          assemblage_in_archlayer.archlayer_idlocality = archaeological_layer.locality_idlocality
+          AND archaeological_layer.name = assemblage_in_archlayer.archlayer_name
+        LEFT JOIN archaeological_stratigraphy ON
+          archaeological_layer.archstratigraphy_idarchstrat = archaeological_stratigraphy.idarchstrat
+        WHERE archaeological_stratigraphy.technocomplex IN (", technocomplex, "))"
+    ),
+    # GROUP and ORDER
+    "GROUP BY assemblage.locality_idlocality, assemblage.idassemblage, assemblage.name, 
+              assemblage.category",
+    #geological_stratigraphy.age_min, geological_stratigraphy.age_max",
+    "ORDER BY assemblage.locality_idlocality ASC, assemblage.idassemblage ASC"
+  )
+
+  data <- road_run_query(query)
+
+  if (nrow(data) == 0 && nrow(localities) > 0)
+  {
+    print_null_result_message(continent = continent,
+                              subcontinent = subcontinent,
+                              country = country,
+                              locality_type = locality_type,
+                              cultural_period = cultural_period,
+                              technocomplex = technocomplex,
+                              category = category,
+                              age_min = age_min,
+                              age_max = age_max)
+  }
+
+  data <- add_locality_columns(data, localities = localities)
+
+  return(data)
+}
