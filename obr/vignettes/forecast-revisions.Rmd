@@ -1,0 +1,109 @@
+---
+title: "Anatomy of a forecast revision"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Anatomy of a forecast revision}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment  = "#>"
+)
+```
+
+Every EFO revises the previous forecast. The OBR's *Forecast Evaluation Report* and IFS Green Budget routinely decompose those revisions into three components:
+
+* **Policy** - measures announced at the fiscal event itself.
+* **Classifications and one-offs** - reclassifications by ONS, valuation adjustments, court rulings.
+* **Underlying** - everything else, mostly changes to the macroeconomic determinants (real GDP, inflation, employment).
+
+The OBR publishes this decomposition as the **Forecast Revisions Database (FRD)**. `obr` exposes it through `get_forecast_revisions()`. This vignette walks through how to read it and how it pairs with the wide forecast panel for forecast-evaluation work.
+
+The chunks that download data are shown as code only.
+
+## The decomposition
+
+```{r, eval = FALSE}
+library(obr)
+
+rev <- get_forecast_revisions(unit = "gbp_bn")
+unique(rev$component)
+# "Total"
+# "Policy"
+# "of which: receipts"
+# "of which: spending"
+# "Classifications and one-offs"
+# "Underlying"
+# "of which: receipts"
+# "of which: debt interest"
+# "of which: non-interest spending"
+```
+
+`Total` for a given (`forecast_date`, `fiscal_year`) cell equals the sum of `Policy` + `Classifications and one-offs` + `Underlying` (up to rounding). The `of which:` rows further decompose Policy and Underlying.
+
+## Top-level revisions only
+
+For the standard "what changed?" chart, filter to top-level components.
+
+```{r, eval = FALSE}
+top <- rev[rev$component %in% c(
+  "Total", "Policy",
+  "Classifications and one-offs", "Underlying"
+), ]
+
+# Most recent vintage's revision for each fiscal year
+latest <- max(top$forecast_date)
+top[top$forecast_date == latest, ]
+```
+
+Plot this with `ggplot2`'s `geom_col(position = "stack")` and you reproduce the OBR's "drivers of revision" chart.
+
+## Per cent of GDP
+
+Pass `unit = "pct_gdp"` for the same decomposition expressed as a share of GDP. This is the right scaling for comparing revisions across fiscal events with materially different nominal-GDP levels.
+
+```{r, eval = FALSE}
+rev_pct <- get_forecast_revisions(unit = "pct_gdp")
+```
+
+## Pairing with the forecast panel
+
+For forecast-evaluation work it helps to see the levels alongside the revisions. `obr_forecast_panel()` pivots the Historical Forecasts Database from long to wide: rows are forecast vintages (chronologically ordered), columns are fiscal years.
+
+```{r, eval = FALSE}
+panel <- obr_forecast_panel("PSNB")
+# Every PSNB forecast for 2027-28
+panel[, c("forecast_date", "2027-28")]
+```
+
+Each row of the panel is one EFO; each column is a fiscal year. Reading down a column gives you the time-series of forecasts the OBR made for the same target year - exactly the input to a Diebold-Mariano test or a forecast-error decomposition.
+
+## Worked example: PSNB 2024-25 across the full vintage history
+
+```{r, eval = FALSE}
+panel <- obr_forecast_panel("PSNB")
+
+# Forecast value for FY 2024-25 across every vintage
+psnb_2425 <- panel[, c("forecast_date", "2024-25")]
+psnb_2425 <- psnb_2425[!is.na(psnb_2425[["2024-25"]]), ]
+psnb_2425
+```
+
+For each vintage that forecast 2024-25 (March 2022 onward, when 2024-25 entered the five-year horizon), you get one row. The first vintage forecast PSNB at around GBP 37bn; by November 2025, the last forecast before the outturn arrives, the projection had reached around GBP 150bn. The FRD attributes most of that drift to the underlying component (weaker tax base) with a smaller contribution from policy.
+
+## Provenance for cited results
+
+For a paper or report, cite the vintage and MD5 of the underlying file so readers can reproduce.
+
+```{r, eval = FALSE}
+prov <- obr_provenance(rev)
+sprintf("OBR Forecast Revisions Database, vintage %s. File MD5: %s. Retrieved %s.",
+        prov$vintage,
+        prov$file_md5,
+        format(prov$retrieved, "%Y-%m-%d"))
+```
+
+Two researchers running the same code six months apart on the same vintage will see different `retrieved` timestamps but identical `file_md5` values - which is the audit-trail property OBR analysts care about.

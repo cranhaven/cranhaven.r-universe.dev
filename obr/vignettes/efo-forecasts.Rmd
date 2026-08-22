@@ -1,0 +1,126 @@
+---
+title: "Working with EFO forecasts"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Working with EFO forecasts}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment  = "#>"
+)
+```
+
+The OBR's *Economic and Fiscal Outlook* contains the official UK fiscal forecast: five-year projections for borrowing, debt, receipts, expenditure, and the underlying economy. `obr` exposes this through `get_efo_fiscal()` (Table 6.5 aggregates) and `get_efo_economy()` (sheets 1.6 labour, 1.7 inflation, 1.14 output gap).
+
+This vignette covers what changed in the v0.4.0 schema and how to use it.
+
+## The standard schema
+
+From v0.4.0, every data-fetching function in `obr` returns the same six columns:
+
+| Column        | Type      | Values                                                     |
+|---------------|-----------|------------------------------------------------------------|
+| `period`      | character | `"2024-25"`, `"2025Q1"`, `"2025"` (depends on `period_type`)|
+| `period_type` | character | `"fiscal_year"`, `"quarter"`, `"calendar_year"`            |
+| `series`      | character | The variable name, e.g. `"CPI"`, `"Net borrowing"`         |
+| `metric_type` | character | `"level"`, `"yoy_pct"`, `"index"`, `"pct"`, `"pct_pts"`    |
+| `value`       | double    | Numeric value                                              |
+| `unit`        | character | `"gbp_bn"`, `"pct"`, `"pct_pts"`, `"index"`, `"count_k"`, etc. |
+
+`get_forecasts()` adds `forecast_date` as a leading column.
+
+The schema is consistent enough that you can `rbind()` outputs from different functions and still know what each value means.
+
+## Index vs YoY: the v0.4.0 fix
+
+Before v0.4.0, `get_efo_economy("inflation")` returned CPI / RPI / etc. as series with values in a single `value` column, with no machine-readable indication of whether a row was a level (index points) or a year-on-year growth rate (per cent). The `metric_type` and `unit` columns now make the distinction explicit.
+
+```{r, eval = FALSE}
+library(obr)
+
+inf <- get_efo_economy("inflation")
+table(inf$metric_type, inf$unit)
+#         index  pct
+#   index   372    0
+#   yoy_pct   0 1844
+```
+
+To get just the year-on-year inflation rates:
+
+```{r, eval = FALSE}
+inf_yoy <- inf[inf$metric_type == "yoy_pct", ]
+head(inf_yoy[inf_yoy$series == "CPI", ])
+```
+
+To get just any index series (e.g. GDP deflator if the source publishes it as an index):
+
+```{r, eval = FALSE}
+inf_idx <- inf[inf$metric_type == "index", ]
+```
+
+The classifier defaults bare names like "CPI" / "RPI" to `yoy_pct` because the OBR inflation sheet reports them as growth rates by convention. Series matching `Index`, `(2015=100)`, or similar literal patterns are tagged as `index` instead. You can override per-row by post-processing the returned frame.
+
+## Combining EFO with outturn from PFD
+
+Because the schema is uniform across publications, you can compare a fiscal forecast (EFO) against the realised outturn (PFD) without column mapping.
+
+```{r, eval = FALSE}
+forecast <- get_efo_fiscal()                # 5-year forecast, gbp_bn
+forecast <- forecast[forecast$series == "Net borrowing", ]
+
+outturn <- get_psnb()                       # historical outturn, series = "PSNB", gbp_bn
+outturn <- outturn[outturn$period >= "2020-21", ]
+
+# Both have period (fiscal_year), value (gbp_bn), unit. Stack them.
+combined <- rbind(
+  data.frame(source = "outturn",  outturn[,  c("period", "value", "unit")]),
+  data.frame(source = "forecast", forecast[, c("period", "value", "unit")])
+)
+```
+
+## Comparing two vintages
+
+Pin a vintage explicitly to compare how the OBR's view changed between fiscal events.
+
+```{r, eval = FALSE}
+oct24 <- get_efo_fiscal(vintage = "October 2024")
+mar26 <- get_efo_fiscal(vintage = "March 2026")
+
+# Net borrowing forecast for 2027-28 from each vintage
+oct24[oct24$series == "Net borrowing" & oct24$period == "2027-28", "value"]
+mar26[mar26$series == "Net borrowing" & mar26$period == "2027-28", "value"]
+```
+
+See `vignette("vintages")` for the full vintage layer.
+
+## What `unit` covers
+
+| Unit code | Meaning                                            | Typical series                          |
+|-----------|----------------------------------------------------|-----------------------------------------|
+| `gbp_bn`  | Pounds sterling, billions                          | PSNB, PSND, TME, receipts forecasts     |
+| `pct`     | Percentage (rate, share, growth rate)              | Inflation, unemployment rate, debt/GDP  |
+| `pct_pts` | Percentage points                                  | Output gap (pp of potential)            |
+| `index`   | Index level (typically rebased to 100 at a year)   | CPI Index, GDP deflator (when level)    |
+| `count_k` | Count, thousands                                   | Incapacity benefit claimants            |
+
+`unit` is plain character. It does not enforce arithmetic safety: if you sum a `gbp_bn` value with a `pct` value, R will compute it without complaint. The column is there to remind you and to allow programmatic filtering.
+
+## Provenance
+
+Every returned object carries provenance metadata describing which OBR publication and vintage produced it.
+
+```{r, eval = FALSE}
+obr_provenance(get_efo_fiscal())
+# $publication: "EFO"
+# $vintage:     "March 2026"
+# $source_url:  ...
+# $retrieved:   timestamp
+# $file_md5:    fingerprint of the underlying spreadsheet
+# $package_version: obr version
+```
+
+This lets you audit which OBR publication produced any number in your analysis. See `vignette("vintages")`.

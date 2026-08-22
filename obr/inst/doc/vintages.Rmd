@@ -1,0 +1,97 @@
+---
+title: "Pinning to a specific OBR publication"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Pinning to a specific OBR publication}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment  = "#>"
+)
+NOT_CRAN <- identical(Sys.getenv("NOT_CRAN"), "true")
+```
+
+The OBR revises every forecast at every Budget and Statement. A number that is correct in March can be wrong in October. For research, audit, and reproducibility, you need a way to say "this analysis used the October 2024 forecast" and have the package reliably return the same numbers six months later.
+
+`obr` calls this the **vintage layer**. This vignette walks through the four ways to use it. The chunks that do not require a network connection are run inline; the chunks that download from the OBR are shown as code only.
+
+## The vintage table
+
+```{r}
+library(obr)
+
+efos <- obr_efo_vintages()
+nrow(efos)
+head(efos, 3)
+tail(efos, 3)
+```
+
+`obr_efo_vintages()` is offline: the publication calendar is hardcoded into the package and refreshed at each release.
+
+## Resolving an EFO by date
+
+```{r}
+obr_as_of("2024-12-15")
+obr_as_of("2010-05-01") |> tryCatch(error = function(e) conditionMessage(e))
+```
+
+The first call returns the most recent EFO published on or before 15 December 2024. The second errors because no EFO existed before June 2010.
+
+## Pinning a session-wide vintage
+
+```{r}
+obr_pin("October 2024")
+obr_pinned()
+obr_unpin()
+obr_pinned()
+```
+
+When pinned, the EFO functions default to that vintage. `obr_unpin()` clears the pin and returns to the dynamic resolver.
+
+## Downloading a specific vintage
+
+These chunks require a network connection and are shown as code only.
+
+```{r, eval = FALSE}
+# Pull two vintages of the same fiscal table to compare forecast revisions
+oct24 <- get_efo_fiscal(vintage = "October 2024")
+mar26 <- get_efo_fiscal(vintage = "March 2026")
+
+# Net borrowing forecast for 2027-28 from each vintage. v0.4.0 schema
+# uses `period` for the time column (with `period_type = "fiscal_year"`).
+oct24[oct24$series == "Net borrowing" & oct24$period == "2027-28", ]
+mar26[mar26$series == "Net borrowing" & mar26$period == "2027-28", ]
+```
+
+Cached files are vintage-tagged, so different vintages do not overwrite each other in the cache. The `vintage = ...` argument always overrides any pin set with `obr_pin()`.
+
+## What's recorded as provenance
+
+Every `obr_tbl` carries enough metadata for an OBR analyst to audit which publication produced any number.
+
+```{r, eval = FALSE}
+obr_provenance(get_efo_fiscal(vintage = "October 2024"))
+# $publication: "EFO"
+# $vintage:     "October 2024"
+# $source_url:  https://obr.uk/download/october-2024-economic-and-fiscal-outlook-...
+# $retrieved:   timestamp of download
+# $file_md5:    MD5 fingerprint of the underlying spreadsheet
+# $package_version: obr version that produced the object
+```
+
+The MD5 fingerprint lets two analyses verify they ran against an identical underlying file, even if downloaded weeks apart.
+
+## How vintage interacts with `get_forecasts()`
+
+The Historical Forecasts Database is a single workbook covering every OBR vintage in one file, so it does not take a `vintage =` argument. To filter to a specific forecast date, subset the long-format result.
+
+```{r, eval = FALSE}
+fc  <- get_forecasts("PSNB")
+fc[fc$forecast_date == "October 2024", ]
+```
+
+For reproducibility, the HFD itself is itself versioned: the OBR releases a new HFD at each fiscal event, so the underlying file MD5 changes over time even if the older forecasts within it do not. `obr_provenance()` records the HFD vintage on every result.
