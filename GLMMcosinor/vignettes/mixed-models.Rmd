@@ -1,0 +1,165 @@
+---
+title: "Mixed models"
+author: "Oliver Jayasinghe and Rex Parsons"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{mixed-models}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+```{r setup, message=FALSE}
+library(GLMMcosinor)
+library(dplyr)
+library(ggplot2)
+```
+
+`{GLMMcosinor}` allows specification of mixed models accounting for fixed and/or random effects. Mixed model specification follows the `{lme4}` format. See their vignette, [Fitting Linear Mixed-Effects Models Using lme4](https://cran.r-project.org/package=lme4/vignettes/lmer.pdf), for details about how to specify mixed models.
+
+### Data with subject-level differences
+
+To illustrate an example of using a model with random effects on the cosinor components, we will first simulate some data with `id`-level differences in amplitude and acrophase.
+
+```{r}
+f_sample_id <- function(id_num,
+                        n = 30,
+                        mesor,
+                        amp,
+                        acro,
+                        family = "gaussian",
+                        sd = 0.2,
+                        period,
+                        n_components,
+                        beta.group = TRUE) {
+  data <- simulate_cosinor(
+    n = n,
+    mesor = mesor,
+    amp = amp,
+    acro = acro,
+    family = family,
+    sd = sd,
+    period = period,
+    n_components = n_components
+  )
+  data$subject <- id_num
+  data
+}
+
+dat_mixed <- do.call(
+  "rbind",
+  lapply(1:30, function(x) {
+    f_sample_id(
+      id_num = x,
+      mesor = rnorm(1, mean = 0, sd = 1),
+      amp = rnorm(1, mean = 3, sd = 0.5),
+      acro = rnorm(1, mean = 1.5, sd = 0.2),
+      period = 24,
+      n_components = 1
+    )
+  })
+)
+dat_mixed$subject <- as.factor(dat_mixed$subject)
+```
+
+```{r echo=FALSE}
+withr::with_seed(
+  50,
+  {
+    dat_mixed <- do.call(
+      "rbind",
+      lapply(1:30, function(x) {
+        f_sample_id(
+          id_num = x,
+          mesor = rnorm(1, mean = 0, sd = 1),
+          amp = rnorm(1, mean = 3, sd = 0.5),
+          acro = rnorm(1, mean = 1.5, sd = 0.2),
+          period = 24,
+          n_components = 1
+        )
+      })
+    )
+    dat_mixed$subject <- as.factor(dat_mixed$subject)
+  }
+)
+```
+
+
+A quick graph shows how there are individual differences in terms of MESOR, amplitude and phase.
+
+```{r}
+ggplot(dat_mixed, aes(times, Y, col = subject)) +
+  geom_point() +
+  geom_line() +
+  theme_bw()
+```
+
+### A single component model with random effects
+
+For the model, we should include a random effect for the MESOR, amplitude and acrophase as these are clustered within individuals.
+
+In the model formula, we can use the special `amp_acro[n]` which represents the n<sup>th</sup> cosinor component. In this case, we only have one component so we use `amp_acro1`. Following the `{lme4}`-style mixed model formula, we add our random effect for this component and the intercept term (MESOR) clustered within subjects by using `(1 + amp_acro1 | subject)`. The code below fits this model
+
+```r
+mixed_mod <- cglmm(
+    Y ~ amp_acro(times, n_components = 1, period = 24) + 
+      (1 + amp_acro1 | subject),
+    data = dat_mixed
+  )
+```
+
+```{r echo=FALSE}
+withr::with_seed(42, {
+  mixed_mod <- cglmm(
+    Y ~ amp_acro(times, n_components = 1, period = 24) +
+      (1 + amp_acro1 | subject),
+    data = dat_mixed
+  )
+})
+```
+
+This works by replacing the amp_acro1 with the relevant cosinor components when the data is rearranged and the formula created. The formula created can be accessed using `.$formula`, and shows the `amp_acro1` is replaced by the `main_rrr1` and `main_sss1` (the cosine and sine components of time that also appear in the fixed effects).
+
+```{r}
+mixed_mod$formula
+```
+
+The mixed model can also be plotted using `autoplot`, but some of the plotting features that are available for fixed-effects models may not be available for mixed-effect models.
+
+```{r}
+autoplot(mixed_mod, superimpose.data = TRUE)
+```
+
+The summary of the model shows that the input means for MESOR, amplitude and acrophase are similar to what we specified in the simulation (0, 3, and 1.5, respectively).
+
+```{r}
+summary(mixed_mod)
+```
+
+We can see that the predicted values from the model closely resemble the patterns we see in the input data.
+
+```{r}
+ggplot(cbind(dat_mixed, pred = predict(mixed_mod))) +
+  geom_point(aes(x = times, y = Y, col = subject)) +
+  geom_line(aes(x = times, y = pred, col = subject))
+```
+
+This looks like a good model fit for these data. We can highlight the importance of using a mixed model in this situation rather than a fixed effects only model by creating that (bad) model and comparing the two by using the Akaike information criterion using `AIC()`.
+
+```{r}
+fixed_effects_mod <- cglmm(
+  Y ~ amp_acro(times, n_components = 1, period = 24),
+  data = dat_mixed
+)
+
+AIC(fixed_effects_mod$fit)
+AIC(mixed_mod$fit)
+```
+
+Aside from not being able to be useful to see the differences between subjects from the model, we end up with much worse model fit and likely biased and/or imprecise estimates of our fixed effects that we are interested in!
