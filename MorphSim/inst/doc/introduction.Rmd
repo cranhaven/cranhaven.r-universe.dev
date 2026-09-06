@@ -1,0 +1,646 @@
+---
+title: "Introduction to MorphSim"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Introduction to MorphSim}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  fig.width = 7,
+  fig.height = 5
+)
+```
+
+MorphSim is an R package for simulating discrete morphological character data
+along phylogenetic trees. It is designed to integrate with existing R packages
+such as TreeSim and FossilSim, enabling simulation of datasets that include
+both extant and extinct taxa. This vignette walks through the main features of
+the package.
+
+## Getting started
+
+To simulate morphological data you first need a phylogenetic tree. MorphSim
+accepts either a tree with branch lengths in evolutionary distance or a
+time-scaled tree. Here we simulate a birth-death tree using TreeSim.
+
+```{r tree}
+library(MorphSim)
+library(TreeSim)
+library(FossilSim)
+
+set.seed(1234)
+tree <- TreeSim::sim.bd.taxa(n = 10, numbsim = 1,
+                              lambda = 0.1, mu = 0.05)[[1]]
+```
+
+## Basic simulation
+
+The core function is `sim.morpho`. At minimum you need a tree, the number of
+character states (`k`), the total number of traits (`trait.num`), and if using
+a time tree, the branch rates (`br.rates`).
+
+```{r basic}
+morpho_data <- sim.morpho(
+  time.tree = tree,
+  k = 2,
+  trait.num = 10,
+  br.rates = 0.1
+)
+morpho_data
+```
+
+## The morpho object
+
+All simulation output is stored in a `morpho` object. This is a list with the
+following components:
+
+**`sequences`** — a list with up to three elements:
+
+- `tips`: character states at the tips of the tree. Stored as a named list
+  where each element is a vector of trait values for one taxon.
+- `nodes`: character states at internal nodes (when `ancestral = TRUE`).
+- `SA`: character states for sampled ancestors (when a fossil object is
+  provided). Named using the specimen number and the branch number along
+  which the fossil was sampled.
+
+**`trees`** — a list containing:
+
+- `EvolTree`: the tree with branch lengths in evolutionary distance.
+- `TimeTree`: the time-scaled tree (if provided).
+- `BrRates`: the branch rates used for simulation.
+
+**`model`** — a list describing the model used:
+
+- `Specified`: a string summarising the model per partition, including the
+  number of traits and character states.
+- `RateVar`: the discrete rate categories drawn from the specified
+  distribution (if ACRV was used).
+- `RateVarTrait`: which rate category was assigned to each trait. Values
+  are listed from lowest rate (1) to highest.
+
+**`transition_history`** — a list of data frames, one per trait. Each data
+frame records every state transition that occurred during simulation,
+including the branch number (`edge`), the new state (`state`), and the
+position along the branch where the transition occurred (`hmin`).
+
+**`root.states`** — a vector of root states, one per trait.
+
+**`fossil`** — the FossilSim fossil object (if provided). The naming scheme
+matches that of FossilSim.
+
+You can check whether an object is a morpho object using `is.morpho()`.
+
+```{r morpho_check}
+is.morpho(morpho_data)
+```
+
+### Accessing data
+
+MorphSim provides helper functions for extracting data from the morpho object.
+
+```{r access}
+# Tip data as a matrix
+get.matrix(morpho_data, seq = "tips")
+
+# Transition history for a specific trait (including root state)
+get.transitions(morpho_data, trait = 1)
+```
+
+## Clock models
+
+A single value for `br.rates` applies a strict clock. A vector of rates
+(one per branch) applies a relaxed clock. You can use the SimClock package
+to generate branch rates under different clock models.
+
+```{r clock}
+# Strict clock
+strict_data <- sim.morpho(time.tree = tree, k = 2, trait.num = 10,
+                           br.rates = 0.1)
+
+# Relaxed clock (random rates per branch for illustration)
+relaxed_rates <- runif(nrow(tree$edge), min = 0.01, max = 0.2)
+relaxed_data <- sim.morpho(time.tree = tree, k = 2, trait.num = 10,
+                            br.rates = relaxed_rates)
+```
+
+## Model extensions
+
+### MkV model
+
+Setting `variable = TRUE` ensures all simulated characters are variable
+across taxa, matching the MkV model of Lewis (2001).
+
+```{r mkv}
+mkv_data <- sim.morpho(time.tree = tree, k = 2, trait.num = 10,
+                        br.rates = 0.1, variable = TRUE)
+```
+
+### Among-character rate variation (ACRV)
+
+Not all morphological characters evolve at the same rate. MorphSim can
+model this using among-character rate variation (ACRV), where each trait is
+assigned a rate drawn from a discretized distribution. Two distributions
+are available.
+
+**Gamma distribution** — controlled by two parameters: `alpha.gamma`, the
+shape parameter of the gamma distribution (smaller values produce greater
+rate heterogeneity, with more characters evolving very slowly or very
+quickly; larger values concentrate rates closer to the mean), and
+`ACRV.ncats`, the number of discrete rate categories used to approximate
+the continuous distribution (commonly set to 4, following standard practice
+in phylogenetic inference).
+```{r acrv_gamma}
+gamma_data <- sim.morpho(
+  time.tree = tree, k = 2, trait.num = 10, br.rates = 0.1,
+  ACRV = "gamma", alpha.gamma = 1, ACRV.ncats = 4
+)
+
+# The discrete rate categories
+gamma_data$model$RateVar
+
+# Which category was assigned to each trait
+gamma_data$model$RateVarTrait
+```
+
+**Lognormal distribution** — controlled by `meanlog` and `sdlog`, the mean
+and standard deviation on the log scale, and `ACRV.ncats` as above. The
+lognormal can produce heavier tails than the gamma, meaning a greater
+spread between the slowest and fastest evolving characters.
+```{r acrv_lgn}
+lgn_data <- sim.morpho(
+  time.tree = tree, k = 2, trait.num = 10, br.rates = 0.1,
+  ACRV = "lgn", meanlog = 0, sdlog = 1, ACRV.ncats = 4
+)
+
+# The discrete rate categories
+lgn_data$model$RateVar
+```
+
+**User-defined rates** — you can also provide your own rate categories
+directly using `ACRV = "user"` and passing a vector of rates to
+`define.ACRV.rates`.
+```{r acrv_user}
+user_data <- sim.morpho(
+  time.tree = tree, k = 2, trait.num = 10, br.rates = 0.1,
+  ACRV = "user", define.ACRV.rates = c(0.5, 1, 1.5, 2),
+  ACRV.ncats = 4
+)
+```
+
+### MkV + Gamma
+
+These can be combined to simulate under an MkV + Gamma model, consistent
+with models implemented in RevBayes and BEAST.
+
+```{r mkv_gamma}
+mkvg_data <- sim.morpho(
+  time.tree = tree, k = 3, trait.num = 10, br.rates = 0.1,
+  variable = TRUE, ACRV = "gamma", alpha.gamma = 1, ACRV.ncats = 4
+)
+```
+
+### Custom Q matrices
+
+You can provide your own transition rate matrix. For example, an ordered
+model where transitions can only occur between adjacent states (0 ↔ 1 ↔ 2):
+
+```{r custom_q}
+ord_Q <- matrix(c(
+  -0.5, 0.5, 0.0,
+   0.3333333, -0.6666667, 0.3333333,
+   0.0, 0.5, -0.5
+), nrow = 3, byrow = TRUE)
+
+ordered_data <- sim.morpho(
+  time.tree = tree, k = 3, trait.num = 10, br.rates = 0.1,
+  define.Q = ord_Q
+)
+```
+
+Note that when using a custom Q matrix, all traits in that simulation share
+the same matrix. If you want to simulate different partitions under different
+Q matrices, for example, some ordered and some unordered characters, you
+can simulate them separately and combine the results. See the section on
+combining morpho objects below.
+
+### Specifying the root state
+
+By default the root state is sampled uniformly. You can fix it using
+`root.state`:
+
+```{r root_state}
+fixed_root <- sim.morpho(
+  time.tree = tree, k = 3, trait.num = 10,
+  br.rates = 0.1, root.state = 0
+)
+```
+
+### Ensure full state space
+
+Setting `full.states = TRUE` ensures that all character states specified by `k`
+are present in at least one tip for each trait. This is useful when you want to guarantee
+that the full range of states specified in the Q matrix is observed at the
+tips. Without this, it is possible for a character with `k = 3` to only
+show states 0 and 1 at the tips if state 2 was never reached or was lost
+before the present.
+```{r strict}
+strict_data <- sim.morpho(
+  time.tree = tree, k = 3, trait.num = 10,
+  br.rates = 0.1, full.states = TRUE
+)
+```
+
+### Partitions
+
+Different groups of characters can be simulated with different numbers of
+states. The `partition` argument specifies how many traits belong to each
+partition, and `k` gives the number of states per partition.
+
+```{r partitions}
+part_data <- sim.morpho(
+  time.tree = tree,
+  k = c(2, 3, 4),
+  trait.num = 20,
+  partition = c(10, 5, 5),
+  br.rates = 0.1
+)
+
+# Model specification per partition
+part_data$model$Specified
+```
+
+The total number of traits defined by trait.num and partition must match or the function will return an error.
+
+### Combining morpho objects
+
+It is not possible to simulate multiple partitions under different models in
+a single call to `sim.morpho`. For example, you might want some characters
+to evolve under an ordered model with a custom Q matrix and others under a
+standard Mk model with gamma rate variation. To do this, simulate each
+partition separately and combine them using `combine.morpho`.
+
+```{r combine}
+# Partition 1: ordered characters with a custom Q matrix
+ord_Q <- matrix(c(
+  -0.5, 0.5, 0.0,
+   0.3333333, -0.6666667, 0.3333333,
+   0.0, 0.5, -0.5
+), nrow = 3, byrow = TRUE)
+
+partition_1 <- sim.morpho(
+  time.tree = tree, k = 3, trait.num = 10,
+  br.rates = 0.1, define.Q = ord_Q
+)
+
+# Partition 2: unordered binary characters with MkV + Gamma
+partition_2 <- sim.morpho(
+  time.tree = tree, k = 2, trait.num = 10,
+  br.rates = 0.1, variable = TRUE,
+  ACRV = "gamma", alpha.gamma = 1, ACRV.ncats = 4
+)
+
+# Combine into a single morpho object
+combined <- combine.morpho(partition_1, partition_2)
+
+# The combined object has 20 traits total
+length(combined$sequences$tips[[1]])
+
+# Model specifications from both partitions are preserved
+combined$model$Specified
+```
+
+Both morpho objects must share the same tree, branch lengths, and fossil
+object (if present). The combined object merges the sequences, transition
+histories, root states, and model information from both inputs.
+
+## FossilSim integration
+
+MorphSim integrates with FossilSim to simulate character data for sampled
+ancestors, fossils that represent direct ancestors of other lineages.
+Because MorphSim tracks where transitions occur along branches, it generates
+trait values appropriate to the time and lineage at which each fossil was
+sampled.
+
+```{r fossils}
+# Simulate fossil and extant sampling
+f <- FossilSim::sim.fossils.poisson(rate = 0.1, tree = tree,
+                                     root.edge = FALSE)
+f2 <- FossilSim::sim.extant.samples(fossils = f, tree = tree, rho = 0.5)
+
+# Simulate morphological data with fossils
+fossil_data <- sim.morpho(
+  time.tree = tree, k = c(2,3), trait.num = 10, partition = c(5,5),
+  br.rates = 0.1, fossil = f2
+)
+
+# Sampled ancestor data
+names(fossil_data$sequences$SA)
+```
+
+## Missing data
+
+Fossil morphological data are often incomplete. `sim.missing.data` allows
+you to introduce missing characters under different scenarios, replacing
+character values with `"?"`.
+
+### Random missing data
+
+Characters are removed uniformly at random across the entire matrix. A
+single probability value controls the proportion of data that is removed.
+
+```{r missing_random}
+missing_random <- sim.missing.data(
+  data = fossil_data, method = "random",
+  seq = "tips", probability = 0.3
+)
+```
+
+### Missing data by partition
+
+Different partitions can have different probabilities of missing data. This
+reflects how different anatomical regions may have different preservation
+potential, for example, robust skeletal elements are more likely to be
+preserved than soft tissue features. The probability vector must match the
+number of partitions.
+
+```{r missing_partition}
+part_fossil <- sim.morpho(
+  time.tree = tree, k = c(2, 3), trait.num = 10,
+  partition = c(5, 5), br.rates = 0.1, fossil = f2
+)
+
+# Hard tissues (partition 1): 10% missing
+# Soft tissues (partition 2): 70% missing
+missing_part <- sim.missing.data(
+  data = part_fossil, method = "partition",
+  seq = "tips", probability = c(0.1, 0.7)
+)
+```
+
+### Missing data by rate category
+
+When data is simulated with ACRV, characters can be removed according to
+the rate category they were simulated under. The probability vector must
+match the number of rate categories. This can be used to explore what
+happens when faster or slower evolving characters are preferentially lost.
+
+```{r missing_rate}
+gamma_fossil <- sim.morpho(
+  time.tree = tree, k = 2, trait.num = 20, br.rates = 0.1,
+  ACRV = "gamma", alpha.gamma = 1, ACRV.ncats = 4, fossil = f2
+)
+
+# Slow characters preserved, fast characters increasingly lost
+missing_rate <- sim.missing.data(
+  data = gamma_fossil, method = "rate",
+  seq = "tips", probability = c(0, 0.2, 0.5, 0.8)
+)
+```
+
+### Missing data by specific traits
+
+Remove characters from specific traits. This is useful for exploring the
+impact of losing particular characters.
+
+```{r missing_trait}
+missing_trait <- sim.missing.data(
+  data = fossil_data, method = "trait",
+  seq = "tips", probability = 1, traits = c(1, 2, 3)
+)
+```
+
+### Missing data by specific taxa
+
+Remove characters from named taxa. This can be used to simulate scenarios
+where certain specimens are poorly preserved.
+
+```{r missing_taxa}
+# Remove all data from the first two taxa
+taxa_to_remove <- names(fossil_data$sequences$tips)[1:2]
+missing_taxa <- sim.missing.data(
+  data = fossil_data, method = "taxa",
+  seq = "tips", probability = 1, taxa = taxa_to_remove
+)
+```
+
+### Missing data from extinct taxa only
+
+Remove characters only from extinct taxa while leaving extant taxa complete.
+This reflects the common scenario where fossil specimens have more missing
+data than living species.
+
+```{r missing_extinct, eval = FALSE}
+missing_extinct <- sim.missing.data(
+  data = fossil_data, method = "extinct",
+  seq = "tips", probability = 0.5
+)
+```
+
+### Missing data for specific traits and taxa
+
+Remove characters from specific traits and specific taxa.
+This reflects scenarios where certain anatomical regions are less likely to
+be preserved in particular lineages.
+```{r missing_trait_taxa}
+missing_trait_taxa <- sim.missing.data(
+  data = fossil_data, method = "trait_taxa",
+  seq = "tips", probability = 0.8,
+  traits = c(1, 2, 3),
+  taxa = taxa_to_remove
+)
+```
+
+## Exploring simulated data
+
+### Summary statistics
+
+`stats.morpho` computes the consistency index, retention index, identifies
+convergent traits, and summarises the tree structure. The consistency index (CI; Kluge and Farris, 1969) measures the minimum number of character changes required on a tree relative to the observed number of changes, with values closer to 1 indicating less homoplasy. The retention index (RI; Farris, 1989) quantifies how well synapomorphies are retained on the tree, with higher values indicating stronger phylogenetic signal. Both metrics range from 0 to 1.
+
+```{r stats}
+stats <- stats.morpho(fossil_data)
+stats$Statistics
+stats$Tree
+```
+
+### Convergence detection
+
+`get.convergent` identifies traits where the same state arose independently
+more than once. Called without a trait number, it returns a summary across
+all traits. Called with a specific trait, it shows which tips inherited their
+state from which evolutionary origin. Tips sharing the same origin inherited
+their state from a single transition event. Tips with the same state but
+different origins represent convergent evolution.
+
+```{r convergent}
+# Which traits are convergent?
+get.convergent(fossil_data)
+
+# Detail for a specific trait
+get.convergent(fossil_data, trait = 1)
+```
+
+### Transition histories
+
+`get.transitions` returns the full transition history for a trait, including
+the root state (shown as edge 0).
+
+```{r transitions}
+get.transitions(fossil_data, trait = 1)
+```
+
+## Plotting
+
+### Trait history on the tree
+
+`plot.morpho` displays the evolutionary history of a trait along the tree.
+Transition boxes show where state changes occurred along each branch. We
+start with the simplest version, just the trait history on the distance
+tree, with all additional features turned off.
+
+```{r plot_basic, fig.height = 6}
+plot(fossil_data, trait = 6, timetree = FALSE,
+     show.fossil = FALSE, reconstructed = FALSE,
+     show.convergent = FALSE)
+```
+
+### Adding fossils
+
+When `show.fossil = TRUE`, fossils are plotted along the branches of the
+tree at the time they were sampled. Extant taxa are shown as green circles
+at the tips and fossil samples as black diamonds along the branches. This
+requires a time tree, so we also set `timetree = TRUE`.
+
+```{r plot_fossils, fig.height = 6}
+plot(fossil_data, trait = 6, timetree = TRUE,
+     show.fossil = TRUE, reconstructed = FALSE,
+     show.convergent = FALSE)
+```
+
+### Showing the reconstructed tree
+
+When `reconstructed = TRUE`, the plot distinguishes between the full
+(true) tree and the reconstructed tree, the tree containing only the
+sampled lineages. Branches that are part of the reconstructed tree are
+drawn in black, while unsampled lineages are shown in grey. This helps
+visualise how much of the true evolutionary history is captured by the
+available samples.
+
+```{r plot_recon, fig.height = 6}
+plot(fossil_data, trait = 6, timetree = TRUE,
+     show.fossil = TRUE, reconstructed = TRUE,
+     show.convergent = FALSE)
+```
+
+### Highlighting convergent evolution
+
+When `show.convergent = TRUE`, transition boxes for any state that arose
+independently more than once are highlighted in blue. This includes
+transitions that were subsequently reversed on descendant branches, giving
+a complete picture of where convergence occurred during the simulation.
+
+```{r plot_convergent, fig.height = 6}
+plot(fossil_data, trait = 6, timetree = TRUE,
+     show.fossil = TRUE, reconstructed = TRUE,
+     show.convergent = TRUE)
+```
+
+By default, `plot.morpho` shows all available features, the time tree,
+fossils, reconstructed tree, and convergence highlighting. If any of these
+are not available in the morpho object (e.g., no fossil data was provided),
+the plot falls back gracefully and informs the user. So the plot above is
+equivalent to the default:
+
+```{r plot_default, eval = FALSE}
+plot(fossil_data, trait = 7)
+```
+
+### Character matrix
+
+`plotMorphoGrid` displays the full character matrix at the tips.
+
+```{r grid, fig.height = 5}
+plotMorphoGrid(fossil_data, seq = "tips")
+```
+
+## Exporting data
+
+`write.morpho` provides a single interface for exporting trees, character
+matrices, and fossil ages. The `type` argument specifies what to export,
+and `reconstructed` controls whether the full or reconstructed version is
+written.
+
+```{r export, eval = FALSE}
+# Full tree
+write.morpho(fossil_data, file = "tree.tre", type = "tree")
+
+# Reconstructed tree
+write.morpho(fossil_data, file = "recon_tree.tre", type = "tree",
+             reconstructed = TRUE)
+
+# Character matrix
+write.morpho(fossil_data, file = "matrix.nex", type = "matrix")
+
+# Reconstructed matrix
+write.morpho(fossil_data, file = "recon_matrix.nex", type = "matrix",
+             reconstructed = TRUE)
+
+# Fossil ages (compatible with RevBayes)
+write.morpho(fossil_data, file = "ages.tsv", type = "ages")
+
+# With age uncertainty
+write.morpho(fossil_data, file = "ages.tsv", type = "ages",
+             uncertainty = 2)
+```
+
+Standard ape export functions also work since the morpho object stores
+trees as `phylo` objects:
+
+```{r export_ape, eval = FALSE}
+ape::write.tree(fossil_data$trees$EvolTree, file = "full_tree.tre")
+ape::write.nexus.data(fossil_data$sequences$tips, file = "full_matrix.nex",
+                      format = "standard")
+```
+
+## Using with ggtree
+
+The morpho object can be converted to a `treedata` object for use with
+ggtree. This requires the treeio, ggtree, tibble, and ggplot2 packages.
+
+```{r ggtree, eval = FALSE}
+library(treeio)
+library(ggtree)
+library(ggplot2)
+library(tibble)
+
+# Convert tip data to a data frame
+tip_df <- as.data.frame(t(as.data.frame(fossil_data$sequences$tips)))
+colnames(tip_df) <- paste0("trait_", seq_len(ncol(tip_df)))
+tip_df$node <- match(rownames(tip_df),
+                     fossil_data$trees$EvolTree$tip.label)
+
+# Create treedata object
+td <- treedata(phylo = fossil_data$trees$EvolTree,
+               data = as_tibble(tip_df))
+
+# Plot tree with coloured tip points for one trait
+ggtree(td) +
+  geom_tiplab(offset = 0.01) +
+  geom_tippoint(aes(color = factor(trait_1)), size = 3) +
+  scale_color_brewer(palette = "Set2", name = "State") +
+  theme(legend.position = "right")
+
+# Plot tree with heatmap of all traits
+heat_df <- tip_df[, grep("trait_", colnames(tip_df))]
+heat_df[] <- lapply(heat_df, factor)
+
+gheatmap(ggtree(td) + geom_tiplab(offset = 0.05),
+         heat_df, offset = 0.02, width = 0.5,
+         colnames_angle = 90, hjust = 1) +
+  scale_fill_brewer(palette = "Set2", name = "State")
+```
