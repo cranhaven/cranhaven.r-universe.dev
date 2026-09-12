@@ -1,0 +1,4 @@
+context("Nod")
+library(polite)
+
+
