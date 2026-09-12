@@ -1,0 +1,560 @@
+---
+title: "A Tutorial for `dsdp`"
+thanks: |
+  This research was supported in part with
+  Grant-in-Aid for Scientific Research(B) JP18H03206, JP21H03398
+  and
+  Grant-in-Aid for Exploratory Research JP20K21792
+  from the Japan Society for the Promotion of Sciences.
+author:
+  - Satoshi Kakihara^[National Graduate Institute for Policy Studies, skakihara@gmail.com]
+  - Takashi Tsuchiya^[National Graduate Institute for Policy Studies, tsuchiya@grips.ac.jp]
+date: November 11th, 2022
+output:
+  pdf_document:
+    toc: false
+    number_sections: true
+    # citation_package: biblatex
+    keep_tex: true
+  html_document:
+    number_sections: true
+linkcolor: red
+citecolor: green
+urlcolor: blue
+fontsize: 11pt
+# bibliography: "`r system.file("dsdp.bib", package="dsdp")`"
+# bibliography: ["dsdp.bib"]
+# biblio-style: alphabetic
+# link-citations: yes
+keep_tex: yes
+keywoards:
+  - dsdp
+abstract: |
+  This vignette is a tutorial for a R package `dsdp`,
+  a probability density estimation package using a maximum likelihood method.
+  A model of interest in this package is a family of exponential distributions
+  as base functions, with polynomial correction terms.
+  To find an optimal model, we adopt a grid search for parameters of base functions
+  and degrees of polynomials,
+  together with semidefinite programming for coefficients of polynomials, and
+  then model selection is done by Akaike Information Criterion.
+  We first give a quick overview of the package, and then move on to a tutorial.
+vignette: >
+  %\VignetteIndexEntry{Tutorial}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+# Overview
+The main task of the package `dsdp` is to estimate probability density
+functions from a data set using a maximum likelihood method.
+The models of density functions in use are familiar Gaussian 
+or exponential distributions with polynomial correction terms.
+We call Gaussian distribution with a polynomial **Gaussian-based model** and
+an exponential distribution with a polynomial **Exponential-based model**,
+respectively.
+`dsdp` seeks parameters of Gaussian or exponential distributions 
+together with degrees of polynomials using a grid search, and coefficients of
+polynomials using a variant of semidefinite programming(SDP) problems.
+Detailed discussions of SDP problem formulations and this type of SDP problems are
+found in other vignettes.
+
+The outline of estimation procedure is as follows.
+
+1. Create Gaussian-based or Exponential-based model from a data set.
+2. Explore a data set by checking the statistics and the histogram
+3. Provide a set of parameters of Gaussian or exponential distributions
+and degrees of polynomials.
+4. Estimate the coefficients of the polynomials for a set of parameters and
+then check the results by comparing Akaike Information Criterion(AIC) and
+plotting density functions.
+5. Refine the parameters and repeat 3-4 until a sufficient estimate is
+obtained.
+
+We will see each process step by step in the next section.
+Before we move on, please install and import the package if you haven't yet.
+Installation is done by
+```{r eval=FALSE}
+## Install from CRAN
+install.packages("dsdp")
+```
+Importing the package is done by
+```{r eval=TRUE, results="hide", message=FALSE}
+## Import dsdp
+library(dsdp)
+```
+This package requires `ggplot2` for displaying histograms and
+density functions.
+`ggplot2` is a part of [`tidyverse`](https://tidyverse.org),
+a de facto standard for data wrangling in R.
+Our `plot` method returns `ggplot2` objects, so if you plan to add the
+title or change the labels in the graphs, it is better to import `ggplot2` too.
+```{r eval=TRUE}
+## Import ggplot2 if necessary.
+library(ggplot2)
+```
+
+# A Tutorial
+In this section, we will see estimation procedures in Gaussian-based model and 
+Exponential-based model in details.
+Essentially, they are same in computations, yet there are subtle differences in
+practice.
+
+## Gaussian-based Model
+The density function of Gaussian-based model is
+$$
+p(x; \boldsymbol{\alpha}) \cdot N(x; \mu, \sigma^2),
+$$
+where $p(x; \boldsymbol{\alpha})$ is a polynomial with a coefficient vector $\boldsymbol{\alpha}$,
+and $N(x; \mu, \sigma^2)$ is Gaussian distribution with mean
+$\mu$ and variance $\sigma^2$:
+$$
+N(x;\mu, \sigma^2) := \frac{1}{\sigma \sqrt{2\pi}} 
+\exp\left(-\frac{(x-\mu)^2}{2\sigma^2}\right).
+$$
+
+The aim of estimation is to find a good set of parameters: $\boldsymbol{\alpha}$,
+$\mu$, and $\sigma$.
+To this end, we first provide a coarse set of parameters of base functions, namely, 
+$\mu$ and $\sigma$, along with degrees of polynomials, 
+and then compute the coefficients of polynomials $\boldsymbol{\alpha}$, 
+to get a rough idea of the model.
+And subsequently, refine the set of parameters and repeat above process
+until sufficient estimate is obtained.
+
+### A Creation of a model
+We first create Gaussian-based model from a data set.
+The name of R's S3 class for Gaussian-based model is `gaussmodel`,
+and we refer to the method of `gaussmodel` as *method.gaussmodel*,
+for example, `summmary.gaussmodel`, `plot.gaussmodel`, `estimate.gaussmodel`,
+`func.gaussmodel`.
+
+There are two scenarios for model creations.
+One is to create a model from only a data set, and the other is to create a model
+from a data set and its corresponding frequency data.
+Let's see model creations in examples.
+
+In the first case, we use a data set `mix2gauss$n200`, which contains 200 realizations
+of bimodal mixed Gaussian distributions, to create R's S3 class `gaussmodel` object
+`gm1`.
+```{r eval=TRUE}
+## Create gaussmodel object from a data set mix2gauss$n200
+gm1 <- gaussmodel(data=mix2gauss$n200)
+```
+The object `gm1`, an instance of a S3 class `gaussmodel`, contains the data
+and parameters to be estimated.
+
+Similarly, in the second case, we use `mix2gaussHist$n200p` for data points
+and `mix2gaussHist$n200f` for their corresponding frequencies, to create
+`gaussmodel` object `gm2`.
+```{r eval=FALSE}
+## Create gaussmodel object from a data set mix2gaussHist$n200p and 
+## its frequencies mix2gaussHist$n200f
+gm2 <- gaussmodel(mix2gaussHist$n200p, mix2gaussHist$n200f)
+```
+
+### Exploring a data set
+A summary of `gm1` is displayed:
+```{r eval=TRUE}
+## Display the summary of a data set
+summary(gm1)
+```
+As a name suggests, `summary.gaussmodel` shows the basic statistics of a data set.
+It prints out the quantiles of standardized data as well as original data.
+Here standardization means rescaling of data so as to have a mean 0 and
+a standard deviation 1.
+
+The histogram of the data is displayed:
+```{r, eval=TRUE, out.height="80%", out.width="70%"}
+## Draw a histogram of the data set
+plot(gm1)
+```
+
+`plot.gaussmodel` can plot scaled data as well as original data by setting
+`scaling=TRUE`.
+
+<!-- The default number of bins is 40, which can be changed, for example,
+```{r eval=FALSE}
+## Output is omitted for brevity
+plot(gm1, bins=50)
+``` -->
+
+### Providing the set of parameters
+Before estimation, we need to provide a set of parameters, 
+means, standard deviations, and degrees of polynomials,
+ to compute the coefficients of
+polynomials.
+
+```{r, eval=TRUE}
+## A vector of degrees of polynomials
+deglist <- c(2, 4, 6)
+## A vector of means in Gaussian distributions
+mulist <- c(-0.5, 0, 0.5)
+## A vector of standard deviations in Gaussian distributions
+sdlist <- c(0.75, 1.0, 1.25)
+```
+
+A vector `deglist` indicates degrees of polynomials, in this case
+`2, 4, 6`. In Gaussian-based model, a positive even integer up to around
+20 is okay. Note that large degrees can cause numerical difficulty.
+`mulist` is a vector of means of Gaussian distribution, and
+`sdlist` is a vector of standard deviations of Gaussian distribution,
+so the element of `sdlist` should be positive.
+
+Note that we set these data for estimation of scaled data, as we will
+mention later.
+
+<!-- **Note that the mean and the standard deviation to be passed to 
+an `estimate.gaussmodel` method are applied to
+internally standardized data, not original data.** -->
+
+### Estimation
+Providing these parameter sets, we are now ready to estimate the model.
+```{r eval=TRUE, results="hide", message=FALSE}
+## Do estimation
+## Output messages are suppressed for brevity
+gm1 <- estimate(gm1, deglist=deglist, mulist=mulist, sdlist=sdlist, scaling=TRUE)
+```
+The computation of the coefficients of the polynomials is done
+for all of the combinations of the parameter sets 
+`deglist`, `mulist`, and `sdlist`, 9 cases in this example.
+By setting `scaling=TRUE`, estimation is done for scaled data,
+not for original data, as mentioned before.
+The result is sorted according to
+[Akaike information criterion(AIC)](https://en.wikipedia.org/wiki/Akaike_information_criterion).
+AIC is widely used criterion for model selection so as to avoid overfitting
+by penalizing the number of free parameters.
+
+Let's see the result of estimation.
+
+```{r eval=TRUE}
+## Show the summary of results up to 5
+summary(gm1, nmax=5, estonly=TRUE)
+```
+(`nmax=5` limits top 5 estimates, and `estonly=TRUE` suppresses the basic statistics.)
+
+The columns of `deg`, `mu1` and  `sig1` indicate the degree of polynomials, 
+mean, and standard deviation, respectively.
+And the columns of `mu` and `sig` indicate the scaled mean and standard deviation,
+ respectively.
+
+The column of `aic` indicates AIC and that of `accuracy` does the accuracy
+of the underlying SDP solver, whose value around $1.0^{-7}$ is 
+sufficient for estimation under IEEE 754  
+double precision.
+If sufficient accuracy is not achieved because of numerical difficulty, 
+set `recompute=TRUE` and `stepsize=c(0.4, 0.2)`, for example, and try recomputation.
+```{r eval=FALSE, results="hide", message=FALSE}
+## This is demonstration for recomputation
+## Not Executed
+gm1 <- estimate(gm1, deglist=deglist, mulist=mulist, sdlist=sdlist, scaling=TRUE,
+          recompute=TRUE, stepsize=c(0.4, 0.2))
+```
+The flag `stepsize` indicates the vector of step sizes of the underlying SDP solver.
+The smaller the values are, the better the chances of successful estimation, but
+the slower the computation is.
+The default value of `stepsize` is `c(0.5, 0.3)`, which is enough in many cases.
+We will not discuss the implementation details here, but if the user sets
+`stepsize` by oneself,
+the user should set the values smaller than default values and the length of two is enough.
+
+The numbers 1,2,3,... in the leftmost column indicate the indices of estimates
+ordered by AIC.
+First row is the best estimate, second row is the second best, so on,
+and these numbers can be used in `plot.gaussmodel` or `func.gaussmodel`
+to designate the estimates to be plotted or evaluated, respectively.
+
+To see the graphs of estimated densities along with the histogram, simply type:
+```{r, eval=TRUE, out.height="80%", out.width="70%"}
+plot(gm1)
+```
+
+By default, `plot.gaussmodel` plots up to best 4 estimated density functions.
+In the legend, the color of graphs are displayed in increasing order of AIC.
+For example, in this graph, the estimation with the degree 6, mean  0.96151,
+standard deviation 0.76680 is the best one.
+
+By setting `scaling=TRUE`, it can plot a scaled data, like scaled graphs.
+```{r, eval=TRUE, out.height="80%", out.width="70%"}
+plot(gm1, scaling=TRUE)
+```
+
+Similarly, in the legend, the color of graphs are displayed 
+in increasing order of AIC.
+For example, in this graph, the estimation with the degree 6, mean 0.5,
+standard deviation 0.75 is the best one.
+
+
+### Refine estimation
+We continue to estimate further by adding the degree 8 and refining 
+`mulist=seq(0, 0.5, by=0.1)` and `sdlist=seq(0.6, 0.9, by=0.1)`.
+Here `seq` command generates the vector starting from 0, incrementing by 0.1,
+and ending with 0.5, 
+in case of `seq(0, 0.5, by=0.1)`.
+
+```{r eval=TRUE, results="hide", message=FALSE}
+## Do estimation
+## Output messages are suppressed for brevity
+gm1 <- estimate(gm1, c(4, 6, 8), seq(0, 0.5, by=0.1), seq(0.5, 1, by=0.1),
+        scaling=TRUE)
+```
+Note that parameters already estimated are skipped in `estimate.gaussmodel`
+and we omit argument names.
+
+The summary of estimation is displayed:
+
+```{r eval=TRUE}
+## Show the summary of results up to 5
+summary(gm1, nmax=5, estonly=TRUE)
+```
+
+The graphs are displayed:
+```{r, eval=TRUE, out.height="80%", out.width="70%"}
+plot(gm1)
+```
+
+We continue to do estimation by refining parameters and checking 
+estimates and graphs.
+```{r eval=TRUE, results="hide", message=FALSE}
+## Do estimation
+## Output messages are suppressed for brevity
+gm1 <- estimate(gm1, c(4, 6, 8), seq(0, 0.2, by=0.05), seq(0.6, 0.8, by=0.05),
+          scaling=TRUE)
+```
+
+```{r eval=TRUE}
+## Show the summary of results up to 5
+summary(gm1, nmax=5, estonly=TRUE)
+```
+
+```{r, eval=TRUE, out.height="80%", out.width="70%"}
+plot(gm1)
+```
+
+According to above results, we confine the degrees of polynomials only to 4,
+and set `mulist=seq(0, 0.2, by=0.025)` and `sdlist=seq(0.7, 0.8, by=0.01)`.
+```{r eval=TRUE, results="hide", message=FALSE}
+## Do estimation
+## Output messages are suppressed for brevity
+gm1 <- estimate(gm1, c(4, 6, 8), seq(0, 0.2, by=0.025), seq(0.7, 0.8, by=0.01),
+          scaling=TRUE)
+```
+
+```{r eval=TRUE}
+## Show the summary of results up to 5
+summary(gm1, nmax=5, estonly=TRUE)
+```
+
+```{r, eval=TRUE, out.height="80%", out.width="70%"}
+plot(gm1)
+```
+
+We stop doing estimation here. 
+<!-- In our heuristics, if we can confine up to 0.01 in `sdlist`, we can achieve
+reasonable estimates. -->
+
+### Notes
+Using `plot.gaussmodel`, we can plot cumulative distributions
+by setting `cum=TRUE`:
+
+```{r, eval=TRUE, out.height="80%", out.width="70%"}
+plot(gm1, cum=TRUE)
+```
+
+For more details, see `?plot.gaussmodel`.
+
+`func.gaussmodel` computes the values of density and cumulative distribution of
+desired estimate. For example,
+```{r, eval=TRUE, out.height="80%", out.width="70%"}
+x <- seq(-4, 4, by=0.1)
+## Compute the density of 1st estimate
+y_pdf <- func(gm1, x, n=1)
+## Compute the cumulative distribution of 1st estimate
+y_cdf <- func(gm1, x, cdf=TRUE, n=1)
+```
+
+Of course, we can compute the desired estimate by designating `n=k` for kth 
+estimate shown in `summary.gaussmodel`.
+
+## Exponential-based Model
+The density function of Exponential-based model is
+$$
+p(x; \boldsymbol{\alpha}) \cdot \mathrm{Exp}(x; \lambda),
+$$
+where $p(x; \boldsymbol{\alpha})$ is a polynomial with a coefficient vector $\boldsymbol{\alpha}$,
+and $\mathrm{Exp}(x; \lambda)$ is an exponential distribution with rate
+parameter $\lambda$:
+$$
+\mathrm{Exp}(x;\lambda) := \lambda e^{-\lambda x}, \quad x \in S = [0, \infty).
+$$
+
+The aim of estimation is to find a good set of parameters: $\boldsymbol{\alpha}$,
+$\lambda$.
+To this end, we first provide a coarse set of parameters of base functions, namely, 
+$\lambda$, and a degree of polynomials, 
+and then compute the coefficients of polynomials $\boldsymbol{\alpha}$, 
+to get a rough idea of the model.
+
+
+### A Creation of a model
+The creation of Exponential-based model from a data set is same as
+that of Gaussian-based model.
+We will show the two scenarios,
+one is to create a model from only a data set, and the other is to create a model
+from a data set and its corresponding frequency data, in sequel.
+
+In the first case, we use a data set `mixexpgamma$n200`, which contains 200
+realizations of  mixture of an exponential distribution and a gamma distribution,
+to create R's S3 class `expmodel` object
+`em1`.
+```{r eval=TRUE}
+em1 <- expmodel(mixexpgamma$n200)
+```
+The object `em1` of a S3 class `expmodel` contains the data
+and parameters to be estimated.
+
+Similarly, in the second case, we use `mixExpGammaHist$n800p` for data points
+and `mixExpGammaHist$n800f` for their corresponding frequencies, to create
+`expmodel` object `em2`.
+```{r eval=FALSE}
+em2 <- expmodel(mixExpGammaHist$n800p, mixExpGammaHist$n800f)
+```
+
+### Exploring of a data set
+A summary of `em1` is displayed:
+```{r eval=TRUE}
+## Display the summary of a data set
+summary(em1)
+```
+As a name suggests, `summary.expmodel` shows the basic statistics of a data set.
+It prints out the quantiles of scaled data as well as original data.
+Here the scaling is to divide the data by the mean of the data.
+
+The histogram of the data is displayed:
+```{r, eval=TRUE, out.height="80%", out.width="70%"}
+## Draw a histogram of the data set
+plot(em1)
+```
+
+`plot.expmodel` can plot scaled data as well as original data by setting
+`scaling=TRUE`.
+
+
+### Providing the set of parameters
+Before estimation, we need to provide a set of rate parameters, 
+and degrees of polynomials,
+to compute the coefficients of polynomials.
+
+```{r, eval=TRUE}
+## A vector of degrees of polynomials
+deglist <- c(2, 3, 4)
+## A vector of rate parameters of exponential distributions
+lmdlist <- c(0.5, 1, 2, 4)
+```
+
+`deglist` is a vector of degrees of polynomials, in this case
+`2, 3, 4`. In Exponential-based model, a positive integer up to around
+20 is okay. Note that large degrees can cause numerical difficulty.
+`lmdlist` is a vector of means of exponential distributions,
+so the element of `lmdlist` should be positive.
+
+Also note that the rate parameters to be passed to 
+an `estimate.expmodel` method are applied to
+internally scaled data, not original data.
+
+
+### Estimation
+Providing these parameter sets, we are now ready to estimate the model.
+```{r eval=TRUE, results="hide", message=FALSE}
+## Do estimation
+## Output messages are suppressed for brevity
+em1 <- estimate(em1, deglist=deglist, lmdlist=lmdlist)
+```
+
+The computation of the coefficients of the polynomials is done
+for all of the combinations of the parameter sets 
+`deglist`, `lmdlist`, 12 cases in this example.
+The result is sorted according to Akaike information criterion(AIC)
+
+Let's see the result of estimation.
+
+```{r eval=TRUE}
+## Show the summary of results up to 5
+summary(em1, nmax=5, estonly=TRUE)
+```
+(`nmax=5` limits top 5 estimates, and `estonly=TRUE` suppresses the basic statistics.)
+
+Next see  the histogram.
+```{r, eval=TRUE, out.height="80%", out.width="70%"}
+plot(em1)
+```
+
+### Refine estimation
+We continue to estimate further by adding parameters.
+As we see in `estimate.gaussmodel`,  paramters already estimated are
+skipped.
+```{r eval=TRUE, results="hide", message=FALSE}
+## Do estimation
+## Output messages are suppressed for brevity
+em1 <- estimate(em1, c(3, 4, 5, 6), c(1, 2, 4, 8))
+```
+
+The summary of the estimation is:
+```{r eval=TRUE}
+## Show the summary of results up to 5
+summary(em1, nmax=5, estonly=TRUE)
+```
+The graphs are:
+```{r, eval=TRUE, out.height="80%", out.width="70%"}
+plot(em1)
+```
+
+<!-- ```{r eval=TRUE, results="hide", message=FALSE}
+## Do estimation
+## Output messages are suppressed for brevity
+em1 <- estimate(em1, c(5, 6, 7), c(2, 3, 4))
+``` -->
+
+We further confine parameters as follows:
+```{r eval=TRUE, results="hide", message=FALSE}
+## Do estimation
+## Output messages are suppressed for brevity
+em1 <- estimate(em1, c(5, 6), seq(3, 4, by=0.25))
+```
+
+And see the summary of estimation:
+```{r eval=TRUE}
+## Show the summary of results up to 5
+summary(em1, nmax=5, estonly=TRUE)
+```
+
+The graphs are as follows:
+```{r, eval=TRUE, out.height="80%", out.width="70%"}
+plot(em1)
+```
+
+Theoretically, we can refine estimation as you like, but
+we stop estimation here.
+
+### Notes
+Using `plot.expmodel`, we can plot cumulative distributions
+by setting `cum=TRUE`:
+
+```{r, eval=TRUE, out.height="80%", out.width="70%"}
+plot(em1, cum=TRUE)
+```
+
+For more details, see `?plot.expmodel`.
+
+`func.expmodel` computes the values of density and cumulative distribution of
+desired estimate. For example,
+```{r, eval=TRUE, out.height="80%", out.width="70%"}
+x <- seq(0, 14, by=0.1)
+## Compute the density of 1st estimate
+y_pdf <- func(em1, x, n=1)
+## Compute the cumulative distribution of 1st estimate
+y_cdf <- func(em1, x, cdf=TRUE, n=1)
+```
+
+Of course, we can compute the desired estimate by designating `n=k` for kth 
+estimate shown in `summary.expmodel`.
