@@ -1,0 +1,55 @@
+##' Data on biological species
+##'
+##' This data set describes 101 different biological species using 16 simple attributes,
+##'  where 15 of these are binary and one is metric (the number of legs). The outcome 
+##'  "mammal vs. other" (\code{type}) is binary.
+##'
+##' The variables are as follows:
+##' \itemize{
+##'   \item \code{hair}. factor. Presence of hairs (true = yes; false = no)
+##'   \item \code{feathers}. factor. Presence of feathers (true = yes; false = no)
+##'   \item \code{eggs}. factor. Does the species lay eggs? (true = yes; false = no)
+##'   \item \code{milk}. factor. Does the species give milk? (true = yes; false = no)  
+##'   \item \code{airborne}. factor. Does the species fly? (true = yes; false = no)   
+##'   \item \code{aquatic}. factor. Does the species live in the water? (true = yes; false = no) 
+##'   \item \code{predator}. factor. Is the species a predator? (true = yes; false = no)
+##'   \item \code{toothed}. factor. Presence of teeth (true = yes; false = no)  
+##'   \item \code{backbone}. factor. Presence of backbone (true = yes; false = no)
+##'   \item \code{breathes}. factor. Does the species breathe with lungs? (true = yes; false = no)
+##'   \item \code{venomous}. factor. Is the species venomous? (true = yes; false = no)
+##'   \item \code{fins}. factor. Presence of fins (true = yes; false = no)  
+##'   \item \code{legs}. metric. Number of legs
+##'   \item \code{tail}. factor. Presence of tail (true = yes; false = no)  
+##'   \item \code{domestic}. factor. Is the species domestic? (true = yes; false = no)  
+##'   \item \code{catsize}. factor. Is the species large? (true = yes; false = no)   
+##'   \item \code{type}. factor. Binary outcome variable - type of species ('mammal' vs. 'other')
+##' }
+##' \verb{ }\cr
+##' The original openML dataset contains an additional variable \code{animal}, which is removed in this 
+##' version of the data set. This variable provided the names of all species.
+##'
+##' @format A data frame with 101 observations, 16 covariates and one binary outcome variable
+##' @source OpenML: data.name: zoo, data.id: 965, link: \url{https://www.openml.org/d/965/} (Accessed: 29/08/2024)
+##'
+##' @examples
+##' 
+##' ##' Load data:
+##' data(zoo)
+##' 
+##' ##' Numbers of observations in the two classes:
+##' table(zoo$type)
+##' 
+##' ##' Dimension of data:
+##' dim(zoo)
+##'
+##' ##' First rows of data:
+##' head(zoo) 
+##' 
+##' @references
+##' \itemize{
+##'   \item Vanschoren, J., van Rijn, J. N., Bischl, B., Torgo, L. (2013). OpenML: networked science in machine learning. SIGKDD Explorations 15(2):49-60, <\doi{10.1145/2641190.2641198}>.
+##'   \item Dua, D., Graff, C. (2019). UCI Machine Learning Repository. Irvine, CA: University of California, School of Information and Computer Science. \url{https://archive.ics.uci.edu/ml/}.
+##'   }
+##'
+##' @name zoo
+NULL
