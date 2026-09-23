@@ -1,0 +1,21 @@
+#' Mock dataset for comorbidPGS package
+#'
+#' A dataset with sets of PGSs, Phenotypes and Covariates to demo the
+#' comorbidPGS package
+#'
+#' @format ## `who`
+#' A data frame with 10,000 rows (individuals) and 16 columns:
+#' \describe{
+#'   \item{ID}{Individual's identifier, characters}
+#'   \item{sex}{Sex of the individuals, binary numeric values}
+#'   \item{age}{Age of the individuals, numeric value}
+#'   \item{gen_array}{The genotypic array used for those individuals, factor values}
+#'   \item{ethnicity}{The ethnicity of individuals, can be also used as Categorical Phenotype, factor values}
+#'   \item{brc_PGS, t2d_PGS, ldl_PGS}{Three distributions of PGS for Breast Cancer, Type 2 Diabetes and Hypertension respectively; numeric values}
+#'   \item{brc, t2d, hypertension}{Three Cases/Controls Phenotypes, representing Breast Cancer, Type 2 Diabetes and Hypertension respectively; binary values}
+#'   \item{ldl, bmi, sbp}{Three Continuous Phenotypes, representing low-density lipoprotein, body-mass index, and systolic blood pressure respectively; numeric values}
+#'   \item{log_ldl}{A continuous Phenotype, based on log(ldl) to have a normal distribution; numeric values}
+#'   \item{sbp_cat}{An Ordered Categorical Phenotype, with 3 possible outcomes: low, normal or high systolic blood pressure; factor values}
+#' }
+#' @source <https://github.com/VP-biostat/comorbidPGS>
+"comorbidData"
