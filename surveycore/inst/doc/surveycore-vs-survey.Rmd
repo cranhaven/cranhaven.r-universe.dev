@@ -1,0 +1,667 @@
+---
+title: "surveycore vs. survey and srvyr"
+output:
+  rmarkdown::html_vignette:
+    toc: true
+    toc_depth: 3
+bibliography: references.bib
+link-citations: true
+vignette: >
+  %\VignetteIndexEntry{surveycore vs. survey and srvyr}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include=FALSE}
+library(surveycore)
+knitr::opts_chunk$set(comment = "#>")
+
+has_survey     <- requireNamespace("survey",     quietly = TRUE)
+has_srvyr      <- requireNamespace("srvyr",      quietly = TRUE)
+
+if (has_survey) {
+  library(survey)
+  data(api) # loads apisrs, apistrat, apiclus1
+}
+if (has_srvyr) suppressMessages(library(srvyr))
+```
+
+If you're coming from `survey` or `srvyr`, this vignette is a side-by-side
+reference showing how surveycore maps to the workflows you already know. Every
+section shows the same task three ways: `survey`, `srvyr`, and `surveycore`.
+
+**Two things to know upfront:**
+
+- surveycore is **not** a wrapper around `survey`. Its variance code is vendored
+  from `survey` — so every estimate surveycore produces matches `survey` output
+  numerically — but `survey` is not a runtime dependency.
+- `survey` → `srvyr` added tidyverse syntax. surveycore rethinks the interface
+  further: tidy-select constructors, dedicated analysis functions, automatic
+  label handling from haven-imported data, and richer tibble output.
+
+**Constructor comparisons** use the `api` dataset from the `survey` package —
+the same reference dataset as the
+[srvyr comparison vignette](https://CRAN.R-project.org/package=srvyr),
+so cross-referencing is easy. **Analysis comparisons** use `ns_wave1`
+(Nationscape Wave 1, Democracy Fund + UCLA) from surveycore's bundled data.
+
+---
+
+## 1. Creating Survey Design Objects
+
+### 1.1 Simple Random Sample
+
+`apisrs` is a simple random sample of California schools.
+
+**survey**
+
+```{r srs-survey, eval=has_survey}
+srs_sv <- svydesign(ids = ~1, fpc = ~fpc, weights = ~pw, data = apisrs)
+srs_sv
+```
+
+**srvyr**
+
+```{r srs-srvyr, eval=has_survey && has_srvyr}
+srs_srvyr <- apisrs |> as_survey_design(ids = 1, fpc = fpc, weights = pw)
+srs_srvyr
+```
+
+**surveycore**
+
+```{r srs-sc, eval=has_survey}
+srs_sc <- surveycore::as_survey(apisrs, weights = pw, fpc = fpc)
+srs_sc
+```
+
+`ids = ~1` is `survey`'s idiom for "no clusters" — not immediately obvious
+to new users. `as_survey()` without `ids` or `strata` creates an SRS design
+directly, making the design type clear from context.
+
+### 1.2 Stratified Design
+
+`apistrat` is stratified by school type (`stype`: E = elementary, M = middle,
+H = high school).
+
+**survey**
+
+```{r strat-survey, eval=has_survey}
+strat_sv <- svydesign(
+  ids = ~1, strata = ~stype, weights = ~pw, fpc = ~fpc, data = apistrat
+)
+strat_sv
+```
+
+**srvyr**
+
+```{r strat-srvyr, eval=has_survey && has_srvyr}
+strat_srvyr <- apistrat |>
+  as_survey_design(strata = stype, weights = pw, fpc = fpc)
+strat_srvyr
+```
+
+**surveycore**
+
+```{r strat-sc, eval=has_survey}
+strat_sc <- surveycore::as_survey(apistrat, strata = stype, weights = pw, fpc = fpc)
+strat_sc
+```
+
+### 1.3 Cluster Design
+
+`apiclus1` is a one-stage cluster sample with school districts (`dnum`) as
+the primary sampling units.
+
+**survey**
+
+```{r clus-survey, eval=has_survey}
+clus_sv <- svydesign(ids = ~dnum, fpc = ~fpc, weights = ~pw, data = apiclus1)
+clus_sv
+```
+
+**srvyr**
+
+```{r clus-srvyr, eval=has_survey && has_srvyr}
+clus_srvyr <- apiclus1 |>
+  as_survey_design(ids = dnum, fpc = fpc, weights = pw)
+clus_srvyr
+```
+
+**surveycore**
+
+```{r clus-sc, eval=has_survey}
+clus_sc <- surveycore::as_survey(apiclus1, ids = dnum, fpc = fpc, weights = pw)
+clus_sc
+```
+
+### 1.4 Replicate Weights
+
+Replicate weights are common in government surveys like the ACS PUMS (80
+successive-difference replicates) and Pew's Jewish Americans Study (100 JK1
+replicates). Both datasets are bundled with surveycore.
+
+The key interface difference: `survey` selects replicate columns with a raw
+regex string; surveycore uses tidyselect — the same composable selection
+language used throughout the tidyverse.
+
+**ACS PUMS Wyoming — successive-difference replicates**
+
+```{r repwt-acs-survey, eval=has_survey}
+acs_sv <- svrepdesign(
+  data             = acs_pums_wy,
+  weights          = ~pwgtp,
+  repweights       = "pwgtp[0-9]+",   # regex string
+  type             = "successive-difference",
+  combined.weights = TRUE
+)
+acs_sv
+```
+
+```{r repwt-acs-srvyr, eval=has_survey && has_srvyr}
+acs_srvyr <- acs_pums_wy |>
+  as_survey_rep(
+    weights          = pwgtp,
+    repweights       = matches("^pwgtp[0-9]+$"), # tidyselect
+    type             = "successive-difference",
+    combined_weights = TRUE
+  )
+acs_srvyr
+```
+
+```{r repwt-acs-sc}
+acs_sc <- as_survey_replicate(
+  acs_pums_wy,
+  weights    = pwgtp,
+  repweights = tidyselect::matches("^pwgtp[0-9]+$"), # tidyselect
+  type       = "successive-difference"
+)
+acs_sc
+```
+
+**Pew Jewish Americans 2020 — JK1 jackknife replicates**
+
+```{r repwt-pew-sc}
+pew_sc <- as_survey_replicate(
+  pew_jewish_2020,
+  weights    = extweight,
+  repweights = extweight1:extweight100,
+  type       = "JK1"
+)
+pew_sc
+```
+
+### 1.5 Calibrated / Non-Probability Samples
+
+`ns_wave1` is the Nationscape Wave 1 survey — a non-probability quota panel
+with raking weights calibrated to ACS demographics and 2016 vote.
+
+`survey` and `srvyr` have no dedicated constructor for calibrated or
+non-probability designs. The design intent is lost in the code:
+
+```{r calib-survey, eval=has_survey}
+# No way to signal this is calibrated or non-probability
+ns_sv <- svydesign(ids = ~1, weights = ~weight, data = ns_wave1)
+```
+
+```{r calib-srvyr, eval=has_survey && has_srvyr}
+ns_srvyr <- ns_wave1 |> as_survey_design(weights = weight)
+```
+
+```{r calib-sc}
+# as_survey_nonprob() makes the design type explicit
+ns_sc <- as_survey_nonprob(ns_wave1, weights = weight)
+ns_sc
+```
+
+`as_survey_nonprob()` preserves the distinction in code, output, and
+documentation. Standard errors are approximate — they assume the calibration
+weights produce approximately correct variance estimates [@elliott2017].
+
+### 1.6 Two-Phase Designs
+
+Two-phase designs are uncommon. surveycore's `as_survey_twophase()` matches
+`survey::twophase()` for the Breslow-Cain variance estimator [@breslow1988].
+For a full worked example using `survival::nwtco`, see
+`vignette("creating-survey-objects")`.
+
+### 1.7 Constructor Summary
+
+| Design | survey | srvyr | surveycore |
+|--------|--------|-------|------------|
+| SRS | `svydesign(ids=~1, ...)` | `as_survey_design(ids=1, ...)` | `as_survey(...)` (no `ids`/`strata`) |
+| Stratified | `svydesign(strata=~s, ...)` | `as_survey_design(strata=s, ...)` | `as_survey(..., strata=s)` |
+| Cluster | `svydesign(ids=~d, ...)` | `as_survey_design(ids=d, ...)` | `as_survey(..., ids=d)` |
+| Replicate wts | `svrepdesign(repweights="regex")` | `as_survey_rep(repweights=matches(...))` | `as_survey_replicate(repweights=matches(...))` |
+| Calibrated/NPS | `svydesign(ids=~1, weights=~w)` ⚠ | `as_survey_design(weights=w)` ⚠ | `as_survey_nonprob(...)` |
+| Two-phase | `twophase(...)` | `as_survey_twophase(...)` | `as_survey_twophase(...)` |
+
+⚠ No dedicated non-probability constructor — design intent is not preserved.
+
+---
+
+## 2. Summary Statistics
+
+The sections below use `ns_sc` (already created above) alongside the equivalent
+`survey` and `srvyr` designs. The **label contrast** — raw integer codes in
+`survey`/`srvyr` vs. human-readable labels in surveycore — is the recurring
+theme. `ns_wave1` was imported with `haven` labels intact; surveycore resolves
+them automatically.
+
+### 2.1 Weighted Means (Grouped)
+
+Estimated discrimination experienced by Black Americans, broken out by
+party identification (`pid3`).
+
+**survey** — group values appear as raw codes (1, 2, 3, 4)
+
+```{r means-survey, eval=has_survey}
+svyby(~discrimination_blacks, ~pid3, ns_sv, svymean, na.rm = TRUE)
+```
+
+**srvyr** — also raw codes unless `pid3` is manually factored first
+
+```{r means-srvyr, eval=has_survey && has_srvyr}
+ns_srvyr |>
+  group_by(pid3) |>
+  summarise(m = survey_mean(discrimination_blacks, vartype = "ci", na.rm = TRUE))
+```
+
+**surveycore** — "Democrat", "Republican", "Independent", "Something else"
+from the haven labels, automatically
+
+```{r means-sc}
+get_means(ns_sc, discrimination_blacks, group = pid3)
+```
+
+### 2.2 Proportions / Frequency Tables
+
+Distribution of willingness to consider voting for Trump (`consider_trump`).
+
+**survey** — `svymean()` on a factor produces column names like
+`consider_trump1`, `consider_trump2`, `consider_trump999`
+
+```{r freqs-survey, eval=has_survey}
+svymean(~factor(consider_trump), ns_sv, na.rm = TRUE)
+```
+
+**srvyr**
+
+```{r freqs-srvyr, eval=has_survey && has_srvyr}
+ns_srvyr |>
+  group_by(consider_trump) |>
+  summarise(pct = survey_mean(na.rm = TRUE))
+```
+
+**surveycore** — `consider_trump` column shows "Yes", "No", "Don't know"
+
+```{r freqs-sc}
+get_freqs(ns_sc, consider_trump)
+```
+
+### 2.3 Population Totals
+
+`ns_wave1` uses calibration weights scaled to the sample size (weights sum to
+6,422 — the number of respondents). `get_totals()` with no variable argument
+returns the estimated population size — here, it confirms the calibration:
+
+**survey** — `svytotal(~1, design)` is not supported; the sum of weights gives the
+estimated N, and `svytotal()` requires a real variable
+
+```{r totals-survey, eval=has_survey}
+sum(weights(ns_sv))                         # estimated population N
+svytotal(~age, ns_sv, na.rm = TRUE)         # total of a continuous variable
+```
+
+**srvyr** — `survey_total(1)` computes estimated N
+
+```{r totals-srvyr, eval=has_survey && has_srvyr}
+ns_srvyr |> summarise(n_pop = survey_total(1))       # estimated N
+ns_srvyr |> summarise(age_total = survey_total(age, na.rm = TRUE))
+```
+
+**surveycore**
+
+```{r totals-sc}
+get_totals(ns_sc)           # estimated N (no x argument)
+get_totals(ns_sc, age)      # total of a continuous variable
+```
+
+For a design with probability weights that sum to the actual population (like
+the Pew Jewish Americans study), `get_totals()` returns the estimated
+population count in millions:
+
+```{r totals-pew}
+get_totals(pew_sc)
+```
+
+### 2.4 Quantiles
+
+Weighted age distribution of Nationscape respondents.
+
+**survey**
+
+```{r quantiles-survey, eval=has_survey}
+svyquantile(~age, ns_sv, quantiles = c(0.25, 0.5, 0.75), na.rm = TRUE)
+```
+
+**srvyr**
+
+```{r quantiles-srvyr, eval=has_survey && has_srvyr}
+ns_srvyr |>
+  summarise(q = survey_quantile(age, c(0.25, 0.5, 0.75), na.rm = TRUE))
+```
+
+**surveycore** — Woodruff (1952) confidence intervals, guaranteed to
+respect the data range
+
+```{r quantiles-sc}
+get_quantiles(ns_sc, age)
+```
+
+### 2.5 Ratios
+
+`api00` / `api99` is a natural ratio: Academic Performance Index in 2000
+relative to 1999. We use `apisrs` here because it provides a clear probability
+design where the ratio estimator is unambiguous.
+
+**survey** — positional argument order requires knowing which formula is
+numerator vs. denominator
+
+```{r ratios-survey, eval=has_survey}
+svyratio(~api00, ~api99, srs_sv)
+```
+
+**srvyr**
+
+```{r ratios-srvyr, eval=has_survey && has_srvyr}
+srs_srvyr |> summarise(ratio = survey_ratio(api00, api99))
+```
+
+**surveycore** — named arguments make direction self-documenting
+
+```{r ratios-sc, eval=has_survey}
+get_ratios(srs_sc, numerator = api00, denominator = api99)
+```
+
+`numerator =` / `denominator =` remove the ambiguity present in
+`svyratio(~y, ~x, design)`.
+
+### 2.6 Correlations
+
+Pearson correlation between Trump and Biden favorability (`cand_favorability_*`
+is a 1–4 scale; 999 codes respondents who haven't heard enough — filtered below).
+
+```{r corr-setup}
+# Pre-filter non-substantive responses before creating the design
+ns_corr <- ns_wave1[
+  !is.na(ns_wave1$cand_favorability_trump) &
+    ns_wave1$cand_favorability_trump != 999 &
+    !is.na(ns_wave1$cand_favorability_biden) &
+    ns_wave1$cand_favorability_biden != 999,
+]
+ns_corr_sc <- as_survey_nonprob(ns_corr, weights = weight)
+```
+
+**survey** — matrix output, no confidence intervals
+
+```{r corr-survey, eval=has_survey && requireNamespace("jtools", quietly = TRUE)}
+ns_corr_sv <- svydesign(ids = ~1, weights = ~weight, data = ns_corr)
+jtools::svycor(~cand_favorability_trump + cand_favorability_biden, ns_corr_sv)
+```
+
+**srvyr** — no dedicated `survey_corr()` verb; users must fall back to `survey`
+
+**surveycore** — long tibble with Fisher-Z confidence intervals (bounds
+guaranteed in [−1, 1])
+
+```{r corr-sc}
+get_corr(ns_corr_sc, c(cand_favorability_trump, cand_favorability_biden))
+```
+
+`svycor()` returns a matrix with no CIs. `get_corr()` returns a tidy tibble
+with Fisher-Z confidence intervals. srvyr has no `survey_corr()` verb at all
+— users fall back to `survey` directly.
+
+---
+
+## 3. Controlling Uncertainty Output
+
+All surveycore analysis functions share a `variance` argument that controls
+which uncertainty columns appear. In `survey`, you call a separate function per
+metric. In `srvyr`, you repeat the `summarise()` call for each type.
+
+**survey** — separate call per uncertainty type
+
+```{r uncertainty-survey, eval=has_survey}
+m <- svymean(~age, ns_sv, na.rm = TRUE)
+m                      # SE only in the estimate
+confint(m)             # CI — separate call
+cv(m)                  # CV — separate call
+svymean(~age, ns_sv, deff = TRUE, na.rm = TRUE) # DEFF — different return structure
+```
+
+**srvyr** — one call per type; the variable is estimated multiple times
+
+```{r uncertainty-srvyr, eval=has_survey && has_srvyr}
+ns_srvyr |>
+  summarise(
+    m_se   = survey_mean(age, vartype = "se",   na.rm = TRUE),
+    m_ci   = survey_mean(age, vartype = "ci",   na.rm = TRUE),
+    m_cv   = survey_mean(age, vartype = "cv",   na.rm = TRUE),
+    m_deff = survey_mean(age, deff = TRUE,      na.rm = TRUE)
+  )
+```
+
+**surveycore** — one call, any combination of metrics
+
+```{r uncertainty-sc}
+get_means(ns_sc, age, variance = c("se", "ci", "cv", "deff"))
+```
+
+Set `variance = NULL` to return point estimates and sample counts only:
+
+```{r uncertainty-null}
+get_means(ns_sc, age, variance = NULL)
+```
+
+Available `variance` codes:
+
+| Code | What it returns |
+|------|-----------------|
+| `"se"` | Standard error |
+| `"ci"` | Confidence interval: `ci_low`, `ci_high` |
+| `"var"` | Variance (SE²) |
+| `"cv"` | Coefficient of variation (SE / estimate) |
+| `"moe"` | Margin of error at `conf_level` |
+| `"deff"` | Design effect (complex / SRS variance) |
+
+The `conf_level` argument controls the level for `"ci"` and `"moe"`.
+Default is `0.95`; for a 90% interval: `get_means(ns_sc, age, conf_level = 0.9)`.
+
+---
+
+## 4. Features With No survey / srvyr Equivalent
+
+### 4.1 Automatic Value Labels
+
+`ns_wave1` was imported with `haven` labels intact. surveycore resolves them
+automatically — no manual recoding required.
+
+**survey / srvyr** — group column values are raw integer codes
+
+```{r labels-survey, eval=has_survey}
+# pid3 values: 1, 2, 3, 4 — the reader must consult the codebook
+svyby(~discrimination_blacks, ~pid3, ns_sv, svymean, na.rm = TRUE)
+```
+
+**surveycore** — "Democrat", "Republican", "Independent", "Something else"
+
+```{r labels-sc}
+get_means(ns_sc, discrimination_blacks, group = pid3)
+```
+
+Opt out with `label_values = FALSE` to see raw codes:
+
+```{r labels-optout}
+get_means(ns_sc, discrimination_blacks, group = pid3, label_values = FALSE)
+```
+
+### 4.2 Multiple Variables in One Call
+
+`ns_wave1` includes a battery of 13 news source items
+(`news_sources_facebook`, `news_sources_cnn`, …, `news_sources_other`).
+Analyzing all at once requires a loop in `survey` and `srvyr`; surveycore
+stacks them in a single call.
+
+**survey / srvyr** — must loop; output is a list that the user binds manually
+
+```{r multi-survey, eval=has_survey}
+news_vars <- c(
+  "news_sources_facebook", "news_sources_cnn", "news_sources_fox",
+  "news_sources_npr", "news_sources_new_york_times"
+)
+results_sv <- lapply(news_vars, function(v) {
+  f <- as.formula(paste0("~", v))
+  svymean(f, ns_sv, na.rm = TRUE)
+})
+# Results are a list — user must bind rows and add a name column manually
+do.call(rbind, lapply(seq_along(results_sv), function(i) {
+  data.frame(name = news_vars[[i]], coef(results_sv[[i]]))
+}))
+```
+
+**surveycore** — one call; a `name` column identifies each item; variable
+labels are applied automatically
+
+```{r multi-sc}
+get_freqs(
+  ns_sc,
+  c(news_sources_facebook:news_sources_other)
+)
+```
+
+### 4.3 Minimum Cell Size Warnings
+
+`survey` and `srvyr` return estimates for tiny cells silently — the user may
+not notice that a group has only 8 respondents. surveycore warns when any
+unweighted cell count falls below `min_cell_n` (default: 30).
+
+```{r min-cell}
+# Construct a design with deliberately small cells
+small_df <- data.frame(
+  group = rep(c("A", "B", "C"), c(8, 15, 200)),
+  x     = rnorm(223),
+  w     = 1
+)
+small_svy <- surveycore::as_survey(small_df, weights = w)
+
+get_means(small_svy, x, group = group)
+```
+
+Suppress the warning when small cells are expected:
+
+```{r min-cell-suppress, eval=FALSE}
+get_means(small_svy, x, group = group, min_cell_n = 0L)
+```
+
+### 4.4 Weighted Sample Size
+
+In `survey` and `srvyr`, getting both the unweighted and estimated population
+count for each cell requires a separate `svytotal(~1, ...)` call. surveycore
+adds it with one argument:
+
+**survey** — extra call for weighted N
+
+```{r n-weighted-survey, eval=has_survey}
+# Proportions by group (unweighted n not shown in output)
+svyby(~factor(consider_trump), ~pid3, ns_sv, svymean, na.rm = TRUE)
+# Estimated weighted N per group — requires a separate call
+svyby(~as.numeric(!is.na(consider_trump)), ~pid3, ns_sv, svytotal, na.rm = TRUE)
+```
+
+**surveycore** — one argument
+
+```{r n-weighted-sc}
+get_freqs(ns_sc, consider_trump, group = pid3, n_weighted = TRUE)
+```
+
+The `n_weighted` column is the sum of weights within each cell — the
+estimated population size that cell represents.
+
+### 4.5 Metadata-Rich Results (`.meta`)
+
+surveycore attaches a `.meta` attribute to every result tibble. It contains
+the variable label, value labels, and question preface for each focal and
+grouping variable — everything needed to build a publication-ready table
+without consulting the codebook separately.
+
+```{r meta}
+result <- get_means(ns_sc, discrimination_blacks, group = pid3)
+
+# Variable label for the focal variable
+attr(result, ".meta")$x$discrimination_blacks$variable_label
+
+# Value labels for the grouping variable
+attr(result, ".meta")$group$pid3$value_labels
+```
+
+In `survey` and `srvyr`, metadata is not attached to results — label
+information is lost after estimation.
+
+---
+
+## 5. Notable Differences
+
+| | survey | srvyr | surveycore |
+|--|--------|-------|------------|
+| **Output format** | S3 `svystat` / matrix | Tibble with `_se`/`_low`/`_upp` suffix columns | S3 tibble subclass with CI columns by default |
+| **Interface** | `~formula` throughout | Mixed: tidy constructor, formula in `summarise()` | Bare names throughout (tidy-select) |
+| **Value labels** | Not applied | Not applied | Applied automatically from `haven` attributes |
+| **Multiple variables** | Loop required | Loop required | `c(x, y, z)` in one call |
+| **Min-cell warning** | None | None | Default `min_cell_n = 30L` |
+| **Weighted N** | Separate call | Separate call | `n_weighted = TRUE` |
+| **Correlation CIs** | None (`svycor()`) | No verb | Fisher-Z CIs via `get_corr()` |
+| **Non-probability design** | No dedicated constructor | No dedicated constructor | `as_survey_nonprob()` |
+| **Manipulation** | Pre/post construction | Bundled via pipe | `surveytidy` (companion package) |
+| **Runtime `survey` dep.** | Is `survey` | Wraps `survey` | Vendored — `survey` not required |
+
+---
+
+## 6. Function Reference Table
+
+| Task | survey | srvyr | surveycore |
+|------|--------|-------|------------|
+| SRS design | `svydesign(ids=~1, ...)` | `as_survey_design(ids=1, ...)` | `as_survey(...)` (no `ids`/`strata`) |
+| Stratified design | `svydesign(strata=~s, ...)` | `as_survey_design(strata=s, ...)` | `as_survey(..., strata=s)` |
+| Cluster design | `svydesign(ids=~d, ...)` | `as_survey_design(ids=d, ...)` | `as_survey(..., ids=d)` |
+| Replicate weights | `svrepdesign(repweights="regex")` | `as_survey_rep(repweights=matches(...))` | `as_survey_replicate(repweights=matches(...))` |
+| Calibrated/NPS | `svydesign(weights=~w)` ⚠ | `as_survey_design(weights=w)` ⚠ | `as_survey_nonprob(...)` |
+| Two-phase | `twophase(...)` | `as_survey_twophase(...)` | `as_survey_twophase(...)` |
+| Weighted mean | `svymean(~x, d)` | `summarise(survey_mean(x))` | `get_means(d, x)` |
+| Grouped mean | `svyby(~x, ~g, d, svymean)` | `group_by(g) \|> summarise(...)` | `get_means(d, x, group=g)` |
+| Proportions | `svymean(~factor(x), d)` | `group_by(x) \|> summarise(survey_mean())` | `get_freqs(d, x)` |
+| Total | `svytotal(~x, d)` | `summarise(survey_total(x))` | `get_totals(d, x)` |
+| Population N | `svytotal(~1, d)` | `summarise(survey_total(1))` | `get_totals(d)` |
+| Quantiles | `svyquantile(~x, d, q)` | `summarise(survey_quantile(x, q))` | `get_quantiles(d, x, probs=q)` |
+| Ratio | `svyratio(~y, ~x, d)` | `summarise(survey_ratio(y, x))` | `get_ratios(d, numerator=y, denominator=x)` |
+| Correlation | `svycor(~x+y, d)` ⚠ no CI | ✗ no verb | `get_corr(d, c(x, y))` with CI |
+| Multiple variables | Loop + bind | Loop + bind | `get_means(d, c(x, y, z))` |
+| Value labels | Manual recode | Manual recode | `label_values = TRUE` (default) |
+| Min-cell warning | ✗ | ✗ | `min_cell_n = 30L` (default) |
+| Weighted N | Separate call | Separate call | `n_weighted = TRUE` |
+| Domain filter | `subset(d, cond)` | `filter(cond)` | `filter(cond)` (`surveytidy`) |
+| Mutate | Modify df, recreate | `mutate(...)` | `mutate(...)` (`surveytidy`) |
+| Group by | `svyby(...)` | `group_by(...)` | `group_by(...)` (`surveytidy`) or `group=` arg |
+
+⚠ = partial / workaround; ✗ = no equivalent
+
+---
+
+## 7. Learning More
+
+- `vignette("getting-started")` — full surveycore overview with worked examples
+- `vignette("creating-survey-objects")` — all five constructors, including
+  two-phase designs and the `nest` argument
+- [srvyr comparison vignette](https://CRAN.R-project.org/package=srvyr)
+  — the original side-by-side that this vignette is modeled on
+- @lumley2010 — the definitive reference on complex survey analysis in R

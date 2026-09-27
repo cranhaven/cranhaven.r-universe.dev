@@ -1,0 +1,595 @@
+---
+title: "Getting Started with surveycore"
+output:
+  rmarkdown::html_vignette:
+    toc: true
+    toc_depth: 3
+bibliography: references.bib
+link-citations: true
+vignette: >
+  %\VignetteIndexEntry{Getting Started with surveycore}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include=FALSE}
+library(surveycore)
+knitr::opts_chunk$set(
+  comment = "#>",
+  eval = requireNamespace("surveytidy", quietly = TRUE)
+)
+```
+
+`surveycore` is a tidyverse-compatible alternative to `survey` and
+`srvyr`, covering the full workflow for survey data analysis. The variance
+estimation code for probability samples is vendored from `survey` and tested 
+against it, so estimates using `as_survey()`, `as_survey_replicate()`, and 
+`as_survey_twophase()` match the reference implementation. This vignette 
+covers two things:
+
+1. Creating survey objects
+
+2. Conducting analysis
+
+---
+
+## Creating the survey object
+
+The first step when conducting survey analysis is creating the right survey object
+where we specify the sampling design, weights, and whatever other information is
+needed. Without this information, point estimates may be biased and standard errors 
+are almost certainly wrong [@lumley2010; @lohr2022].
+
+Fortunately, we don't have to worry about that — that's what survey objects are
+for. They give the analysis functions everything they need to correctly account
+for variance and bias from the sampling design.
+
+`surveycore` has four different survey object constructors:
+
+1. `as_survey()`
+
+2. `as_survey_replicate()`
+
+3. `as_survey_nonprob()`
+
+4. `as_survey_twophase()`
+
+Rather than going into detail on each constructor, here is a quick overview of
+each. For more information on the different constructors visit 
+`vignette("creating-survey-objects")`.
+
+### `as_survey()` 
+
+Use `as_survey()` for two types of designs:
+
+1. A stratified or clustered sample
+
+2. A simple random sample (SRS)
+
+If you know your data is a stratified/clustered sample or your data
+comes with variables identifying the cluster IDs or strata, use this function.
+All datasets used in this vignette are bundled with `surveycore`. In this first
+example, we'll use the General Social Survey, which has variables for clustering,
+strata, and design weights.
+
+``` {r as_survey}
+gss_svy <- as_survey(
+  gss_2024,
+  # the cluster ids
+  ids = vpsu,
+  # the strata
+  strata = vstrat,
+  # the weights
+  weights = wtssps,
+  nest = TRUE
+)
+
+gss_svy
+```
+
+Each survey object has a print method that shows the first 10 rows of the
+data, similar to a tibble, but also includes a brief description of the
+survey design.
+
+If your data doesn't have strata or clusters, but each respondent had equal 
+probability of being sampled (a simple random sample), then you still want
+to use this function. However, unlike before, you leave `strata` and `ids`
+NULL since you don't have any. A good example of this is the 2000 
+California API survey.
+
+```{r srs}
+ca_api_2000_svy <- as_survey(
+  ca_api_2000,
+  weights = pw,
+  fpc = fpc # reduces SEs
+)
+
+ca_api_2000_svy
+```
+
+### `as_survey_replicate()`
+
+Use this when the data you have is from a probability sample and has replicate 
+weight columns like `repwt_1`, `repwt_2`. For example, Pew's Jewish American 
+study from 2020 uses replicate weights.
+
+
+```{r replicate}
+pew_jewish_svy <- as_survey_replicate(
+  pew_jewish_2020,
+  weights = extweight,
+  repweights = extweight1:extweight100,
+  type = "JK2"
+)
+
+pew_jewish_svy
+```
+
+
+### `as_survey_nonprob()`
+
+Use this if your data comes from a non-probability sample (e.g., via an opt-in
+panel like Qualtrics Panels, Cint/Lucid, Dynata, etc.) and
+has weights (e.g., calibration weights, inverse-probability weights, etc.).
+To illustrate we'll use Wave 1 from the Nationscape dataset.
+
+```{r calibrated}
+ns_wave1_svy <- as_survey_nonprob(ns_wave1, weights = weight)
+
+ns_wave1_svy
+```
+
+### `as_survey_twophase()`
+
+Two-phase sampling involves collecting a large initial sample, then sampling a
+subset of those respondents as a follow-up. This is not a very common survey
+method, but common examples include case-cohort studies, medical validation
+studies, or surveys with a screening phase. If your data is a two-phase sample,
+use `as_survey_twophase()`.
+
+We will use the nwtco data from the `survival` package.
+
+```{r nwtco, eval=requireNamespace("survival", quietly=TRUE)}
+nwtco <- survival::nwtco
+
+# in.subcohort is stored as 0/1 — must be logical for as_survey_twophase()
+nwtco$in.subcohort <- as.logical(nwtco$in.subcohort)
+
+# Phase 1: all 4,028 enrolled patients (each patient is their own unit)
+phase1 <- as_survey(nwtco, ids = seqno)
+
+# Phase 2: subcohort, with Phase 2 sampling stratified by relapse status
+nwtco_svy <- as_survey_twophase(
+  phase1,
+  strata2 = rel, # Phase 2 strata: cases (rel=1) vs. non-cases (rel=0)
+  subset = in.subcohort, # Logical column: TRUE = selected into Phase 2
+  method = "full"
+)
+
+nwtco_svy
+```
+
+
+---
+
+## Analysis functions
+
+In addition to creating survey objects, `surveycore` has several 
+functions designed to make analysis easier: 
+
+- `get_freqs()`
+
+- `get_means()`
+
+- `get_totals()`
+
+- `get_corr()`
+
+- `get_ratios()`
+
+- `get_quantiles()`
+
+- `get_diffs()`
+
+- `get_t_test()`
+
+- `get_pairwise()`
+
+- `get_variance()`
+
+### Frequency tables — `get_freqs()`
+
+`get_freqs()` calculates weighted frequencies (aka proportions). The 
+first argument is the survey design, the second is the variable you want 
+to get the frequencies for. Here's a simple example where we calculate 
+whether people are willing to consider voting for Trump.
+
+```{r freqs-basic}
+get_freqs(ns_wave1_svy, consider_trump)
+```
+
+
+#### Analyzing multiple variables at once
+
+A key piece of survey research involves select-all-that-apply style questions. 
+For example, the Nationscape data asked people: "We're interested in where you
+might have heard news about politics in the last week. Please indicate which of 
+the following sources you used." Rather than looking at each one individually,
+`get_freqs()` accepts `tidy-select` expressions, which allows you to pass in
+multiple variables. Let's look at an example:
+
+```{r freqs-multi}
+get_freqs(ns_wave1_svy, c(news_sources_facebook:news_sources_other))
+```
+
+The `name` column identifies which variable each row belongs to; `value`
+holds the response code. You can also change the name of the columns if
+you want. For example:
+
+```{r freqs-rename}
+ns_wave1_svy |>
+  get_freqs(
+    c(news_sources_facebook:news_sources_other),
+    names_to = "news_source",
+    values_to = "choice"
+  )
+```
+
+
+### Weighted means — `get_means()`
+
+`get_means()` estimates the survey-weighted mean of a continuous variable.
+
+```{r means-basic}
+# Average favorability towards Biden
+ns_wave1_svy |>
+  # remove those who said "Not sure" (coded as 999)
+  surveytidy::filter_out(cand_favorability_biden == 999) |>
+  get_means(cand_favorability_biden)
+```
+
+
+
+### Population totals — `get_totals()`
+
+`get_totals()` estimates the weighted total for the target population. When
+called without `x`, it simply provides a sum of the weights. The meaning of
+the result depends on how the weights are scaled. Pew's Jewish-American 
+study scales the weights so it gives the estimated size of the Jewish-
+American population:
+
+```{r totals-pew}
+pew_jewish_svy |>
+  # only include jews by religion and jews of no religion to match Pew's report
+  surveytidy::filter(jewishcat %in% c(1:2)) |>
+  get_totals()
+```
+
+Compare that to the GSS data from earlier, where the weights are scaled to
+the sample size (N = 3,309):
+
+```{r totals-ns}
+get_totals(gss_svy)
+```
+
+Specifying a variable in `x` computes the weighted total for that variable. 
+To show this, we'll use the `ca_api_2000_svy` object from before to 
+determine how many students are enrolled in the California API system.
+
+```{r totals-x}
+get_totals(ca_api_2000_svy, x = enroll)
+```
+
+To see the weighted total within each level of a categorical variable, 
+use the `group` argument. To show this, we'll look at how how many
+Jewish-Americans fall in each age category:
+
+```{r totals-group}
+pew_jewish_svy |>
+  # only include jews by religion and jews of no religion to match Pew's report
+  surveytidy::filter(jewishcat %in% c(1:2)) |>
+  get_totals(group = age4cat)
+```
+
+---
+
+### Weighted correlations — `get_corr()`
+
+`get_corr()` estimates survey-weighted Pearson correlations between two or
+more continuous variables. Confidence intervals use the Fisher Z
+transformation, guaranteeing bounds in (−1, 1).
+
+Let's look at favorability for Trump and Biden. First we clean the underlying
+data frame using the `surveytidy` package by dropping rows with missing 
+values and removing "Not sure" responses (coded `999`).
+
+```{r corr-basic}
+ns_wave1_clean_svy <- ns_wave1_svy |>
+  surveytidy::drop_na(
+    cand_favorability_trump,
+    cand_favorability_biden
+  ) |>
+  surveytidy::filter_out(
+    cand_favorability_trump == 999,
+    cand_favorability_biden == 999
+  )
+
+get_corr(
+  ns_wave1_clean_svy,
+  c(cand_favorability_trump, cand_favorability_biden)
+)
+```
+
+Next, let's look at favorability across multiple variables.
+
+```{r corr-multi}
+fav_vars <- c(
+  "cand_favorability_trump",
+  "cand_favorability_biden",
+  "cand_favorability_harris",
+  "cand_favorability_sanders",
+  "cand_favorability_warren",
+  "cand_favorability_buttigieg",
+  "cand_favorability_pence"
+)
+
+ns_wave1_multi <- ns_wave1_clean_svy |>
+  # remove NAs from all variables of interest
+  surveytidy::drop_na(tidyselect::all_of(fav_vars)) |>
+  # remove those who said "not sure" to any variable of interest
+  surveytidy::filter_out(
+    dplyr::if_any(
+      tidyselect::all_of(fav_vars),
+      \(x) x == 999
+    )
+  )
+
+get_corr(
+  ns_wave1_multi,
+  c(cand_favorability_trump:cand_favorability_pence)
+)
+```
+
+The output defaults to a long version where each row is a unique
+variable pair. It shows the correlation in `r`, the confidence
+intervals, p-values, and other relevant information.
+
+Switch to wide format for a more familiar correlation-matrix layout:
+
+```{r corr-wide}
+get_corr(
+  ns_wave1_multi,
+  c(cand_favorability_trump:cand_favorability_pence),
+  format = "wide"
+)
+```
+
+
+---
+
+### Ratio estimation — `get_ratios()`
+
+`get_ratios()` estimates the ratio of two weighted totals. This is useful 
+when you want an estimate that doesn't change relative to the scale of 
+the weights, like wages per hour, spending per household member, or
+disease prevalence ratios. 
+
+We'll illustrate this with a less conventional example, comparing 
+Trump's favorability to Biden's favorability. In this example, a score 
+below 1 would mean that Trump is viewed more favorably, and a score above 
+1 would mean Biden is viewed more favorably. We'll also use the 
+`ns_wave1_multi` object from the `get_corr()` section since it already has
+missing values and "Not sure" responses (999) removed.
+
+```{r ratios-basic}
+get_ratios(
+  ns_wave1_multi,
+  numerator = cand_favorability_trump,
+  denominator = cand_favorability_biden
+)
+```
+
+---
+
+### Weighted quantiles — `get_quantiles()`
+
+`get_quantiles()` estimates survey-weighted quantiles using the Woodruff (1952)
+confidence interval method. Confidence intervals are derived by inverting the
+weighted CDF rather than assuming normality, so they are generally **asymmetric**
+around the estimate and always respect the range of the data. By default, it 
+calculates the quantiles at the 25th, 50th, and 75th percentile.
+
+```{r quantiles-basic}
+# Quartiles and median of age (default probs = c(0.25, 0.5, 0.75))
+get_quantiles(ns_wave1_svy, age)
+```
+
+
+---
+
+### Treatment effects — `get_diffs()`
+
+`get_diffs()` estimates the difference in means between each group and a
+reference group using survey-weighted regression. Use it when you have a
+categorical treatment variable with two or more levels and want to compare
+each group against a baseline.
+
+Here we estimate how Biden favorability differs by party identification.
+The first factor level is used as the reference group by default; use
+`ref_level` to change it.
+
+```{r diffs-basic}
+ns_wave1_svy |>
+  surveytidy::filter_out(cand_favorability_biden == 999) |>
+  get_diffs(cand_favorability_biden, treats = pid3)
+```
+
+Use `show_pct_change = TRUE` to add a column showing how much each group
+differs from the reference mean in percentage terms:
+
+```{r diffs-pct}
+ns_wave1_svy |>
+  surveytidy::filter_out(cand_favorability_biden == 999) |>
+  get_diffs(
+    cand_favorability_biden,
+    treats = pid3,
+    show_pct_change = TRUE
+  )
+```
+
+---
+
+### Two-sample t-test — `get_t_test()`
+
+`get_t_test()` compares weighted means between exactly two groups using a
+design-based t-test. The `by` variable must have exactly two levels.
+
+```{r t-test-basic}
+get_t_test(gss_svy, hrs1, by = sex)
+```
+
+The output includes the estimated difference, the mean for each group, 
+standard error/confidence interval, t-statistic, degrees of freedom,
+and p-value.
+
+---
+
+### All-pairs comparisons — `get_pairwise()`
+
+When your grouping variable has more than two levels, `get_pairwise()`
+runs all k(k−1)/2 pairwise t-tests in one call. P-values are adjusted
+for multiple comparisons using the Holm method by default.
+
+```{r pairwise-basic}
+get_pairwise(ns_wave1_svy, age, by = pid3)
+```
+
+Each row is one pair of groups. Use `pval_adj` to change the correction
+method: `"bonferroni"`, `"BH"`, `"none"`, etc.
+
+---
+
+### Population variance — `get_variance()`
+
+`get_variance()` estimates the finite-population variance of a variable —
+how spread out the variable is in the population, not the uncertainty of
+the estimate. It accepts the same `group`, `variance`, and `n_weighted`
+arguments as the other functions.
+
+```{r variance-basic}
+get_variance(ns_wave1_svy, age)
+```
+
+
+### Subgroup analysis — the `group` argument
+
+Every analysis function accepts a `group` argument for computing estimates
+separately within levels of a categorical variable. Pass a bare column name
+or multiple using `c()`. For example, we'll look at Trump consideration
+by party identification.
+
+```{r group-means}
+get_freqs(ns_wave1_svy, consider_trump, group = pid3)
+```
+
+Rows where the grouping variable is `NA` are excluded from all groups and do
+not appear in the output. Responses within each group sum to 100% for
+`get_freqs()`.
+
+---
+
+### Controlling uncertainty output
+
+All analysis functions share a common `variance` argument. You can request
+any combination of:
+
+| Code   | What it returns                                     |
+|--------|-----------------------------------------------------|
+| `"se"` | Standard error                                      |
+| `"ci"` | Confidence interval: `ci_low`, `ci_high`            |
+| `"var"`| Variance (square of the SE)                         |
+| `"cv"` | Coefficient of variation (SE / estimate)            |
+| `"moe"`| Margin of error at `conf_level`                     |
+| `"deff"` | Design effect (complex design variance / SRS variance) |
+
+The `conf_level` argument controls the confidence level for `"ci"` and
+`"moe"`. The default is `0.95`; for a 90% CI:
+
+```{r variance-options}
+get_means(
+  ns_wave1_svy,
+  age,
+  variance = c("se", "ci", "moe"),
+  conf_level = 0.9
+)
+```
+
+Set `variance = NULL` to suppress all uncertainty columns and return point
+estimates and sample counts only.
+
+Add `n_weighted = TRUE` to include the estimated population count, the sum of
+weights, alongside the unweighted sample count `n`. Using `get_freqs()` on
+Pew's Jewish-Americans data, we can see both the proportion and the estimated
+population size for each age category:
+
+```{r n-weighted}
+get_freqs(pew_jewish_svy, age4cat, n_weighted = TRUE)
+```
+
+
+---
+
+## Regression
+
+surveycore supports design-based regression via `survey_glm()`. It fits a
+weighted generalized linear model with support for Gaussian (OLS), 
+logistic, Poisson, and other methods, and returns a `survey_glm_fit` 
+object.
+
+```{r glm-fit}
+fit <- gss_svy |>
+  # convert race to a factor so one variable is a factor
+  surveytidy::mutate(
+    race_f = surveytidy::make_factor(race)
+  ) |>
+  survey_glm(hrs1 ~ sex + degree + age + race_f)
+
+fit
+```
+
+Use `clean()` to tidy the output into a one-row-per-coefficient tibble with
+estimates, standard errors, confidence intervals, and p-values:
+
+```{r glm-clean}
+clean(fit)
+```
+
+For logistic or Poisson models, pass `exponentiate = TRUE` to `clean()` to
+report odds ratios or rate ratios instead of log-scale coefficients.
+
+---
+
+## Summary
+
+| Function | Use for |
+|---|---|
+| `get_freqs()` | Categorical variables — weighted distributions, percentages |
+| `get_means()` | Continuous variables — weighted means |
+| `get_totals()` | Population counts or aggregates — weighted sums |
+| `get_corr()` | Pairwise Pearson correlations |
+| `get_ratios()` | Ratios of two weighted totals |
+| `get_quantiles()` | Weighted quantiles and median — Woodruff CIs |
+| `get_diffs()` | Group comparisons — treatment effects vs. a reference group |
+| `get_t_test()` | Two-group mean comparison — design-based t-test |
+| `get_pairwise()` | All-pairs t-tests with multiple-comparison adjustment |
+| `get_variance()` | Finite-population variance of a continuous variable |
+| `survey_glm()` + `clean()` | Design-based regression — OLS, logistic, Poisson |
+
+All functions:
+- Return a tibble subclass ready for further analysis or display
+- Accept a `group` argument for subgroup estimates
+- Accept a `variance` argument to control which uncertainty columns appear
+- Handle all survey design classes: `survey_taylor`, `survey_replicate`,
+  `survey_twophase`, and `survey_nonprob`
+
+

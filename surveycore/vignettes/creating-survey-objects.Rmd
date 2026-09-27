@@ -1,0 +1,721 @@
+---
+title: "Creating Survey Objects in surveycore"
+output:
+  rmarkdown::html_vignette:
+    toc: true
+    toc_depth: 3
+bibliography: references.bib
+link-citations: true
+vignette: >
+  %\VignetteIndexEntry{Creating Survey Objects in surveycore}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include=FALSE}
+library(surveycore)
+```
+
+## Introduction
+
+Every analysis function in surveycore — `get_means()`, `get_totals()`,
+`get_freqs()`, `get_ratios()`, `get_corr()` — takes a **survey design object** 
+as its first argument. That object includes things like which units
+were clustered together, which strata were defined, what weights apply, and
+other relevant information so that point and variance estimation can be 
+properly calculated. Without it, point estimates may be biased and standard
+errors are almost certainly wrong [@lumley2010; @lohr2022].
+
+This vignette answers one question: *given my data, which constructor do I
+call and how do I call it?*
+
+This vignette covers object *creation* only. Two things not covered are:
+- How to create weights and how different weighting mechanisms work. 
+- What the different analysis/estimation functions (`get_means()`, 
+  `get_totals()`, etc.) do. Those are covered in `vignette("getting-started")`.
+
+---
+
+## 1. Decision Guide {#sec-decision}
+
+Read the first row that matches your data.
+
+| My data...                                                                     | Constructor             | Why                                                                |
+|--------------------------------------------------------------------------------|-------------------------|--------------------------------------------------------------------|
+| Is a probability sample and has weights and/or cluster IDs, strata             | `as_survey()`           | Taylor series linearization — the general case                     |
+| Is a probability sample and has replicate weight columns (repwt_1, repwt_2, …) | `as_survey_replicate()` | Uses the agency-supplied variance replicates                       |
+| Is a pure simple random sample with no clustering or strata                    | `as_survey()`           | Omit `ids` and `strata`; creates an SRS design                     |
+| Is a non-probability sample with weights but no replicate weights              | `as_survey_nonprob()`   | SRS-approximation variance; SEs understate calibration uncertainty |
+| Is a non-probability panel with replicate weights                              | `as_survey_nonprob()`   | Bootstrap/jackknife variance includes calibration uncertainty      |
+| Was sampled in two stages with an expensive Phase 2 measurement                | `as_survey_twophase()`  | Two-phase variance accounting for both stages                      |
+
+### Common surveys at a glance
+
+| Survey                              | Constructor             | Design                                                     |
+|-------------------------------------|-------------------------|------------------------------------------------------------|
+| NHANES                              | `as_survey()`           | Stratified cluster, Taylor series                          |
+| ANES                                | `as_survey()`           | Stratified cluster, Taylor series                          |
+| GSS                                 | `as_survey()`           | Stratified multi-stage cluster                             |
+| Pew NPORS                           | `as_survey()`           | Stratified address-based sample (no PSU)                   |
+| ACS PUMS (1-year)                   | `as_survey_replicate()` | 80 successive-difference replicate weights                 |
+| Pew Jewish Americans 2020           | `as_survey_replicate()` | 100 JK1 jackknife replicate weights                        |
+| BRFSS                               | `as_survey_replicate()` | Bootstrap replicate weights                                |
+| NAEP / PISA                         | `as_survey_replicate()` | JK2 jackknife replicate weights                            |
+| Nationscape (Democracy Fund + UCLA) | `as_survey_nonprob()`   | Non-probability quota panel; ACS-calibrated raking weights |
+| Opt-in online panels                | `as_survey_nonprob()`   | Non-probability                                            |
+
+---
+
+## 2. `as_survey()` — Taylor Series Designs {#sec-taylor}
+
+`as_survey()` is the right constructor for probability surveys with cluster
+and/or stratum information but no pre-computed replicate weights. It uses
+**Taylor series linearization** (also called the linearization or delta-method
+estimator), the standard approach for complex probability surveys
+[@lumley2010, ch. 2; @lohr2022, ch. 9].
+
+### 2.1 Core arguments
+
+| Argument  | Codebook term                                       | What it does                             |
+|-----------|-----------------------------------------------------|------------------------------------------|
+| `ids`     | "PSU", "primary sampling unit", "cluster ID"        | Stage-1 cluster identifier               |
+| `weights` | "sampling weight", "person weight", "design weight" | Inverse of selection probability         |
+| `strata`  | "stratum", "design stratum", "sampling stratum"     | Stratification variable                  |
+| `fpc`     | "FPC", "finite population correction", "N"          | Population size or sampling fraction     |
+| `nest`    | (see below)                                         | Whether PSU IDs are locally unique       |
+
+All arguments accept bare column names — no `~formula` syntax required.
+
+### 2.2 The `nest` argument
+
+Many government surveys assign PSU IDs locally within each stratum. NHANES,
+for example, assigns IDs 1 and 2 within *every* stratum — PSU 1 in stratum
+31 is a completely different unit from PSU 1 in stratum 32. If you do not
+account for this, surveycore treats PSU 1 from stratum 31 and PSU 1 from
+stratum 32 as the same cluster, which produces incorrect variance estimates.
+
+Set `nest = TRUE` when PSU IDs are not globally unique across strata
+[@lumley2010, p. 28]. A quick diagnostic:
+
+```{r nest-diagnostic}
+# NHANES: only two distinct PSU values, but 15 strata
+# Each stratum has its own PSU 1 and PSU 2 → nest = TRUE
+length(unique(nhanes_2017$sdmvpsu)) # 2
+length(unique(nhanes_2017$sdmvstra)) # 15
+```
+
+If the number of unique PSU values is much smaller than the number of strata,
+the IDs are almost certainly nested and you need `nest = TRUE`.
+
+### 2.3 The `fpc` argument
+
+The finite population correction (FPC) reduces variance estimates when you
+have sampled a substantial fraction of the population [@cochran1977, §2.8;
+@lohr2022, §2.8]. Supply either:
+
+- An **integer column** with the total population size in each stratum
+- A **numeric column** (0–1) with the sampling fraction
+
+FPC has a meaningful effect when the sampling rate exceeds roughly 5%
+[@cochran1977]. For large national surveys like NHANES and ANES, the sampling
+fraction is tiny and FPC can be safely omitted (`fpc = NULL`).
+
+### 2.4 Multi-level clustering
+
+For two-stage designs — counties then households, schools then students —
+pass both levels of IDs as a vector:
+
+```r
+as_survey(data, ids = c(county_id, household_id), weights = wt, strata = region)
+```
+
+### 2.5 Worked example: NHANES 2017–2018
+
+NHANES uses a stratified, multistage probability cluster sample. The design
+variables are documented in the analytic notes on the NHANES website
+[@lumley2010, ch. 4]:
+
+| Variable   | Role                                                      | Argument  |
+|------------|-----------------------------------------------------------|-----------|
+| `sdmvpsu`  | Masked variance PSU (cluster ID)                          | `ids`     |
+| `sdmvstra` | Masked variance stratum                                   | `strata`  |
+| `wtmec2yr` | 2-year MEC examination weight (blood pressure, lab tests) | `weights` |
+| `wtint2yr` | 2-year interview weight (income, education, etc.)         | `weights` |
+
+```{r nhanes}
+# Subset to MEC exam participants (ridstatr == 2) before using wtmec2yr.
+# The 550 interview-only participants have wtmec2yr = 0 and are not part
+# of the exam sample.
+nhanes_exam <- nhanes_2017[nhanes_2017$ridstatr == 2, ]
+
+svy_nhanes <- as_survey(
+  nhanes_exam,
+  ids = sdmvpsu,
+  strata = sdmvstra,
+  weights = wtmec2yr,
+  nest = TRUE # PSU IDs are locally unique within strata
+)
+svy_nhanes
+```
+
+For interview-only variables (income, education), use the full dataset with
+`wtint2yr` — all 9,254 participants have a positive interview weight:
+
+```{r nhanes-interview}
+svy_nhanes_int <- as_survey(
+  nhanes_2017,
+  ids = sdmvpsu,
+  strata = sdmvstra,
+  weights = wtint2yr,
+  nest = TRUE
+)
+```
+
+### 2.6 Worked example: ANES 2024
+
+The 2024 American National Election Studies uses a stratified cluster design
+with separate pre- and post-election weights. Use the correct weight for the
+variables you are analyzing:
+
+| Variable   | Role                                                          | Argument  |
+|------------|---------------------------------------------------------------|-----------|
+| `v240103c` | PSU (FTF+Web combined) — cluster ID                          | `ids`     |
+| `v240103d` | Stratum (FTF+Web combined)                                    | `strata`  |
+| `v240103a` | Pre-election weight — use for pre-election variables          | `weights` |
+| `v240103b` | Post-election weight — use for validated vote choice          | `weights` |
+
+```{r anes}
+# Pre-election analysis (party ID, ideology, candidate preference)
+svy_anes_pre <- as_survey(
+  anes_2024,
+  ids = v240103c,
+  strata = v240103d,
+  weights = v240103a
+)
+
+# Post-election analysis (validated vote choice: v242066, v242067)
+svy_anes_post <- as_survey(
+  anes_2024,
+  ids = v240103c,
+  strata = v240103d,
+  weights = v240103b
+)
+```
+
+**Missing values:** ANES uses negative integer codes throughout — `−9` =
+Refused, `−8` = Don't know, `−1` = Inapplicable. Recode these to `NA`
+before analysis. Check `attr(anes_2024$v241177, "labels")` for the full set
+of codes for any variable.
+
+### 2.7 Worked example: GSS 2024
+
+The General Social Survey uses a stratified multi-stage cluster design. Two
+weights are available depending on whether non-response bias is a concern:
+
+| Variable    | Role                                                               | Argument  |
+|-------------|--------------------------------------------------------------------|-----------|
+| `vpsu`      | Variance primary sampling unit                                     | `ids`     |
+| `vstrat`    | Variance stratum                                                   | `strata`  |
+| `wtssps`    | Person post-stratification weight — standard analysis weight       | `weights` |
+| `wtssnrps`  | Person post-stratification weight, non-response adjusted           | `weights` |
+
+```{r gss}
+# Standard analysis weight
+svy_gss <- as_survey(
+  gss_2024,
+  ids = vpsu,
+  strata = vstrat,
+  weights = wtssps
+)
+
+# Non-response adjusted weight (preferred when non-response bias is a concern)
+svy_gss_nr <- as_survey(
+  gss_2024,
+  ids = vpsu,
+  strata = vstrat,
+  weights = wtssnrps
+)
+```
+
+**Missing values:** GSS uses `−100` = Inapplicable, `−99` = No answer,
+`−98` = Don't know, `−90` = Refused. These are stored as value labels on
+every column — check `attr(gss_2024$happy, "labels")` and recode to `NA`
+before analysis.
+
+### 2.8 Worked example: Pew NPORS 2025
+
+The 2025 National Public Opinion Reference Survey is an **address-based
+sample (ABS)** — units are drawn directly from the USPS Computerized Delivery
+Sequence file with no intermediate cluster stage. Each address is its own
+sampling unit, so there is no PSU variable. Omit `ids`:
+
+| Variable  | Role                                                              | Argument  |
+|-----------|-------------------------------------------------------------------|-----------|
+| `stratum` | Sampling stratum (10 levels, defined by census block group)       | `strata`  |
+| `weight`  | Final raked weight — base weight calibrated to Census targets     | `weights` |
+
+```{r npors}
+svy_npors <- as_survey(
+  pew_npors_2025,
+  strata = stratum,
+  weights = weight
+)
+```
+
+---
+
+## 3. `as_survey_replicate()` — Replicate Weight Designs {#sec-rep}
+
+Use `as_survey_replicate()` when your data provider has supplied pre-computed
+replicate weight columns — columns like `repwt_1`, `repwt_2`, ..., or
+`pwgtp1`–`pwgtp80`. Replicate-based variance estimation works by repeatedly
+re-estimating the target statistic under small perturbations of the sample,
+embedding variance information directly in the weights
+[@wolter2007, ch. 1].
+
+**Use the agency-supplied replicate weights when they are available.**
+Survey agencies tune these weights for their specific design. Using them
+correctly replicates published point estimates and standard errors and is
+generally considered the preferred approach for variance estimation with major
+public surveys [@lohr2022, §9.4].
+
+### 3.1 The `type` argument
+
+The `type` argument specifies which replication variance formula applies.
+Getting this wrong produces systematically incorrect standard errors. Identify
+the correct type from your codebook's technical documentation.
+
+| Type                    | Full name                    | Identifying signs in codebook                     | Common surveys                           |
+|-------------------------|------------------------------|---------------------------------------------------|------------------------------------------|
+| `"JK1"`                 | Jackknife-1                  | "JK1"; one PSU dropped per replicate              | NHES, some Pew studies                   |
+| `"JK2"`                 | Jackknife-2                  | "JK2"; paired PSUs; exactly 2 PSUs per stratum    | NAEP, PISA, most NCES surveys            |
+| `"JKn"`                 | Jackknife-n                  | One stratum dropped per replicate                 | Less common; some multi-PSU designs      |
+| `"BRR"`                 | Balanced Repeated Replication| "BRR"; exactly 2 PSUs per stratum required        | Some CPS variants                        |
+| `"Fay"`                 | Fay's Modified BRR           | "Fay BRR" or "Fay's method"; BRR with epsilon     | Some Census Bureau surveys [@fay1989; @judkins1990] |
+| `"bootstrap"`           | Bootstrap                    | "bootstrap replication weights"; 100–500 replicates | BRFSS                                  |
+| `"successive-difference"` | Successive Difference      | "SDR" or "successive difference replication"      | ACS 1-year PUMS [@census2022]            |
+| `"ACS"`                 | ACS variant                  | Specific to ACS 5-year methodology                | ACS 5-year PUMS                          |
+
+The Fay epsilon parameter (`fay_rho`) controls how much each replicate weight
+differs from the full-sample weight. Its value is specified in the survey's
+technical documentation [@fay1989; @judkins1990].
+
+### 3.2 Worked example: ACS PUMS 2022 — Wyoming
+
+The ACS 1-year PUMS provides 80 successive-difference replicate weights for
+variance estimation, documented in the ACS Design and Methodology report
+[@census2022]:
+
+| Variable             | Role                                                    | Argument      |
+|----------------------|---------------------------------------------------------|---------------|
+| `pwgtp`              | Person weight                                           | `weights`     |
+| `pwgtp1`–`pwgtp80`   | Successive-difference replicate weights (80 replicates) | `repweights`  |
+
+```{r acs}
+svy_acs <- as_survey_replicate(
+  acs_pums_wy,
+  weights = pwgtp,
+  repweights = pwgtp1:pwgtp80,
+  type = "successive-difference"
+)
+svy_acs
+```
+
+### 3.3 Worked example: Pew Jewish Americans 2020
+
+This Pew study provides 100 jackknife-1 replicate weights alongside the
+full-sample weight:
+
+| Variable                       | Role                                          | Argument     |
+|--------------------------------|-----------------------------------------------|--------------|
+| `extweight`                    | Full-sample base weight                       | `weights`    |
+| `extweight1`–`extweight100`    | JK1 jackknife replicate weights (100 replicates) | `repweights` |
+
+```{r pew-jewish}
+svy_jewish <- as_survey_replicate(
+  pew_jewish_2020,
+  weights = extweight,
+  repweights = extweight1:extweight100,
+  type = "JK1"
+)
+svy_jewish
+```
+
+### 3.4 The `scale` and `rscales` arguments
+
+Most users can omit `scale` and `rscales`. surveycore computes defaults based
+on `type` and the number of replicates. Override them only when your
+codebook's technical documentation specifies custom values [@wolter2007, ch. 3].
+
+---
+
+## 4. `as_survey_twophase()` — Two-Phase Designs {#sec-twophase}
+
+> **If you are not sure whether your design is two-phase, it almost certainly
+> is not.** Skip to [Section 5](#sec-srs) or [Section 6](#sec-nps).
+
+### 4.1 What two-phase sampling is
+
+Two-phase (or double-sampling) designs collect data in two stages
+[@lumley2010, ch. 9]:
+
+1. **Phase 1:** A large, inexpensive sample that records basic variables
+   (demographics, a screening question, administrative records).
+2. **Phase 2:** A subsample drawn from Phase 1 that collects expensive or
+   difficult measurements — lab tests, in-person interviews, expert coding.
+
+The variance estimator accounts for uncertainty from both sampling stages
+[@saegusa2013]. You must have retained the Phase 1 data and know which
+Phase 1 units were selected into Phase 2.
+
+Common contexts: case-cohort studies, medical validation studies, surveys
+with a screening phase [@breslow1988].
+
+### 4.2 Arguments
+
+| Argument                          | What it does                                                             |
+|-----------------------------------|--------------------------------------------------------------------------|
+| `phase1`                          | A `survey_taylor` object representing the Phase 1 design                 |
+| `subset`                          | Bare name of a logical column: `TRUE` = selected into Phase 2            |
+| `ids2`, `strata2`, `probs2`, `fpc2` | Phase 2 design variables (all optional)                                |
+| `method`                          | `"full"` (default), `"approx"`, or `"simple"`                            |
+
+The `method` argument:
+
+- `"full"`: Correct variance accounting for both phases. Requires Phase 1
+  cluster information.
+- `"approx"`: Faster approximation; adequate when the Phase 1 sampling
+  fraction is small.
+- `"simple"`: Ignores the Phase 1 design. Use only if Phase 1 is a census.
+
+### 4.3 Worked example: National Wilms Tumor Study
+
+The `nwtco` dataset from the `survival` package records outcomes for 4,028
+children enrolled in the National Wilms Tumor Study — a multi-institution
+clinical trial. This is a case-cohort design: a random subcohort was selected
+from all enrolled children (Phase 1), and expensive central-laboratory
+histology was measured only for subcohort members plus all relapse cases
+[@breslow1988].
+
+```{r nwtco, eval=requireNamespace("survival", quietly=TRUE)}
+nwtco <- survival::nwtco
+
+# in.subcohort is stored as 0/1 — must be logical for as_survey_twophase()
+nwtco$in.subcohort <- as.logical(nwtco$in.subcohort)
+
+# Phase 1: all 4,028 enrolled patients (each patient is their own unit)
+phase1 <- as_survey(nwtco, ids = seqno)
+
+# Phase 2: subcohort, with Phase 2 sampling stratified by relapse status
+svy_twophase <- as_survey_twophase(
+  phase1,
+  strata2 = rel, # Phase 2 strata: cases (rel=1) vs. non-cases (rel=0)
+  subset = in.subcohort, # Logical column: TRUE = selected into Phase 2
+  method = "full"
+)
+svy_twophase
+```
+
+---
+
+## 5. Simple Random Sample with `as_survey()` {#sec-srs}
+
+Use `as_survey()` without `ids` or `strata` when every unit in your target
+population had an equal, known probability of selection — no clustering, no
+stratification [@cochran1977, ch. 2; @lohr2022, ch. 2]. This design is common
+in:
+
+- Surveys of a complete organizational roster (all employees at a company,
+  all students at a school) where units are drawn directly from a list
+- Small-scale research with a well-defined, numbered sampling frame
+- Pilot studies and classroom experiments
+
+When neither `ids` nor `strata` is specified, `as_survey()` creates a
+`survey_taylor` object with no cluster or stratum structure — the SRS
+special case of the Taylor series estimator.
+
+### 5.1 The `fpc` argument matters more here
+
+Without clustering or stratification, the FPC has a proportionally larger
+effect on variance estimates than in complex designs [@cochran1977, §2.8].
+Supply it when you know the population size or sampling fraction. For the
+example below, the population is N = 400 schools.
+
+### 5.2 Worked example: School district survey
+
+A district administrator draws a simple random sample of 80 schools from a
+complete roster of 400 schools. Every school has an equal probability of
+selection (80/400 = 0.20) — the textbook SRS case [@cochran1977, ch. 2;
+@lohr2022, ch. 2]:
+
+```{r apisrs}
+set.seed(101)
+N <- 400 # total schools in district
+n <- 80 # schools sampled
+
+school_survey <- data.frame(
+  school_id = sample(seq_len(N), n),
+  avg_score = round(rnorm(n, mean = 72, sd = 11), 1),
+  pct_frpl = round(runif(n, 0.10, 0.85), 2), # % free/reduced price lunch
+  enrollment = round(runif(n, 180, 850)),
+  sw = N / n, # equal sampling weight = 400/80 = 5.0
+  fpc = N # population size for FPC
+)
+
+svy_srs <- as_survey(
+  school_survey,
+  weights = sw, # each sampled school represents 5 schools in the population
+  fpc = fpc # reduces SEs: we sampled 20% of the population
+)
+svy_srs
+```
+
+Two things worth making explicit so this example is not misread:
+
+**The unit of analysis is the school, not the student.** Variables like
+`avg_score`, `pct_frpl`, and `enrollment` are school-level aggregates drawn
+from administrative records for each sampled school. This is a survey *of
+schools*. If you wanted individual student-level data from each selected
+school, you would need a two-stage cluster design — sample schools, then
+sample students within each school — and use `as_survey()` with
+`ids = school_id` to account for the clustering.
+
+**The weight is constant because this is SRS.** Each school was selected
+with probability 80/400 = 0.20, so each receives weight 1/0.20 = 5.0. The
+weight is the same for every school because no school was oversampled or
+undersampled relative to any other. Uniform weights are not a simplification
+— they are the defining signature of simple random sampling.
+
+---
+
+## 6. `as_survey_nonprob()` — Non-Probability Samples {#sec-nps}
+
+If you conduct surveys with non-probability samples, like with opt-in panels
+such as Cint, Dynata, Qualtrics panels, Prolific, or others, then this
+section is for you. 
+
+This section assumes you have, at a minimum, either calibration (raking)
+weights or inverse-probability weights (IPW) via propensity scoring, 
+but ideally you will also have replicate weights based on the calibration
+weights or IPW you already have. I'll go into more detail on why you 
+want to have replicate weights in §6.2.
+
+### 6.1 The fundamental distinction
+
+A **probability sample** gives every unit in the target population a known,
+positive inclusion probability. Design-based variance estimators are valid
+because the randomness that justifies them comes from the sampling mechanism
+itself [@cochran1977, ch. 1; @lohr2022, ch. 1].
+
+A **non-probability sample**, like an opt-in online panel, has unknown inclusion
+probabilities. The decision to join a panel and to complete a particular
+survey is self-selected. No mechanical property of the data guarantees
+representativeness [@baker2013; @elliott2017]. As a result, there is additional
+uncertainty associated with non-probability samples that is not fully captured 
+by traditional design-based variance estimation.
+
+### 6.2 Variance estimation: two modes {#sec-nonprob-variance}
+
+`as_survey_nonprob()` has two variance estimation modes:
+
+**SRS approximation** (`repweights = NULL`, the default): If replicate 
+weights are not supplied to `repweights` (i.e., `repweights = NULL`), then
+the standard errors treat the calibrated weights as fixed and apply a 
+simple random sampling formula. This is convenient but underestimates the
+standard errors as the calibration step itself introduces additional 
+uncertainty that the SRS formula does not capture
+[@elliott2017; @kolenikov2014].
+
+**Bootstrap or jackknife replicate variance** (`repweights` supplied): If
+replicate weights are supplied in the `repweights` argument, the replicate
+weight variance estimation is used. This approach properly includes the 
+uncertainty that comes from the calibration into the variance estimate and 
+is the recommended method when replicate weights are available 
+[@elliott2017; @kolenikov2014; @chrostowski2025].
+
+Neither mode resolves the fundamental limitation common to all non-probability
+samples: standard errors cannot capture uncertainty from the unknown selection
+mechanism itself [@baker2013; @elliott2017].
+
+#### Choosing `type`
+
+When `repweights` is supplied, the `type` argument selects the replicate
+scheme. Four types are supported for `survey_nonprob` objects:
+
+| `type` | Description | Default `scale` | When to use |
+|--------|-------------|-----------------|-------------|
+| `"bootstrap"` | Bootstrap resampling | `1/R` | Most vendor-supplied replicates |
+| `"JK1"` | Delete-one jackknife (`"jackknife"` is an alias) | `(R-1)/R` | Some research panels |
+| `"JK2"` | Stratified jackknife; requires explicit `rscales` | `1` | Clustered nonprob designs |
+| `"JKn"` | Equivalent to JK2 | `1` | Same as JK2 |
+
+
+### 6.3 What you can and cannot claim
+
+| Claim                                                                       | Valid?          | Notes                                                                                       |
+|-----------------------------------------------------------------------------|-----------------|----------------------------------------------------------------------------------------------|
+| Point estimates representative of calibration margins                       | ✅ Yes           | Calibrated to age, gender, education, etc. targets                                           |
+| Estimates more accurate than unweighted                                     | ✅ Usually       | Especially for outcomes correlated with demographic variables                                 |
+| Standard errors (SRS approx., no `repweights`)                              | ⚠️ Understated  | Treats calibrated weights as fixed; calibration variance not propagated                       |
+| Standard errors (with `repweights`, calibration re-applied per replicate)   | ⚠️ Approximately | Captures calibration uncertainty; cannot address selection mechanism uncertainty              |
+| Results equivalent to a probability-sample estimate                         | ❌ No            | Selection mechanism is unknown and cannot be fully corrected                                  |
+
+This is the standard practice across the industry — used routinely by
+academic researchers, major survey organizations, and commercial firms
+[@baker2013; @mcphee2023]. The key is transparency: **your methods section
+should state that you used a non-probability sample, detail how the
+weights were created, and acknowledge that standard errors are approximate.**
+
+### 6.4 Worked example: Democracy Fund + UCLA Nationscape (SRS approximation) {#sec-nonprob-nationscape}
+
+The Nationscape is a large-scale non-probability survey conducted by
+Democracy Fund + UCLA, fielded weekly from July 2019 through January 2021.
+Each wave used quota sampling to ensure that the data was representative and
+consisted of approximately 6,250 respondents from Lucid (now known as Cint).
+The data also contains weights created by raking the data to the American
+Community Survey across age, gender, education, race/ethnicity, region, and
+2016 presidential vote choice. The variable name for these weights is `weight`.
+
+```{r nationscape}
+svy_ns <- as_survey_nonprob(ns_wave1, weights = weight)
+svy_ns
+
+# Presidential approval rating (July 2019)
+get_freqs(svy_ns, pres_approval)
+```
+
+This produces a `survey_nonprob` object using SRS-approximation variance 
+because no replicate weights were supplied. As a result, the standard 
+errors will be too small as they do not take into account the additional 
+variance introduced by the raking procedure.
+
+### 6.5 Worked example: Bootstrap replicate weights {#sec-nonprob-repweights}
+
+When your data provider supplies bootstrap replicate weight columns — each
+representing one round of calibration re-applied to a bootstrap resample of
+the respondents — use `repweights` with `type = "bootstrap"`. The resulting
+variance estimates properly account for calibration uncertainty rather than
+treating the weights as fixed [@kolenikov2014; @chrostowski2025].
+
+The example below uses synthetic data to illustrate the interface. In
+practice the replicate weight columns come from your vendor alongside the
+main calibration weight column.
+
+```{r nonprob-bootstrap}
+set.seed(1)
+n <- 200
+R <- 50
+
+ns_synthetic <- data.frame(
+  pres_approval = sample(c("Approve", "Disapprove", "DK"), n, replace = TRUE),
+  age_grp = sample(c("18-34", "35-54", "55+"), n, replace = TRUE),
+  weight = runif(n, 0.5, 2.5)
+)
+
+# Replicate columns: calibration re-applied on each bootstrap draw.
+# In practice these come from your vendor alongside the main weight column.
+rep_mat <- matrix(runif(n * R, 0.3, 3.0), nrow = n)
+colnames(rep_mat) <- paste0("repwt_", seq_len(R))
+ns_synthetic <- cbind(ns_synthetic, as.data.frame(rep_mat))
+
+svy_np_boot <- as_survey_nonprob(
+  ns_synthetic,
+  weights = weight,
+  repweights = starts_with("repwt_"),
+  type = "bootstrap"
+)
+svy_np_boot
+```
+
+Use `svy_np_boot` with `get_means()`, `get_freqs()`, and other estimation
+functions exactly as you would a plain `survey_nonprob` object — the
+variance estimator switches from SRS approximation to bootstrap
+automatically.
+
+
+### 6.6 Worked example: University snowball sample
+
+A university sends an email to 100 students inviting them to take part
+in a survey. At the end of the survey, they encourage the students to 
+share the survey with other students. In the end they end up recruiting
+500 respondents. This is known as a snowball sample and is another
+example of non-probability sampling.
+
+If the sample was weighted to represent the broader student body 
+population, then weights should be applied as shown below:
+
+```r
+svy_campus <- as_survey_nonprob(campus_survey, weights = weight)
+```
+
+---
+
+## 7. When no constructor applies: convenience and purposive samples {#sec-no-constructor}
+
+Not every data collection fits the survey design framework.
+
+### 7.1 Example: program evaluation classrooms
+
+A researcher surveys students in five classrooms that volunteered to
+participate in a new educational program and wants to assess whether the
+program changed their attitudes.
+
+The classrooms were not randomly selected from any defined population. There
+is no sampling mechanism to justify a design-based variance estimator, and
+no calibration weights that would correct for the non-random selection. The
+inferential question — whether the program *caused* attitude change — is a
+**causal inference** problem requiring a control group and appropriate
+methods (difference-in-differences, matching, regression discontinuity),
+not a survey design object.
+
+If the goal is purely **descriptive** — summarizing the attitudes of
+students in these specific classrooms without generalizing — you can treat
+the participants as a census. Add a column of 1s and use `as_survey()`
+without `ids` or `strata`:
+
+```r
+classroom_data$wt <- 1
+svy_participants <- as_survey(classroom_data, weights = wt)
+```
+
+Equal weights treat all participants as equally represented. The SEs reflect
+variation *among participants*. Do not interpret results as representative
+of all students at the school.
+
+### 7.2 General decision rule
+
+| Design | Appropriate tool | Notes |
+|---|---|---|
+| Probability sample with design weights | `as_survey()`, `as_survey_replicate()` | Exact variance |
+| Pure SRS — equal probability, no clustering/strata | `as_survey()` (no `ids` or `strata`) | Exact variance; SRS special case of Taylor |
+| Any non-probability sample with weights | `as_survey_nonprob()` | Approximate variance |
+| Voluntary response or convenience sample, no weights | `as_survey()` with `weights = 1` (no `ids`/`strata`) | Conditional inference only; disclose |
+
+When you use `as_survey()` with equal weights and no `ids` or `strata` for
+a non-probability sample, surveycore produces estimates and SEs without
+error. The SEs are valid as a measure of variability *among the observed
+participants*. They should not be interpreted as uncertainty about a broader
+population unless the sample can be independently defended as representative.
+
+---
+
+## 8. Reference: Common Codebook Variables {#sec-reference}
+
+A lookup table for common codebook terms and how they map to constructor
+arguments:
+
+| Codebook term                                                    | Maps to                                              | Notes                                     |
+|------------------------------------------------------------------|------------------------------------------------------|-------------------------------------------|
+| "sampling weight", "survey weight", "person weight"              | `weights =`                                          |                                           |
+| "PSU", "primary sampling unit", "cluster ID"                     | `ids =`                                              |                                           |
+| "stratum", "design stratum", "sampling stratum"                  | `strata =`                                           |                                           |
+| "FPC", "finite population correction", "population size"         | `fpc =`                                              |                                           |
+| "replicate weights", "bootstrap weights", "BRR weights"          | `repweights =`                                       | Use `as_survey_replicate()`               |
+| "base weight", "design weight" (with separate replicates)        | `weights =` in `as_survey_replicate()`               |                                           |
+| "Fay coefficient", "Fay factor", "epsilon"                       | `fay_rho =`                                          | With `type = "Fay"`                       |
+| "raking weights", "post-stratification weights", "cal weights"   | `weights =` in `as_survey_nonprob()`                 | Non-probability design                    |
+| "two-phase", "double sampling", "case-cohort"                    | Phase 1 → `as_survey()`, then `as_survey_twophase()` |                                           |
+
+---
+
+## References
