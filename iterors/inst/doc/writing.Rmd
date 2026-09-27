@@ -1,0 +1,517 @@
+---
+title: "Writing Custom Iterators"
+output: rmarkdown::html_vignette
+author:
+  - Steve Weston (originally for package `iterators`)
+  - Peter Meilstrup (adapted for package `iterors`)
+vignette: >
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteIndexEntry{Writing Custom Iterators}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{R echo=FALSE, results="hide"}
+library(iterors)
+```
+
+An _iterator_ is a special type of object that supplies data on
+demand, one element [^one] at a time.  This is a nice abstraction
+that can help simplify many programs.  Iterators are particularly useful
+in parallel computing, since they facilitate splitting a problem into
+smaller pieces that can then be executed in parallel.
+
+[^one]: An ``element'' in this case can be basically any object.  I don't mean to suggest that the data is necessarily returned as scalar values, for example.
+
+Iterators can also be used to reduce the total memory that is needed at
+any one time.  For example, if you want to process the lines of text in
+a file, it is common to write a loop that reads the file one line at a
+time, rather than reading the entire file in order to avoid running out
+of memory on huge files.  That's the basic idea of iterators.  Iterators
+provide a standard method for getting the next element, which allows us
+to write functions that take an iterator as an argument to provide a
+source of data.  The function doesn't need to know what kind of iterator
+it is.  It just needs to know how to get another piece of data.  The
+data could be coming from a file, a database, a vector, or it could be
+dynamically generated.
+
+There are a number of iterators that come in the `iterors`
+package.  The `iteror.array` method allows you to iterate over
+arrays, in much the same way as the standard `apply` function.
+`apply` has fixed rules on how the results are returned, which
+may require you to reshape the results, which can be inefficient, as
+well as inconvenient.  But since `i_apply` doesn't process any
+data or combine the results, it is more flexible.  You can use
+`i_apply` with the `foreach` package to perform a parallel
+`apply` operation, and combine the results any way you want via
+the `.combine` argument to `foreach`.
+
+Another iterator that comes in the `iterors` package is the
+`isplit` function, which works much like the standard
+`split` function. `split` returns a list containing all of the data divided into
+groups.  `isplit` only generates one group at a time, as they are
+needed, which can reduce the amount memory that is needed.
+
+But of course, there will be times when you need an iterator that isn't
+provided by the `iterors` package.  That is when you need to
+write your own custom iterator.  Fortunately, that is fairly easy to do.
+
+## What methods are needed for an iteror?
+
+Basically, an `iteror` is an S3 object whose base class is
+`"iteror"`, which has defined methods called  `nextOr` and `iteror`.
+
+The function `iteror` is a generic method.  The purpose of the
+`iteror` method is to construct an iterator for the specified object.
+For example, this makes an iteror `it` out of a list:
+
+```{R iterable1}
+it <- iteror(list(1:2, 3:4))
+```
+
+When `iteror` is called on a list (or any object without a class) it finds the method
+`iteror.default`, which constructs an iterator which returns one element
+at a time from the given vector.
+
+If `x` is already of class `"iteror"` then `iteror(x)` simply returns `x`, which
+seems odd at first.  But the `iteror` method can be defined for
+other objects that don't define a `nextOr` method.  We call
+those objects _iterables_, meaning that you can iterate over them.
+The `iterators` package defines `iteror` methods for
+vectors, lists, matrices, and data frames, making those objects
+iterables.  By defining an `iteror` method for data types,
+you can pass those types directly to any function that expects an iterable.
+
+If you want to create an iterator for some existing class, you can do
+that by writing an `iteror` method that constructs an appropriate
+iterator. The alternative is to write your own function that takes
+arbitrary arguments, and returns an iterator.  You can choose
+whichever method is most natural.
+
+The most important method required for iterators is `nextOr(obj, or)`.
+Given an iteror `obj`, this simply returns the next value, or forces
+and returns its second argument `or.` Returning the value of `or=`
+indicates that there are no more values available in the
+iterator. There is (by design) no default value for `or`; you need to
+specify one.
+
+Above we created an iterator from a list; we can now call `nextOr` on
+that iterator to get the values from the list:
+
+```{R iterable2}
+nextOr(it, NULL)
+nextOr(it, NULL)
+nextOr(it, NULL)
+```
+
+This shows how `nextOr` behaves at the stop of iteration, returning
+whatever value was given to argument `or`. Here we specified NULL, but
+we will later see other ways to use the second argument.
+
+## Handling the end of iteration
+
+In many situations, you will be dealing with effectively finite data,
+but data for which you don't necessarily know the length. So if you
+extract values one at a time from an iterator, you need to handle the
+case where there isn't a next value. This is where the `iterors`
+package improves on `iterators` by giving you a few options for how to
+respond to the end of iteration.
+
+### Breaking out of a loop at end of iteration
+
+If you are consuming an iterator in a loop, the easiest (and often
+fastest) way to respond to the end of iteration so to break out of the
+loop. You just put a break directly in the second argument of
+`nextOr`.
+
+```{R consuming_iter_break}
+x <- icount(10)
+repeat {
+  print(nextOr(x, break))
+}
+```
+
+Because the `or` argument is lazily evaluated, the
+`break` does not execute until `nextOr` evaluates its
+second argument. You can put any code into the `or` argument,
+which will come in useful below.
+
+### Detecting end of iteration with a sentinel value
+
+Sometimes a break or return isn't the right action to take.  As we saw
+above, `nextOr` will return its second argument (whatever that
+is) to signal end of iteration, when the iterator contains no more
+data. So you can check whether the returned value is the same as the
+one you provided, and interpret that as the end of iteration.
+
+```{R consuming_iter}
+x <- icount(10)
+while (!is.null(val <- nextOr(x, NULL))) {
+  print(val)
+}
+```
+
+Here, if `nextOr` returns `NULL`, the `while`
+loop will exit. A special value used like `NULL` is used above,
+is often called a _sentinel value_.
+
+#### Unsafe sentinel values
+
+It's popular to use `NULL` as a sentinel, but it's worth considering what
+would happen if there were an iterator that legitimately returns
+`NULL` as a value. For instance, this list contains some tricky
+values:
+
+```{R bad_iter}
+bad_values <- list(
+  quote(.StopIteration),
+  NA,
+  NULL,
+  list(),
+  simpleError("StopIteration"),
+  try(stop("StopIteration", call.=FALSE), silent=TRUE),
+  "",
+  numeric(0))
+```
+
+Suppose you iterate over this list using NULL as your end-of-iteration sentinel, like this:
+
+```{R enum}
+it <- iteror(bad_values)
+while (!is.null(val <- nextOr(it, NULL))) {
+  print(val)
+}
+```
+
+The enumeration stops early because it mistakes `NULL`, a legitimate
+value in the list that we are iterating over, for `NULL` the sentinel
+value. This is a general problem with the sentinel value scheme in
+dynamically-typed languages; any value you could use to signal a stop,
+could also be a legitimate value for an iterator to emit.
+
+#### Safe sentinel values
+
+A way to escape this problem is to construct a one-shot, _unique_
+sentinel value to use locally, just with this iteror, and then throw
+away, not keeping it in your code. One easy way to do this by using
+`new.env()`. Consuming an iterator using a local sentinel value looks
+like this:
+
+```{R consuming_sentinel}
+end_sentinel <- new.env()
+it <- iteror(bad_values)
+repeat {
+  val <- nextOr(it, end_sentinel)
+  if (identical(val, end_sentinel)) break
+  print(val)
+}
+```
+
+Because environments compare by reference, a newly constructed
+environment is guaranteed not to be `identical()` to any other object
+in the R session, and the check for identity is very fast (just a
+pointer comparison.) By using a locally generated, unique sentinel value
+you avoid mistaking a legitimate value in your data for the end of
+iteration.
+
+## A simple iterator
+
+It's time to show the implementation of a very simple iterator.
+Although I've made it sound like you have to write your own `nextOr`
+methods, you can use a standard one. In fact, that's what all of the
+following examples do. The method `iteror.function` takes a function
+you specify and wraps it in an object with class `iteror`, which has a
+`nextOr` method defined.
+
+Now here's a function that creates a very simple iterator, one that
+returns the same value `x` indefinitely.:
+
+```{R iter1}
+iforever <- function(x) {
+  nextOr_ <- function(or) x
+  iteror(nextOr_)
+}
+```
+
+Note that I called the internal function `nextOr_` with an underscore,
+rather than `nextOr`.  I do that by convention to avoid masking the
+standard `nextOr` generic function.  That would cause problems when
+you want your iterator to call the `nextOr` method of another
+iterator, which can be quite useful, as we'll see in a later example.
+
+We create an instance of this iterator by calling the `iforever`
+function, and then use it by calling the `nextOr` method on the
+resulting object:
+
+```{R runiter1}
+it <- iforever(42)
+nextOr(it, NULL)
+nextOr(it, NULL)
+```
+
+You can also get values from an iterator using `as.numeric`.  But
+since this is an infinite iterator, you need to also give an argument
+`n` argument to avoid getting stuck in an infinite loop until you run
+out of memory:
+
+```{R runiter1.part2}
+as.numeric(it, n=6)
+```
+
+Notice that it doesn't make sense to implement this iterator by
+defining a new `iteror` method, since there is no natural iterable to
+dispatch on; the argument 42 is just a vector of length 1 and
+`iterator.default` already handles that case. So instead, we implement
+this iterator by defining a normal function that returns the iterator.
+
+This iterator is quite simple to implement, and possibly even
+useful. [^3] The iterator returned by `iforever` is actually just the
+same function you provided, with the class `iteror` added. This means
+you get `nextOr` method already defined, whlch just delegates to your
+given function. Additionally since the returned object has class
+`iteror`, it inherits an `iteror` method that will return itself.
+
+[^3]: Be careful how you use this iterator!  If you pass it to
+    `foreach`, it will result in an infinite loop unless you pair it
+    with a non-infinite iterator.  Also, _never_ pass this to the
+    `as.list` function without the `n` argument.
+
+Of course, the reason this iterator is so simple is because it doesn't
+contain any state.  Most iterators need to contain some state, or it
+will be difficult to make it return different values and eventually
+stop.  Managing the state is usually the real trick to writing iterators.
+
+## A stateful iterator that stops
+
+Let's modify the previous iterator `iforever` to stop after it
+returns a certain number of values.  I'll call the new function
+`irep`, and give it another argument called `times`:
+
+```{R iter2}
+irep <- function(x, times) {
+  nextOr_ <- function(or) {
+    if (times > 0) {
+      times <<- times - 1
+      x
+    } else {
+      or
+    }
+  }
+
+  iteror(nextOr_)
+}
+```
+
+Now let's try it out:
+
+```{R runiter2}
+it <- irep(7, 6)
+unlist(as.list(it))
+```
+
+The differences between `iforever` and `irep` are in the inner
+function `nextOr_`. This inner function not only accesses the values
+of the variables `x` and `times`, but it also modifies the value of
+`times`.  This is accomplished by means of the "`<<-=`"[^1] operator,
+and the rules of lexical scoping.
+
+[^1]: It's commonly believed that `<<-` is only used to set
+variables in the global environment, but that isn't true.  I think of
+it as an _inheriting_ assignment operator.}
+
+After enough calls, the inner function will find `times <= 0`, and
+will return its argument `or`. As the author of an iterator this is how
+you signal end of iteration. When implementing an iterator you never
+need to do anything with `or` other than return it when appropriate;
+otherwise leave it alone, allowing R to be lazy in treating that
+argument.
+
+Technically, this kind of function that refers to enclosing variables
+is called a _closure_, and is a fundamental feature of `R`.  The
+important thing to remember is that `nextOr_` is able to get the value
+of variables that were passed as arguments to `irep`, and it can
+modify those values using the `<<-` operator.  These are _not_ global
+variables: they are defined in the enclosing environment of the
+`nextOr_` function.  You can create as many iterators as you want
+using the `irep` function, and they will all work as expected without
+conflicts.
+
+Note that this iterator only uses the arguments to `irep` to
+store its state.  If any other state variables are needed, they can be
+defined anywhere inside the `irep` function.
+
+## Using an iterator inside an iterator
+
+The previous section described a general way of writing custom iterators.
+Almost any iterator can be written using those basic techniques.  At times, it
+may be simpler to make use of an existing iterator to implement a new iterator.
+Let's say that you need an iterator that splits a vector into subvectors.  That
+can allow you to process the vector in parallel, but still use vector
+operations, which is essential to getting good sequential performance in R.
+The following function returns just such an iterator:
+
+```{R iter3}
+ivector <- function(x, ...) {
+ i <- 1
+ it <- idiv(length(x), ...)
+
+ nextOr_ <- function(or) {
+   n <- nextOr(it, return(or))
+   ix <- seq(i, length=n)
+   i <<- i + n
+   x[ix]
+ }
+
+ iteror(nextOr_)
+}
+```
+
+`ivector` uses `...` to pass options on to
+`idiv`.  `idiv` supports the `chunks` argument
+to split its argument into a specified number of pieces, and the
+`chunkSize` argument to split it into pieces of a specified
+maximum size.
+
+Let's create an `ivector` iterator to split a vector into three
+pieces using the `chunks` argument:
+
+```{R runiter3}
+it <- ivector(1:25, chunks=3)
+as.list(it)
+```
+
+Note how our `nextOr_` function handles the end of iteration.  If the
+underlying `idiv` iterator reaches the end, it will force its `or`
+argument, which we have specified as `return(or)`, Although it is
+forced by the underlying iterator, R correctly evaluates a `return`
+call in a lazy argument according to the scope that call was written
+in. So when `it` of the internal `idiv` reaches the end, and forces
+its `or` argument, our `nextOr_` passes that signal along by returning
+_its_ `or` argument.
+
+The `nextOr` method uses a lazy evaluated argument expressly for
+this purpose, so that you can respond to end of iteration by using a
+control flow operator like `return`, `break`, `next` or `stop`.
+
+It should be clear that only minor modification need to be made to this
+function to create an iterator over the blocks of rows or columns of a
+matrix or data frame.  But I'll leave that as an exercise for the
+reader.
+
+## A recycling iterator
+
+You can start to compose simple iterators together to do more complex
+things by writing functions that take in one iterator and construct a
+new one. In this example, we'll return an iterator that recycles the
+values of the wrapped iterator: [^2]
+
+[^2]: Actually, many of the standard `iteror` methods support a
+`recycle` argument.  But this is a nice example, and a more general
+solution, since it works on any iterator.
+
+```{R recyle}
+i_recycle <- function(it) {
+  values <- as.list(iteror(it))
+  i <- length(values)
+
+  nextOr_ <- function(or) {
+    i <<- i + 1
+    if (i > length(values)) i <<- 1
+    values[[i]]
+  }
+
+  iteror(nextOr_)
+}
+```
+
+This is fairly nice, but note that this is another one of those
+infinite iterators that we need to be careful about.  Also, make sure
+that you don't pass an infinite iterator to `i_recycle`.  That would
+be pointless of course, since there's no reason to recycle an iterator
+that never ends.  It would be possible to write this to avoid that
+problem by not grabbing all of the values right up front, but you
+would still end up saving values that will never be recycled, so I've
+opted to keep this simple.
+
+Let's try it out:
+
+```{R recyleexample}
+it <- i_recycle(icount(3))
+unlist(as.list(it, n=9))
+```
+
+## Limiting infinite iterators
+
+I was tempted to add an argument to the `i_recycle` function to
+limit the number of values that it returns, because sometimes you want
+to recycle for awhile, but not forever.  I didn't do that, because
+rather than make `i_recycle` more complicated, I decided to
+write another function that takes an iterator and returns a
+modified iterator. Functions like this are _composable_; the
+limiting function can be applied to any underlying iterator instead of
+just `i_recycle`.
+
+```{R i_limit}
+i_limit <- function(it, times) {
+  it <- iteror(it)
+
+  nextOr_ <- function(or) {
+    if (times > 0) {
+      times <<- times - 1
+      nextOr(it, or)
+    } else
+      return(or)
+  }
+
+  iteror(nextOr_)
+}
+```
+
+By convention, the `iterors` package uses the prefix `i_` for this
+kind of composing iterator function, and a bare `i` for functions that
+build an iterator based on basic data.
+
+Note that this looks an awful lot like the `irep` function that
+we implemented previously.  In fact, using `i_limit`, we can
+implement `irep` using `iforever` much more simply, and
+without duplication of code:
+
+```{R irep2}
+irep2 <- function(x, times)
+  i_limit(iforever(x), times)
+```
+
+To demonstrate `irep2`:
+
+```{R testirep2}
+it <- irep2('foo', 3)
+repeat {
+  print(nextOr(it, break))
+}
+```
+
+Here's one last example.  Let's recycle a vector three times using
+`i_limit`, and convert it back into a vector using
+`as.numeric`:
+
+```{R testi_recycle}
+iterable <- 1:3
+n <- 3
+it <- i_limit(i_recycle(iterable), n * length(iterable))
+as.numeric(it)
+```
+
+Sort of a complicated version of:
+```{R rep}
+rep(iterable, n)
+```
+Aren't iterators fun?
+
+## Conclusion
+
+Writing your own iterators can be quite simple, and yet is very useful
+and powerful.  It provides a very effective way to extend the
+capabilities of other packages that use iterators, such as the
+`foreach` package.  By writing iterators that wrap other
+iterators, it is possible to put together a powerful and flexible set of
+tools that work well together, and that can solve many of the complex
+problems that come up in parallel computing.
