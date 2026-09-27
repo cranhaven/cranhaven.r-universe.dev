@@ -1,0 +1,42 @@
+#' Example HLA Genotype Data for DRB1 and DQB1
+#' 
+#' A data frame of phased two-field HLA-DRB1 and HLA-DQB1 genotypes for 419 European American control subjects included
+#' in a study of Multiple Sclerosis.
+#' Genotype data for each locus is shown in two columns; the alleles in columns 1 and 2 are phased with the alleles in columns 3 and 4, respectively.
+#' These genotypes were extracted from the hla.hap.demo dataset.  
+#' @docType data
+#' @keywords genotype data hla
+#' @name drb1.dqb1.demo
+#' @usage data(drb1.dqb1.demo)
+#' @format A data frame with 419 rows and four columns
+#' \itemize{
+#'   \item{DRB1: the first of two two-field HLA-DRB1 alleles}
+#'   \item{DRB1: the second of two two-field HLA-DRB1 alleles}
+#'   \item{DQB1: the first of two two-field HLA-DQB1 alleles}
+#'   \item{DQB1: the second of two two-field HLA-DRB1 alleles}
+#'   }
+#' @source immport.org study SDY1045 doi:10.21430/M3QW34U2SG
+#' @references Mack et al. Genes Immun. 2019;20(4):308-326. doi: 10.1038/s41435-017-0006-8. 
+"drb1.dqb1.demo"
+
+#' Example Six-Locus HLA Haplotype Data in GL String Format
+#' 
+#' A data frame of experimentally phased genotype data for the HLA-A, -C, -B, -DRB1, -DQB1 and DQB1 loci. These haplotypes are
+#' for 419 unrelated European American control subjects included in a study of Multiple Sclerosis. These haplotypes were experimentally phased using the EM algorithm; low-frequency haplotypes (with counts < 3) are assigned stochasically by the EM method, so the phase "quality" of these haplotypes should be considered lower than that for haplotypes determined via family segregation analysis.
+#' @note This data is formatted as example input for the LDWrap() function, but is not actual family data. Actual family data would include 'mother', 'father' and 'child' in the "Relation" field. Nevertheless, including 'Subject' in this field is sufficient for analysis using LDWrap(). 
+#' @docType data
+#' @keywords hla haplotype data
+#' @name hla.hap.demo
+#' @usage data(hla.hap.demo)
+#' @format A data frame with 419 rows and two columns
+#' \itemize{
+#'  \item{Relation: the genotyped individual's status in a family}
+#'  \item{Gl String: GL String formatted multilocus phased HLA genotype}
+#' }
+#' @source immport.org study SDY1045 doi:10.21430/M3QW34U2SG
+#' @references 
+#' \itemize{
+#'  \item{Published study: Mack et al. Genes Immun. 2019;20(4):308-326. doi: 10.1038/s41435-017-0006-8.}
+#'  \item{GL String format: Milius et al. Tissue Antigens. 2013;82(2):106-12. doi: 10.1111/tan.12150.}
+#'  }
+"hla.hap.demo"
