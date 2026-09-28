@@ -1,0 +1,279 @@
+---
+title: "permRand: Permutation Randomization"
+output: rmarkdown::html_vignette
+author: Michelle Mellers, PhD and Thaddeus Haight, PhD
+vignette: >
+  %\VignetteIndexEntry{permRand}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+
+## Vignette for the Package: `permRand`
+
+This vignette illustrates the functionality of the R-package `permRand`.  It demonstrates all of the functions within the package.  This document also demonstrates the use of an example pipeline to describe the flow of a randomization for an observational study using the package.
+
+```{r libraries, message=FALSE}
+
+library(dplyr)
+library(magrittr)
+library(permRand)
+```
+
+## Example Use of Package Functions
+
+We start by demonstrating an example randomization problem for a cohort study with 2:1 matched cases to control.  The analyst would like to generate labels for a fully randomized samples for serum samples in batches and specify a certain number of QC samples to test the batch sizes.  Extra blood from the samples will be used for a secondary test.  This apparatus has different sized batches then the original batch so we must reassign the batches for the new apparatus.  To make it easier on the scientists in the lab, the number of "switches" to the new configuration must be minimized.
+
+### Step 1: Generate a Test Dataset
+
+We must first generate a test dataset.  The package includes the function `testRand` that allows specification of size, matching, plate size, and the child per mother specification.
+
+Variable descriptions of `testRand` include:
+
+* rowSize: size of plate row
+* colSize: size of plat column
+* studySize: size of each arm for the study
+* expNS: expected number of samples for all study arms
+* numCC: expected number of controls for each case
+* QCpt: percent of QC samples for the total study size
+* child: number of children per mother aliquots
+
+So, the function would be for this example:
+`testRand(rowSize=20,colSize=15,studySize=1000,expNS=7000,numCC=2,QCpct=0.07,child=4)`
+
+For this test we can load a saved dataset called: testR.
+
+```{r testData}
+data("testR",package="permRand")
+
+serumIDs <- testR[[1]]
+serumLoc <- testR[[2]]
+emptyQC <- testR[[3]]
+motherQC <- testR[[4]]
+```
+
+We create a test dataset with a plate:
+
+* 20 rows (rowSize)
+* 15 columns (colSize)
+* 1000 individuals per arm (studySize)
+* 7000 expected number of samples (samples)
+* 2 cases per control (numCC)
+* 5% percentage of QC samples (QCpct)
+* 4 children per mother (child)
+    
+We divide the output of this function into 4 different test datasets.
+
+1. serumIDs: serum ID with participant ID
+2. serumLoc: serum Packing location
+3. emptyQC: empty QC vials
+4. motherQC: qc "mother" samples
+
+We next test the serumIDs and individual IDs to ensure that unique IDs are assigned to each serum sample. In this example, the ID is unique if the output dataset has no rows.
+
+```{r qualData}
+tests1 <- uniqueID(serumIDs,"serumID")
+tests2 <- uniqueID(serumLoc,"serumID")
+tests3 <- uniqueID(emptyQC,"serumID")
+tests4 <- uniqueID(motherQC,"serumID")
+```
+
+### Step 2: Format Datasets
+
+In this step we next format the datasets for entry into the Randomization function.
+
+We first assign IDs linking mother/child and events using the function `randTest`.  The output of the function is a dataset with the ID links.  This function requires:
+
+* dataMom: The mother dataset.
+* dataChild: Child dataset.
+* maxAliq: number of aliquots per mother aliquot.
+* nEvent: number of aliquots per each of event or lab.
+
+The function `formatRand` formats the dataset for the randomization function.  This function inputs serum data for both the study subjects and QC.
+
+* QCData: QC data
+* serumIDR: serum data with serumIDs
+* serumPack: serum data with packing lists
+
+```{r format}
+QCMaster <- randTest(dataMom=motherQC,dataChild=emptyQC,maxAliq=4, nEvent=c(28,27,28,30))
+
+serumMaster <- formatRand(QCdata=QCMaster,serumIDR=serumIDs,serumPack=serumLoc)
+```
+
+The dataset `serumMaster` is a dataset that is formatted and ready for the randomization file.
+
+### Step 3: Randomize Dataset
+
+While the practice dataset includes multiple events or labs that can process the samples, we are only going to randomize a single event at a time.  We subset the dataset, serumMaster to only include a single event. In this example we will pick event 3.  The function, `allRand`, randomizes aliquots to batches.
+
+* dataR: data for randomization
+* batchTot: c(batchTot1, batchTot2) sizes of plates, just use one plate per batch, batch size inclusive of QC samples
+* numQC: number of QC samples per batch
+* withinN: number of samples away that the QC samples must be from each other
+* numMatch: number of QC samples from a single mother within a batch
+* chkRep: check if there is a repeat of the groups within the batches
+
+```{r rand}
+
+serumMaster3 <- serumMaster %>% filter(event == 3)
+serumRand <- allRand(dataR=serumMaster3,batchTot=c(40,44), numQC=2,
+                     withinN=2,numMatch=2,chkRep=1)
+```
+
+The example code demonstrates the use of the randomization function. The output, serumRand is the randomized serum samples.
+
+### Step 4: Check the Randomization 
+
+We can verify the success of the randomization using seven different tests.  We describe these verification tests and the functions that implement these tests.
+
+**Test 1:** no case-control samples across batches or plates.
+This function `testCCAcross` inputs the randomized dataset.
+```{r test1ar}
+test <- testCCAcross(dataS=serumRand)
+```
+The output dataset, test, shows all of the case-control groups that are split across batches.  In this example the output should have 0 rows.
+
+**Test 2:** measures that every batch has at least the specified number of matching QC sample sets in a batch.
+The function `testQCmatch` inputs:
+
+* dataS: randomized data
+* numQCs: number of QCs specified per dataset
+* numMatch: number of QC samples form a single mother within a batch
+  
+```{r test2ar}
+test <- testQCmatch(dataS=serumRand,numQCs=4,numMatch=2)
+```
+The output lists all batches with not enough QC sample sets or the QC samples do not come from the same mother.
+
+**Test 3:** tests for unique serum samples in the randomized datset.
+The function, `uniqueID`, is repeated from above.
+```{r test3ar}
+test <- uniqueID(serumRand,"serumID")
+```
+The output lists any duplicates of IDs in the dataset.
+
+**Test 4:** tests if sets are next to each other.  Any sets that are not next to each other are flagged.
+The function, testPair, inputs `serumRand`.
+```{r test4ar}
+test <- testPair(dataS=serumRand)
+```
+The output reports any sets that are separated in the loc.
+
+**Test 5:** tests if a large number of cases or controls are next to each other
+The function, `orderCases`, has the inputs:
+
+* dataI: test dataset
+* betW: number of cases or controls to check if they are next to each other
+  
+```{r test5ar}
+test <- orderCases(dataI=serumRand,betW=4)
+```
+The output stores if there are any cases or controls together beyond a certain specified value.  In this example the value is chosen to be 4.  The output lists the studyID of the groups that have many next to each other.
+
+**Test 6:** counts the number of samples that are in each of the batches.
+The function, `batchCount`, has the inputs:
+
+* dataS: test dataset
+* batchSizeT: batch size to test for
+
+```{r test6ar}
+test <- batchCount(dataS=serumRand,batchSizeT=84)
+```
+The output should be empty, as it contains the ID of any batch that does not contain the specified number of samples.  The last batch is not reported if it has less than the specified number of samples.
+
+**Test 7:** count how many QC samples are in each of the batches, and if it doesn't match the number specified.
+The function, `countQC`, contains:
+
+* dataS: test dataset
+* QCN: number of QC samples per batch
+  
+```{r test7ar}
+test <- countQC(dataS=serumRand,QCN=4)
+```
+The output includes any batches that does not contain the number of QC samples specified.  In this example there are 4.
+
+Now that our randomized example dataset, serumRand, has passed all of the verification checks, we can create our output packing lists.
+
+### Step 5: Packing Lists From the Randomization Results
+
+In or example we demonstration we demonstrate by outputting two packing lists, one blinded and the other not blinded.  We first demonstrate the unblinded packing list with the original packing location and title the dataset, unBlind.
+
+```{r packingar}
+unBlind <- outputLab(dataOut=serumRand,blind=0,origP=1,maxRows=9,maxCols=9,newPack=1)
+blind <- outputLab(dataOut=serumRand,blind=1,origP=0,maxRows=9,maxCols=9,newPack=1)
+```
+
+The function, `outputLab`, has the following options:
+
+* dataOut = dataset to be formatted for packing list
+* Blind = 0/1 indicator to select if a blinded (1) or unblinded(0) packing list is to be generated
+* origP = 0/1 indicator for inclusion of the original packing location (1) or deletion of the packing location (0)
+* maxRows = maximum row for the output dataset
+* maxCols = maximum column for the output dataset
+* newPack = 0/1 indicator to generate new packing locations
+
+The second packing list, blind, demonstrates an output where the packing list is blinded.  The original packing location is also not displayed.  These packing lists can be printed for use.
+
+### Step 6: Switching Without Re-Randomization
+
+We do not want to completely re-randomize, but we may need to change parameters such as plate sizes or QC samples per plate.  The analyst now wants to produce a new location list for serum samples, but the test bench has different sized batches.
+
+* dataIn: randomized dataset
+* numqc: number of QC samples per set
+* numqcM: number of qc matching samples
+* batchS: new batch size
+
+```{r switchR}
+serumSwitch <- switchR(dataIn=serumRand,numqc=2,numqcM=2,batchS=44)
+```
+
+In this example the batch size is now 43 samples with 2 QC samples and 2 matching per batches.
+
+### Step 7: Checking the Results
+              
+As above we check the randomization for the serum switch.
+
+```{r checksr}
+test1 <- testCCAcross(serumSwitch)
+test2 <- testQCmatch(serumSwitch,2,2)
+test3 <- uniqueID(serumSwitch,"serumID")
+test4 <- testPair(serumSwitch)
+test5 <- orderCases(serumSwitch,4)
+test6 <- batchCount(serumSwitch,44)
+test7 <- countQC(serumSwitch,2)
+```
+
+As a reminder, the functions of the tests are repeated below.
+
+* **Test 1:** no case-control samples across batches or plates.
+* **Test 2:** The output shows the batches with QC errors.
+The results are test 2 are fine, it just shows that there are extra QC samples
+in certain batches.
+* **Test 3:** The output shows samples where the serum ID is repeated.
+* **Test 4:** The "test" dataset contains any case-control sets that are not together.
+* **Test 5:** The test data shows cases or controls that are together.
+* **Test 6:**  The test data contains batches with more than the specified count (43)
+* **Test 7:** The output contains batches that do not contain 2 QC samples.
+
+Once this test is complete, we can output the packing lists for these serum samples.  These packing lists are outputted in the datasets not Blinded (unBlindSw) and Blinded (blindSw).
+
+### Step 8: Output the Packing Lists for the `switchR` Function
+
+We output blinded and unblinded packing lists for the `switchR` results.  We can again use the `outputLab` function and set the newPack indicator variable to 0.
+```{r packingarS}
+serumSwitchP <- unBlind %>% 
+                select(serumID,rack,row,col) %>%
+                merge(.,serumSwitch,by='serumID')
+unBlindSw <- outputLab(serumSwitchP,blind=0,origP=.,maxRows=.,maxCols=.,newPack=0)
+blindSw <- outputLab(serumSwitchP,blind=1,origP=.,maxRows=.,maxCols=.,newPack=0)
+```
+
+All of the example functions have been shown, and a demonstration of the pipeline for the package.  The input datasets are formatted then randomized using two different methods.  These output datasets are checked then packing lists are generated.
