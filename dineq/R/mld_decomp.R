@@ -1,0 +1,114 @@
+#' @title Decomposition of the mean log deviation
+#'
+#' @description Decomposes the mean log deviation into non overlapping population subgroups.
+#' Distinction is made by between and within group inequality.
+#'
+#' @details The decomposition of the mean log deviation by between and within group
+#' inequality. Within group inequality is calculated by using the mean log deviation for each sub
+#' group. Between group inequality by the mean log deviation of the average of both sub groups.
+#'
+#' It uses a logarithmic transformation of the values of the distribution. Therefore it
+#' cannot handle negative or zero values. Those are excluded from the computation in this function.
+#'
+#' Based on calcGEI function in IC2 package. Handles missings.
+#'
+#' @param x a numeric vector containing at least non-negative elements.
+#' @param z a factor containing the population subgroups.
+#' @param weights an optional vector of weights of x to be used in the computation of
+#' the decomposition. Should be NULL or a numeric vector.
+#'
+#' @return a list with the results of the decomposition and the parts used for the
+#' decomposition, containing the following components:
+#'    \item{mld_decomp}{a list containing the decomposition: mld_total (value of the mean log
+#'    deviation index of x) mld_within (value of within-group inequality) and mld_between (value
+#'    of between-group inequality)}
+#'    \item{mld_group}{a list containing mld_group (the mean log deviations of the different
+#'    subgroups) and mld_group_contribution(the contribution of the subgroups to the total
+#'    within-group inequality: adds up to mld_within)}
+#'    \item{mld_decomp}{a list containing the means of x: mean_total (value of the mean of x of
+#'    all subgroups combined) and mean_group (value of the mean of x of the individual subgroups)
+#'    inequality) and mld_between (value of between-group inequality)}
+#'    \item{share_groups}{the distribution of the subgroups z }
+#'    \item{share_income_groups}{the distribution of vector x by subgroups z }
+#'    \item{number_cases}{a list containing the number of cases in total, by subgroup (weighted
+#'    and unweighted): n_unweighted (total number of unweighted x), n_weighted (total number of
+#'    weighted x), n_group_unweighted (number of unweighted x by subgroup z), n_group_unweighted
+#'    (number of weighted x by subgroup z)}
+#'    \item{note}{number of zero or negative observations. The mean log deviation uses a logarithmic
+#'    transformation of x. Therefore these observations are deleted from the analysis}
+#'
+#' @seealso \code{\link{mld_change}}
+#'          \code{\link{gini_decomp}}
+#'
+#' @examples
+#' #Decomposition of mean log deviation by level of education using Mexican Income data set
+#' data(mex_inc_2008)
+#' education_decomp <- mld_decomp(x=mex_inc_2008$income,z=mex_inc_2008$education,
+#' weights=mex_inc_2008$factor)
+#'
+#' #complete output
+#' education_decomp
+#'
+#' #Selected output: decomposition into between- and within-group inequality
+#' education_decomp["mld_decomp"]
+#'
+#' @references
+#' Mookherjee, D. and A. Shorrocks (1982) A decomposition analysis of the trend in UK income
+#' inequality, \emph{Economic Journal}, 92 (368), p. 886-902.
+#'
+#' Brewer M., and L. Wren-Lewis (2016) Accounting for Changes in Income Inequality:
+#' Decomposition Analyses for the UK, 1978–2008. \emph{Oxford Bulletin of economics and
+#' statistics}, 78 (3), p. 289-322,
+#'
+#' Haughton, J. and S. Khandker. (2009) \emph{Handbook on poverty and inequality},
+#' Washington, DC: World Bank.
+#'
+#'
+#' @source
+#' Plat, D. (2012). IC2: Inequality and Concentration Indices and Curves. R package
+#' version 1.0-1. https://CRAN.R-project.org/package=IC2
+#'
+#' @export
+
+mld_decomp <- function(x,z,weights=NULL) {
+
+  if (is.null(weights)){
+    weights <- rep(1, length(x))}
+  note= paste(sum(  x <= 0, na.rm=TRUE  ), "negative or zero x's deleted (unweighted)")
+  if (!all(weights>=0, na.rm=TRUE)) stop("At least one weight is negative", call.=FALSE)
+  if (all(weights == 0, na.rm=TRUE)) stop("All weights are zero", call.=FALSE)
+  z <- factor(z)
+  df <- data.frame(x = as.numeric(x[x>0]), z = as.factor(z[x>0]), w = as.numeric(weights[x>0]))
+  df <- df[stats::complete.cases(df), ,drop = FALSE]
+
+  #totals
+  n <- as.numeric(nrow(df))
+  n_weighted <- sum(df[, "w"])
+  dfSplit <- split(df[, c("x", "w")], df[, "z"])
+  n_group <- table(df[, "z"])
+  n_group_weighted <- sapply(dfSplit, function(df) sum(df[, "w"]), simplify = TRUE)
+
+  #different parts of decomposition
+  df[, "w"] <- df[, "w"]/sum(df[, "w"])
+  xMean <- stats::weighted.mean(df[, "x"], df[, "w"])
+  xMean_group <- sapply(dfSplit, function(df) stats::weighted.mean(df[,"x"], df[, "w"]), simplify = TRUE)
+  share_group <- n_group_weighted/n_weighted
+  share_group_income <- share_group * xMean_group/xMean
+
+  #mld and decompositon
+  mld_group <- sapply(dfSplit, function(df) mld.wtd(df[,"x"], df[,"w"]), simplify = TRUE)
+  mld_group_contribution <- mld_group * (share_group_income^0) * (share_group)
+  mld_within <- sum(mld_group_contribution)
+  mld_between <- mld.wtd(xMean_group, share_group)
+  index <- mld_within + mld_between
+  mld_total <- mld.wtd(df[,"x"], df[,"w"])
+
+  return(list(mld_decomp= list(mld_total= mld_total,mld_within=mld_within, mld_between=mld_between),
+              mld_group=list(mld_group=mld_group, mld_group_contribution=mld_group_contribution),
+              mean= list(mean_total=xMean, mean_group=xMean_group),
+              share_groups= share_group,
+              share_income_groups=  share_group_income,
+              number_cases= list(n_unweighted=n, n_weighted=n_weighted, n_group_unweighted=n_group,
+                                 n_group_weighted=n_group_weighted),
+              note=note))
+}
