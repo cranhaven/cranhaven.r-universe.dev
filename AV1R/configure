@@ -1,0 +1,98 @@
+#!/bin/sh
+
+# Configure script for AV1R
+# FFmpeg бинарник используется через system() в R — dev-пакеты НЕ нужны.
+# Vulkan (optional) — только для GPU encoding.
+
+USE_VULKAN="auto"
+VULKAN_CPPFLAGS=""
+VULKAN_LIBS=""
+
+# Parse arguments
+for arg in "$@"; do
+  case "$arg" in
+    --with-vulkan)    USE_VULKAN="yes" ;;
+    --without-vulkan) USE_VULKAN="no"  ;;
+  esac
+done
+
+# --- Проверка ffmpeg бинарника (не -dev пакетов) ---
+echo "Checking for ffmpeg binary..."
+FFMPEG_BIN=$(command -v ffmpeg 2>/dev/null)
+if [ -z "$FFMPEG_BIN" ]; then
+  echo ""
+  echo "Note: ffmpeg binary not found. AV1R CPU encoding will not work."
+  echo "  Install: sudo apt install ffmpeg"
+  echo "  (No -dev packages required)"
+  echo ""
+else
+  echo "  Found ffmpeg: $FFMPEG_BIN"
+fi
+
+# --- Vulkan detection (optional, для GPU encoding) ---
+if [ "$USE_VULKAN" = "no" ]; then
+  echo "Vulkan: disabled by --without-vulkan"
+fi
+
+if [ "$USE_VULKAN" = "auto" ] || [ "$USE_VULKAN" = "yes" ]; then
+  echo "Checking for Vulkan support..."
+
+  HAVE_VULKAN_H="no"
+  if [ -f "/usr/include/vulkan/vulkan.h" ] || [ -n "$VULKAN_SDK" ]; then
+    HAVE_VULKAN_H="yes"
+  elif command -v pkg-config >/dev/null 2>&1 && pkg-config --exists vulkan 2>/dev/null; then
+    HAVE_VULKAN_H="yes"
+  fi
+
+  HAVE_VULKAN_VIDEO="no"
+  if [ "$HAVE_VULKAN_H" = "yes" ]; then
+    # Bundled AV1 video headers in src/vk_video/
+    if [ -f "src/vk_video/vulkan_video_codec_av1std_encode.h" ]; then
+      HAVE_VULKAN_VIDEO="yes"
+    elif grep -r "VK_KHR_VIDEO_ENCODE_AV1" /usr/include/vulkan/ >/dev/null 2>&1; then
+      HAVE_VULKAN_VIDEO="yes"
+    elif [ -n "$VULKAN_SDK" ] && grep -r "VK_KHR_VIDEO_ENCODE_AV1" "$VULKAN_SDK/include/vulkan/" >/dev/null 2>&1; then
+      HAVE_VULKAN_VIDEO="yes"
+    fi
+  fi
+
+  if [ "$HAVE_VULKAN_H" = "no" ]; then
+    if [ "$USE_VULKAN" = "yes" ]; then
+      echo "ERROR: Vulkan headers not found."
+      echo "  Ubuntu/Debian: sudo apt install libvulkan-dev"
+      exit 1
+    else
+      echo "  Vulkan not found, GPU encoding disabled. CPU path via ffmpeg only."
+      USE_VULKAN="no"
+    fi
+  else
+    USE_VULKAN="yes"
+    VULKAN_CPPFLAGS="-DAV1R_USE_VULKAN"
+    VULKAN_LIBS="-lvulkan"
+    if [ "$HAVE_VULKAN_VIDEO" = "yes" ]; then
+      echo "  Found Vulkan with VK_KHR_VIDEO_ENCODE_AV1"
+      VULKAN_CPPFLAGS="$VULKAN_CPPFLAGS -DAV1R_VULKAN_VIDEO_AV1"
+    else
+      echo "  Found Vulkan (no VK_KHR_VIDEO_ENCODE_AV1, GPU encode disabled)"
+      USE_VULKAN="no"
+      VULKAN_CPPFLAGS=""
+      VULKAN_LIBS=""
+    fi
+  fi
+fi
+
+# --- Write Makevars ---
+sed \
+  -e "s|@VULKAN_CPPFLAGS@|$VULKAN_CPPFLAGS|g" \
+  -e "s|@VULKAN_LIBS@|$VULKAN_LIBS|g" \
+  src/Makevars.in > src/Makevars
+
+echo ""
+echo "AV1R configuration:"
+echo "  CPU encoding (ffmpeg binary): $([ -n "$FFMPEG_BIN" ] && echo yes || echo no)"
+if [ "$USE_VULKAN" = "yes" ]; then
+  echo "  GPU encoding (Vulkan AV1):    yes"
+else
+  echo "  GPU encoding (Vulkan AV1):    no"
+fi
+echo ""
