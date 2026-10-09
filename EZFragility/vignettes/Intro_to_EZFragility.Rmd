@@ -1,0 +1,125 @@
+---
+title: "Introduction to EZFragility package"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Intro_to_EZFragility}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+library(EZFragility)
+knitr::opts_chunk$set(
+    collapse = TRUE,
+    comment = "#>",
+    fig.align = "center",
+    fig.width = 6,
+    fig.height = 4
+)
+```
+
+This is the introduction to how to use the EZFragility package.
+It calculates the neural fragility heatmap based on intracranial electrocorticographic (iEEG) recordings of ictal events.
+The method is based on the paper by Li et al. (2017) <doi: 10.23919/ACC.2017.7963378>.
+<a href="https://ieeexplore.ieee.org/document/7963378" style="color:blue; text-decoration:none;"> Fragility Method</a>
+
+## Key definition of the neural fragility marker
+
+Drug-resistant epilepsy (DRE) is a significant clinical challenge. Effective treatment requires the synthesis of large amounts of personalized clinical data with the goal of identifying the region within a patient’s brain from which seizures originate (the epileptogenic zone, or EZ). Current standard of care involves multidisciplinary group meetings and clinician consensus after reviewing patient data. This lack of a standardized methodology has led to variable surgical outcomes, measured by seizure freedom/reduction after surgery. Computational methods to identify the EZ have been developed to improve outcomes. 
+The neural fragility implemented in this R package is a promising biomarker of the epileptogenic zone. We provide this R package so that the method can be tested on extensive data for research.
+
+The hypothesis of the neural fragility is that small changes in connection strengths at seizure onset zone nodes (SOZ) cause an imbalance in inhibitory and excitatory connectivity between brain regions. Then if the SOZ is perturbed, over excitation can occur manifesting in a seizure. The neural fragility marker propose a metric to evaluate when connection strength changes cause imbalance and on which electrodes.To create the fragility marker, a personalized dynamic model of the brain network from observed iEEG signals is computed in a discrete number of time windows. Then the neural fragility measures the degree network nodes are imbalanced by systematically computing the minimum perturbation required for each electrode’s connections to produce instability for the entire network. 
+
+
+## Load small ictal ieeg data for patient PT01
+
+This example data corresponds to the first seizure of patient PT01 from the Fragility Data Set. `pt01EcoG` is an Epoch object with 3000 rows (time points) and 84 columns (electrodes). The acquisition frequency is 1000Hz and the time around seizure onset is [-1:2]s. The rows names are the electrodes names. The column names is the time relative to seizure onset in (s). For more information about the data, you can use the `?pt01EcoG` command.
+
+The patient underwent a surgical treatment and was seizure-free after the surgery. There are two ways to find the SOZ electrodes in the data
+```{r ictal data}
+data("pt01EcoG")
+
+# option 1: boolean value indicating if the electrode is in the SOZ
+rowData(pt01EcoG)$soz
+
+# option 2: SOZ names from the metadata
+sozNames <- metaData(pt01EcoG)$sozNames
+sozNames
+```
+
+The function `plot` can visualize the iEEG data. 
+```{r}
+plot(pt01EcoG)
+```
+
+The Epoch object can be subset using the `[` operator. Here we show the electrodes that are marked as SOZ and additional 4 electrodes
+```{r}
+display <- c(sozNames, "MLT1", "MLT2", "MLT3", "MLT4")
+plot(pt01EcoG[display])
+```
+Equivalently, we can use `plot(pt01EcoG[display, ])` to visualize the data for the specified electrodes. You can also specify the range of time points to display. For example, to display the first 100 time points, you can use:
+```{r}
+plot(pt01EcoG[display, 1:100])
+```
+You can use `crop` to subset the Epoch object to a specific time range in seconds relative to seizure onset. For example, to crop the data to the time range [-1:0]s, you can use:
+```{r}
+epochClipped <- crop(pt01EcoG, start = -1, end = 0)
+
+plot(epochClipped)
+```
+
+## Compute Fragility Matrix
+The function `calcAdjFrag` computes the fragility matrix for the given iEEG time series. The simplest form is `calcAdjFrag(ieegts, window, step)`. However, computing Fragility Matrix can take a bit while. To speed up the computation, we provided a parallel example below. The parallel feature is built upon the `foreach` package. You need to have a parallel backend registered in your R session beforehand. For example, you can use the `doSNOW` package to register a parallel backend. The result pt01Frag (`data("pt01Frag")`) from this code snippet corresponds to the data saved in the package. The  function `calcAdjFrag` allows the user to tune the parameters window, step and nSearch (see help `?calcAdjFrag`). 
+```{r}
+## Register a SNOW parallel backend with 4 workers
+library(doSNOW)
+cl <- makeCluster(4, type = "SOCK")
+registerDoSNOW(cl)
+
+windowNum <- 250
+step <- 125
+pt01Frag <- calcAdjFrag(epoch = pt01EcoG, window = windowNum, step = step, parallel = TRUE, nSearch=100L,progress = TRUE)
+
+# Fragility result
+pt01Frag
+
+# Stop the parallel backend
+stopCluster(cl)
+```
+
+
+## Predict the SOZ 
+High value of the fragility correlate with the SOZ. The function `estimateSOZ` estimates the SOZ from the fragility matrix. By default, it will return the electrode names that are in the top 10% of the fragility values. In this example, `pt01Frag$startTimes > 0` corresponds to the time windows that are after the seizure onset. This is not required. However, we found that this usually improves the results. 
+```{r}
+soz <- estimateSOZ(pt01Frag[ ,pt01Frag$startTimes > 0])
+soz
+```
+
+## Fragility Statistics 
+The function `fragStat` computes quantiles, mean and standard deviation for two electrodes group marked as soz non marked as soz to check that the high value of fragilities. The significant higher distribution of the fragility in the electrode group marked as soz can be used as a prediction of seizure-freedom after resection of these electrodes. The quantile results can be used in a multi-patient study with a machine learning model to detect automatically the SOZ Li et al. (2017) <doi: 10.23919/ACC.2017.7963378>.
+```{r}
+stats <- fragStat(pt01Frag, soz)
+stats
+```
+
+## Plot functions for Fragility Matrix
+The function `plot` produce a heatmap of the fragility and allows to visually check the correlation between the SOZ and sustained high fragility value. Time window around seizure onset [-1:2]s, which includes the following electrodes: 
+
+- Electrodes within the surgery region: `sozNames`
+- Electrodes outside of the surgery region: "MLT1", "MLT2", "MLT3", "MLT4" 
+
+The parameter `groupIndex` accepts either electrode names or their indices in the fragility matrix. If `groupIndex` is provided, the function will display the `groupIndex` electrodes in blue in the top rows of the heatmap. If `groupIndex` is not provided, the function will simply generate a heatmap of the fragility matrix. Here the group index are the SOZ names but for EZ localization study it can be the resected electrodes or the intersection between resected electrodes and the SOZ. Use groupName to label your study group.
+```{r}
+display <- c(sozNames, "MLT1", "MLT2", "MLT3", "MLT4")
+plot(pt01Frag[display], groupIndex = sozNames)
+```
+
+`plotFragDistribution` and `plotFragQuantile` are similar to the `plot` function. They plot the fragility distribution and quantiles, respectively.
+```{r, out.width="100%"}
+plotFragDistribution(pt01Frag[display], groupIndex = sozNames)
+```
+
+```{r, out.width="100%"}
+plotFragQuantile(pt01Frag[display], groupIndex = sozNames, groupName = "SOZ")
+```
+

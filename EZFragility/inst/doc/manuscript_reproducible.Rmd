@@ -1,0 +1,260 @@
+---
+title: "manuscript_reproducible"
+author: "Anne-Cecile Lesage, PhD, Oliver Zhou, BA, Jiefei Wang, PhD"
+date: "`r Sys.Date()`"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{manuscript_reproducible}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+    collapse = TRUE,
+    comment = "#>",
+    fig.align = "center",
+    fig.width = 10,
+    fig.height = 8
+)
+```
+
+This vignette shows how to reproduce results from the companion software paper of the <a href="https://cran.r-project.org/package=EZFragility" style="color:blue; text-decoration:none;"> EZFragility CRAN R package</a> for the first seizure of patients 01 and 26. This allows to check how well the EZFragility package reproduces results from the <a href="https://www.nature.com/articles/s41593-021-00901-w" style="color:blue; text-decoration:none;"> original neural fragility paper </a>
+
+## Load the package and data
+```{r}
+library(EZFragility)
+library(Epoch)
+library(ggplot2)
+library(ggtext)
+library(gsignal)
+```
+
+
+## Data preprocess (Not included in the package)
+
+To allow fast and easy exploration of fragility results,  we preprocessed the multipatient data from 
+the <a href="https://openneuro.org/datasets/ds003029/versions/1.0.0/metadata" style="color:blue; text-decoration:none;"> OpenNeuro Fragility Data Set</a> with <a href="https://rave.wiki/" style="color:blue; text-decoration:none;"> RAVE 2.0 </a>. Main steps included Notch filtering to remove power line interference, re-referencing, and epoching based on seizure onset time to isolate relevant segments of [-30:30s]. 
+
+## Download Data
+To access the preprocessed data, you can use the `EpochDownloader` class from the `Epoch` package. The following code downloads the data and lists the available datasets.
+```{r}
+dl<-EpochDownloader(progress = FALSE)
+names(dl)
+```
+
+The preprocessed voltage data from patient pt01 seizure 1 and pt26 seizure 1 can be loaded by
+```{r}
+pt01sz1 <- dl$FragilityData_subpt01_1
+pt01sz1
+
+pt26sz1 <- dl$FragilityData_subjh103_1
+pt26sz1
+```
+
+## Remove Artifacts
+The following function applies a band-pass filter voltage between 0.5 and 150 frequency with fourth-order Butterworth filter to the `Epoch` objects to remove high-frequency artifacts.
+```{r}
+butterworthFilter <- function(epoch, lowpass=0.5, highpass=150) {
+  order <- 4
+
+  sampling_freq <- metaData(epoch)$samplingRate
+  nyquist_freq <- sampling_freq / 2
+
+  normalized_freqs <- c(lowpass, highpass) / nyquist_freq
+  
+  filter_type <- "pass"
+  butter_filter <- gsignal::butter(
+    n = order,
+    w = normalized_freqs,
+    type = filter_type)
+
+  # Apply filter to epoch data
+  mat <- tblData(epoch)
+
+  # Apply zero-phase filtering (filtfilt) to each row
+  filtered_data <- gsignal::filtfilt(
+    filt = butter_filter,
+    x = t(mat))
+
+  filtered_data <- t(filtered_data)
+  tblData(epoch) <- filtered_data
+
+  epoch
+}
+```
+
+We apply the filter to the epochs and crop the data to the relevant time window of [-10:10s] around seizure onset:
+```{r}
+pt01sz1Cropped <- pt01sz1 |>
+    crop(start=-10, end=10) |>
+    butterworthFilter()
+pt01sz1Cropped
+
+pt26sz1Cropped <- pt26sz1 |>
+    crop(start=-10, end=10) |>
+    butterworthFilter()
+pt26sz1Cropped
+```
+
+
+## Visualize Voltage Plot (Figure 2.b)
+We show the voltage plot using `plot(epoch)` for a selected subset of electrodes for patient 01 and 26. We will highlight the SOZ electrodes in red and non-SOZ electrodes in black.
+```{r}
+# A helper function to visualize SOZ electrodes in red and non-SOZ in black
+visualSOZ <- function(epoch, sozNames) {
+  p <- plot(epoch, gap = 4, timeResolution = 512)
+
+  elecColor <- rep("black", nrow(epoch))
+  elecColor[rownames(epoch) %in% sozNames] <- 'red'
+  elecColor <- rev(elecColor) # match the electrode order in the plot
+
+  p +
+    geom_vline(xintercept = 0, color = "black", linetype = "dashed", linewidth = 1)+
+    theme(axis.text.y = element_markdown(colour = elecColor))
+}
+```
+
+To visualize patient 01 seizure 1:
+```{r}
+pt01Subset <- c(
+    "ATT1", "ATT2", "AD1", "AD2", "AD3", 
+    "AD4", "PD1", "PD2", "PD3", "PD4", 
+    "MLT1", "MLT2", "MLT3", "MLT4")
+pt01sozName <- c(
+    "ATT1", "ATT2", "AD1", "AD2", "AD3", 
+    "AD4", "PD1", "PD2", "PD3", "PD4"
+)
+pt01sz1Reordered <- pt01sz1Cropped[pt01Subset, ]
+visualSOZ(pt01sz1Reordered, pt01sozName)
+```
+
+To visualize patient 26 seizure 1:
+```{r}
+pt26Subset <- c(
+    "ABT1", "ABT2", "RAD1", "RAD2", "RAD3", "RAD4", "RAD5", "RAD6", 
+    "RAD7", "RHD1", "RHD2", "RHD3", "RHD4", "RHD5", "RHD6", "RHD7",
+    "RHD8", "RHD9", "RTG29", "RTG30", "RTG31", "RTG32", "RTG40",
+    "RTG48")
+pt26sozName <- c(
+    "RAD1", "RAD2", "RAD3", "RAD4", "RAD5", "RAD6", "RAD7", "RHD1", 
+    "RHD2", "RHD3", "RHD4", "RHD5", "RHD6", "RHD7", "RHD8", "RHD9",
+    "RTG40", "RTG48")
+pt26sz1Reordered <- pt26sz1Cropped[pt26Subset, ]
+visualSOZ(pt26sz1Reordered, pt26sozName)
+```
+
+## Compute the Fragility Matrix
+The following code computes the fragility matrix using all electrodes and store the results in the Fragility class object pt01sz1Frag
+```{r}
+library(doSNOW)
+# compute fragility
+
+cl <- makeCluster(parallel::detectCores(), type = "SOCK")
+registerDoSNOW(cl)
+
+windowNum <- 250
+step <- 125
+pt01sz1Frag <- calcAdjFrag(epoch = pt01sz1Cropped, window = windowNum, step = step, parallel = TRUE, nSearch=100L, progress = FALSE)
+
+pt26sz1Frag <- calcAdjFrag(epoch = pt26sz1Cropped, window = windowNum, step = step, parallel = TRUE, nSearch=100L, progress = FALSE)
+
+# Stop the parallel backend
+stopCluster(cl)
+```
+
+## Fragility Heatmap (Figure 2.a)
+We plot the fragility heatmap using `plot(frag)` with the same display options as the previous voltage plot. Looking at both plots allows to check correlation between soz patterns
+```{r}
+# A helper function to visualize fragility heatmap with SOZ electrodes in red and non-SOZ in black
+fragHeatmap <- function(frag, sozNames, ranked=FALSE) {
+  startTimes <- frag$startTimes
+
+  indexsz <- which(abs(startTimes)<=0.01)
+  elecColor <- rep("black", length(frag$electrodes))
+  elecColor[frag$electrodes%in% sozNames] <- 'red'
+  elecColor <- rev(elecColor)
+
+  plot(frag, ranked=ranked) +
+    geom_vline(xintercept = indexsz, color = "black", linetype = "dashed", linewidth = 1) +
+    theme(
+      axis.text.y = element_markdown(colour = elecColor)
+    )
+}
+```
+
+For patient 01, we can see that the SOZ electrodes identified by clinicians have high fragility values compared to the non-SOZ electrodes. The regions corresponding to the SOZ electrodes were resected during surgery, and patient 01 was a surgical success.
+```{r}
+pt01sz1FragReordered <- pt01sz1Frag[pt01Subset]
+fragHeatmap(pt01sz1FragReordered, pt01sozName)
+```
+
+For patient 26, many non-SOZ electrodes also had high fragility values. The regions corresponding to those high-fragility non-SOZ electrodes were not resected during surgery, and patient 26 was a surgical failure.
+```{r}
+pt26sz1FragReordered <- pt26sz1Frag[pt26Subset]
+fragHeatmap(pt26sz1FragReordered, pt26sozName)
+```
+
+## Mean and standard deviation statistics for SOZ and non SOZ electrode group (Figure 3.a)
+We use `plotFragDistribution(frag)` function from the EZFragility package to visualize the mean and standard deviation statistics for the SOZ and non-SOZ electrode groups. This plot shows that the fragility biomarker statistics are respectively significantly/not significantly higher in the soz labeled group correlated with the ground truth success/failure outcome for patient 01 and patient 26. 
+
+```{r}
+# A helper function to plot fragility distribution for SOZ and non-SOZ groups
+fragDist <- function(frag, sozNames) {
+    timeWindows <- frag$startTimes
+    timeIdx <- which(timeWindows >= -5 & timeWindows <= 10)
+    frag <- frag[, timeIdx]
+    plotFragDistribution(frag = frag, groupIndex = sozNames, bandType="SEM", rollingWindow = 1) +
+        geom_vline(xintercept = 0, color = "black", linetype = "dashed", linewidth = 1)
+}
+```
+
+Patient 01 seizure 1 (p 1481 Extended Fig.4)
+```{r}
+fragDist(pt01sz1Frag[pt01Subset], pt01sozName)
+```
+Patient 26 seizure 1 (p 1481 Extended Fig.4)
+```{r}
+fragDist(pt26sz1Frag[pt26Subset], pt26sozName)
+```
+
+# Distribution of Fragility Values (Figure 3.b)
+We use `plotFragQuantile(frag)` function from the EZFragility package to visualize the distribution of fragility values across all time windows for the SOZ and non-SOZ electrode groups. For patient 01:
+```{r}
+plotFragQuantile(pt01sz1Frag[pt01Subset])
+```
+For patient 26:
+```{r}
+plotFragQuantile(pt26sz1Frag[pt26Subset])
+```
+
+# Comparing different lambda values (Figure 4)
+Since the fragility computation relies on L2-norm regularization, we can explore how different lambda values impact the fragility results. We compute fragility matrices for three different lambda values (1e-4, 1e-3, 1e-2) and visualize the fragility heatmaps for patient 01 seizure 1.
+```{r}
+library(doSNOW)
+cl <- makeCluster(parallel::detectCores(), type = "SOCK")
+registerDoSNOW(cl)
+
+windowNum <- 250
+step <- 125
+
+pt01sz1Frag_lambda1 <- calcAdjFrag(epoch = pt01sz1Cropped, window = windowNum, step = step, parallel = TRUE, nSearch=100L, progress = FALSE, lambda=1e-4)
+
+
+pt01sz1Frag_lambda2 <- calcAdjFrag(epoch = pt01sz1Cropped, window = windowNum, step = step, parallel = TRUE, nSearch=100L, progress = FALSE, lambda=1e-3)
+
+pt01sz1Frag_lambda3 <- calcAdjFrag(epoch = pt01sz1Cropped, window = windowNum, step = step, parallel = TRUE, nSearch=100L, progress = FALSE, lambda=1e-2)
+
+
+# Stop the parallel backend
+stopCluster(cl)
+```
+
+We can see that the choice of lambda impacts the fragility values, but the overall patterns seems relatively stable. However, it should be noted that there is no mathmatical guarantee that the fragility values are valid when the connection matrix is unstable.
+```{r}
+fragHeatmap(pt01sz1FragReordered, pt01sozName, ranked=FALSE) + ggtitle("λ = Auto-selected")
+fragHeatmap(pt01sz1Frag_lambda1[pt01Subset], pt01sozName, ranked=FALSE) + ggtitle("λ = 1e-4")
+fragHeatmap(pt01sz1Frag_lambda2[pt01Subset], pt01sozName, ranked=FALSE) + ggtitle("λ = 1e-3")
+fragHeatmap(pt01sz1Frag_lambda3[pt01Subset], pt01sozName, ranked=FALSE) + ggtitle("λ = 1e-2")
+```
+
