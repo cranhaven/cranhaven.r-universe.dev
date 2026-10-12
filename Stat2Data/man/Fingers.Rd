@@ -1,0 +1,33 @@
+\name{Fingers}
+\alias{Fingers}
+\docType{data}
+\title{Finger Tap Rates}
+\description{
+Finger tap rates after drug administration
+}
+\format{
+  A data frame with 12 observations on the following 4 variables.
+  \describe{
+    \item{\code{Subject}}{Subject code (\code{I}, \code{II}, \code{III}, or \code{IV})}
+        \item{\code{Drug}}{Drug administered (\code{Ca}=caffeine, \code{Pl}=placebo, or  \code{Th}=theobromine)}
+    \item{\code{TapRate}}{Finger taps in a fixed time interval}
+   }
+}
+\details{
+Scientists Scott and Chen, published
+research that compared the effects of caffeine with those of theobromine (a similar chemical
+found in chocolate) and with those of a placebo. Their experiment used four human subjects, and
+took place over several days. Each day each subject swallowed a tablet containing one of caffeine,
+theobromine, or the placebo. Two hours later they were timed while tapping a finger in a specified
+manner (that they had practiced earlier, to control for learning effects). The response is the number
+of taps in a fixed time interval.
+
+Renamed FranticFingers in second edition.
+}
+\source{
+The data was found in Statistics in Biology, Vol. 1, by C. I. Bliss (1967), New York: McGraw Hill.
+
+The original article is Scott, C. and Chen, K. (1944) "Comparison of the action of 1-ethyl theobromine and caffeine in animals and man," Journal of Pharmacological Experimental Therapy, v. 82, pp 89-97.
+}
+
+\keyword{datasets}
