@@ -1,0 +1,32 @@
+#' Sensitivity Analysis for Comparative Methods
+#' 
+#' An implementation of sensitivity analysis for phylogenetic comparative
+#' methods. The package is an umbrella of statistical and graphical methods that 
+#' estimate and report different types of uncertainty in PCM:  
+#' (i) Species Sampling uncertainty (sample size; influential species and clades).  
+#' (ii) Phylogenetic uncertainty (different topologies and/or branch lengths).  
+#' (iii) Data uncertainty (intraspecific variation and measurement error).  
+#'
+#' @name sensiPhy
+#' @author Gustavo Paterno; Caterina Penone & Gijsbert D.A. Werner
+#' @section Bug reports: 
+#' 
+#' \url{https://github.com/paternogbc/sensiPhy/issues}.
+#' @section How to contribute?: 
+#' 
+#' You can find instructions on how to contribute to \bold{sensiPhy} at
+#' this link: \url{https://github.com/paternogbc/sensiPhy/wiki/How-to-support-sensiPhy}
+#' 
+#' A quick tutorial is available at this link: 
+#' \url{https://github.com/paternogbc/sensiPhy/wiki}
+#' @references 
+#' 
+#' Paterno, G. B., Penone, C. Werner, G. D. A. 
+#' \href{http://doi.wiley.com/10.1111/2041-210X.12990}{sensiPhy: 
+#' An r-package for sensitivity analysis in phylogenetic 
+#' comparative methods.} Methods in Ecology and Evolution 
+#' 2018, 9(6):1461-1467.  
+#'
+#' @docType package
+NULL
+
