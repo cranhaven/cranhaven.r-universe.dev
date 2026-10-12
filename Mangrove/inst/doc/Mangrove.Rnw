@@ -1,0 +1,293 @@
+\documentclass[a4paper]{article}
+
+\title{Mangrove: Genetic risk prediction on trees}
+\author{Luke Jostins}
+\usepackage{moreverb}
+
+%\VignetteIndexEntry{Mangrove}
+
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+\verb@Mangrove@ is an R package for performing genetic risk
+prediction from genotype data.  You can use it to perform risk prediction for
+individuals, or for families with missing data.
+
+In general, you will require an Odds Ratio object, which contains the
+risk alleles, the frequencies and the odds ratios for all the risk
+variants. You will also require a pedigree object, which contains
+genotypes for each individual, and their relationship to each other.
+
+This vignette goes through some examples that illustrate how to use
+the various functions that make up \verb@Mangrove@.
+\end{abstract}
+
+  
+\section{The odds ratios object}
+
+We start by loading the Mangrove library:
+
+<<>>=
+library(Mangrove)
+@
+
+We can read in odds ratios from a text file. For instance, the odds
+ratio file that corresponds to the \verb@exampleORs@ object contains:
+
+\begin{verbatimtab}[8]
+rsID    RiskAllele      OR      Freq
+SNP1	A	1.5	0.2
+SNP2	C	1.3	0.4
+SNP3	C	1.4	0.6
+SNP4	A	2.0	0.01
+\end{verbatimtab}
+
+In this case, as there is only one ``OR'' field, \verb@Mangrove@ assumes that the
+variants all have additive risk (i.e. ORhet=OR, ORhom=OR*OR). If you include two OR fields,``ORhet'' and ``ORhom'', \verb@Mangrove@ will use both appropriately.
+
+We can read in the odds ratio file using the \verb@readORs@
+function. However, we are going to use the preloaded example object \verb@exampleORs@:
+
+<<>>=
+data(exampleORs)
+class(exampleORs)
+print(exampleORs)
+@
+
+There are a few methods association with the \verb@MangroveORs@
+class. \verb@summary@ gives you a general idea of how predictive the
+set of variants is, including the variance explained (on the liability
+scale) for a few example prevalences. \verb@plot@ gives the cumulative
+variance explained as variants are added in (in the order of most
+predictive first):
+
+<<fig=TRUE>>=
+summary(exampleORs)
+plot(exampleORs)
+@ 
+
+If you know the actual prevalence of your disease, you can get more
+accurate figures. For instance, suppose the prevalence of the disease
+that the odds ratios predict is $K = 0.02$:
+
+<<fig=TRUE>>=
+summary(exampleORs,K=0.02)
+plot(exampleORs,K=0.02)
+@ 
+
+
+\section{Risk prediction in unrelated individuals}
+
+To perform genetic risk prediction, you need genotypes for your
+individuals. We read genetic data in from pedigree/map file pairs,
+such as those produced by the program \verb@Plink@.
+
+You can read in pedigree files using the \verb@readPed@ function. However, for this example we will use an example dataset from a large cohort of
+unrelated cases and controls (cases have the disease predicted by the odds ratios in \verb@exampleORs@):
+
+<<>>=
+data(ccped)
+class(ccped)
+@ 
+
+We can take a look at the contents of this pedigree object:
+
+<<>>=
+head(ccped)
+summary(ccped)
+@ 
+
+This tells us that there are 20K individuals, split evenly between
+cases and controls, genotyped for 4 variants.
+
+We can use our odds ratio object to perform risk prediction on these individuals:
+
+<<>>=
+ccrisk <- calcORs(ccped,exampleORs)
+class(ccrisk)
+@ 
+
+This object contains combined odds ratios, relative to population
+average, for every individual in the pedigree object. The \verb@plot@
+method shows the distribution of this on the log scale, which should
+be approximately normally distributed (though for 4 variants, the
+approximation will be very approximate):
+
+<<fig=TRUE>>=
+plot(ccrisk)
+@ 
+
+Looking at the distribution in cases and controls shows that, as
+expected, the odds ratios are significantly higher in cases over controls:
+
+<<fig=TRUE>>=
+boxplot(log(ccrisk) ~ ccped[,6])
+@ 
+
+We can calculate posterior probabilities of disease incidence from the
+odds ratios, given a prevalence. Again assuming $K = 0.02$:
+<<fig=TRUE>>=
+ccprob <- applyORs(ccrisk,K=0.02)
+summary(ccprob)
+boxplot(ccprob ~ ccped[,6])
+@ 
+
+If we wish to prioritise individuals for sequencing, our best bet is
+to pick the cases with the lowest genetic risk. For instance, to select 1000 cases:
+
+<<>>=
+selcases <- names(head(sort(ccrisk[ccped[,6] == 2]),1000))
+@
+
+We could also select 1000 matching control with the highest risk:
+
+<<>>=
+selcontrols <- names(tail(sort(ccrisk[ccped[,6] == 1]),1000))
+@ 
+
+As expected, this pulls out a set of cases with much genetic risk than
+the set of controls:
+
+<<fig=TRUE>>=
+boxplot(list(ctrl=log(ccrisk[selcontrols]),cases=log(ccrisk[selcases])))
+@ 
+
+\section{Quantitative trait prediction in unrelated individuals}
+
+You can also use Mangrove to perform continuous risk prediction on unrelated individuals. For
+continuous prediction we have a beta file, which contains beta-values (the equivalent of odds ratios
+in quantitative trait prediction). These have a similar format to the odds ratio file, and are read in
+using \verb@readBetas@. All the same methods apply (plot, summary, print).
+
+We will use an example file, which actually contains beta values for 179 SNPs that predict height:
+
+<<>>=
+data(exampleBetas)
+class(exampleBetas)
+summary(exampleBetas)
+@
+
+We will also look at 1000 (simulated) female individuals genotyped at these sites:
+
+<<>>=
+data(contped)
+class(contped)
+@
+
+The mean female height is around 163cm, and the standard deviation is around 6.4cm,
+so we can perform .
+
+<<>>=
+predbetas <- calcBetas(contped,exampleBetas)
+contpreds <- applyBetas(predbetas,162,6.4)
+summary(contpreds)
+@
+
+If you are prioritising people for sequencing to find eQTLs, the best method is to sample people 
+who have significantly larger and significantly smaller values than predicted from known genetics:
+
+
+<<fig=TRUE>>=
+hist(contped[,6] - contpreds)
+@
+
+\section{Risk prediction in families}
+
+Finally, we can consider the case of risk prediction in
+families. Suppose we have a family that we are considering sequencing,
+due to their higher-than-expected prevalence of the disease. We have
+genotyped them, and can get their pedigree file:
+
+<<>>=
+data(famped)
+summary(famped)
+@
+
+We can see that the family has three affected individuals, out of a
+total of 19. 9 family members have been genotyped for the same 4
+variants as above.
+
+We can use the package \verb@kinship2@ to plot the pedigree, colouring
+individuals we have genotypes for blue:
+
+<<fig=TRUE>>=
+library(kinship2)
+missing <- (apply(famped[,-c(1:6)] == 0,1,sum) == 0)
+kinped <- pedigree(famped$ID,famped$Father,famped$Mother,famped$Sex,famped$Phenotype,missid=0)
+plot(kinped,col=missing*3 + 1)
+@ 
+
+We can ask, given a naive binomial model, what the distribution of number of
+affecteds would be in a family of this size, assuming no genetic effects,
+using the \verb@plotNaivePrev@ function. The green line is the
+expected number in a family of this size, the red is the observed
+number, and the grey bars of the expected distribution.
+
+<<fig=TRUE>>=
+plotNaivePrev(famped,K=0.02)
+@ 
+
+We can see that the prevalence is far higher than would be expected by
+chance. We can verify this by calculating a p-value:
+
+<<>>=
+p <- 1 - pbinom(2,19,0.02)
+print(p)
+@ 
+
+However, the higher prevalence could by simply due to a higher load of
+known genetic risk factors. As we saw when we ran \verb@summary@, the
+family does seem to have a pretty high frequency of the low-frequency
+risk allele of SNP4. Can this explain the number of cases we observe?
+
+We can use the Inside-Outside Algorithms to sample from the posterior
+distribution of number of affecteds. First of all, we initialise a tree object, and load
+the genetic data into it:
+
+<<>>=
+tree <- initialiseTree()
+class(tree)
+tree$addPed(famped,exampleORs)
+summary(tree)
+print(tree)
+@ 
+
+We can then perform the sampling, given the odds ratios and prevalences:
+
+<<>>=
+sam <- tree$getPrevs(exampleORs,K=0.02)
+class(sam)
+@ 
+
+We can view the expected distribution of affecteds given the observed
+genotypes using the \verb@plot@ method
+
+<<fig=TRUE>>=
+plot(sam)
+@
+
+We can see that the number of affecteds we see no longer looks that
+unexpected. Once again, we can quantify this with a p-value, in this case using the \verb@summary@ method:
+
+<<>>=
+summary(sam)
+@ 
+
+This family is not significantly enriched for cases over-and-above
+what we would expect from the known risk loci. Thus the family is probably not a good candidate for further study.
+
+If we did want to pursue this family, we could look at the risk
+predictions for the affected family members:
+
+<<>>=
+famrisk <- calcORs(famped,exampleORs)
+print(famrisk[famped[,6] == 2])
+@ 
+
+We can see that A21 does not have a particularly high genetic risk, and would be our best candidate for sequencing if we wanted to push forward with this family.
+
+
+\end{document}
