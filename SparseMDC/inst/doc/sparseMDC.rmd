@@ -1,0 +1,326 @@
+---
+title: "SparseMDC"
+author: "Martin Barron"
+date: "`r Sys.Date()`"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{sparseMDC}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+---
+references:
+- id: biase2014
+  title: Cell fate inclination within 2-cell and 4-cell mouse embryos revealed by single-cell RNA sequencing
+  author:
+  - family: Biase
+    given: Fernando H.
+  - family: Cao
+    given: Xiaoyi
+  - family: Zhong
+    given: Sheng
+  container-title: Genome Research
+  volume: 11
+  URL: 'https://www.ncbi.nlm.nih.gov/pmc/articles/PMC4216920/'
+  DOI: 10.1101/gr.177725.114
+  issue: 4
+  publisher: Genome Research
+  page: 1787-1796
+  type: article-journal
+  issued:
+    year: 2014
+    month: 11
+    
+
+
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+set.seed(100000)
+```
+
+## Overview
+
+The SparseMDC package implements the multiple condition SparseDC model. This package is suitable for data coming from >=2 ordered conditions. This method clusters samples (cells) in each condition, links corresponding clusters (cell-types) across conditions, identifies a unique set of characteristic features (marker genes) for each cluster and identifies features which characterize the condition change for each cluster. This vignetter will guide you through the application of SparseMDC including pre-processing of data, calculation of penalty parameters, and extraction.
+
+## Section 1 - Preliminaries
+
+SparseMDC was designed for the analysis of single-cell RNA-squencing(scRNA-seq) data coming from multiple ordered conditions. These conditions could include cells before and after treatment, cells at different developmental stages, or cells taken from different time points in a time course experiment. The data SparseMDC takes as input is scRNA-seq gene expression data. SparseMDC assumes that this data has been properly normalized for sequencing depth and other technical effects prior to the application of SparseMDC. 
+
+### 1-1 Load SparseMDC
+The first step is to install and load the SparseMDC package. 
+```{r Install and Load}
+# install.packages("SparseMDC")
+library("SparseMDC")
+```
+
+
+### 1-2 Real Data Example:Biase Data
+To demonstrate the data format and application of SparseMDC scRNA-seq data created by Biase
+et al. to study cell fate inclination in mouse embryos [@biase2014] will be used. This dataset contains 
+gene expression, FPKM, measurements for 49 cells and 16,514 genes. The cells in
+the dataset come from three different cell types, zygote, two-cell embryos and
+four-cell embryos. While the cells in this dataset are all from a single
+condition we have dveloped an approach to split the data into three conditions so
+that the linking of clusters across conditions can be demonstrated. For this example we split the data so that the zygote and 10 two-cell cells are in condition A, 10 two-cell and 10 four-cell cells are in condition B and 10 four-cells cells are in condition C.
+
+```{r Biase  overview}
+# Load Dataset
+data(data_biase)
+# Summarize condition vector 
+summary(as.factor(condition_biase))
+# Compare condition and cell type
+table(condition_biase, cell_type_biase)
+
+```
+
+
+### 1-3 Data Formatting 
+
+SparseMDC takes as input scRNA-seq gene expression data for multiple conditions. This data should be stored as a list with each entry containing a gene expression matrix for a single condition. The data should be stored with genes as rows and cells as columns. 
+
+The next step to check the data is stored correctly, separate the data into different conditions, and store the data as a list
+```{r biase formatting}
+# Check rows are genes and columns are cells 
+head(data_biase[,1:5])
+# Separate data by condition
+biase_A <- data_biase[,which(condition_biase == "A")]
+cell_type_A <- cell_type_biase[which(condition_biase == "A")]
+biase_B <- data_biase[,which(condition_biase == "B")]
+cell_type_B <- cell_type_biase[which(condition_biase == "B")]
+biase_C <- data_biase[,which(condition_biase == "C")]
+cell_type_C <- cell_type_biase[which(condition_biase == "C")]
+# Move data into list
+dat_l <- list(biase_A, biase_B, biase_C)
+
+```
+
+## Section 2 - Preprocessing
+
+Prior to the application of SparseMDC the data needs to be normalized for sequencing depth and other technical effects and centered on a gene-by-gene basis. We also recommend that the data is log-transformed.
+To do this we have included a function that can easily pre-process the data. For the normalization it is recommended that users make use of one of the many methods that exist for normalizing scRNA-Seq data. The centering of the data is crucially important to the function of SparseMDC and is vital to accurately clustering the data and identifying marker genes. We recommend that all users use this function to center their data and that only experienced users set "center=FALSE".
+
+The Biase data are FPKM measurements of gene expression and so have been 
+normalized using an alternate method as advised. This means we can set 
+"norm = FALSE". The Biase data then needs to be both log transformed and
+centered so we can set "log =TRUE"" and "center = TRUE". We also set "dim=3" which is the number of conditions in the data:
+
+```{r normalize biase}
+pdat <- pre_proc_data(dat_l, dim = 3, norm = FALSE, log = TRUE, center = TRUE)
+```
+The data is returned as list containing the centered and log-transformed data. To check the data has been correctly centered we can view the rowSums for each gene.
+```{r check centering}
+# Check condition A
+summary(rowSums(pdat[[1]]))
+# Check condition B
+summary(rowSums(pdat[[2]]))
+# Check condition C
+summary(rowSums(pdat[[3]]))
+```
+
+## Section 3 - Penalty Parameter Estimation
+
+Now that the data has been centered and log-transformed it is time to estimate the penalty parameters used in SparseMDC. The target function of SparseMDC contains two penalty parameters, $\lambda_{1}$ and $\lambda_{2}$. The $\lambda_{1}$ penalty acts on the center value of each cluster driving them towards zero and revealing the marker genes for each cell-type. This term then controls the number of non-zero center values which are the characteristic features (marker genes) in the solution. Larger values of $\lambda_{1}$ lead to a sparser solution. The $\lambda_{2}$ penalty acts on the difference between center values for each cluster across conditions. This has the effect of driving similar cells across conditions together, linking clusters across conditions, and revealing features which characterize the change. Larger values of $\lambda_{2}$ lead to less change across conditions. Details on the estimation of these parameters can be found in the supplementary material of the manuscript. 
+
+### 3-1 $\lambda_{1}$
+
+To estimate $\lambda_{1}$ we just need to provide the centered and log-transformed data, the number of conditions and the number of clusters. As there are three cell-types present we set the number of clusters, \code{nclust} as 3. 
+```{r lambda 1 estimation}
+lambda1 <- lambda1_calculator(pdat, dim = 3, nclust = 3 )
+lambda1
+```
+
+
+### 3-2 $\lambda_{2}$
+
+To estimate $\lambda_{2}$ we again need to provide the centered and log-transformed data, the number of conditions and clusters as well as the calculated $\lambda_{1}$ value.
+```{r lambda 2 estimation}
+lambda2 <- lambda2 <- lambda2_calculator(pdat, dim = 3, nclust = 3, 
+                                         lambda1 = lambda1)
+lambda2
+```
+
+## Section 4 - SparseMDC
+
+Once the parameters have been calculated we are now ready to apply SparseMDC. SparseMDC requires us to input the processed data, the number of conditions and clusters and the calculated penalty parameters. Other parameters which can changed are:
+
+* \code{nitter} - The maximum number of iterations for each start, default value is 20.
+* \code{nstarts} - The number of starts for the algorithm, default value is 50.
+* \code{init_iter} - The number of interations of K-means used to generate the starting centers,
+default value is 5.
+
+### 4-1 Apply SparseMDC
+
+```{r sparsemdc app}
+# Apply SparseMDC
+smdc_res <- sparse_mdc(pdat,  dim = 3, nclust = 3, lambda1 = lambda1, 
+                      lambda2 = lambda2, nstarts = 50, init_iter = 1)
+```
+
+### 4-2 Examine Results
+
+After the application the results are stored as a list. The first item contains the clustering assignments while the second item contains the calculated center values. Each of these items is also a list and contains the solution for each condition in its corresponding entry, i.e. the clusters for condition A are stored in the first entry of the cluster list.
+
+```{r examine clustering}
+# Extract clustering solution
+clusters <- smdc_res[[1]]
+# Extract clusters for condition A
+clusters_A <- clusters[[1]]
+# Extract clusters for condition B
+clusters_B <- clusters[[2]]
+# Extract clusters for condition C
+clusters_C <- clusters[[3]]
+# Compare clusters and cell type 
+table(cell_type_A, clusters_A)
+table(cell_type_B, clusters_B)
+table(cell_type_C, clusters_C)
+# View full comparision
+table(c(cell_type_A, cell_type_B, cell_type_C), 
+      c(clusters_A, clusters_B, clusters_C))
+
+```
+
+The centers are extracted in a similar manner.
+
+```{r extract centers}
+# Extract centers
+centers <- smdc_res[[2]]
+# Extract centers for condition A
+centers_A <- centers[[1]]
+# Extract centers for condition B
+centers_B <- centers[[2]]
+# Extract centers for condition C
+centers_C <- centers[[3]]
+```
+
+### 4-3 Housekeeping Marker Genes
+
+The center results from SparseMDC can be used to identify marker genes of different categories from the result. Full details on the different categories of marker genes can be found in the original manuscript but a brief desciption is:
+
+* Housekeeping marker genes - These are marker genes for a cell type/cluster in all conditions and there expression is consistent in each condition. 
+* Condition-dependent marker genes - These are marker genes for a cell type/cluster in two or more conditions but their expression depends on the condition.
+* Condition-specific marker genes - These are marker genes for a cell type/cluster in a single condition. 
+
+The center values are stored in the column corresponding to the cluster number. For example the center values for cluster 1 in condition A are stored in the first column of \code{centers_A}.
+
+To identify housekeeping marker genes for cluster 1 we can use the following approach:
+```{r housekeeping marker genes}
+#Identify housekeeping marker gene index
+clus_1_hk_gene_ind <- which(centers_A[,1] == centers_B[,1] & 
+                              centers_B[,1] == centers_C[,1] & 
+                              centers_A[,1] != 0)
+# Identify the housekeeping marker genes
+clus_1_hk_genes <- row.names(data_biase)[clus_1_hk_gene_ind]
+```
+
+### 4-4 Condition-Dependent/Condition-Specific Marker Genes
+
+Condition-dependent marker genes can be identified in the following way.
+```{r Condition dependent}
+clus_1_cd_gene_ind <- which(centers_A[,1] != 0 & centers_B[,1] != 0 & 
+                              centers_A[,1] != centers_B[,1] |
+                            centers_A[,1] != 0 & centers_C[,1] != 0 &
+                              centers_A[,1] != centers_C[,1] |
+                            centers_B[,1] != 0 & centers_C[,1] != 0 &
+                              centers_B[,1] != centers_C[,1])
+```
+
+Condition-specific genes for cluster 1 can be identified in the following way.
+```{r Condition specific}
+# Identify condition A specific genes
+clus_1_A_cs_ind <- which(centers_A[,1] != 0 & centers_B[,1] == 0 & 
+                           centers_C[,1] == 0)
+clus_1_A_cs_genes <- row.names(data_biase)[clus_1_A_cs_ind]
+# Identify condition B specific genes
+clus_1_B_cs_ind <- which(centers_A[,1] == 0 & centers_B[,1] != 0 & 
+                           centers_C[,1] == 0)
+clus_1_B_cs_genes <- row.names(data_biase)[clus_1_B_cs_ind]
+# Identify condition C specific genes
+clus_1_C_cs_ind <- which(centers_A[,1] == 0 & centers_B[,1] == 0 & 
+                           centers_C[,1] != 0)
+clus_1_C_cs_genes <- row.names(data_biase)[clus_1_C_cs_ind]
+```
+
+
+## References
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
