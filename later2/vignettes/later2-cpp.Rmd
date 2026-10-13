@@ -1,0 +1,123 @@
+---
+title: "Using later from C++"
+author: "Mauricio Vargas Sepulveda"
+date: "`r Sys.Date()`"
+output:
+  litedown::html_format:
+    options:
+      toc: true
+      number_sections: true
+vignette: >
+  %\VignetteIndexEntry{02 - Setup}
+  %\VignetteEngine{litedown::vignette}
+  %\VignetteEncoding{UTF-8}
+editor:
+  markdown:
+    wrap: sentence
+---
+
+# Using later from C++
+
+You can call `later2::later` from C++ code in R packages. This is safe to call from either the main R thread or a different
+thread, and for both cases the callback will be invoked from the main R thread.
+
+To use the C++ interface, you will need to:
+
+* Add `later` to the `DESCRIPTION` file, under both `LinkingTo` and `Imports`
+* Make sure that the `NAMESPACE` file has an `import(later)` entry.
+* Add `#include <later2_api.h>` to the top of each C++ file that uses the later API.
+
+## Executing a C function later
+
+The `later2::later` function is accessible from `later2_api.h` and its prototype looks like this:
+
+```cpp
+void later(void (*func)(void*), void* data, double secs)
+```
+
+The first argument is a pointer to a function that takes one `void*` argument and returns void. The second argument is a `void*`
+that will be passed to the function when it is called back. And the third argument is the number of seconds to wait (at a minimum)
+before invoking. In all cases, the function will be invoked on the R thread, when no user R code is executing.
+
+## Background tasks
+
+This package also offers a higher-level C++ helper class called `later2::BackgroundTask`, to make it easier to execute tasks on a
+background thread. It takes care of launching the background thread for you, and returning control back to the R thread at a later
+point. You are responsible for providing the actual code that executes on the background thread, as well as code that executes on
+the R thread before and after the background task completes.
+
+The public/protected interface looks like this:
+
+```cpp
+class BackgroundTask {
+
+public:
+  BackgroundTask();
+  virtual ~BackgroundTask();
+
+  // Start executing the task  
+  void begin();
+
+protected:
+  // The task to be executed on the background thread.
+  // Neither the R runtime nor any R data structures may be touched from the
+  // background thread; any values that need to be passed into or out of the
+  // Execute method must be included as fields on the Task subclass object.
+  virtual void execute() = 0;
+  
+  // A short task that runs on the main R thread after the background task has
+  // completed. It is safe to access the R runtime and R data structures from
+  // here.
+  virtual void complete() = 0;
+}
+```
+
+Create your own subclass, implementing a custom constructor plus the `execute` and `complete` methods.
+
+It is critical that the code in your `execute` method not mutate any R data structures, call any R code, or cause any R
+allocations, as it will execute in a background thread where such operations are unsafe. You can, however, perform such operations
+in the constructor (assuming you perform construction only from the main R thread) and `complete` method. Pass values between the
+constructor and methods using fields.
+
+```cpp
+#include "cpp4r.hpp"
+#include <later2_api.h>
+
+using namespace cpp11;
+
+class MyTask : public later2::BackgroundTask {
+public:
+  MyTask(doubles vec) :
+    inputVals(as_cpp<std::vector<double> >(vec)) {
+  }
+
+protected:
+  void execute() {
+    double sum = 0;
+    for (std::vector<double>::const_iterator it = inputVals.begin();
+      it != inputVals.end();
+      it++) {
+      
+      sum += *it;
+    }
+    result = sum / inputVals.size();
+  }
+  
+  void complete() {
+    Rprintf("Result is %f\n", result);
+  }
+
+private:
+  std::vector<double> inputVals;
+  double result;
+};
+```
+
+To run the task, `new` up your subclass and call `begin()`, e.g. `(new MyTask(vec))->begin()`. There is no need to keep track of
+the pointer, the task object will delete itself when the task is complete.
+
+```r
+[[cpp11::register]] void asyncMean(doubles data) {
+  (new MyTask(data))->begin();
+}
+```
