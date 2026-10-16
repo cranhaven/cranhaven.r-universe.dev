@@ -1,0 +1,139 @@
+---
+title: "trafficCAR-intro"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{trafficCAR-intro}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+## Introduction
+
+`trafficCAR` provides tools for constructing **conditional autoregressive (CAR)**
+precision matrices on graphs derived from road networks. The package supports
+network creation from spatial linework, basic spatial weight construction, and
+proper/ICAR precision matrices that can be used in Gaussian hierarchical
+models.
+
+This vignette walks through a minimal workflow that uses the bundled example
+roads data to build a network, create spatial weights, and construct CAR/ICAR
+precision matrices suitable for simulation or modeling.
+
+## Load the package and example data
+
+```{r}
+library(trafficCAR)
+library(Matrix)
+
+data("roads_small", package = "trafficCAR")
+roads_sf <- roads_small
+```
+
+## Build a road network graph
+
+```{r}
+net <- build_network(
+  roads_sf,
+  crs_out = 3857,
+  node_intersections = TRUE,
+  snap_tol = 0,
+  simplify = TRUE
+)
+
+c(
+  nodes = nrow(net$nodes),
+  edges = nrow(net$edges),
+  adjacency_nnz = Matrix::nnzero(net$A)
+)
+```
+
+## Spatial weights from the adjacency matrix
+
+```{r}
+W_row <- weights_from_adjacency(net$A, style = "row-standardized")
+Matrix::rowSums(W_row)[1:6]
+```
+
+## CAR and ICAR precision matrices
+
+```{r}
+Q_car <- car_precision(net$A, type = "proper", rho = 0.25, tau = 1)
+
+Q_icar <- intrinsic_car_precision(net$A, tau = 1, scale = FALSE)
+
+Q_car[1:6, 1:6]
+dim(Q_icar)
+```
+
+## Sampling from a CAR precision matrix
+
+```{r}
+set.seed(123)
+theta <- trafficCAR:::rmvnorm_prec(Q_car)
+c(mean = mean(theta), sd = sd(theta))
+```
+
+## Interactive road visualizations
+
+`trafficCAR` includes lightweight interactive mapping helpers built on
+**leaflet**. They visualize segment-level traffic quantities such as predicted
+traffic levels or relative congestion on the bundled example road network.
+
+The example below fabricates simple segment-level quantities so the map can be
+rendered without fitting a full model. In applied workflows, these values are
+produced automatically by `augment_roads()`.
+
+```{r}
+roads_sf <- roads_small
+
+# mock traffic quantities (stand-in for augment_roads() output)
+set.seed(123)
+
+# many mapping helpers expect these standard columns
+roads_sf$predicted_mean <- runif(nrow(roads_sf), min = 20, max = 60)
+roads_sf$relative_congestion <- as.numeric(scale(runif(nrow(roads_sf))))
+
+has_leaflet <- requireNamespace("leaflet", quietly = TRUE) &&
+  requireNamespace("viridisLite", quietly = TRUE)
+
+if (has_leaflet) {
+  map_roads_interactive(roads_sf, value = "predicted_speed")
+} else {
+  message("Install 'leaflet' and 'viridisLite' to view the interactive map.")
+}
+```
+
+You can also expose multiple standard traffic layers using
+`map_roads_interactive_layers()`.
+
+```{r}
+if (has_leaflet) {
+  map_roads_interactive_layers(
+    roads_sf,
+    values = c("predicted_speed", "relative_congestion")
+  )
+}
+```
+
+## Takeaways
+
+- `build_network()` converts road linework to a graph with adjacency and edge metadata.
+- `weights_from_adjacency()` can produce binary or row-standardized weights.
+- `car_precision()` and `intrinsic_car_precision()` create sparse CAR/ICAR precision matrices.
+- Interactive helpers visualize predicted traffic levels and relative congestion.
+
+## Further directions
+
+Planned extensions include:
+
+- Poisson and negative binomial models for traffic volume
+- Layered interactive maps (raw vs modeled traffic)
+- Shiny applications for time-varying traffic data
+

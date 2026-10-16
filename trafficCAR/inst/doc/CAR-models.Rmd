@@ -1,0 +1,149 @@
+---
+title: "CAR-models"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{CAR-models}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(collapse = TRUE, comment = "#>")
+```
+
+## Conditional autoregressive (CAR) models
+
+Let \(A\) be an \(n \times n\) symmetric adjacency/weight matrix for a graph. In
+`trafficCAR`, \(A\) may be binary (0/1) or contain nonnegative edge weights; the
+diagonal is ignored (set to 0). If `symmetrize = TRUE`, the input is replaced by
+\((A + A^\top)/2\) before construction.
+
+Define the diagonal “degree” matrix
+\[
+D = \mathrm{diag}(A \mathbf{1}),
+\]
+i.e., \(D_{ii} = \sum_j A_{ij}\).
+
+### ICAR model
+
+The intrinsic CAR (ICAR) precision matrix is
+\[
+Q = \tau (D - A).
+\]
+
+Key properties:
+
+- \(Q\) is singular (improper prior).
+- Rank deficiency equals the number of connected components.
+- Disconnected graphs and isolated nodes increase the rank deficiency.
+- Constraints are typically imposed for identifiability (e.g. sum-to-zero).
+
+In `trafficCAR`, ICAR precision matrices are constructed with
+`trafficCAR::car_precision(type = "icar")` (internally using \(\rho = 1\)). If
+the graph contains isolated nodes (degree 0), `car_precision()` issues a warning
+because those components necessarily contribute to singularity.
+
+```{r}
+library(Matrix)
+library(trafficCAR)
+
+A <- matrix(0, 4, 4)
+A[1,2] <- A[2,1] <- 1
+A[2,3] <- A[3,2] <- 1
+A[3,4] <- A[4,3] <- 1
+
+Q_icar <- car_precision(A, type = "icar", tau = 1)
+Q_icar
+```
+
+### Proper CAR model
+
+The proper CAR precision matrix is
+\[
+Q = \tau (D - \rho A).
+\]
+
+In general, admissible values of \(\rho\) depend on the spectrum of a normalized
+adjacency/weight matrix. `trafficCAR` does **not** compute tight spectral bounds.
+Instead, `trafficCAR::car_precision(type = "proper", check = TRUE)` enforces the
+simple condition \(|\rho| < 1\) as a conservative, widely used safeguard.
+
+Values with \(|\rho| \ge 1\) are rejected because they can yield singular or
+indefinite precision matrices under common graph structures and weight choices.
+
+`trafficCAR` additionally rejects proper CAR models on graphs with isolated nodes
+(degree 0) when `check = TRUE`, since the construction \(D - \rho A\) cannot be
+positive definite in that case.
+
+```{r}
+Q_prop <- car_precision(A, type = "proper", rho = 0.9, tau = 2)
+Q_prop
+```
+
+As \(\rho \to 1\), the proper CAR model approaches the ICAR model.
+
+### Disconnected graphs and isolated nodes
+
+Disconnected graphs imply multiple connected components. For ICAR, each connected
+component contributes to rank deficiency, so \(Q\) is singular even when all nodes
+have positive degree.
+
+Isolated nodes (degree 0) are a special case of disconnectedness:
+
+- For ICAR: `car_precision(type = "icar")` warns when isolates are present, and
+  the resulting precision is singular for those components.
+- For proper CAR: `car_precision(type = "proper", check = TRUE)` errors if any
+  isolates are present.
+
+The following example adds an isolated node (node 5 has no neighbors):
+
+```{r}
+A_iso <- matrix(0, 5, 5)
+A_iso[1,2] <- A_iso[2,1] <- 1
+A_iso[2,3] <- A_iso[3,2] <- 1
+A_iso[3,4] <- A_iso[4,3] <- 1
+# node 5 is isolated
+
+# ICAR: warning about isolated node(s)
+Q_icar_iso <- car_precision(A_iso, type = "icar", tau = 1)
+Q_icar_iso
+
+# Proper CAR: error when isolates are present (with check = TRUE)
+try(car_precision(A_iso, type = "proper", rho = 0.9, tau = 1))
+```
+
+### Scaling (Sørbye–Rue)
+
+ICAR precision matrices are often scaled so that the geometric mean of the
+marginal variances equals 1, making the precision parameter \(\tau\) more
+comparable across graphs and resolutions.
+
+
+
+**Implementation note.**
+In `trafficCAR`, scaling of ICAR precision matrices is implemented as a
+best-effort calibration step intended to make the precision parameter
+\(\tau\) comparable across graphs and resolutions. The scaling constant is
+computed using a Cholesky-based approximation to the diagonal of the
+generalized inverse. On some graph structures or platforms, this computation
+may fail due to numerical or definiteness issues; in that case, a warning is
+issued and the unscaled ICAR precision matrix is returned.
+
+This behavior preserves correctness of the ICAR model and ensures robust
+construction of precision matrices across platforms. When scaling succeeds,
+the resulting precision matrix is a positive scalar multiple of the unscaled
+ICAR precision, leaving the dependence structure unchanged while rescaling the
+marginal variances.
+
+Future versions may adopt component-wise constrained scaling to guarantee the
+geometric-mean marginal variance normalization described by Sørbye and Rue
+(2014) in all cases.
+In `trafficCAR`, scaling is available via
+`trafficCAR::intrinsic_car_precision(scale = TRUE)`. If the internal Cholesky
+factorization needed for scaling fails, the function warns and returns the
+unscaled ICAR precision matrix.
+
+```{r}
+Q_icar_scaled <- intrinsic_car_precision(A, tau = 1, scale = TRUE)
+Q_icar_scaled
+```
