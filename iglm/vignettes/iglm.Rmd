@@ -1,0 +1,124 @@
+---
+title: "Joint Modeling of Networks and Attributes with iglm"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{undirected iglm}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+options(rmarkdown.html_vignette.check_title = FALSE)
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  out.width = "100%",
+  fig.width = 7, 
+  fig.height = 5
+)
+library(iglm)
+```
+
+## Overview
+This vignette provides an introduction to the `iglm` package, which is designed for estimating joint probability models that incorporate network structures. The package allows users to analyze how individual attributes and network connections jointly influence outcomes of interest.
+
+
+You can create a `iglm` object by specifying the network structure and the attributes of interest. Here is a simple example:
+
+```{r}
+n_units <- 100
+
+attribute_info <- rnorm(n_units)
+attribute_cov <- diag(attribute_info)
+edge_cov <- outer(attribute_info, attribute_info, FUN = function(x, y) {
+  abs(x - y)
+})
+set.seed(123)
+
+alpha <- 0.3
+block <- matrix(nrow = 50, ncol = 50, data = 1)
+neighborhood <- as.matrix(Matrix::bdiag(replicate(n_units / 50, block, simplify = FALSE)))
+
+overlapping_degree <- 0.5
+neighborhood <- matrix(nrow = n_units, ncol = n_units, data = 0)
+block <- matrix(nrow = 5, ncol = 5, data = 0)
+size_neighborhood <- 5
+size_overlap <- ceiling(size_neighborhood * overlapping_degree)
+
+end <- floor((n_units - size_neighborhood) / size_overlap)
+for (i in 0:end) {
+  neighborhood[(1 + size_overlap * i):(size_neighborhood + size_overlap * i), (1 + size_overlap * i):(size_neighborhood + size_overlap * i)] <- 1
+}
+neighborhood[(n_units - size_neighborhood + 1):(n_units), (n_units - size_neighborhood + 1):(n_units)] <- 1
+
+family_x <- "binomial"
+family_y <- "binomial"
+object <- iglm.data(neighborhood = neighborhood, directed = F, family_x = family_x, family_y = family_y, n_units = n_units)
+```
+
+## Model Specification
+You can specify a model formula that includes various network statistics and attribute effects. For example:
+```{r}
+formula <- object ~ edges + attribute_y + attribute_x + degrees
+```
+
+
+To fully define the model, you need to set up a sampler for the MCMC estimation and set all necessary parameters:
+
+```{r}
+# Parameters of edges(mode = "local"), attribute_y, and attribute_x
+gt_coef <- c(3, -1, -1)
+# Parameters for degree effect
+gt_coef_degrees <- c(rnorm(n = n_units, -2, 1))
+# Define the sampler
+sampler_tmp <- sampler.iglm(
+  n_burn_in = 100, n_simulation = 10,
+  sampler_x = sampler.net.attr(n_proposals = n_units * 10),
+  sampler_y = sampler.net.attr(n_proposals = n_units * 10),
+  sampler_z = sampler.net.attr(n_proposals = sum(neighborhood > 0) * 10),
+  init_empty = F
+)
+
+model_tmp_new <- iglm(
+  formula = formula,
+  coef = gt_coef, coef_degrees = gt_coef_degrees, sampler = sampler_tmp,
+  control = control.iglm(accelerated = F, max_it = 200, display_progress = F)
+)
+```
+
+
+## Model Simulation 
+
+Once you have specified a model, you can simulate new data based on the fitted parameters:
+```{r}
+# Simulate new networks
+model_tmp_new$simulate()
+# Get the samples
+tmp <- model_tmp_new$get_samples()
+```
+
+## Model Estimation 
+
+You can estimate the model parameters using the `estimate` method:
+```{r}
+# First set the first simulated network as the target for estimation
+model_tmp_new$set_target(tmp[[1]])
+model_tmp_new$estimate()
+model_tmp_new$iglm.data$degree_distribution(plot = TRUE)
+```
+
+## Model Assessment
+
+After estimation, you can assess the model fit using various diagnostics:
+```{r}
+model_tmp_new$assess(formula = ~ degree_distribution +
+  geodesic_distances_distribution + edgewise_shared_partner_distribution + mcmc_diagnostics)
+model_tmp_new$results$plot(model_assessment = T)
+```
+
+
+
+
+
+
+
