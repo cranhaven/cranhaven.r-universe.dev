@@ -1,0 +1,200 @@
+---
+title: "Simulate Models"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Simulate Models}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+```{r setup}
+library(uqsa)
+library(parallel)
+library(errors)
+```
+
+In this package, there are two solvers available to you, solvers for
+ODEs from the GNU Scientific Library (called via the `.Call`
+interface), and a C implementation of the Gillespie algorithm. Here we
+show how these are used on one of the included examples.
+
+We make heavy use of closures: functions that were created in an
+environment with access to implicit arguments such as simulation
+experiments. The created closures have an explicit argument, such as
+the Markov chain variable `parMCMC`, which in some way maps to the
+parameters that the model can be simulated with `parModel`.
+
+We assume that simulations require lots of arguments, but only one of
+them will change every once in a while, the `parMCMC` variable; the
+simulation experiments (initial state vector, input parameters, output
+times, etc.) remain the same, and so does the model structure.
+
+This closure approach allows you to hijack the procedure at any point
+by constructing your own simulation closure that uses your solver of
+convenience and/or necessity. You can write a function that accepts a
+`parMCMC` vector and calls the solvers from the `deSolve`
+package. Just make sure to package the simulation results in the same
+way as our solvers do.
+
+Typically a simulation result `y` has this structure: `y[[i]]` is the
+simulation of `ex[[i]]` (where `ex` is the list of simulation
+experiments, with data from the real experiments). Each `y[[i]]` has
+the fields: `state`, `func`, `status`, `cpuSeconds`, `numSteps`. Only
+`state` and `func` have scientific relevance. The `func` array
+(3d-array), contains the measurable quantities for this model (the
+observables): `y[[i]]$func[j,k,l]` is experiment `i`, output function
+`j`, time-point `k` value for parameter set `l` if you are simulating
+several parameter vectors in one call (otherwise `l` is exactly `1`).
+
+
+# Load the AKAP79 Model
+
+This model is included with the package. To load your own model (also
+a collection of TSV files) call `model_from_tsv()` with a
+character-vector of file names or the name of the directory that
+contains the TSV files. To use an example model included with the
+package, we use `uqsa_example()`:
+
+```{r shared-library}
+m <- model_from_tsv(uqsa_example("AKAP79"))
+o <- as_ode(m)
+c_path(o) <- write_c_code(generate_code(o))
+so_path(o) <- shlib(o)
+print(o)
+if (!file.exists(so_path(o))) stop('creation of shared library failed')
+```
+
+By default, `as_ode` performs a conservation law analysis that can be
+turned off with `as_ode(o,cla=FALSE)`.
+
+With conservation laws, some species are calculated
+algebraically. Their initial values are turned into input parameters
+(using the found law):
+
+With this hypothetical relationship ($c$ is a constant):
+
+$$A+B = c\,,$$
+
+we can determine that
+
+$$c = A_0 + B_0\,.$$
+
+And thus we can replace either of the two species:
+
+$$A(t) = A_0 + B_0 - B(t)$$
+
+And $A_0+B_0$ are turned into an input called `A_ConservedConst` (the
+$c$ above) with the value determined from the stated, experiment
+specific, initial condition.
+
+# Load Experiments (data)
+
+This list of data-sets also includes instructions for the simulator on
+how to simulate the scenario with the model.
+
+```{r experiments}
+ex <- experiments(m,o)
+```
+
+We supply both `m` and `o` because `o` contains information about
+whether or not conservation law analysis has occurred. With
+conservation law analysis, we must adjust the input vector for the
+simulation experiment and reduce the initial state for each simulation
+to the dynamic variables rather (without the ones determined
+algebraically). Currently, there is no way to influence which
+variables are replaced by algebraic constraints. This can be
+inconvenient if you are relying very heavily on the state component
+of the result `y[[i]]$state` (where some variables are now missing,
+due to conservation laws). This is why you should rely on the `func`
+component of the return value. This directly corresponds to the
+`m$Output` table: the observable/measurable quantities for this
+model. If you need to compare substance `A` to the data (in some way),
+then add an output function for it (e.g. `A_out` or `A_obs` with a
+value of `A`). Then it doesn't matter whether the conservation law
+analysis removes `A` from the state space; it remains part of the
+`func` component.
+
+# Simulate
+
+This will make a function `s`, which will always simulate the
+scenarios described in the `experiments` list, but for user supplied
+parameters. The parameters in the tables are supplied in log10-space,
+this is because the author of tat file intends to sample in
+log10-space. This way the parameters are guaranteed to be positive and
+we can very quickly sample several orders of magnitude for each
+parameter. The simulator accepts a function in the `parMap` slot,
+which can do any arbitrary transformation between the values you
+supply to the simulator and the values it supplies the model with: the
+model will be simulated with `parModel <- parMap(p)`, where `p` is
+what we call the simulator with. If the sampling is done in log10
+space, then the model accepts `10^p`. This package has a set of
+functions that perform this reverse transformation from sampling space
+to model-parameter space, based on which transformation the user
+performed in the model files: log10ParMap belongs to a log10 sampling
+space and performs `10^p` (to get back to the model-parameters):
+
+```{r sim}
+stopifnot(all(m$Parameter$scale=="log10")) # just to make sure
+opt <- options(mc.cores = 2)               # required by CRAN to be 2, set this to a bigger value for yourself
+s <- simulator.c(ex,o,parMap=log10ParMap)
+
+p0 <- values(m$Parameter) # default parameters, in log10-space
+rprior <- rNormalPrior(p0,rep(0.1,length(p0))) # a small neighborhood
+y <- s(t(rprior(300)))
+status <- unlist(lapply(y,\(E) as.logical(E$status))) # non-zero means an error occurred
+print(status)
+if (any(status)) stop("simulation failed.")
+```
+
+Next we plot the result:
+
+```{r plotting, out.width="100%", res=200, fig.width=12, fig.height=10}
+e.g. <- 18
+plot(
+	as.errors(ex[[e.g.]]$outputTimes), # exact
+	ex[[e.g.]]$data,                   # uncertain
+	xlab="time",
+	ylab="AKAR4p",
+	main=sprintf("AKAP79 model, expr. %i: %s",e.g.,names(ex)[e.g.]),
+	ylim=c(90,200)
+)
+matplot(
+	ex[[e.g.]]$outputTimes,
+	y[[e.g.]]$func['AKAR4pOUT',,],
+	lwd=2,                                   # fat
+	col=rgb(200,0,255,12,maxColorValue=255), # low opacity
+	lty=1,                                   # solid
+	type="l",                                # line
+	add=TRUE
+)
+```
+
+There is also a specialized plot function for simulations, but we
+subset the simulation results:
+
+```{r plot-generic, out.width="100%", res=300, fig.width=12, fig.height=18}
+print(class(y))
+oldpar <- par()      # remember graphics values
+on.exit(par(oldpar)) # restore original values
+par(mfrow=c(3,2))
+plot(ex[seq(6)],y[seq(6)],ylim=c(90,140))
+```
+
+This is an overview of the simulation:
+
+```{r, label="print-y"}
+print(y)
+```
+
+Reset options:
+
+```
+options(opt) # restores original values
+```
