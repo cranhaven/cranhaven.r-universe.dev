@@ -1,0 +1,103 @@
+# querychat <a href="https://posit-dev.github.io/querychat/r/"><img src="man/figures/logo.png" align="right" height="138" alt="querychat website" /></a>
+
+<!-- badges: start -->
+[![R-CMD-check](https://github.com/posit-dev/querychat/actions/workflows/R-CMD-check.yaml/badge.svg)](https://github.com/posit-dev/querychat/actions/workflows/R-CMD-check.yaml)
+[![CRAN status](https://www.r-pkg.org/badges/version/querychat)](https://CRAN.R-project.org/package=querychat)
+[![querychat status badge](https://posit-dev.r-universe.dev/querychat/badges/version)](https://posit-dev.r-universe.dev/querychat)
+<!-- badges: end -->
+
+querychat facilitates safe and reliable natural language exploration of tabular data, powered by SQL and large language models (LLMs). For users, it offers an intuitive web application where they can quickly ask questions of their data and receive verifiable data-driven answers. As a developer, you can access the chat UI component, generated SQL queries, and filtered data to build custom applications that integrate natural language querying into your data workflows.
+
+## Installation
+
+Install the stable release from CRAN:
+
+```r
+install.packages("querychat")
+```
+
+Or the development version from GitHub:
+
+```r
+# install.packages("pak")
+pak::pak("posit-dev/querychat/pkg-r")
+```
+
+## Quick start
+
+The quickest way to start chatting with your data is via `querychat_app()`, which provides a fully polished Shiny app. It requires a data [data source](https://posit-dev.github.io/querychat/r/articles/data-sources.html) (e.g., data.frame, database connection, etc.) and optionally other parameters (e.g. the LLM `client` [model](https://posit-dev.github.io/querychat/r/articles/models.html)).
+
+```r
+library(querychat)
+library(palmerpenguins)
+
+querychat_app(penguins, client = "openai/gpt-4.1")
+```
+
+Once running (which requires an API key[^api-key]), you'll notice 3 main views:
+
+[^api-key]: By default, querychat uses OpenAI to power the chat experience. So, for this example to work, you'll need [an OpenAI API key](https://platform.openai.com/). See the [Models](https://posit-dev.github.io/querychat/r/articles/models.html) article for details on how to set up credentials for other model providers.
+
+1. A sidebar chat with suggestions on where to start exploring.
+2. A data table that updates to reflect filtering and sorting queries.
+3. The SQL query behind the data table, for transparency and reproducibility.
+
+![](man/figures/quickstart.png){alt="Screenshot of querychat's app with the penguins dataset." class="rounded shadow"}
+
+Suppose we pick a suggestion like "Show me Adelie penguins". Since this is a filtering operation, both the data table and SQL query update accordingly.
+
+![](man/figures/quickstart-filter.png){alt="Screenshot of the querychat's app with the penguins dataset filtered." class="rounded shadow"}
+
+querychat can also handle more general questions about the data that require calculations and aggregations. For example, we can ask "What is the average bill length by species?". The LLM will generate the SQL query to perform the calculation, querychat will execute it, and return the result in the chat:
+
+![](man/figures/quickstart-summary.png){alt="Screenshot of the querychat's app with a summary statistic inlined in the chat." class="rounded shadow"}
+
+querychat can also create visualizations, powered by [ggsql](https://ggsql.org/).
+With the [visualization tool](https://posit-dev.github.io/querychat/r/articles/visualize.html) enabled, ask for a chart and it appears inline in the conversation:
+
+![](man/figures/viz-bar-chart.png){alt="Bar chart showing average body mass by penguin species." class="rounded shadow"}
+
+## Custom apps
+
+querychat is designed to be highly extensible — it provides programmatic access to the chat interface, the filtered/sorted data frame, SQL queries, and more. You can register [multiple related tables](https://posit-dev.github.io/querychat/r/articles/build.html#multiple-tables) for cross-table queries and joins, and connect all of it to your own visualizations and layouts.
+For example, [here](https://github.com/posit-conf-2025/llm/blob/main/_solutions/25_querychat/25_querychat_02-end-app.R)'s a bespoke app for exploring Airbnb listings in Ashville, NC:
+
+![](man/figures/airbnb.png){alt="A custom app for exploring Airbnb listings, powered by querychat." class="shadow rounded mb-3"}
+
+To learn more, see [Build an app](https://posit-dev.github.io/querychat/r/articles/build.html) for a step-by-step guide.
+
+## How it works
+
+querychat uses LLMs to translate natural language into SQL queries. Models of all sizes, from small ones you can run locally to large frontier models from major AI providers, are remarkably effective at this task. But even the best models need to understand your data's structure to perform well.
+
+To address this, querychat provides a schema retrieval [tool](https://posit-dev.github.io/querychat/r/articles/tools.html#schema-retrieval) that the LLM calls on demand to learn about table structure — column names, types, ranges, and categorical values. You can further improve results by providing a [data dictionary](https://posit-dev.github.io/querychat/r/articles/context.html#data-dictionary) with column descriptions, table relationships, and domain terminology. Importantly, querychat **does not** send raw data to the LLM; it shares only enough structural information for the model to generate accurate queries. When the LLM produces a query, querychat executes it in a SQL database (DuckDB[^duckdb], by default) to obtain precise results.
+
+This design makes querychat reliable, safe, and reproducible:
+
+- **Reliable**: query results come from a real database, not LLM-generated summaries -- so outputs are precise, verifiable, and less vulnerable to hallucination[^hallucination].
+- **Safe**: querychat's tools are read-only by design, avoiding destructive actions on your data.[^permissions]
+- **Reproducible**: generated SQL can be exported and re-run in other environments, so your analysis isn't locked into a single tool.
+
+::: {.alert .alert-warning}
+**Data privacy**
+
+See the [Provide context](https://posit-dev.github.io/querychat/r/articles/context.html) and [Tools](https://posit-dev.github.io/querychat/r/articles/tools.html) articles for more details on exactly what information is provided to the LLM and how customize it.
+:::
+
+[^duckdb]: DuckDB is extremely fast and has a surprising number of [statistical functions](https://duckdb.org/docs/stable/sql/functions/aggregates.html#statistical-aggregates).
+
+[^hallucination]: The [query tool](https://posit-dev.github.io/querychat/r/articles/tools.html) gives query results to the model for context and interpretation. Thus, there is *some* potential that the model to mis-interpret those results.
+
+[^permissions]: To fully guarantee no destructive actions on your production database, ensure querychat's database permissions are read-only.
+
+## Next steps
+
+From here, you might want to learn more about:
+
+- [Models](https://posit-dev.github.io/querychat/r/articles/models.html): customize the LLM behind querychat.
+- [Data sources](https://posit-dev.github.io/querychat/r/articles/data-sources.html): different data sources you can use with querychat.
+- [Provide context](https://posit-dev.github.io/querychat/r/articles/context.html): provide the LLM with the context it needs to work well.
+- [Visualizations](https://posit-dev.github.io/querychat/r/articles/visualize.html): create inline charts powered by ggsql.
+- [Build an app](https://posit-dev.github.io/querychat/r/articles/build.html): design a custom Shiny app around querychat.
+- [Greet users](https://posit-dev.github.io/querychat/r/articles/greet.html): create welcoming onboarding experiences.
+- [Tools](https://posit-dev.github.io/querychat/r/articles/tools.html): understand what querychat can do under the hood.

@@ -1,0 +1,557 @@
+describe("QueryChatSystemPrompt$new()", {
+  skip_if_no_dataframe_engine()
+
+  it("initializes with string template", {
+    df <- new_test_df()
+    ds <- DataFrameSource$new(df, "test_table")
+    withr::defer(ds$cleanup())
+
+    sp <- QueryChatSystemPrompt$new(
+      prompt_template = "Template: {{schema}}",
+      data_sources = list(test_table = ds)
+    )
+
+    expect_type(sp$template, "character")
+    expect_true(grepl("Template:", sp$template))
+    expect_equal(sp$categorical_threshold, 10)
+  })
+
+  it("initializes with file path template", {
+    df <- new_test_df()
+    ds <- DataFrameSource$new(df, "test_table")
+    withr::defer(ds$cleanup())
+
+    temp_file <- withr::local_tempfile(fileext = ".md")
+    writeLines("File template: {{db_type}}", temp_file)
+
+    sp <- QueryChatSystemPrompt$new(
+      prompt_template = temp_file,
+      data_sources = list(test_table = ds)
+    )
+
+    expect_type(sp$template, "character")
+    expect_true(grepl("File template:", sp$template))
+  })
+
+  it("initializes with string data_description", {
+    df <- new_test_df()
+    ds <- DataFrameSource$new(df, "test_table")
+    withr::defer(ds$cleanup())
+
+    sp <- QueryChatSystemPrompt$new(
+      prompt_template = "Template",
+      data_sources = list(test_table = ds),
+      data_description = "Test data description"
+    )
+
+    expect_equal(sp$data_description, "Test data description")
+  })
+
+  it("initializes with file path data_description", {
+    df <- new_test_df()
+    ds <- DataFrameSource$new(df, "test_table")
+    withr::defer(ds$cleanup())
+
+    temp_file <- withr::local_tempfile(fileext = ".txt")
+    writeLines("Data from file", temp_file)
+
+    sp <- QueryChatSystemPrompt$new(
+      prompt_template = "Template",
+      data_sources = list(test_table = ds),
+      data_description = temp_file
+    )
+
+    expect_equal(trimws(sp$data_description), "Data from file")
+  })
+
+  it("initializes with string extra_instructions", {
+    df <- new_test_df()
+    ds <- DataFrameSource$new(df, "test_table")
+    withr::defer(ds$cleanup())
+
+    sp <- QueryChatSystemPrompt$new(
+      prompt_template = "Template",
+      data_sources = list(test_table = ds),
+      extra_instructions = "Extra instructions here"
+    )
+
+    expect_equal(sp$extra_instructions, "Extra instructions here")
+  })
+
+  it("initializes with file path extra_instructions", {
+    df <- new_test_df()
+    ds <- DataFrameSource$new(df, "test_table")
+    withr::defer(ds$cleanup())
+
+    temp_file <- withr::local_tempfile(fileext = ".txt")
+    writeLines("Instructions from file", temp_file)
+
+    sp <- QueryChatSystemPrompt$new(
+      prompt_template = "Template",
+      data_sources = list(test_table = ds),
+      extra_instructions = temp_file
+    )
+
+    expect_equal(trimws(sp$extra_instructions), "Instructions from file")
+  })
+
+  it("stores categorical_threshold", {
+    df <- new_test_df()
+    ds <- DataFrameSource$new(df, "test_table")
+    withr::defer(ds$cleanup())
+
+    sp <- QueryChatSystemPrompt$new(
+      prompt_template = "Template",
+      data_sources = list(test_table = ds),
+      categorical_threshold = 25
+    )
+
+    expect_equal(sp$categorical_threshold, 25)
+  })
+
+  it("handles NULL data_description and extra_instructions", {
+    df <- new_test_df()
+    ds <- DataFrameSource$new(df, "test_table")
+    withr::defer(ds$cleanup())
+
+    sp <- QueryChatSystemPrompt$new(
+      prompt_template = "Template",
+      data_sources = list(test_table = ds)
+    )
+
+    expect_null(sp$data_description)
+    expect_null(sp$extra_instructions)
+  })
+})
+
+describe("QueryChatSystemPrompt$render()", {
+  skip_if_no_dataframe_engine()
+
+  it("renders handoff guidance only when available", {
+    df <- new_test_df()
+    ds <- DataFrameSource$new(df, "test_table")
+    withr::defer(ds$cleanup())
+    sp <- QueryChatSystemPrompt$new(
+      prompt_template = system.file(
+        "prompts",
+        "prompt.md",
+        package = "querychat"
+      ),
+      data_sources = list(test_table = ds)
+    )
+
+    public_prompt <- sp$render(tools = NULL)
+    handoff_prompt <- sp$render(
+      tools = NULL,
+      handoff_available = TRUE
+    )
+
+    expect_no_match(public_prompt, "/handoff", fixed = TRUE)
+    expect_match(handoff_prompt, "/handoff", fixed = TRUE)
+    expect_match(
+      handoff_prompt,
+      "save, share, export, package, reproduce, or continue",
+      fixed = TRUE
+    )
+  })
+
+  it("renders with both tools", {
+    df <- new_test_df()
+    ds <- DataFrameSource$new(df, "test_table")
+    withr::defer(ds$cleanup())
+
+    template <- paste(
+      "{{#has_tool_update}}update enabled{{/has_tool_update}}",
+      "{{#has_tool_query}}query enabled{{/has_tool_query}}",
+      "{{#include_query_guidelines}}query guidelines{{/include_query_guidelines}}",
+      sep = "\n"
+    )
+
+    sp <- QueryChatSystemPrompt$new(
+      prompt_template = template,
+      data_sources = list(test_table = ds)
+    )
+
+    result <- sp$render(c("update", "query"))
+
+    expect_true(grepl("update enabled", result))
+    expect_true(grepl("query enabled", result))
+    expect_true(grepl("query guidelines", result))
+  })
+
+  it("renders with query only", {
+    df <- new_test_df()
+    ds <- DataFrameSource$new(df, "test_table")
+    withr::defer(ds$cleanup())
+
+    template <- paste(
+      "{{#has_tool_update}}update enabled{{/has_tool_update}}",
+      "{{#has_tool_query}}query enabled{{/has_tool_query}}",
+      "{{#include_query_guidelines}}query guidelines{{/include_query_guidelines}}",
+      sep = "\n"
+    )
+
+    sp <- QueryChatSystemPrompt$new(
+      prompt_template = template,
+      data_sources = list(test_table = ds)
+    )
+
+    result <- sp$render("query")
+
+    expect_false(grepl("update enabled", result))
+    expect_true(grepl("query enabled", result))
+    expect_true(grepl("query guidelines", result))
+  })
+
+  it("renders with update only", {
+    df <- new_test_df()
+    ds <- DataFrameSource$new(df, "test_table")
+    withr::defer(ds$cleanup())
+
+    template <- paste(
+      "{{#has_tool_update}}update enabled{{/has_tool_update}}",
+      "{{#has_tool_query}}query enabled{{/has_tool_query}}",
+      "{{#include_query_guidelines}}query guidelines{{/include_query_guidelines}}",
+      sep = "\n"
+    )
+
+    sp <- QueryChatSystemPrompt$new(
+      prompt_template = template,
+      data_sources = list(test_table = ds)
+    )
+
+    result <- sp$render("update")
+
+    expect_true(grepl("update enabled", result))
+    expect_false(grepl("query enabled", result))
+    expect_true(grepl("query guidelines", result))
+  })
+
+  it("renders with NULL tools", {
+    df <- new_test_df()
+    ds <- DataFrameSource$new(df, "test_table")
+    withr::defer(ds$cleanup())
+
+    template <- paste(
+      "{{#has_tool_update}}update enabled{{/has_tool_update}}",
+      "{{#has_tool_query}}query enabled{{/has_tool_query}}",
+      "{{#include_query_guidelines}}query guidelines{{/include_query_guidelines}}",
+      "Always shown",
+      sep = "\n"
+    )
+
+    sp <- QueryChatSystemPrompt$new(
+      prompt_template = template,
+      data_sources = list(test_table = ds)
+    )
+
+    result <- sp$render(NULL)
+
+    expect_false(grepl("update enabled", result))
+    expect_false(grepl("query enabled", result))
+    expect_false(grepl("query guidelines", result))
+    expect_true(grepl("Always shown", result))
+  })
+
+  it("includes schema in rendered output", {
+    df <- new_test_df()
+    ds <- DataFrameSource$new(df, "test_table")
+    withr::defer(ds$cleanup())
+
+    sp <- QueryChatSystemPrompt$new(
+      prompt_template = "Schema: {{schema}}",
+      data_sources = list(test_table = ds)
+    )
+
+    result <- sp$render(NULL)
+
+    expect_true(grepl("Schema:", result))
+    expect_true(grepl("test_table", result))
+  })
+
+  it("includes db_type in rendered output", {
+    skip_if_not_installed("duckdb")
+
+    df <- new_test_df()
+    ds <- DataFrameSource$new(df, "test_table")
+    withr::defer(ds$cleanup())
+
+    sp <- QueryChatSystemPrompt$new(
+      prompt_template = "Database: {{db_type}}",
+      data_sources = list(test_table = ds)
+    )
+
+    result <- sp$render(NULL)
+
+    expect_true(grepl("Database:", result))
+    expect_true(grepl("DuckDB", result))
+  })
+
+  it("includes data_description when provided", {
+    df <- new_test_df()
+    ds <- DataFrameSource$new(df, "test_table")
+    withr::defer(ds$cleanup())
+
+    template <- paste(
+      "{{#data_description}}Description: {{data_description}}{{/data_description}}",
+      sep = "\n"
+    )
+
+    sp <- QueryChatSystemPrompt$new(
+      prompt_template = template,
+      data_sources = list(test_table = ds),
+      data_description = "My test data"
+    )
+
+    result <- sp$render(NULL)
+
+    expect_true(grepl("Description: My test data", result))
+  })
+
+  it("excludes data_description when NULL", {
+    df <- new_test_df()
+    ds <- DataFrameSource$new(df, "test_table")
+    withr::defer(ds$cleanup())
+
+    template <- paste(
+      "{{#data_description}}Description: {{data_description}}{{/data_description}}",
+      "Other content",
+      sep = "\n"
+    )
+
+    sp <- QueryChatSystemPrompt$new(
+      prompt_template = template,
+      data_sources = list(test_table = ds)
+    )
+
+    result <- sp$render(NULL)
+
+    expect_false(grepl("Description:", result))
+    expect_true(grepl("Other content", result))
+  })
+
+  it("includes extra_instructions when provided", {
+    df <- new_test_df()
+    ds <- DataFrameSource$new(df, "test_table")
+    withr::defer(ds$cleanup())
+
+    template <- paste(
+      "{{#extra_instructions}}Instructions: {{extra_instructions}}{{/extra_instructions}}",
+      sep = "\n"
+    )
+
+    sp <- QueryChatSystemPrompt$new(
+      prompt_template = template,
+      data_sources = list(test_table = ds),
+      extra_instructions = "Be concise"
+    )
+
+    result <- sp$render(NULL)
+
+    expect_true(grepl("Instructions: Be concise", result))
+  })
+
+  it("excludes extra_instructions when NULL", {
+    df <- new_test_df()
+    ds <- DataFrameSource$new(df, "test_table")
+    withr::defer(ds$cleanup())
+
+    template <- paste(
+      "{{#extra_instructions}}Instructions: {{extra_instructions}}{{/extra_instructions}}",
+      "Other content",
+      sep = "\n"
+    )
+
+    sp <- QueryChatSystemPrompt$new(
+      prompt_template = template,
+      data_sources = list(test_table = ds)
+    )
+
+    result <- sp$render(NULL)
+
+    expect_false(grepl("Instructions:", result))
+    expect_true(grepl("Other content", result))
+  })
+
+  it("detects DuckDB correctly", {
+    skip_if_not_installed("duckdb")
+
+    df <- new_test_df()
+    ds <- DataFrameSource$new(df, "test_table")
+    withr::defer(ds$cleanup())
+
+    template <- "{{#is_duck_db}}DuckDB detected{{/is_duck_db}}"
+
+    sp <- QueryChatSystemPrompt$new(
+      prompt_template = template,
+      data_sources = list(test_table = ds)
+    )
+
+    result <- sp$render(NULL)
+
+    # DataFrameSource uses DuckDB under the hood
+    expect_true(grepl("DuckDB detected", result))
+  })
+
+  it("returns character string", {
+    df <- new_test_df()
+    ds <- DataFrameSource$new(df, "test_table")
+    withr::defer(ds$cleanup())
+
+    sp <- QueryChatSystemPrompt$new(
+      prompt_template = "Simple template",
+      data_sources = list(test_table = ds)
+    )
+
+    result <- sp$render(NULL)
+
+    expect_type(result, "character")
+    expect_true(nchar(result) > 0)
+  })
+})
+
+describe("QueryChatSystemPrompt with full prompt.md template", {
+  skip_if_no_dataframe_engine()
+
+  it("renders full template with data_description", {
+    df <- new_test_df(3)
+    ds <- DataFrameSource$new(df, "test_table")
+    withr::defer(ds$cleanup())
+
+    sp <- QueryChatSystemPrompt$new(
+      prompt_template = system.file(
+        "prompts",
+        "prompt.md",
+        package = "querychat"
+      ),
+      data_sources = list(test_table = ds),
+      data_description = "A test dataframe"
+    )
+    prompt <- sp$render(NULL)
+
+    expect_type(prompt, "character")
+    expect_true(nchar(prompt) > 0)
+    expect_match(prompt, "A test dataframe")
+    expect_match(prompt, "test_table")
+  })
+
+  it("includes DuckDB-specific content for DuckDB sources", {
+    skip_if_not_installed("duckdb")
+
+    df <- new_test_df()
+    ds <- DataFrameSource$new(df, "test_table")
+    withr::defer(ds$cleanup())
+
+    sp <- QueryChatSystemPrompt$new(
+      prompt_template = system.file(
+        "prompts",
+        "prompt.md",
+        package = "querychat"
+      ),
+      data_sources = list(test_table = ds)
+    )
+    sys_prompt <- sp$render(NULL)
+
+    expect_equal(ds$get_db_type(), "DuckDB")
+    expect_true(grepl("DuckDB SQL Tips", sys_prompt, fixed = TRUE))
+  })
+
+  it("stores categorical_threshold for on-demand schema", {
+    df_with_categories <- data.frame(
+      id = 1:10,
+      category = rep(c("A", "B", "C", "D", "E"), each = 2)
+    )
+    cat_source <- DataFrameSource$new(df_with_categories, "test_table")
+    withr::defer(cat_source$cleanup())
+
+    sp <- QueryChatSystemPrompt$new(
+      prompt_template = system.file(
+        "prompts",
+        "prompt.md",
+        package = "querychat"
+      ),
+      data_sources = list(test_table = cat_source),
+      categorical_threshold = 3
+    )
+    expect_equal(sp$categorical_threshold, 3)
+    prompt <- sp$render(NULL)
+    expect_match(prompt, "querychat_get_schema")
+  })
+})
+
+describe("viz prompt conditionals", {
+  skip_if_no_dataframe_engine()
+
+  default_prompt <- function() {
+    system.file("prompts", "prompt.md", package = "querychat")
+  }
+
+  it("includes viz section when visualize tool is active", {
+    ds <- local_data_frame_source(new_test_df())
+    sp <- QueryChatSystemPrompt$new(
+      prompt_template = default_prompt(),
+      data_sources = list(test_table = ds)
+    )
+    rendered <- sp$render(tools = c("query", "visualize"))
+    expect_match(rendered, "querychat_visualize")
+    expect_match(rendered, "ggsql")
+    expect_match(rendered, "VISUALISE")
+  })
+
+  it("excludes viz section without visualize tool", {
+    ds <- local_data_frame_source(new_test_df())
+    sp <- QueryChatSystemPrompt$new(
+      prompt_template = default_prompt(),
+      data_sources = list(test_table = ds)
+    )
+    rendered <- sp$render(tools = c("query"))
+    expect_no_match(rendered, "querychat_visualize")
+  })
+
+  it("shows fallback message without visualize tool", {
+    ds <- local_data_frame_source(new_test_df())
+    sp <- QueryChatSystemPrompt$new(
+      prompt_template = default_prompt(),
+      data_sources = list(test_table = ds)
+    )
+    rendered <- sp$render(tools = c("query"))
+    expect_match(rendered, "visualization is not currently enabled")
+  })
+
+  it("includes ggsql syntax reference as partial", {
+    ds <- local_data_frame_source(new_test_df())
+    sp <- QueryChatSystemPrompt$new(
+      prompt_template = default_prompt(),
+      data_sources = list(test_table = ds)
+    )
+    rendered <- sp$render(tools = c("visualize"))
+    expect_match(rendered, "ggsql-syntax-reference")
+    expect_match(rendered, "FROM sales")
+    expect_match(rendered, "DRAW range")
+    expect_match(rendered, "xend")
+    expect_no_match(rendered, "errorbar", ignore.case = TRUE)
+    expect_no_match(rendered, "DRAW segment MAPPING 0 AS yend", fixed = TRUE)
+    expect_no_match(rendered, "Column casing in VISUALISE", fixed = TRUE)
+    expect_no_match(rendered, "ROOM_TYPE", fixed = TRUE)
+  })
+
+  it("includes collapsed guidance when both query and visualize active", {
+    ds <- local_data_frame_source(new_test_df())
+    sp <- QueryChatSystemPrompt$new(
+      prompt_template = default_prompt(),
+      data_sources = list(test_table = ds)
+    )
+    rendered <- sp$render(tools = c("query", "visualize"))
+    expect_match(rendered, "Avoid redundant expanded results")
+  })
+
+  it("excludes collapsed guidance with visualize only", {
+    ds <- local_data_frame_source(new_test_df())
+    sp <- QueryChatSystemPrompt$new(
+      prompt_template = default_prompt(),
+      data_sources = list(test_table = ds)
+    )
+    rendered <- sp$render(tools = c("visualize"))
+    expect_no_match(rendered, "Avoid redundant expanded results")
+  })
+})

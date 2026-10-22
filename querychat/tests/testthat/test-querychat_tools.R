@@ -1,0 +1,615 @@
+local_executor <- function(df_source, env = parent.frame()) {
+  executor <- build_query_executor(list(test_table = df_source))
+  withr::defer(executor$cleanup(), envir = env)
+  executor
+}
+
+test_that("tool_update_dashboard() checks update_fn inputs", {
+  skip_if_no_dataframe_engine()
+
+  df_source <- local_data_frame_source(new_test_df())
+  executor <- local_executor(df_source)
+
+  expect_snapshot(error = TRUE, {
+    tool_update_dashboard(executor, "test_table", update_fn = NULL)
+    tool_update_dashboard(
+      executor,
+      "test_table",
+      update_fn = function(query) {}
+    )
+    tool_update_dashboard(
+      executor,
+      "test_table",
+      update_fn = function(title, extra) {}
+    )
+  })
+})
+
+test_that("tool_reset_dashboard() checks inputs", {
+  expect_snapshot(
+    error = TRUE,
+    tool_reset_dashboard("not_a_function", table_names = "t")
+  )
+})
+
+describe("querychat_tool_starts_open()", {
+  it("uses the tool default when options are unset", {
+    withr::local_options(querychat.tool_details = NULL)
+    withr::local_envvar(QUERYCHAT_TOOL_DETAILS = NA)
+
+    expect_false(querychat_tool_starts_open("query"))
+    expect_true(querychat_tool_starts_open("update"))
+    expect_false(querychat_tool_starts_open("reset"))
+  })
+
+  it("uses the tool default when envvar is 'default'", {
+    withr::local_options(querychat.tool_details = NULL)
+    withr::local_envvar(QUERYCHAT_TOOL_DETAILS = "default")
+
+    expect_false(querychat_tool_starts_open("query"))
+    expect_true(querychat_tool_starts_open("update"))
+    expect_false(querychat_tool_starts_open("reset"))
+  })
+
+  it("uses the tool default when option is 'default'", {
+    withr::local_options(querychat.tool_details = "default")
+
+    expect_false(querychat_tool_starts_open("query"))
+    expect_true(querychat_tool_starts_open("update"))
+    expect_false(querychat_tool_starts_open("reset"))
+  })
+
+  it("always expands when option is 'expanded'", {
+    withr::local_options(querychat.tool_details = "expanded")
+
+    expect_true(querychat_tool_starts_open("query"))
+    expect_true(querychat_tool_starts_open("update"))
+    expect_true(querychat_tool_starts_open("reset"))
+  })
+
+  it("always collapses when option is 'collapsed'", {
+    withr::local_options(querychat.tool_details = "collapsed")
+
+    expect_false(querychat_tool_starts_open("query"))
+    expect_false(querychat_tool_starts_open("update"))
+    expect_false(querychat_tool_starts_open("reset"))
+  })
+})
+
+describe("querychat_tool_details_option()", {
+  it("is case-insensitive", {
+    withr::local_options(querychat.tool_details = "EXPANDED")
+    expect_equal(querychat_tool_details_option(), "expanded")
+
+    withr::local_options(querychat.tool_details = "Collapsed")
+    expect_equal(querychat_tool_details_option(), "collapsed")
+  })
+
+  it("warns on invalid setting", {
+    withr::local_options(querychat.tool_details = "invalid")
+
+    expect_warning(
+      querychat_tool_details_option(),
+      "Invalid value for"
+    )
+  })
+
+  it("gives option precedence over envvar", {
+    withr::local_options(querychat.tool_details = "collapsed")
+    withr::local_envvar(QUERYCHAT_TOOL_DETAILS = "expanded")
+
+    expect_equal(querychat_tool_details_option(), "collapsed")
+  })
+})
+
+describe("querychat_tool_result()", {
+  skip_if_no_dataframe_engine()
+
+  it("returns successful result for valid query action", {
+    df_source <- local_data_frame_source(new_test_df())
+    executor <- local_executor(df_source)
+
+    result <- querychat_tool_result(
+      executor,
+      query = "SELECT * FROM test_table WHERE id = 1",
+      action = "query"
+    )
+
+    expect_s7_class(result, ellmer::ContentToolResult)
+    expect_null(result@error)
+
+    # Value is a JSON string that round-trips to the query result
+    expect_type(result@value, "character")
+    value_df <- jsonlite::fromJSON(result@value)
+    expect_s3_class(value_df, "data.frame")
+    expect_equal(nrow(value_df), 1)
+  })
+
+  it("materializes lazy tbl results (e.g. from TblSqlSource)", {
+    tbl_source <- local_tbl_sql_source()
+    executor <- local_executor(tbl_source)
+
+    result <- querychat_tool_result(
+      executor,
+      query = "SELECT * FROM test_table WHERE id = 1",
+      action = "query"
+    )
+
+    expect_s7_class(result, ellmer::ContentToolResult)
+    expect_null(result@error)
+    expect_type(result@value, "character")
+    expect_equal(nrow(jsonlite::fromJSON(result@value)), 1)
+  })
+
+  it("returns successful result for valid update action", {
+    df_source <- local_data_frame_source(new_test_df())
+    executor <- local_executor(df_source)
+
+    result <- querychat_tool_result(
+      executor,
+      query = "SELECT * FROM test_table WHERE value > 20",
+      title = "High values",
+      action = "update",
+      table_name = "test_table"
+    )
+
+    expect_s7_class(result, ellmer::ContentToolResult)
+    expect_null(result@error)
+    expect_equal(
+      result@value,
+      "Dashboard updated. Use `querychat_query` tool to review results, if needed."
+    )
+  })
+
+  it("returns successful result for reset action", {
+    df_source <- local_data_frame_source(new_test_df())
+    executor <- local_executor(df_source)
+
+    result <- querychat_tool_result(
+      executor,
+      query = NULL,
+      action = "reset"
+    )
+
+    expect_s7_class(result, ellmer::ContentToolResult)
+    expect_null(result@error)
+    expect_equal(result@value, "The dashboard has been reset to show all data.")
+  })
+
+  it("handles query errors appropriately", {
+    df_source <- local_data_frame_source(new_test_df())
+    executor <- local_executor(df_source)
+
+    result <- querychat_tool_result(
+      executor,
+      query = "SELECT * FROM nonexistent_table",
+      action = "query"
+    )
+
+    expect_s7_class(result, ellmer::ContentToolResult)
+    expect_s3_class(result@error, "error")
+    expect_null(result@value)
+  })
+
+  it("handles update errors appropriately", {
+    df_source <- local_data_frame_source(new_test_df())
+    executor <- local_executor(df_source)
+
+    result <- querychat_tool_result(
+      executor,
+      query = "INVALID SQL",
+      action = "update",
+      table_name = "test_table"
+    )
+
+    expect_s7_class(result, ellmer::ContentToolResult)
+    expect_s3_class(result@error, "error")
+    expect_null(result@value)
+  })
+
+  it("formats query results with details block", {
+    df_source <- local_data_frame_source(new_test_df())
+    executor <- local_executor(df_source)
+
+    result <- querychat_tool_result(
+      executor,
+      query = "SELECT * FROM test_table LIMIT 1",
+      action = "query"
+    )
+
+    markdown <- result@extra$display$markdown
+    expect_match(markdown, "```sql")
+    expect_match(markdown, "SELECT \\* FROM test_table LIMIT 1")
+    expect_match(markdown, "<details")
+    expect_match(markdown, "</details>")
+  })
+
+  it("formats update results with button HTML", {
+    df_source <- local_data_frame_source(new_test_df())
+    executor <- local_executor(df_source)
+
+    result <- querychat_tool_result(
+      executor,
+      query = "SELECT * FROM test_table",
+      title = "Test Filter",
+      action = "update",
+      table_name = "test_table"
+    )
+
+    markdown <- result@extra$display$markdown
+    expect_match(markdown, "```sql")
+    expect_match(markdown, "SELECT \\* FROM test_table")
+    expect_match(markdown, "button")
+    expect_match(markdown, "Apply Filter")
+    expect_match(markdown, "data-query")
+    expect_match(markdown, "data-title")
+  })
+
+  it("formats reset results with button HTML", {
+    df_source <- local_data_frame_source(new_test_df())
+    executor <- local_executor(df_source)
+
+    result <- querychat_tool_result(
+      executor,
+      query = NULL,
+      action = "reset"
+    )
+
+    markdown <- result@extra$display$markdown
+    expect_match(markdown, "button")
+    expect_match(markdown, "Reset Filter")
+  })
+
+  it("includes title in extra display metadata for update action", {
+    df_source <- local_data_frame_source(new_test_df())
+    executor <- local_executor(df_source)
+
+    result <- querychat_tool_result(
+      executor,
+      query = "SELECT * FROM test_table",
+      title = "Custom Title",
+      action = "update",
+      table_name = "test_table"
+    )
+
+    expect_equal(result@extra$display$title, "Custom Title")
+  })
+
+  it("does not include title for query action", {
+    df_source <- local_data_frame_source(new_test_df())
+    executor <- local_executor(df_source)
+
+    result <- querychat_tool_result(
+      executor,
+      query = "SELECT * FROM test_table",
+      title = "Should be ignored",
+      action = "query"
+    )
+
+    expect_null(result@extra$display$title)
+  })
+
+  it("sets open state based on action and tool details option", {
+    df_source <- local_data_frame_source(new_test_df())
+    executor <- local_executor(df_source)
+    withr::local_options(querychat.tool_details = NULL)
+
+    query_result <- querychat_tool_result(
+      executor,
+      query = "SELECT * FROM test_table",
+      action = "query"
+    )
+    expect_false(query_result@extra$display$open)
+
+    reset_result <- querychat_tool_result(
+      executor,
+      query = NULL,
+      action = "reset"
+    )
+    expect_false(reset_result@extra$display$open)
+  })
+
+  it("shows request on error", {
+    df_source <- local_data_frame_source(new_test_df())
+    executor <- local_executor(df_source)
+
+    result <- querychat_tool_result(
+      executor,
+      query = "INVALID SQL",
+      action = "query"
+    )
+
+    expect_true(result@extra$display$show_request)
+  })
+
+  it("hides request on success", {
+    df_source <- local_data_frame_source(new_test_df())
+    executor <- local_executor(df_source)
+
+    result <- querychat_tool_result(
+      executor,
+      query = "SELECT * FROM test_table",
+      action = "query"
+    )
+
+    expect_false(result@extra$display$show_request)
+  })
+})
+
+describe("tool_query()", {
+  skip_if_no_dataframe_engine()
+
+  it("returns an ellmer tool object", {
+    df_source <- local_data_frame_source(new_test_df())
+    executor <- local_executor(df_source)
+    tool <- tool_query(executor)
+
+    expect_s3_class(tool, "ellmer::ToolDef")
+    expect_equal(tool@name, "querychat_query")
+  })
+
+  it("includes database type in description", {
+    df_source <- local_data_frame_source(new_test_df())
+    executor <- local_executor(df_source)
+    tool <- tool_query(executor)
+
+    # DataFrameSource uses DuckDB
+    expect_match(tool@description, "DuckDB|duckdb", ignore.case = TRUE)
+  })
+
+  it("creates a working tool function", {
+    df_source <- local_data_frame_source(new_test_df())
+    executor <- local_executor(df_source)
+    tool <- tool_query(executor)
+
+    # Execute the tool function
+    result <- tool(query = "SELECT * FROM test_table LIMIT 1")
+
+    expect_s7_class(result, ellmer::ContentToolResult)
+    expect_null(result@error)
+  })
+})
+
+describe("tool_update_dashboard()", {
+  skip_if_no_dataframe_engine()
+
+  it("returns an ellmer tool object", {
+    df_source <- local_data_frame_source(new_test_df())
+    executor <- local_executor(df_source)
+
+    tool <- tool_update_dashboard(
+      executor,
+      table_names = "test_table",
+      update_fn = function(query, title, table) {}
+    )
+
+    expect_s3_class(tool, "ellmer::ToolDef")
+    expect_equal(tool@name, "querychat_update_dashboard")
+  })
+
+  it("includes database type in description", {
+    df_source <- local_data_frame_source(new_test_df())
+    executor <- local_executor(df_source)
+
+    tool <- tool_update_dashboard(
+      executor,
+      table_names = "test_table",
+      update_fn = function(query, title, table) {}
+    )
+
+    # DataFrameSource uses DuckDB
+    expect_match(tool@description, "DuckDB|duckdb", ignore.case = TRUE)
+  })
+
+  it("creates a working tool function", {
+    df_source <- local_data_frame_source(new_test_df())
+    executor <- local_executor(df_source)
+
+    res_update <- NULL
+    tool <- tool_update_dashboard(
+      executor,
+      table_names = "test_table",
+      update_fn = function(query, title, table) {
+        res_update <<- list(query = query, title = title, table = table)
+      }
+    )
+
+    res_tool <- tool(
+      query = "SELECT * FROM test_table WHERE id > 2",
+      title = "Filtered View",
+      table = "test_table"
+    )
+
+    expect_s7_class(res_tool, ellmer::ContentToolResult)
+    expect_equal(res_update$query, "SELECT * FROM test_table WHERE id > 2")
+    expect_equal(res_update$title, "Filtered View")
+    expect_equal(res_update$table, "test_table")
+  })
+})
+
+describe("tool_reset_dashboard()", {
+  it("returns an ellmer tool object", {
+    tool <- tool_reset_dashboard(
+      reset_fn = function(table) {},
+      table_names = c("test_table")
+    )
+
+    expect_s3_class(tool, "ellmer::ToolDef")
+    expect_equal(tool@name, "querychat_reset_dashboard")
+  })
+
+  it("uses the provided reset function", {
+    reset_fn <- function(table) paste("Reset executed for", table)
+    tool <- tool_reset_dashboard(reset_fn, table_names = c("test_table"))
+
+    expect_s3_class(tool, "ellmer::ToolDef")
+    expect_equal(tool("test_table"), "Reset executed for test_table")
+  })
+})
+
+describe("tool_update_dashboard_impl()", {
+  skip_if_no_dataframe_engine()
+
+  it("returns a function", {
+    df_source <- local_data_frame_source(new_test_df())
+    executor <- local_executor(df_source)
+
+    impl_fn <- tool_update_dashboard_impl(
+      executor,
+      table_names = "test_table",
+      update_fn = function(query, title, table) {}
+    )
+
+    expect_type(impl_fn, "closure")
+  })
+
+  it("updates reactive values on successful query", {
+    df_source <- local_data_frame_source(new_test_df())
+    executor <- local_executor(df_source)
+
+    res_update <- NULL
+    impl_fn <- tool_update_dashboard_impl(
+      executor,
+      table_names = "test_table",
+      update_fn = function(query, title, table) {
+        res_update <<- list(query = query, title = title, table = table)
+      }
+    )
+
+    res_tool <- impl_fn(
+      query = "SELECT * FROM test_table WHERE id < 3",
+      title = "First Two",
+      table = "test_table"
+    )
+
+    expect_equal(res_update$query, "SELECT * FROM test_table WHERE id < 3")
+    expect_equal(res_update$title, "First Two")
+    expect_equal(res_update$table, "test_table")
+    expect_null(res_tool@error)
+  })
+
+  it("does not update reactive values on query error", {
+    df_source <- local_data_frame_source(new_test_df())
+    executor <- local_executor(df_source)
+
+    res_update <- NULL
+    impl_fn <- tool_update_dashboard_impl(
+      executor,
+      table_names = "test_table",
+      update_fn = function(query, title, table) {
+        res_update <<- list(query = query, title = title, table = table)
+      }
+    )
+
+    res_tool <- impl_fn(
+      query = "INVALID SQL",
+      title = "Should Not Update",
+      table = "test_table"
+    )
+
+    # `update_fn` was not called
+    expect_null(res_update)
+    # because the tool resulted in an error
+    expect_s3_class(res_tool@error, class = "error")
+  })
+})
+
+describe("tool_get_schema()", {
+  skip_if_no_dataframe_engine()
+
+  it("returns schema text with a native rich display", {
+    df_source <- local_data_frame_source(new_test_df())
+    executor <- local_executor(df_source)
+    table_spec <- list(
+      columns = list(
+        list(
+          name = "id",
+          description = "Primary key",
+          units = "rows",
+          constraints = c("positive", "required"),
+          range = list(min = 1, max = 5)
+        )
+      )
+    )
+    data_dicts <- list(list(tables = list(test_table = table_spec)))
+    expected <- executor$get_schema_result(
+      "test_table",
+      20,
+      table_spec = table_spec
+    )
+    tool <- tool_get_schema(
+      data_dicts = data_dicts,
+      executor = executor,
+      table_names = "test_table",
+      categorical_threshold = 20
+    )
+
+    result <- tool(table_name = "test_table")
+    display <- result@extra$display
+    html <- as.character(display$html)
+
+    expect_equal(tool@annotations$title, "Fetch schemas")
+    expect_equal(result@value, expected$text)
+    expect_s3_class(display, "shinychat_tool_result_display")
+    expect_equal(display$label, "test_table")
+    expect_equal(display$value_preview, "3 columns")
+    expect_false(display$show_request)
+    expect_false(display$open)
+    expect_match(html, '<div class="table-responsive">', fixed = TRUE)
+    expect_match(
+      html,
+      '<table class="table table-sm table-hover align-middle mb-0">',
+      fixed = TRUE
+    )
+    expect_match(html, '<thead class="table-light">', fixed = TRUE)
+    expected_headers <- c(
+      "Column",
+      "Type",
+      "Range / Values",
+      "Description",
+      "Constraints"
+    )
+    header_positions <- vapply(
+      paste0('<th scope="col">', expected_headers, "</th>"),
+      function(header) regexpr(header, html, fixed = TRUE)[[1]],
+      integer(1)
+    )
+    id_cell_positions <- vapply(
+      c(
+        "<code>id</code>",
+        "<span>INTEGER</span>",
+        "<td>1 to 5</td>",
+        "<td>Primary key</td>",
+        "<td>positive, required</td>"
+      ),
+      function(content) regexpr(content, html, fixed = TRUE)[[1]],
+      integer(1)
+    )
+    expect_true(all(header_positions > 0))
+    expect_true(all(id_cell_positions > 0))
+    expect_true(all(diff(header_positions) > 0))
+    expect_true(all(diff(id_cell_positions) > 0))
+    expect_match(
+      html,
+      '<th scope="row">\\s*<code>id</code>\\s*</th>'
+    )
+    expect_match(html, "INTEGER", fixed = TRUE)
+    expect_match(html, "1 to 5", fixed = TRUE)
+    expect_match(html, "'A', 'B', 'C', 'D', 'E'", fixed = TRUE)
+  })
+
+  it("uses a singular preview for one column", {
+    df_source <- local_data_frame_source(data.frame(id = 1:3))
+    executor <- local_executor(df_source)
+    tool <- tool_get_schema(
+      data_dicts = list(),
+      executor = executor,
+      table_names = "test_table",
+      categorical_threshold = 20
+    )
+
+    result <- tool(table_name = "test_table")
+
+    expect_equal(result@extra$display$value_preview, "1 column")
+  })
+})

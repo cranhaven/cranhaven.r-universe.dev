@@ -1,0 +1,134 @@
+#' Data Source Base Class
+#'
+#' @description
+#' An abstract R6 class defining the interface that custom QueryChat data
+#' sources must implement. This class should not be instantiated directly;
+#' instead, use one of its concrete implementations like [DataFrameSource] or
+#' [DBISource].
+#'
+#' @examples
+#' MyDataSource <- R6::R6Class(
+#'   "MyDataSource",
+#'   inherit = DataSource,
+#'   public = list(
+#'     initialize = function(table_name) {
+#'       self$table_name <- table_name
+#'     }
+#'     # Implement abstract methods here...
+#'   )
+#' )
+#'
+#' @export
+DataSource <- R6::R6Class(
+  "DataSource",
+  private = list(
+    colnames = NULL
+  ),
+  public = list(
+    #' @field table_name Name of the table to be used in SQL queries
+    table_name = NULL,
+
+    #' @description
+    #' Get the database type
+    #'
+    #' @return A string describing the database type (e.g., "DuckDB", "SQLite")
+    get_db_type = function() {
+      cli::cli_abort(
+        "{.fn get_db_type} must be implemented by subclass",
+        class = "not_implemented_error"
+      )
+    },
+
+    #' @description
+    #' Get schema information about the table
+    #'
+    #' @param categorical_threshold Maximum number of unique values for a text
+    #'   column to be considered categorical
+    #' @return A string containing schema information formatted for LLM prompts
+    get_schema = function(categorical_threshold = 20, table_spec = NULL) {
+      cli::cli_abort(
+        "{.fn get_schema} must be implemented by subclass",
+        class = "not_implemented_error"
+      )
+    },
+
+    get_schema_result = function(
+      categorical_threshold = 20,
+      table_spec = NULL
+    ) {
+      cli::cli_abort(
+        "{.fn get_schema_result} must be implemented by subclass",
+        class = "not_implemented_error"
+      )
+    },
+
+    #' @description
+    #' Execute a SQL query and return results
+    #'
+    #' @param query SQL query string to execute
+    #' @return A data frame containing query results
+    execute_query = function(query) {
+      cli::cli_abort(
+        "{.fn execute_query} must be implemented by subclass",
+        class = "not_implemented_error"
+      )
+    },
+
+    #' @description
+    #' Test a SQL query by fetching only one row
+    #'
+    #' @param query SQL query string to test
+    #' @param require_all_columns If `TRUE`, validates that the result includes
+    #'   all original table columns (default: `FALSE`)
+    #' @return A data frame containing one row of results (or empty if no
+    #'   matches)
+    test_query = function(query, require_all_columns = FALSE) {
+      cli::cli_abort(
+        "{.fn test_query} must be implemented by subclass",
+        class = "not_implemented_error"
+      )
+    },
+
+    #' @description
+    #' Get the unfiltered data as a data frame
+    #'
+    #' @return A data frame containing all data from the table
+    get_data = function() {
+      cli::cli_abort(
+        "{.fn get_data} must be implemented by subclass",
+        class = "not_implemented_error"
+      )
+    },
+
+    #' @description
+    #' Get a human-readable data description for the system prompt.
+    #'
+    #' Subclasses may override this to provide metadata-derived descriptions
+    #' (e.g., pin title/description). The default returns an empty string.
+    #'
+    #' @return A string, or empty string if no description is available.
+    get_data_description = function() {
+      ""
+    },
+
+    #' @description
+    #' Release resources this data source created. Only resources querychat
+    #' opened itself are closed (for example the in-memory DuckDB connection a
+    #' [DataFrameSource] creates). Connections passed in by the caller are
+    #' never closed; their lifecycle stays with the caller.
+    #'
+    #' @return NULL (invisibly)
+    cleanup = function() {
+      cli::cli_abort(
+        "{.fn cleanup} must be implemented by subclass",
+        class = "not_implemented_error"
+      )
+    }
+  )
+)
+
+# Helper Functions -------------------------------------------------------------
+
+is_data_source <- function(x) {
+  inherits(x, "DataSource")
+}
