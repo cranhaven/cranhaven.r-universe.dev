@@ -1,0 +1,267 @@
+## ----setup, include = FALSE---------------------------------------------------
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  fig.width = 7,
+  fig.height = 5
+)
+library(couplr)
+library(dplyr)
+
+## ----first-match--------------------------------------------------------------
+library(couplr)
+library(dplyr)
+
+# Create example data: treatment and control groups
+set.seed(123)
+treatment <- tibble(
+  id = 1:50,
+  age = rnorm(50, mean = 45, sd = 10),
+  income = rnorm(50, mean = 55000, sd = 12000)
+)
+
+control <- tibble(
+  id = 1:80,
+  age = rnorm(80, mean = 50, sd = 12),
+  income = rnorm(80, mean = 48000, sd = 15000)
+)
+
+# Match on age and income
+result <- match_couples(
+  left = treatment,
+  right = control,
+  vars = c("age", "income"),
+  auto_scale = TRUE
+)
+
+# View matched pairs
+head(result$pairs)
+
+## ----output-explained---------------------------------------------------------
+# Quick overview with summary()
+summary(result)
+
+# Or access specific info
+result$info$n_matched
+
+## ----scaling-demo-------------------------------------------------------------
+# BAD: Without scaling, income dominates
+result_unscaled <- match_couples(
+  treatment, control,
+  vars = c("age", "income"),
+  auto_scale = FALSE
+)
+
+# GOOD: With scaling, both variables contribute equally
+result_scaled <- match_couples(
+  treatment, control,
+  vars = c("age", "income"),
+  auto_scale = TRUE
+)
+
+# Compare mean distances
+cat("Unscaled mean distance:", round(mean(result_unscaled$pairs$distance), 1), "\n")
+cat("Scaled mean distance:", round(mean(result_scaled$pairs$distance), 3), "\n")
+
+## ----balance-check------------------------------------------------------------
+# Get the matched observations
+matched_treatment <- treatment[result$pairs$left_id, ]
+matched_control <- control[result$pairs$right_id, ]
+
+# Compare means before and after matching
+cat("BEFORE matching:\n")
+cat("  Age difference:", round(mean(treatment$age) - mean(control$age), 1), "years\n")
+cat("  Income difference: $", round(mean(treatment$income) - mean(control$income), 0), "\n\n")
+
+cat("AFTER matching:\n")
+cat("  Age difference:", round(mean(matched_treatment$age) - mean(matched_control$age), 1), "years\n")
+cat("  Income difference: $", round(mean(matched_treatment$income) - mean(matched_control$income), 0), "\n")
+
+## ----plot-result, fig.width=6, fig.height=4, fig.alt="Histogram showing distribution of match distances, with most matches having low distances near zero"----
+plot(result)
+
+## ----greedy-example-----------------------------------------------------------
+# Create larger datasets
+set.seed(456)
+large_treatment <- tibble(
+  id = 1:2000,
+  age = rnorm(2000, 45, 10),
+  income = rnorm(2000, 55000, 12000)
+)
+
+large_control <- tibble(
+  id = 1:3000,
+  age = rnorm(3000, 50, 12),
+  income = rnorm(3000, 48000, 15000)
+)
+
+# Fast greedy matching
+result_greedy <- match_couples(
+  large_treatment, large_control,
+  vars = c("age", "income"),
+  auto_scale = TRUE,
+  strategy = "row_best"  # fastest strategy
+, method = "greedy")
+
+cat("Matched", result_greedy$info$n_matched, "pairs\n")
+cat("Mean distance:", round(mean(result_greedy$pairs$distance), 3), "\n")
+
+## ----caliper-example----------------------------------------------------------
+# Allow any match
+result_loose <- match_couples(
+  treatment, control,
+  vars = c("age", "income"),
+  auto_scale = TRUE
+)
+
+# Only allow close matches
+result_strict <- match_couples(
+  treatment, control,
+  vars = c("age", "income"),
+  auto_scale = TRUE,
+  max_distance = 0.5  # reject pairs more different than this
+)
+
+cat("Without caliper:", result_loose$info$n_matched, "pairs\n")
+cat("With caliper:", result_strict$info$n_matched, "pairs\n")
+
+## ----blocking-example---------------------------------------------------------
+# Data from multiple hospital sites
+set.seed(321)
+treated <- tibble(
+  id = 1:60,
+  site = rep(c("Hospital A", "Hospital B", "Hospital C"), each = 20),
+  age = rnorm(60, 55, 10),
+  severity = rnorm(60, 5, 2)
+)
+
+controls <- tibble(
+  id = 1:90,
+  site = rep(c("Hospital A", "Hospital B", "Hospital C"), each = 30),
+  age = rnorm(90, 52, 12),
+  severity = rnorm(90, 4.5, 2.5)
+)
+
+# Step 1: Create blocks by hospital site
+blocks <- matchmaker(
+  left = treated,
+  right = controls,
+  block_type = "group",
+  block_by = "site"
+)
+
+# Step 2: Match within each block
+result_blocked <- match_couples(
+  left = blocks$left,
+  right = blocks$right,
+  vars = c("age", "severity"),
+  block_id = "block_id",
+  auto_scale = TRUE
+)
+
+# Verify: matches stay within their block
+result_blocked$pairs |> count(block_id)
+
+## ----full-match-example-------------------------------------------------------
+result_full <- full_match(
+  left = treatment,
+  right = control,
+  vars = c("age", "income")
+)
+
+result_full
+
+# Each group has one or more left and right units with matching weights
+head(result_full$groups)
+
+## ----complete-example---------------------------------------------------------
+# 1. Prepare your data
+set.seed(789)
+patients_treated <- tibble(
+  patient_id = paste0("T", 1:100),
+  age = rnorm(100, 62, 8),
+  bmi = rnorm(100, 28, 4),
+  smoker = sample(0:1, 100, replace = TRUE, prob = c(0.6, 0.4))
+)
+
+patients_control <- tibble(
+  patient_id = paste0("C", 1:200),
+  age = rnorm(200, 58, 10),
+  bmi = rnorm(200, 26, 5),
+  smoker = sample(0:1, 200, replace = TRUE, prob = c(0.7, 0.3))
+)
+
+# 2. Match on clinical variables
+matched <- match_couples(
+  left = patients_treated,
+  right = patients_control,
+  vars = c("age", "bmi", "smoker"),
+  auto_scale = TRUE
+)
+
+# 3. Check how many matched
+cat("Treated patients:", nrow(patients_treated), "\n")
+cat("Successfully matched:", matched$info$n_matched, "\n")
+cat("Match rate:", round(100 * matched$info$n_matched / nrow(patients_treated), 1), "%\n")
+
+# 4. Extract matched samples for analysis
+treated_matched <- patients_treated[matched$pairs$left_id, ]
+control_matched <- patients_control[matched$pairs$right_id, ]
+
+# 5. Verify balance
+cat("\nBalance check (difference in means):\n")
+cat("  Age:", round(mean(treated_matched$age) - mean(control_matched$age), 2), "\n")
+cat("  BMI:", round(mean(treated_matched$bmi) - mean(control_matched$bmi), 2), "\n")
+cat("  Smoker %:", round(100*(mean(treated_matched$smoker) - mean(control_matched$smoker)), 1), "\n")
+
+## ----lap-solve-basic----------------------------------------------------------
+# Cost matrix: 3 workers x 3 tasks
+cost <- matrix(c(
+  4, 2, 5,
+  3, 3, 6,
+  7, 5, 4
+), nrow = 3, byrow = TRUE)
+
+result <- lap_solve(cost)
+print(result)
+
+## ----forbidden----------------------------------------------------------------
+cost_forbidden <- matrix(c(
+  4, 2, NA,   # Row 1 cannot go to column 3
+  Inf, 3, 6,  # Row 2 cannot go to column 1
+  7, 5, 4
+), nrow = 3, byrow = TRUE)
+
+lap_solve(cost_forbidden)
+
+## ----maximize-----------------------------------------------------------------
+preferences <- matrix(c(
+  8, 5, 3,
+  4, 7, 6,
+  2, 4, 9
+), nrow = 3, byrow = TRUE)
+
+lap_solve(preferences, maximize = TRUE)
+
+## ----grouped-lap--------------------------------------------------------------
+# Weekly nurse-shift scheduling: solve each day separately
+schedule <- tibble(
+  day = rep(c("Mon", "Tue", "Wed"), each = 9),
+  nurse = rep(rep(1:3, each = 3), 3),
+  shift = rep(1:3, 9),
+  cost = c(4,2,5, 3,3,6, 7,5,4,   # Monday costs
+           5,3,4, 2,4,5, 6,4,3,   # Tuesday costs
+           3,4,5, 4,2,6, 5,5,4)   # Wednesday costs
+)
+
+# Solve all three days at once
+schedule |>
+  group_by(day) |>
+  lap_solve(nurse, shift, cost)
+
+## ----kbest--------------------------------------------------------------------
+cost <- matrix(c(1, 2, 3, 4, 3, 2, 5, 4, 1), nrow = 3, byrow = TRUE)
+
+kbest <- lap_solve_kbest(cost, k = 3)
+print(kbest)
+

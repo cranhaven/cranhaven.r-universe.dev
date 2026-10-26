@@ -1,0 +1,1847 @@
+---
+title: "Matching Workflows"
+author: "Gilles Colling"
+date: "`r Sys.Date()`"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Matching Workflows}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  fig.width = 7,
+  fig.height = 5
+)
+library(couplr)
+library(dplyr)
+library(ggplot2)
+```
+
+## Overview
+
+Matching is a fundamental technique for creating comparable groups in observational studies. Unlike random assignment, observational data often contain systematic differences between treatment and control groups that confound causal inference. Matching addresses this by pairing similar units based on observed characteristics, creating "apples-to-apples" comparisons.
+
+This vignette follows a **complete workflow** from raw data to publication-ready results, using a realistic job training evaluation as the running example. You'll learn to handle the full pipeline: preprocessing, matching, assessment, and reporting.
+
+### Who This Vignette Is For
+
+**Audience**: Researchers, epidemiologists, economists, data scientists working with observational data
+
+**Prerequisites**:
+
+- Familiarity with basic `couplr` usage (`vignette("getting-started")`)
+
+- Understanding of causal inference concepts (treatment effects, confounding)
+
+- Basic statistics (means, standard deviations, t-tests)
+
+**What You'll Learn**:
+
+- How to match treatment and control units with `match_couples()`
+
+- Automatic preprocessing: scaling, health checks, categorical encoding
+
+- Assessing match quality with `balance_diagnostics()`
+
+- When to use optimal vs greedy matching
+
+- Creating publication-ready balance tables
+
+**Time to complete**: 30-45 minutes
+
+### Documentation Roadmap
+
+| Vignette | Focus | Difficulty |
+|----------|-------|------------|
+| Getting Started | Basic LAP solving, API introduction | Beginner |
+| Algorithms | Mathematical foundations, solver selection | Intermediate |
+| **Matching Workflows** | Production matching pipelines | Intermediate |
+| Pixel Morphing | Scientific applications, approximations | Advanced |
+
+*You are here: Matching Workflows*
+
+### The Running Example: Job Training Evaluation
+
+Throughout this vignette, we evaluate a **job training program's effect on earnings**. The challenge: participants self-selected into the program, so they differ systematically from non-participants in age, education, and prior earnings. Without matching, any earnings difference could be due to these baseline differences rather than the program itself.
+
+**Our goal**: Create comparable treatment and control groups, assess balance quality, and estimate the treatment effect credibly.
+
+### Key Features
+
+- Automatic preprocessing with health checks and smart scaling
+
+- Optimal matching via linear assignment algorithms
+
+- Fast greedy matching for large datasets (n > 5,000)
+
+- Blocking and stratification support
+
+- Comprehensive balance diagnostics
+
+- Publication-ready output tables
+
+## Problem Definition
+
+### The Matching Problem
+
+Given two groups of units:
+
+- **Left group** (treatment, exposed, cases): $n_L$ units
+
+- **Right group** (control, unexposed, controls): $n_R$ units
+
+Each unit $i$ has a covariate vector $\mathbf{x}_i \in \mathbb{R}^p$ describing characteristics we want to balance (age, income, education, etc.).
+
+**Goal:** Find one-to-one matches that minimize total distance:
+
+$$
+\min_{\pi} \sum_{i=1}^{n} d(\mathbf{x}_i^L, \mathbf{x}_{\pi(i)}^R)
+$$
+
+where $d(\cdot, \cdot)$ is a distance function (typically Euclidean or Mahalanobis) and $\pi$ is a matching assignment.
+
+### Why Matching Matters
+
+**Without matching:**
+
+- Groups may differ systematically on important covariates
+
+- Treatment effect estimates are confounded by these differences
+
+- Statistical adjustments (regression) rely on untestable assumptions
+
+**With matching:**
+
+- Create comparable groups that differ primarily in treatment status
+
+- Balance covariates to reduce confounding
+
+- Improve causal inference by mimicking randomized experiments
+
+- Transparent, non-parametric preprocessing step
+
+### Distance Metrics
+
+The quality of matching depends on the distance metric:
+
+**Euclidean distance** (after scaling):
+$$
+d(\mathbf{x}_i, \mathbf{x}_j) = \sqrt{\sum_{k=1}^{p} (x_{ik} - x_{jk})^2}
+$$
+
+**Mahalanobis distance** (accounts for correlations):
+$$
+d(\mathbf{x}_i, \mathbf{x}_j) = \sqrt{(\mathbf{x}_i - \mathbf{x}_j)^\top \Sigma^{-1} (\mathbf{x}_i - \mathbf{x}_j)}
+$$
+
+**Propensity score distance** (single dimension):
+$$
+d(i, j) = |p_i - p_j|
+$$
+
+where $p_i = P(\text{treatment} \mid \mathbf{x}_i)$ is the propensity score.
+
+`couplr` defaults to Euclidean distance with automatic scaling, which works well for most applications.
+
+## Basic Usage
+
+### Creating a Matched Sample
+
+The simplest workflow uses `match_couples()` with automatic preprocessing:
+
+```{r basic-example}
+# Simulate observational data
+set.seed(123)
+n_left <- 100
+n_right <- 150
+
+# Treatment group (tends to be younger, higher income)
+left_data <- tibble(
+  id = 1:n_left,
+  age = rnorm(n_left, mean = 45, sd = 10),
+  income = rnorm(n_left, mean = 60000, sd = 15000),
+  education = sample(c("HS", "BA", "MA"), n_left, replace = TRUE),
+  group = "treatment"
+)
+
+# Control group (older, lower income on average)
+right_data <- tibble(
+  id = 1:n_right,
+  age = rnorm(n_right, mean = 52, sd = 12),
+  income = rnorm(n_right, mean = 50000, sd = 18000),
+  education = sample(c("HS", "BA", "MA"), n_right, replace = TRUE),
+  group = "control"
+)
+
+# Perform optimal matching
+result <- match_couples(
+  left = left_data,
+  right = right_data,
+  vars = c("age", "income"),
+  auto_scale = TRUE,
+  return_diagnostics = TRUE
+)
+
+# View matched pairs
+head(result$pairs)
+
+# Summary statistics
+result$info
+```
+
+The result contains:
+
+- `pairs`: Matched pairs with IDs and distances
+
+- `info`: Matching method, counts, total distance
+
+- `left_unmatched`, `right_unmatched`: Units without matches
+
+- `cost_matrix`: Full distance matrix (if `return_diagnostics = TRUE`)
+
+### Understanding the Output
+
+```{r inspect-output, fig.alt="Histogram showing the distribution of match distances, with most matches having low distances indicating good match quality"}
+# How many matched?
+cat("Matched pairs:", result$info$n_matched, "\n")
+cat("Unmatched left:", nrow(result$left_unmatched), "\n")
+cat("Unmatched right:", nrow(result$right_unmatched), "\n")
+
+# Distribution of match distances
+summary(result$pairs$distance)
+
+# Visualize match quality
+ggplot(result$pairs, aes(x = distance)) +
+  geom_histogram(bins = 30, fill = "#29abe0", alpha = 0.7) +
+  labs(
+    title = "Distribution of Match Distances",
+    x = "Euclidean Distance (scaled)",
+    y = "Count"
+  ) +
+  theme_minimal() +
+  theme(plot.background = element_rect(fill = "transparent", color = NA),
+        panel.background = element_rect(fill = "transparent", color = NA),
+        panel.grid = element_blank())
+```
+
+**Interpretation:**
+
+- Lower distances indicate better matches (more similar units)
+
+- Median distance provides typical match quality
+
+- Large distances suggest poor matches (consider caliper constraints)
+
+## Automatic Preprocessing
+
+### Why Preprocessing Matters
+
+Raw covariates often have:
+
+- **Different scales**: Age in years (20-80), income in dollars (20,000-200,000)
+
+- **Different units**: Continuous (age), categorical (education), binary (smoker)
+
+- **Data quality issues**: Missing values, constant variables, extreme outliers
+
+Without preprocessing, high-variance variables dominate distance calculations.
+
+### Smart Scaling with `auto_scale = TRUE`
+
+When `auto_scale = TRUE`, `match_couples()` automatically:
+
+1. **Detects problematic variables**
+
+   - Constant variables (SD = 0) -> excluded with warning
+
+   - High missingness (>50%) -> warned
+
+   - Extreme skewness (|skew| > 2) -> informed
+
+2. **Applies appropriate scaling**
+
+   - Continuous variables -> scaled by selected method
+
+   - Binary variables (0/1) -> used as-is
+
+   - Categorical -> converted to numeric if ordered
+
+3. **Handles categorical variables**
+
+   - Unordered factors -> converted to binary indicators
+
+   - Ordered factors -> converted to numeric ranks
+
+```{r preprocessing-demo}
+# Create data with scaling challenges
+set.seed(456)
+challenging_data <- tibble(
+  id = 1:50,
+  age = rnorm(50, 50, 10),                    # Years (reasonable scale)
+  income = rnorm(50, 60000, 20000),           # Dollars (large scale)
+  bmi = rnorm(50, 25, 5),                     # Ratio (small scale)
+  smoker = sample(0:1, 50, replace = TRUE),   # Binary
+  education = factor(
+    sample(c("HS", "BA", "MA", "PhD"), 50, replace = TRUE),
+    ordered = TRUE,
+    levels = c("HS", "BA", "MA", "PhD")
+  )
+)
+
+left_chal <- challenging_data[1:25, ]
+right_chal <- challenging_data[26:50, ]
+
+# Match WITHOUT auto-scaling (income dominates)
+result_no_scale <- match_couples(
+  left_chal, right_chal,
+  vars = c("age", "income", "bmi"),
+  auto_scale = FALSE
+)
+
+# Match WITH auto-scaling (all variables contribute)
+result_scaled <- match_couples(
+  left_chal, right_chal,
+  vars = c("age", "income", "bmi"),
+  auto_scale = TRUE,
+  scale = "robust"  # Median/MAD scaling (robust to outliers)
+)
+
+# Compare match quality
+cat("Without scaling - mean distance:", mean(result_no_scale$pairs$distance), "\n")
+cat("With scaling - mean distance:", mean(result_scaled$pairs$distance), "\n")
+```
+
+### Scaling Methods
+
+Three scaling strategies available via `scale` parameter:
+
+**1. Robust scaling** (`scale = "robust"`, default):
+$$
+x_{\text{scaled}} = \frac{x - \text{median}(x)}{\text{MAD}(x)}
+$$
+
+- Uses median and median absolute deviation (MAD)
+
+- Resistant to outliers and skewness
+
+- Best for: Real-world data with potential outliers
+
+**2. Standardization** (`scale = "standardize"`):
+$$
+x_{\text{scaled}} = \frac{x - \text{mean}(x)}{\text{SD}(x)}
+$$
+
+- Classical z-score normalization
+
+- Assumes approximate normality
+
+- Best for: Clean, normally-distributed data
+
+**3. Range scaling** (`scale = "range"`):
+$$
+x_{\text{scaled}} = \frac{x - \min(x)}{\max(x) - \min(x)}
+$$
+
+- Scales to [0, 1] range
+
+- Preserves exact relationships
+
+- Best for: Bounded variables, visualization
+
+```{r scaling-comparison}
+# Demonstrate scaling methods
+demo_var <- c(10, 20, 25, 30, 100)  # Contains outlier (100)
+
+# Function to show scaling
+show_scaling <- function(x, method) {
+  left_demo <- tibble(id = 1:3, var = x[1:3])
+  right_demo <- tibble(id = 1:2, var = x[4:5])
+
+  result <- match_couples(
+    left_demo, right_demo,
+    vars = "var",
+    auto_scale = TRUE,
+    scale = method,
+    return_diagnostics = TRUE
+  )
+
+  # Extract scaled values from cost matrix
+  cat(method, "scaling:\n")
+  cat("  Original:", x, "\n")
+  cat("  Distance matrix diagonal:", diag(result$cost_matrix)[1:2], "\n\n")
+}
+
+show_scaling(demo_var, "robust")
+show_scaling(demo_var, "standardize")
+show_scaling(demo_var, "range")
+```
+
+### Health Checks and Warnings
+
+The preprocessing system provides informative diagnostics:
+
+```{r health-checks, eval=FALSE}
+# Create data with issues
+problematic_data <- tibble(
+  id = 1:100,
+  age = rnorm(100, 50, 10),
+  constant_var = 5,                           # No variation - will warn
+  mostly_missing = c(rnorm(20, 50, 10), rep(NA, 80)),  # >50% missing
+  extreme_skew = rexp(100, rate = 0.1)       # Very skewed
+)
+
+# Attempt matching - will show warnings
+result <- match_couples(
+  problematic_data[1:50, ],
+  problematic_data[51:100, ],
+  vars = c("age", "constant_var", "mostly_missing", "extreme_skew"),
+  auto_scale = TRUE
+)
+
+# Warning messages will indicate:
+# - "constant_var excluded (SD = 0)"
+# - "mostly_missing has 80% missing values"
+# - "extreme_skew has high skewness (3.2)"
+```
+
+## Optimal vs Greedy Matching
+
+For large datasets (n > 5,000), optimal matching becomes computationally expensive. `couplr` provides fast greedy alternatives.
+
+### When to Use Each Approach
+
+**Optimal matching** (`method = "optimal"`):
+
+- Minimizes total distance (globally optimal solution)
+
+- Uses linear assignment algorithms ($O(n^3)$ complexity)
+
+- Suitable for: n < 5,000, when optimality is critical
+
+- Typical runtime: <1 second for n=1,000, ~10 seconds for n=3,000
+
+**Greedy matching** (`method = "greedy"`):
+
+- Fast approximation (10-100x faster)
+
+- Three strategies: sorted, row_best, pq
+
+- Suitable for: n > 5,000, exploratory analysis, when speed matters
+
+- Typical runtime: <1 second for n=10,000
+
+```{r optimal-vs-greedy}
+# Create moderately large dataset
+set.seed(789)
+n <- 1000
+large_left <- tibble(
+  id = 1:n,
+  x1 = rnorm(n),
+  x2 = rnorm(n),
+  x3 = rnorm(n)
+)
+large_right <- tibble(
+  id = 1:n,
+  x1 = rnorm(n),
+  x2 = rnorm(n),
+  x3 = rnorm(n)
+)
+
+# Optimal matching
+time_optimal <- system.time({
+  result_optimal <- match_couples(
+    large_left, large_right,
+    vars = c("x1", "x2", "x3"),
+    method = "hungarian"
+  )
+})
+
+# Greedy matching (row_best strategy)
+time_greedy <- system.time({
+  result_greedy <- match_couples(
+    large_left, large_right,
+    vars = c("x1", "x2", "x3"),
+    strategy = "row_best"
+  , method = "greedy")
+})
+
+# Compare
+cat("Optimal matching:\n")
+cat("  Time:", round(time_optimal["elapsed"], 3), "seconds\n")
+cat("  Mean distance:", round(mean(result_optimal$pairs$distance), 4), "\n\n")
+
+cat("Greedy matching:\n")
+cat("  Time:", round(time_greedy["elapsed"], 3), "seconds\n")
+cat("  Mean distance:", round(mean(result_greedy$pairs$distance), 4), "\n")
+cat("  Speedup:", round(time_optimal["elapsed"] / time_greedy["elapsed"], 1), "x\n")
+```
+
+### Greedy Strategies
+
+Three greedy strategies available via `match_couples(method = "greedy")`:
+
+**1. Sorted** (`strategy = "sorted"`):
+
+- Sort all possible pairs by distance
+
+- Assign greedily from best to worst
+
+- Best quality among greedy methods
+
+- Slowest greedy option (still much faster than optimal)
+
+```
+Algorithm:
+1. Compute all n_L × n_R distances
+
+2. Sort pairs by distance (ascending)
+
+3. For each pair in sorted order:
+
+   - If both units unmatched, assign them
+
+4. Stop when no more matches possible
+```
+
+**2. Row-best** (`strategy = "row_best"`, default):
+
+- For each left unit, find best available right unit
+
+- Process left units in order
+
+- Fast and simple
+
+- Medium quality
+
+```
+Algorithm:
+1. For i = 1 to n_L:
+
+   - Find unmatched right unit j with minimum distance to i
+
+   - Assign (i, j)
+
+2. Return all assignments
+```
+
+**3. Priority queue** (`strategy = "pq"`):
+
+- Maintains priority queue of potential matches
+
+- Updates dynamically as assignments made
+
+- Best for very large problems
+
+- Fastest option
+
+```{r greedy-strategies}
+# Compare greedy strategies on same data
+set.seed(101)
+test_left <- tibble(id = 1:200, x = rnorm(200))
+test_right <- tibble(id = 1:200, x = rnorm(200))
+
+strategies <- c("sorted", "row_best", "pq")
+results <- list()
+
+for (strat in strategies) {
+  time <- system.time({
+    greedy_result <- match_couples(
+      test_left, test_right,
+      vars = "x",
+      strategy = strat
+    , method = "greedy")
+  })
+
+  results[[strat]] <- list(
+    time = time["elapsed"],
+    mean_dist = mean(greedy_result$pairs$distance),
+    total_dist = greedy_result$info$total_distance
+  )
+}
+
+# Display comparison
+comparison <- do.call(rbind, lapply(names(results), function(s) {
+  data.frame(
+    strategy = s,
+    time_sec = round(results[[s]]$time, 4),
+    mean_distance = round(results[[s]]$mean_dist, 4),
+    total_distance = round(results[[s]]$total_dist, 2)
+  )
+}))
+
+print(comparison)
+```
+
+**Recommendation:**
+
+- Default to `strategy = "row_best"` for good speed/quality balance
+
+- Use `strategy = "sorted"` when quality is important but optimal is too slow
+
+- Use `strategy = "pq"` for n > 10,000
+
+## Caliper Constraints
+
+Calipers impose maximum allowable match distances to ensure minimum quality.
+
+### Why Use Calipers
+
+Without calipers, optimal matching may pair very dissimilar units just to maximize the number of matches. Calipers prevent this by:
+
+- Setting a distance threshold beyond which matches are forbidden
+
+- Reducing the number of matches to improve average quality
+
+- Implementing the "common support" requirement in propensity score matching
+
+```{r calipers, fig.alt="Overlapping histograms comparing match distances with and without caliper constraint, showing the caliper excludes distant matches"}
+# Create data where some units are far apart
+set.seed(202)
+left_cal <- tibble(
+  id = 1:50,
+  x = c(rnorm(40, mean = 0, sd = 1), rnorm(10, mean = 5, sd = 0.5))  # Some outliers
+)
+right_cal <- tibble(
+  id = 1:50,
+  x = rnorm(50, mean = 0, sd = 1)
+)
+
+# Match without caliper - pairs everything
+result_no_cal <- match_couples(
+  left_cal, right_cal,
+  vars = "x",
+  auto_scale = FALSE
+)
+
+# Match with caliper - excludes poor matches
+result_with_cal <- match_couples(
+  left_cal, right_cal,
+  vars = "x",
+  max_distance = 1.5,  # Caliper: max distance = 1.5
+  auto_scale = FALSE
+)
+
+cat("Without caliper:\n")
+cat("  Matched:", result_no_cal$info$n_matched, "\n")
+cat("  Mean distance:", round(mean(result_no_cal$pairs$distance), 3), "\n")
+cat("  Max distance:", round(max(result_no_cal$pairs$distance), 3), "\n\n")
+
+cat("With caliper (1.5):\n")
+cat("  Matched:", result_with_cal$info$n_matched, "\n")
+cat("  Mean distance:", round(mean(result_with_cal$pairs$distance), 3), "\n")
+cat("  Max distance:", round(max(result_with_cal$pairs$distance), 3), "\n")
+
+# Visualize caliper effect
+ggplot(result_no_cal$pairs, aes(x = distance)) +
+  geom_histogram(aes(fill = "No caliper"), bins = 30, alpha = 0.5) +
+  geom_histogram(
+    data = result_with_cal$pairs,
+    aes(fill = "With caliper"),
+    bins = 30,
+    alpha = 0.5
+  ) +
+  geom_vline(xintercept = 1.5, linetype = "dashed", color = "red") +
+  labs(
+    title = "Caliper Effect on Match Distances",
+    x = "Distance",
+    y = "Count",
+    fill = "Condition"
+  ) +
+  theme_minimal() +
+  theme(plot.background = element_rect(fill = "transparent", color = NA),
+        panel.background = element_rect(fill = "transparent", color = NA),
+        legend.background = element_rect(fill = "transparent", color = NA),
+        panel.grid = element_blank())
+```
+
+### Choosing Caliper Width
+
+Common approaches:
+
+**1. Standard deviation rule**: Caliper = 0.1 to 0.25 pooled SD
+
+```{r caliper-sd, eval=FALSE}
+# Calculate pooled SD
+combined <- bind_rows(
+  left_data |> mutate(group = "left"),
+  right_data |> mutate(group = "right")
+)
+
+pooled_sd <- sd(combined$age)  # For single variable
+caliper_width <- 0.2 * pooled_sd
+
+result <- match_couples(
+  left_data, right_data,
+  vars = "age",
+  max_distance = caliper_width
+)
+```
+
+**2. Propensity score rule**: 0.1 to 0.25 SD of propensity score logit
+
+**3. Empirical rule**: Examine distance distribution, exclude extreme tail
+
+```{r caliper-empirical}
+# Fit all matches first
+all_matches <- match_couples(left_cal, right_cal, vars = "x")
+
+# Choose caliper at 90th percentile
+caliper_90 <- quantile(all_matches$pairs$distance, 0.90)
+
+# Refit with caliper
+refined_matches <- match_couples(
+  left_cal, right_cal,
+  vars = "x",
+  max_distance = caliper_90
+)
+
+cat("90th percentile caliper:", round(caliper_90, 3), "\n")
+cat("Matches retained:",
+    round(100 * refined_matches$info$n_matched / all_matches$info$n_matched, 1), "%\n")
+```
+
+## Blocking and Stratification
+
+Blocking (exact matching on key variables) combined with distance matching on remaining covariates is a powerful strategy.
+
+### Why Use Blocking
+
+**Benefits:**
+
+- Ensures exact balance on critical variables (site, gender, age category)
+
+- Reduces problem size (smaller within-block matching problems)
+
+- Prevents poor cross-block matches
+
+- Transparent and interpretable
+
+**When to use:**
+
+- Strong domain knowledge about important stratification variables
+
+- Variables that absolutely must be balanced (e.g., study site in multi-center trials)
+
+- Large datasets where blocking reduces computational burden
+
+### Exact Blocking with `matchmaker()`
+
+```{r blocking-exact}
+# Create multi-site data
+set.seed(303)
+multi_site <- bind_rows(
+  tibble(
+    id = 1:100,
+    site = sample(c("A", "B", "C"), 100, replace = TRUE),
+    age = rnorm(100, 50, 10),
+    income = rnorm(100, 55000, 15000),
+    group = "treatment"
+  ),
+  tibble(
+    id = 101:250,
+    site = sample(c("A", "B", "C"), 150, replace = TRUE),
+    age = rnorm(150, 50, 10),
+    income = rnorm(150, 55000, 15000),
+    group = "control"
+  )
+)
+
+left_site <- multi_site |> filter(group == "treatment")
+right_site <- multi_site |> filter(group == "control")
+
+# Create exact blocks by site
+blocks <- matchmaker(
+  left = left_site,
+  right = right_site,
+  block_type = "group",
+  block_by = "site"
+)
+
+cat("Blocking structure:\n")
+print(blocks$block_summary)
+
+# Match within blocks
+result_blocked <- match_couples(
+  left = blocks$left,
+  right = blocks$right,
+  vars = c("age", "income"),
+  block_id = "block_id",  # Use block IDs from matchmaker
+  auto_scale = TRUE
+)
+
+# Verify exact site balance
+result_blocked$pairs |>
+  mutate(left_id = as.integer(left_id), right_id = as.integer(right_id)) |>
+  left_join(left_site |> dplyr::select(id, site), by = c("left_id" = "id")) |>
+  left_join(right_site |> dplyr::select(id, site), by = c("right_id" = "id"), suffix = c("_left", "_right")) |>
+  count(site_left, site_right)
+```
+
+### Cluster-Based Blocking
+
+For continuous variables, use k-means clustering to create blocks:
+
+```{r blocking-cluster}
+# Create blocks based on age groups (data-driven)
+cluster_blocks <- matchmaker(
+  left = left_site,
+  right = right_site,
+  block_type = "cluster",
+  block_vars = "age",
+  n_blocks = 3
+)
+
+cat("Cluster-based blocks:\n")
+print(cluster_blocks$block_summary)
+
+# Match within clusters
+result_clustered <- match_couples(
+  left = cluster_blocks$left,
+  right = cluster_blocks$right,
+  vars = c("age", "income"),
+  block_id = "block_id",
+  auto_scale = TRUE
+)
+
+# Show age distribution by cluster
+cluster_blocks$left |>
+  group_by(block_id) |>
+  summarise(
+    n = n(),
+    mean_age = mean(age),
+    sd_age = sd(age)
+  )
+```
+
+## Balance Diagnostics
+
+After matching, assess balance quality using `balance_diagnostics()`.
+
+### Key Balance Metrics
+
+**1. Standardized differences:**
+$$
+\text{Std Diff} = \frac{\bar{x}_{\text{left}} - \bar{x}_{\text{right}}}{\sqrt{(s_{\text{left}}^2 + s_{\text{right}}^2) / 2}}
+$$
+
+**Thresholds:**
+
+- < 0.1: Excellent balance
+
+- 0.1 - 0.25: Good balance
+
+- 0.25 - 0.5: Acceptable (may need further adjustment)
+
+- > 0.5: Poor balance (reconsider matching strategy)
+
+**2. Variance ratios:**
+$$
+\text{VR} = \frac{s_{\text{left}}^2}{s_{\text{right}}^2}
+$$
+
+**Interpretation:**
+
+- Close to 1.0: Similar variability (good)
+
+- < 0.5 or > 2.0: Concerning imbalance in spread
+
+**3. Kolmogorov-Smirnov tests:**
+
+- Non-parametric test for distributional differences
+
+- Sensitive to differences beyond mean/variance
+
+- P-value > 0.05 suggests similar distributions
+
+```{r balance-assessment}
+# Perform matching
+match_result <- match_couples(
+  left = left_data,
+  right = right_data,
+  vars = c("age", "income"),
+  auto_scale = TRUE
+)
+
+# Get matched samples
+matched_left <- left_data |>
+  filter(id %in% match_result$pairs$left_id)
+
+matched_right <- right_data |>
+  filter(id %in% match_result$pairs$right_id)
+
+# Compute balance diagnostics
+balance <- balance_diagnostics(
+  result = match_result,
+  left = left_data,
+  right = right_data,
+  vars = c("age", "income")
+)
+
+# Print balance summary
+print(balance)
+
+# Extract balance table for reporting
+balance_table(balance)
+```
+
+### How to Interpret Balance Results
+
+The balance diagnostics output tells you whether your match succeeded. Here's how to read it:
+
+```
+Balance Diagnostics
+-------------------
+Variables: age, income
+
+Variable Statistics:
+  variable mean_left mean_right std_diff var_ratio ks_stat ks_p
+  age      45.2      45.8       -0.08    0.95      0.06    0.89
+  income   58000     56500      0.12     1.08      0.09    0.45
+```
+
+**Reading each column**:
+
+| Column | Meaning | Good Values |
+|--------|---------|-------------|
+| `std_diff` | Standardized difference in means | \|value\| < 0.1 excellent, < 0.25 acceptable |
+| `var_ratio` | Ratio of standard deviations | 0.5--2.0 acceptable, closer to 1.0 is better |
+| `ks_stat` | Kolmogorov-Smirnov statistic | Smaller is better |
+| `ks_p` | KS test p-value | > 0.05 suggests similar distributions |
+
+**Quality thresholds** for standardized differences:
+
+- **< 0.1**: Excellent balance (treat as successfully matched)
+
+- **0.1-0.25**: Good balance (acceptable for most purposes)
+
+- **0.25-0.5**: Marginal (consider refinement or sensitivity analysis)
+
+- **> 0.5**: Poor balance (matching strategy needs revision)
+
+**What to do if balance is poor**:
+
+1. **Add more matching variables** that explain the imbalance
+
+2. **Tighten calipers** (accept fewer matches but better quality)
+
+3. **Try blocking** on the problematic variable
+
+4. **Report and discuss** in limitations section
+
+### Visualizing Balance
+
+```{r balance-plots, fig.alt="Bar chart comparing standardized differences before and after matching, with threshold lines at 0.1 and 0.25 showing improved balance after matching"}
+# Before-after balance plot
+# (Requires creating pre-match balance for comparison)
+
+# For pre-match comparison, just compute summary statistics directly
+pre_match_stats <- tibble(
+  variable = c("age", "income"),
+  std_diff = c(
+    (mean(left_data$age) - mean(right_data$age)) / sqrt((sd(left_data$age)^2 + sd(right_data$age)^2) / 2),
+    (mean(left_data$income) - mean(right_data$income)) / sqrt((sd(left_data$income)^2 + sd(right_data$income)^2) / 2)
+  ),
+  when = "Before"
+)
+
+# Combine for plotting
+balance_comparison <- bind_rows(
+  pre_match_stats,
+  balance$var_stats |> dplyr::select(variable, std_diff) |> mutate(when = "After")
+)
+
+ggplot(balance_comparison, aes(x = variable, y = std_diff, fill = when)) +
+  geom_hline(yintercept = c(-0.1, 0.1), linetype = "dashed", color = "#93c54b", linewidth = 0.8) +
+  geom_hline(yintercept = c(-0.25, 0.25), linetype = "dashed", color = "#f47c3c", linewidth = 0.8) +
+  geom_col(position = "dodge", width = 0.5) +
+  geom_label(aes(x = 1.5, y = -0.1, label = "±0.1 excellent"),
+             fill = "#93c54b", color = "white", inherit.aes = FALSE,
+             size = 3, fontface = "bold", label.padding = unit(0.2, "lines")) +
+  geom_label(aes(x = 1.5, y = 0.25, label = "±0.25 acceptable"),
+             fill = "#f47c3c", color = "white", inherit.aes = FALSE,
+             size = 3, fontface = "bold", label.padding = unit(0.2, "lines")) +
+  labs(
+    title = "Covariate Balance Before and After Matching",
+    x = "Variable",
+    y = "Standardized Difference",
+    fill = "Timing"
+  ) +
+  theme_minimal() +
+  theme(plot.background = element_rect(fill = "transparent", color = NA),
+        panel.background = element_rect(fill = "transparent", color = NA),
+        legend.background = element_rect(fill = "transparent", color = NA),
+        panel.grid = element_blank()) +
+  coord_flip()
+```
+
+## Real-World Example: Treatment Effect Estimation
+
+Complete workflow for estimating treatment effects in an observational study.
+
+### Scenario
+
+Evaluate the effect of a job training program on earnings. Participants self-selected into the program, creating potential selection bias.
+
+**Data:**
+
+- Treatment: 200 program participants
+
+- Control: 500 non-participants
+
+- Covariates: age, education, prior earnings, employment status
+
+- Outcome: Earnings one year after program
+
+### Step 1: Data Preparation
+
+```{r real-world-data}
+set.seed(404)
+
+# Simulate realistic scenario with selection bias
+# Program attracts younger, more educated, currently employed individuals
+create_participant <- function(n, is_treatment) {
+  if (is_treatment) {
+    tibble(
+      id = 1:n,
+      age = rnorm(n, mean = 35, sd = 8),
+      education_years = rnorm(n, mean = 14, sd = 2),
+      prior_earnings = rnorm(n, mean = 35000, sd = 10000),
+      employed = sample(c(0, 1), n, replace = TRUE, prob = c(0.3, 0.7)),
+      treatment = 1
+    )
+  } else {
+    tibble(
+      id = (n+1):(n+500),
+      age = rnorm(500, mean = 42, sd = 12),
+      education_years = rnorm(500, mean = 12, sd = 3),
+      prior_earnings = rnorm(500, mean = 30000, sd = 12000),
+      employed = sample(c(0, 1), 500, replace = TRUE, prob = c(0.5, 0.5)),
+      treatment = 0
+    )
+  }
+}
+
+treatment_group <- create_participant(200, TRUE)
+control_group <- create_participant(500, FALSE)
+
+# Simulate outcome (earnings) with treatment effect
+# True effect: +$5,000, with heterogeneity
+treatment_group <- treatment_group |>
+  mutate(
+    earnings = prior_earnings +
+      5000 +  # True treatment effect
+      2000 * rnorm(n()) +  # Random variation
+      100 * education_years  # Education effect
+  )
+
+control_group <- control_group |>
+  mutate(
+    earnings = prior_earnings +
+      2000 * rnorm(n()) +
+      100 * education_years
+  )
+
+# Examine baseline imbalance
+cat("Pre-matching differences:\n")
+cat("Age diff:",
+    mean(treatment_group$age) - mean(control_group$age), "\n")
+cat("Education diff:",
+    mean(treatment_group$education_years) - mean(control_group$education_years), "\n")
+cat("Prior earnings diff:",
+    mean(treatment_group$prior_earnings) - mean(control_group$prior_earnings), "\n")
+```
+
+### Step 2: Perform Matching
+
+```{r real-world-matching}
+# Match on baseline covariates
+job_match <- match_couples(
+  left = treatment_group,
+  right = control_group,
+  vars = c("age", "education_years", "prior_earnings", "employed"),
+  auto_scale = TRUE,
+  scale = "robust",
+  return_diagnostics = TRUE
+)
+
+cat("Matching summary:\n")
+cat("  Treated units:", nrow(treatment_group), "\n")
+cat("  Matched treated:", job_match$info$n_matched, "\n")
+cat("  Match rate:",
+    round(100 * job_match$info$n_matched / nrow(treatment_group), 1), "%\n")
+```
+
+### Step 3: Assess Balance
+
+```{r real-world-balance}
+# Extract matched samples
+matched_treated <- treatment_group |>
+  filter(id %in% job_match$pairs$left_id)
+
+matched_control <- control_group |>
+  filter(id %in% job_match$pairs$right_id)
+
+# Compute balance
+job_balance <- balance_diagnostics(
+  result = job_match,
+  left = treatment_group,
+  right = control_group,
+  vars = c("age", "education_years", "prior_earnings", "employed")
+)
+
+print(job_balance)
+
+# Check overall balance quality
+cat("\nOverall balance:\n")
+cat("  Mean |std diff|:", round(job_balance$overall$mean_abs_std_diff, 3), "\n")
+cat("  Max |std diff|:", round(job_balance$overall$max_abs_std_diff, 3), "\n")
+cat("  % with |std diff| > 0.1:",
+    round(job_balance$overall$pct_large_imbalance, 1), "%\n")
+```
+
+### Step 4: Estimate Treatment Effect
+
+```{r real-world-ate}
+# Naive estimate (without matching) - BIASED
+naive_effect <- mean(treatment_group$earnings) - mean(control_group$earnings)
+
+# Matched estimate - accounts for baseline differences
+matched_effect <- mean(matched_treated$earnings) - mean(matched_control$earnings)
+
+# Paired t-test for significance
+paired_comparison <- tibble(
+  treated = matched_treated$earnings,
+  control = matched_control$earnings[match(
+    matched_treated$id,
+    job_match$pairs$left_id
+  )]
+)
+
+t_test <- t.test(paired_comparison$treated, paired_comparison$control, paired = TRUE)
+
+# Report results
+cat("Treatment Effect Estimates:\n\n")
+cat("Naive (unmatched):\n")
+cat("  Difference: $", round(naive_effect, 0), "\n")
+cat("  (Upward biased due to selection)\n\n")
+
+cat("Matched estimate:\n")
+cat("  Difference: $", round(matched_effect, 0), "\n")
+cat("  95% CI: ($", round(t_test$conf.int[1], 0), ", $",
+    round(t_test$conf.int[2], 0), ")\n")
+cat("  P-value:", format.pval(t_test$p.value, digits = 3), "\n")
+cat("  (Closer to true effect of $5,000)\n")
+```
+
+### Step 5: Publication-Ready Output
+
+```{r real-world-table, eval=FALSE}
+# Table 1: Balance table
+balance_publication <- balance_table(job_balance)
+print(balance_publication)
+
+# Table 2: Sample characteristics
+sample_table <- bind_rows(
+  matched_treated |>
+    summarise(
+      Group = "Treatment",
+      N = n(),
+      `Age (mean ± SD)` = sprintf("%.1f ± %.1f", mean(age), sd(age)),
+      `Education (years)` = sprintf("%.1f ± %.1f", mean(education_years), sd(education_years)),
+      `Prior Earnings` = sprintf("$%s ± %s",
+                                 format(round(mean(prior_earnings)), big.mark = ","),
+                                 format(round(sd(prior_earnings)), big.mark = ",")),
+      `Employed (%)` = sprintf("%.1f", 100 * mean(employed))
+    ),
+  matched_control |>
+    summarise(
+      Group = "Control",
+      N = n(),
+      `Age (mean ± SD)` = sprintf("%.1f ± %.1f", mean(age), sd(age)),
+      `Education (years)` = sprintf("%.1f ± %.1f", mean(education_years), sd(education_years)),
+      `Prior Earnings` = sprintf("$%s ± %s",
+                                 format(round(mean(prior_earnings)), big.mark = ","),
+                                 format(round(sd(prior_earnings)), big.mark = ",")),
+      `Employed (%)` = sprintf("%.1f", 100 * mean(employed))
+    )
+)
+
+print(sample_table)
+
+# Table 3: Treatment effect
+effect_table <- tibble(
+  Method = c("Unmatched", "Matched"),
+  `N (Treated)` = c(nrow(treatment_group), nrow(matched_treated)),
+  `N (Control)` = c(nrow(control_group), nrow(matched_control)),
+  `Effect Estimate` = sprintf("$%s", format(round(c(naive_effect, matched_effect)), big.mark = ",")),
+  `95% CI` = c("--", sprintf("($%s, $%s)",
+                            format(round(t_test$conf.int[1]), big.mark = ","),
+                            format(round(t_test$conf.int[2]), big.mark = ",")))
+)
+
+print(effect_table)
+```
+
+## Performance Considerations
+
+### Scalability
+
+**Optimal matching complexity:** $O(n^3)$ using Jonker-Volgenant
+
+- n = 100: < 0.01 seconds
+
+- n = 500: ~ 0.1 seconds
+
+- n = 1,000: ~ 1 second
+
+- n = 3,000: ~ 10 seconds
+
+- n = 5,000: ~ 30-60 seconds
+
+**Greedy matching complexity:** $O(n^2 \log n)$ for sorted, $O(n^2)$ for row-best
+
+- n = 5,000: ~ 1 second
+
+- n = 10,000: ~ 3-5 seconds
+
+- n = 50,000: ~ 30-60 seconds
+
+### Memory Usage
+
+- Cost matrix: 8n² bytes (for n×n problem)
+
+- n = 1,000: ~ 8 MB
+
+- n = 5,000: ~ 200 MB
+
+- n = 10,000: ~ 800 MB
+
+`build_cost_matrix()` allocates this full matrix in `memory_mode = "dense"`
+for every `method`, including `"greedy"`: greedy changes how the matrix is
+solved, not how much memory it takes.
+
+For very large problems:
+
+1. Use `memory_mode = "lazy"` with `method = "jv"`/`"auction"` to compute
+   distances on demand from the underlying feature data instead of
+   allocating the full matrix -- `memory_mode = "auto"` (the default)
+   switches to this automatically when the dense matrix would need a large
+   share of free RAM
+
+2. Use blocking to reduce within-block size -- combines with either memory
+   mode
+
+3. Consider approximate methods (upcoming vignette)
+
+### Optimization Tips
+
+**1. Use blocking for large datasets**
+
+```{r optimization-blocking, eval=FALSE}
+# Instead of matching 10,000 × 10,000:
+# Create 10 blocks of ~1,000 × 1,000 each
+blocks <- matchmaker(
+  left_large, right_large,
+  block_type = "cluster",
+  cluster_vars = "age",
+  n_clusters = 10
+)
+
+# Much faster: 10 * O(1000^3) << O(10000^3)
+result <- match_couples(
+  blocks$left, blocks$right,
+  vars = covariates,
+  block_id = "block_id"
+)
+```
+
+**2. Start with greedy, refine if needed**
+
+```{r optimization-greedy, eval=FALSE}
+# Quick greedy match for exploration
+quick <- match_couples(
+  left_data, right_data,
+  vars = covariates,
+  strategy = "row_best"
+, method = "greedy")
+
+# Assess balance
+balance_quick <- balance_diagnostics(quick, left_data, right_data, vars = covariates)
+
+# If balance is acceptable, done!
+# If not, try optimal or add blocking
+```
+
+**3. Use calipers to reduce problem size**
+
+```{r optimization-caliper, eval=FALSE}
+# Caliper removes distant pairs from cost matrix
+# Can dramatically reduce effective problem size
+result <- match_couples(
+  left_data, right_data,
+  vars = covariates,
+  max_distance = 0.25,  # Strict caliper
+  auto_scale = TRUE
+)
+```
+
+## What Can Go Wrong
+
+Matching doesn't always succeed. Here are common problems and solutions.
+
+### Problem: Poor Balance Despite Matching
+
+**Symptom**: `balance_diagnostics()` shows |std_diff| > 0.25 for some variables.
+
+**Causes**:
+- Groups are fundamentally too different (weak overlap)
+
+- Important confounders not included in matching variables
+
+- Caliper too loose
+
+**Solutions**:
+```{r poor-balance-fix, eval=FALSE}
+# 1. Add more matching variables
+result <- match_couples(left, right,
+                        vars = c("age", "income", "education", "region"),  # Added!
+                        auto_scale = TRUE)
+
+# 2. Tighten caliper (fewer but better matches)
+result <- match_couples(left, right, vars = vars,
+                        max_distance = 0.1)  # Was 0.5
+
+# 3. Block on the problematic variable
+blocks <- matchmaker(left, right, block_type = "group", block_by = "region")
+result <- match_couples(blocks$left, blocks$right, vars = other_vars,
+                        block_id = "block_id")
+```
+
+### Problem: Very Few Matches
+
+**Symptom**: `n_matched` is much smaller than `nrow(left)`.
+
+**Causes**:
+- Caliper too strict
+
+- Non-overlapping covariate distributions
+
+- Blocking creates small strata
+
+**Diagnosis**:
+```{r few-matches-diagnosis, eval=FALSE}
+# Check covariate overlap
+library(ggplot2)
+combined <- bind_rows(
+  left |> mutate(group = "treatment"),
+  right |> mutate(group = "control")
+)
+ggplot(combined, aes(x = age, fill = group)) +
+  geom_density(alpha = 0.5) +
+  labs(title = "Check for Overlap")
+```
+
+**Solutions**:
+- Relax caliper
+
+- Use coarser blocking categories
+
+- Accept that some treatment units are unmatchable (report this!)
+
+### Problem: Matching Takes Too Long
+
+**Symptom**: `match_couples()` runs for minutes or doesn't complete.
+**Cause**: $O(n^3)$ complexity for optimal matching.
+
+**Solutions**:
+```{r slow-matching-fix, eval=FALSE}
+# For n > 3000: use greedy
+result <- match_couples(left, right, vars = vars, strategy = "sorted", method = "greedy")
+
+# For n > 5000: add blocking
+blocks <- matchmaker(left, right, block_type = "cluster", n_blocks = 20)
+result <- match_couples(blocks$left, blocks$right, vars = vars,
+                        block_id = "block_id")
+```
+
+### Problem: Memory Error
+
+**Symptom**: R crashes or reports "cannot allocate vector of size X".
+
+**Cause**: Full cost matrix doesn't fit in RAM. A 10,000×10,000 matrix needs ~800 MB.
+
+**Solutions**:
+- Use `match_couples(method = "greedy")` which doesn't require full matrix
+
+- Use blocking to create smaller sub-problems
+
+- Consider random sampling if sample size permits
+
+## Summary
+
+This vignette walked through a complete matching workflow using the job training evaluation example:
+
+1. **Problem framing**: Treatment effect estimation with selection bias
+
+2. **Matching**: Creating comparable groups with `match_couples()`
+
+3. **Preprocessing**: Automatic scaling and variable health checks
+
+4. **Assessment**: Balance diagnostics and interpretation
+
+5. **Refinement**: Calipers, blocking, and greedy alternatives
+
+6. **Estimation**: Treatment effect with confidence intervals
+
+**Key Takeaways**:
+
+| Concept | Key Point |
+|---------|-----------|
+| Preprocessing | Always use `auto_scale = TRUE` unless you have a specific reason not to |
+| Balance | Target \|std_diff\| < 0.1; accept < 0.25 |
+| Calipers | Start loose, tighten if needed for balance |
+| Blocking | Use for exact balance on key categorical variables |
+| Greedy | Use for n > 3000; almost as good, much faster |
+
+**Recommended Workflow**:
+
+```{r workflow-diagram, fig.width=8, fig.height=6, echo=FALSE, fig.alt="Flowchart showing recommended matching workflow with iterative refinement loop"}
+library(ggplot2)
+
+# Define workflow nodes
+nodes <- data.frame(
+  label = c("1. Explore data\nIdentify confounders",
+            "2. First match\nmatch_couples()",
+            "3. Check balance\nbalance_diagnostics()",
+            "Balance\nOK?",
+            "4. Estimate\neffect",
+            "Refine: caliper,\nblocking, more vars"),
+  x = c(4, 4, 4, 4, 2, 6),
+  y = c(6, 5, 4, 3, 2, 2),
+  type = c("step", "step", "step", "decision", "step", "step")
+)
+
+# Define edges
+edges <- data.frame(
+  from_x = c(4, 4, 4, 4, 4, 6),
+  from_y = c(6, 5, 4, 3, 3, 2),
+  to_x = c(4, 4, 4, 2, 6, 4),
+  to_y = c(5, 4, 3, 2, 2, 4),
+  label = c("", "", "", "Yes", "No", ""),
+  label_x = c(NA, NA, NA, 2.8, 5.2, 5.5),
+  label_y = c(NA, NA, NA, 2.6, 2.6, 3)
+)
+
+ggplot() +
+  # Draw straight edges (vertical arrows)
+  geom_segment(data = edges[1:3, ],
+               aes(x = from_x, y = from_y, xend = to_x, yend = to_y),
+               arrow = arrow(length = unit(0.15, "cm"), type = "closed"),
+               color = "#3e3f3a", linewidth = 0.7) +
+
+  # Draw decision branches
+  geom_segment(data = edges[4:5, ],
+               aes(x = from_x, y = from_y, xend = to_x, yend = to_y),
+               arrow = arrow(length = unit(0.15, "cm"), type = "closed"),
+               color = "#3e3f3a", linewidth = 0.7) +
+  # Draw return loop (curved)
+  geom_curve(data = edges[6, ],
+             aes(x = from_x, y = from_y, xend = to_x, yend = to_y),
+             arrow = arrow(length = unit(0.15, "cm"), type = "closed"),
+             color = "#3e3f3a", linewidth = 0.7, curvature = 0.3) +
+  # Edge labels - no explicit color so CSS can control dark mode
+  geom_text(data = edges[!is.na(edges$label_x), ],
+            aes(x = label_x, y = label_y, label = label),
+            size = 3, fontface = "italic") +
+  # Step nodes (rectangles) - sandstone info color with white text
+  geom_label(data = nodes[nodes$type == "step", ],
+             aes(x = x, y = y, label = label), size = 3,
+             fill = "#29abe0", color = "white",
+             label.padding = unit(0.4, "lines"), label.r = unit(0.15, "lines"),
+             lineheight = 0.9) +
+  # Decision node (diamond) - sandstone warning color
+  geom_point(data = nodes[nodes$type == "decision", ],
+             aes(x = x, y = y), shape = 23, size = 20,
+             fill = "#ffc107", color = "#f47c3c", stroke = 1.5) +
+  # Decision text - use default color that adapts to dark mode
+  geom_text(data = nodes[nodes$type == "decision", ],
+            aes(x = x, y = y, label = label), size = 3, lineheight = 0.85) +
+  # Title
+  labs(title = "Matching Workflow") +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 12),
+        axis.text = element_blank(),
+        axis.title = element_blank(),
+        panel.grid = element_blank(),
+        plot.background = element_rect(fill = "transparent", color = NA),
+        panel.background = element_rect(fill = "transparent", color = NA)) +
+  coord_cartesian(xlim = c(0, 8), ylim = c(1.5, 6.5))
+```
+
+---
+
+## Advanced Matching Techniques
+
+### Full Matching (Variable-Ratio Groups)
+
+Standard one-to-one matching discards unmatched units — a significant loss when control pools are large. Full matching assigns *every* unit to a matched group with variable ratios (1:k or k:1), maximizing sample size while preserving balance.
+
+```{r full-matching}
+# Full matching: every unit gets assigned to a group
+result_full <- full_match(
+  left = left_data,
+  right = right_data,
+  vars = c("age", "income"),
+  method = "optimal"   # min-cost max-flow (default)
+)
+
+result_full
+```
+
+The `method` argument controls the algorithm:
+
+- `"optimal"` (default) — Solves a min-cost max-flow problem that minimizes total distance across all group assignments simultaneously. Uses Dijkstra's algorithm with Johnson potentials. Guarantees the globally optimal solution.
+
+- `"greedy"` — A fast two-pass heuristic: (1) each left unit picks its nearest right unit, (2) remaining right units are assigned to their nearest matched left unit. Faster but not globally optimal.
+
+```{r full-matching-comparison}
+# Compare optimal vs greedy
+result_full_greedy <- full_match(
+  left = left_data,
+  right = right_data,
+  vars = c("age", "income"),
+  method = "greedy"
+)
+
+cat("Optimal: ", result_full$info$n_groups, "groups,",
+    result_full$info$n_unmatched_left, "unmatched left,",
+    result_full$info$n_unmatched_right, "unmatched right\n")
+cat("Greedy:  ", result_full_greedy$info$n_groups, "groups,",
+    result_full_greedy$info$n_unmatched_left, "unmatched left,",
+    result_full_greedy$info$n_unmatched_right, "unmatched right\n")
+```
+
+Full matching supports `min_controls` and `max_controls` to constrain group sizes, and `caliper` to exclude poor matches:
+
+```{r full-matching-constraints}
+# Constrain: each group gets 2-5 right units, caliper of 1.5
+result_constrained <- full_match(
+  left = left_data,
+  right = right_data,
+  vars = c("age", "income"),
+  min_controls = 2,
+  max_controls = 5,
+  caliper = 1.5
+)
+
+cat("Groups:", result_constrained$info$n_groups, "\n")
+cat("Unmatched left:", result_constrained$info$n_unmatched_left, "\n")
+cat("Unmatched right:", result_constrained$info$n_unmatched_right, "\n")
+```
+
+The output is an S3 object of class `full_matching_result` with a `groups` tibble containing `group_id`, `id`, `side`, and `weight`. Within each group, right-unit weights sum to the number of left units, enabling unbiased estimation:
+
+```{r full-matching-weights}
+head(result_full$groups, 10)
+```
+
+**When to use full matching vs one-to-one:**
+
+| Criterion | One-to-one (`match_couples`) | Full (`full_match`) |
+|-----------|------------------------------|---------------------|
+| Sample size | Discards excess units | Uses every unit |
+| Estimand | ATT (treatment on treated) | ATT or ATE (with weights) |
+| Group structure | Pairs (1:1) | Variable-ratio groups |
+| Balance | Excellent within pairs | Good overall (weighted) |
+| Precision | Lower (smaller n) | Higher (larger effective n) |
+
+### Ratio Matching (k:1)
+
+Sometimes matching multiple controls per treated unit improves precision. Use the `ratio` parameter:
+
+```{r ratio-matching}
+# Match 2 controls per treated unit
+result_2to1 <- match_couples(
+  left = left_data,
+  right = right_data,
+  vars = c("age", "income"),
+  auto_scale = TRUE,
+  ratio = 2,
+  method = "hungarian"
+)
+
+result_2to1$pairs
+```
+
+Higher ratios increase sample size at the cost of slightly worse individual match quality. A common choice is 2:1 or 3:1.
+
+### With-Replacement Matching
+
+When controls are scarce relative to treated units, allowing replacement lets each control serve as a match for multiple treated units:
+
+```{r replacement-matching}
+# Allow controls to be reused
+result_wr <- match_couples(
+  left = left_data,
+  right = right_data,
+  vars = c("age", "income"),
+  auto_scale = TRUE,
+  replace = TRUE,
+  method = "hungarian"
+)
+
+# Some controls may appear multiple times
+n_distinct_controls <- length(unique(result_wr$pairs$right_id))
+cat("Unique controls used:", n_distinct_controls, "out of", nrow(right_data), "\n")
+```
+
+With-replacement matching reduces bias (each treated unit gets its closest match) but increases variance.
+
+### Propensity Score Matching
+
+Instead of matching directly on covariates, you can match on the estimated probability of treatment — the propensity score. `ps_match()` automates this:
+
+```{r ps-matching}
+# Combine data for propensity score estimation
+combined <- rbind(
+  transform(left_data[, c("id", "age", "income")], treated = 1L),
+  transform(right_data[, c("id", "age", "income")], treated = 0L)
+)
+
+# Match on propensity scores (wider caliper for this example)
+ps_result <- ps_match(
+  formula = treated ~ age + income,
+  data = combined,
+  treatment = "treated",
+  caliper_sd = 0.5,
+  method = "hungarian"
+)
+
+ps_result
+```
+
+The function fits a logistic regression, transforms scores to the logit scale, and calls `match_couples()` with a caliper constraint. The default caliper is 0.2 SD of logit(PS) (Rosenbaum and Rubin recommendation); we use 0.5 here for this small simulated dataset. You can also supply a pre-fitted model via the `ps_model` argument.
+
+### Cardinality Matching
+
+Standard matching minimizes total distance. Cardinality matching instead maximizes the number of matched pairs subject to balance constraints, and reports how far the matched sample sits from the largest one those constraints admit.
+
+Fine balance on a categorical partition is representable in the matching network itself, so a call that states balance only that way is answered by a single min-cost flow solve, with a dual certificate, at polynomial cost. `max_std_diff` defaults to `Inf`, stating no moment constraint, so this is the route a call takes until a finite bound is asked for:
+
+```{r cardinality-matching}
+# Maximize pairs subject to exact balance on the education distribution
+card_result <- cardinality_match(
+  left = left_data,
+  right = right_data,
+  vars = c("age", "income"),
+  fine = "education",
+  auto_scale = TRUE
+)
+
+card_result$cardinality
+```
+
+Bounding the standardized difference of each matching variable adds constraints that cut across the network. Those are dualized and searched by branch and bound, which runs until the bound meets the incumbent or `node_limit` or `time_limit` runs out:
+
+```{r cardinality-moments}
+card_bb <- cardinality_match(
+  left = left_data[1:20, ],
+  right = right_data[1:80, ],
+  vars = c("age", "income"),
+  max_std_diff = 0.1,
+  node_limit = 10L,
+  scale = "standardize"
+)
+
+card_bb$cardinality
+card_bb$cardinality$constraints
+```
+
+`certified` is `TRUE` only when the search settled and the gap is zero. When it is not, `gap` and `gap_fraction` say how many matched units separate the answer from the bound, and `stopped_on` says what ended the search.
+
+How long the search runs depends on whether the moment bounds bind. When the distance-minimizing match already satisfies them, which happens with a loose bound or a control reservoir large enough that the closest partners are already balanced, the root node certifies and the call returns in milliseconds. When they bind, every node costs a flow solve, and although the root enters a feasible incumbent before the first node is opened, the bound above it closes slowly, so a call can spend its whole budget and still report a gap. Set `node_limit` and `time_limit` to a budget you are willing to spend, and read `stopped_on` and `gap` to see what the budget bought.
+
+`time_limit` reaches the flow solver, which checks it between augmentations, so the call returns on the budget rather than on the completion of the solve that was running when it ran out. The node that solve belonged to goes back on the frontier unopened, which is what keeps `bound` valid for the whole problem, and the incumbent stands.
+
+A pruning heuristic is reachable with `engine = "heuristic"`. It starts from a full match and deletes the pairs carrying the worst variable's imbalance, one variable per round, and reports `info$pruning_iterations` and `info$pairs_removed`. It computes no bound, so `best_possible` and `gap` come back `NA`:
+
+```{r cardinality-heuristic}
+card_heur <- cardinality_match(
+  left = left_data,
+  right = right_data,
+  vars = c("age", "income"),
+  max_std_diff = 0.1,
+  engine = "heuristic",
+  scale = "standardize"
+)
+
+cat("Pairs matched:", card_heur$info$n_matched, "\n")
+cat("Pruning iterations:", card_heur$info$pruning_iterations, "\n")
+cat("Pairs removed:", card_heur$info$pairs_removed, "\n")
+```
+
+Cardinality matching is useful when balance is a requirement rather than a diagnostic, and the question is how large a sample can meet it.
+
+### Coarsened Exact Matching (CEM)
+
+CEM coarsens continuous variables into bins, then performs exact matching within strata. This avoids model dependence — results don't rely on a distance function or propensity score model:
+
+```{r cem-matching}
+cem_result <- cem_match(
+  left = left_data,
+  right = right_data,
+  vars = c("age", "income"),
+  n_bins = "sturges"   # automatic bin width; also "fd", "scott", or an integer
+)
+
+cem_result
+
+# Strata summary: how many units in each coarsened cell
+head(cem_result$strata_summary)
+```
+
+You can supply custom cutpoints per variable with the `cutpoints` argument, or pass categorical grouping variables with `grouping`. Each matched unit receives a weight inversely proportional to the stratum size, ensuring balance across strata.
+
+### Subclassification
+
+Subclassification (stratification on the propensity score) divides the sample into strata of similar PS, then computes within-stratum effects. Unlike one-to-one matching, no units are discarded:
+
+```{r subclass-matching}
+# Combine data
+combined <- rbind(
+  transform(left_data[, c("id", "age", "income")], treated = 1L),
+  transform(right_data[, c("id", "age", "income")], treated = 0L)
+)
+
+sub_result <- subclass_match(
+  formula = treated ~ age + income,
+  data = combined,
+  treatment = "treated",
+  n_subclasses = 5,
+  estimand = "ATT"
+)
+
+sub_result
+head(sub_result$subclass_summary)
+```
+
+### Ecosystem Integration
+
+All couplr result types can be converted to a unified analysis-ready format or to MatchIt-class objects for interoperability with cobalt and marginaleffects.
+
+**`match_data()`** produces a single data frame with `treatment`, `weights`, `subclass`, and `distance` columns — ready for downstream modelling:
+
+```{r match-data-example}
+md <- couplr::match_data(result, left_data, right_data)
+head(md)
+```
+
+**`as_matchit()`** constructs a `matchit`-class object, enabling direct use with `cobalt::bal.tab()`, `cobalt::love.plot()`, and `marginaleffects::avg_comparisons()`:
+```{r as-matchit-example, eval=FALSE}
+mi <- as_matchit(result, left_data, right_data)
+
+# cobalt balance table
+cobalt::bal.tab(mi)
+
+# marginaleffects
+marginaleffects::avg_comparisons(model, vcov = "HC3", newdata = match.data(mi))
+```
+
+---
+
+## Sensitivity Analysis
+
+After matching, a natural question is: *how much hidden bias would be needed to invalidate the results?* Rosenbaum bounds address this by computing p-values under varying degrees of unobserved confounding.
+
+```{r sensitivity-analysis}
+# Simulate a modest treatment effect (small enough that hidden bias matters)
+set.seed(99)
+n_sa <- 50
+left_sa <- data.frame(
+  id = 1:n_sa,
+  x = rnorm(n_sa, 5, 2),
+  outcome = rnorm(n_sa, mean = 1.0, sd = 2)
+)
+right_sa <- data.frame(
+  id = (n_sa + 1):(2 * n_sa),
+  x = rnorm(n_sa, 5, 2),
+  outcome = rnorm(n_sa, mean = 0.3, sd = 2)
+)
+
+# Match on covariate x
+result_sa <- match_couples(
+  left = left_sa,
+  right = right_sa,
+  vars = "x",
+  method = "hungarian"
+)
+
+# How robust is the result to hidden bias?
+sa <- sensitivity_analysis(
+  result = result_sa,
+  left = left_sa,
+  right = right_sa,
+  outcome_var = "outcome",
+  gamma = seq(1, 2, by = 0.25)
+)
+
+sa
+```
+
+The **critical gamma** ($\Gamma$) is the smallest value at which the upper-bound p-value crosses 0.05. A larger critical gamma means the finding is more robust: a critical gamma of 1.75, for example, means an unobserved confounder would need to change the odds of treatment by a factor of 1.75 to explain away the result.
+
+---
+
+## Visualizing Results with autoplot
+
+If `ggplot2` is available, `autoplot()` methods produce publication-ready plots:
+
+```{r autoplot-examples, fig.width=7, fig.height=4}
+if (requireNamespace("ggplot2", quietly = TRUE)) {
+  library(ggplot2)
+
+  # Distance distribution
+  autoplot(result, type = "histogram")
+}
+```
+
+```{r autoplot-balance, fig.width=7, fig.height=4}
+if (requireNamespace("ggplot2", quietly = TRUE)) {
+  # Balance diagnostics love plot
+  bal <- balance_diagnostics(result, left_data, right_data, vars = c("age", "income"))
+  autoplot(bal, type = "love")
+}
+```
+
+```{r autoplot-sensitivity, fig.width=7, fig.height=4}
+if (requireNamespace("ggplot2", quietly = TRUE)) {
+  # Sensitivity analysis curve
+  autoplot(sa)
+}
+```
+
+All `autoplot()` methods return `ggplot` objects, so you can add layers, themes, and labels as needed.
+
+---
+
+## See Also
+
+- `vignette("getting-started")` - Basic LAP solving
+
+- `vignette("algorithms")` - Mathematical foundations
+
+- `vignette("comparison")` - How couplr compares to MatchIt, optmatch, designmatch
+
+- `vignette("troubleshooting")` - Common issues and solutions
+
+- `vignette("pixel-morphing")` - Large-scale approximation strategies
+
+- `?match_couples`, `?full_match`, `?balance_diagnostics`, `?matchmaker`
+
+- `?ps_match`, `?cardinality_match`, `?sensitivity_analysis`, `?cem_match`, `?subclass_match`
+
+- `?match_data`, `?as_matchit` — ecosystem integration

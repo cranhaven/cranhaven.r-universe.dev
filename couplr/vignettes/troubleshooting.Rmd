@@ -1,0 +1,703 @@
+---
+title: "Troubleshooting Guide"
+author: "Gilles Colling"
+date: "`r Sys.Date()`"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Troubleshooting Guide}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  fig.width = 7,
+  fig.height = 5,
+  error = TRUE
+)
+library(couplr)
+library(dplyr)
+```
+
+## Overview
+This vignette provides solutions to common issues encountered when using couplr. Each section describes a problem, explains why it occurs, and provides step-by-step solutions.
+
+**Quick reference:**
+
+| Issue | Jump to Section |
+|-------|-----------------|
+| No valid pairs found | [Infeasible Problems](#infeasible-problems) |
+| Poor balance after matching | [Poor Balance](#poor-balance-despite-matching) |
+| Matching is too slow | [Performance Issues](#performance-issues) |
+| Memory errors | [Memory Errors](#memory-errors) |
+| Different results with different methods | [Non-Determinism](#different-results-with-different-methods) |
+| Unexpected NA in results | [Missing Values](#missing-values-in-data) |
+| C++ compilation errors | [Installation Issues](#installation-issues) |
+
+---
+
+## Infeasible Problems
+
+### Symptom
+
+```{r, error=TRUE}
+# This fails: all assignments have Inf cost
+cost <- matrix(c(1, Inf, Inf, Inf, Inf, Inf, Inf, 2, 3), nrow = 3, byrow = TRUE)
+result <- lap_solve(cost)
+```
+
+Error message: "No feasible assignment found" or total cost is Inf.
+
+### Cause
+
+A feasible assignment requires that every row can be assigned to at least one column with finite cost. When rows have all-Inf or all-NA entries, no valid assignment exists.
+
+### Diagnosis
+
+```{r}
+# Check for infeasible rows
+check_feasibility <- function(cost_matrix) {
+  finite_per_row <- rowSums(is.finite(cost_matrix))
+  infeasible_rows <- which(finite_per_row == 0)
+
+  if (length(infeasible_rows) > 0) {
+    cat("Infeasible rows (no finite costs):", infeasible_rows, "\n")
+    return(FALSE)
+  }
+
+  finite_per_col <- colSums(is.finite(cost_matrix))
+  infeasible_cols <- which(finite_per_col == 0)
+
+  if (length(infeasible_cols) > 0) {
+    cat("Infeasible columns (no finite costs):", infeasible_cols, "\n")
+    return(FALSE)
+  }
+
+  cat("Problem appears feasible\n")
+  return(TRUE)
+}
+
+# Check the problematic matrix
+cost <- matrix(c(1, Inf, Inf, Inf, Inf, Inf, Inf, 2, 3), nrow = 3, byrow = TRUE)
+check_feasibility(cost)
+```
+
+### Solutions
+
+**1. Remove infeasible rows/columns:**
+
+```{r}
+# Remove rows with no valid assignments
+cost <- matrix(c(1, Inf, Inf, Inf, Inf, Inf, Inf, 2, 3), nrow = 3, byrow = TRUE)
+valid_rows <- rowSums(is.finite(cost)) > 0
+cost_valid <- cost[valid_rows, , drop = FALSE]
+
+if (nrow(cost_valid) > 0) {
+  result <- lap_solve(cost_valid)
+  cat("Matched", nrow(result), "of", nrow(cost), "rows\n")
+}
+```
+
+**2. Add fallback costs:**
+
+```{r}
+# Replace Inf with high (but finite) penalty
+cost_with_fallback <- cost
+cost_with_fallback[!is.finite(cost_with_fallback)] <- 1e6  # Large penalty
+
+result <- lap_solve(cost_with_fallback)
+print(result)
+```
+
+**3. For matching: check covariate overlap:**
+
+```{r, fig.width=7, fig.height=4, fig.alt="Density plot showing overlap between treatment and control groups on the age variable"}
+# Simulate poor overlap scenario
+set.seed(123)
+left <- tibble(id = 1:50, age = rnorm(50, mean = 25, sd = 3))
+right <- tibble(id = 1:50, age = rnorm(50, mean = 55, sd = 3))
+
+# Visualize overlap
+library(ggplot2)
+combined <- bind_rows(
+  left |> mutate(group = "Left"),
+  right |> mutate(group = "Right")
+)
+
+ggplot(combined, aes(x = age, fill = group)) +
+  geom_density(alpha = 0.5) +
+  labs(title = "Poor Covariate Overlap",
+       subtitle = "No overlap means no good matches possible") +
+  theme_minimal() +
+  theme(plot.background = element_rect(fill = "transparent", color = NA),
+        panel.background = element_rect(fill = "transparent", color = NA))
+```
+
+---
+
+## Poor Balance Despite Matching
+
+### Symptom
+
+After matching, `balance_diagnostics()` shows |std_diff| > 0.25 for some variables.
+
+```{r}
+# Example of poor balance
+set.seed(456)
+left <- tibble(
+  id = 1:100,
+  age = rnorm(100, 30, 5),
+  income = rnorm(100, 80000, 20000)  # Very different from right
+)
+right <- tibble(
+  id = 1:100,
+  age = rnorm(100, 32, 5),
+  income = rnorm(100, 40000, 10000)  # Very different income
+)
+
+result <- match_couples(left, right, vars = c("age", "income"), auto_scale = TRUE,
+                        method = "hungarian")
+balance <- balance_diagnostics(result, left, right, vars = c("age", "income"))
+print(balance)
+```
+
+### Causes
+
+1. **Weak overlap**: Groups are too different on key variables
+
+2. **Missing confounders**: Important variables not included in matching
+
+3. **Caliper too loose**: Accepting poor matches
+
+4. **Wrong scaling**: Variables not properly weighted
+
+### Solutions
+
+**1. Add more matching variables:**
+
+```{r, eval=FALSE}
+# Include additional relevant variables
+result <- match_couples(
+  left, right,
+  vars = c("age", "income", "education", "region"),  # More variables
+  auto_scale = TRUE
+)
+```
+
+**2. Tighten caliper (fewer but better matches):**
+
+```{r}
+result_strict <- match_couples(
+  left, right,
+  vars = c("age", "income"),
+  max_distance = 0.3,  # Stricter caliper
+  auto_scale = TRUE,
+  method = "hungarian"
+)
+
+cat("Original matches:", result$info$n_matched, "\n")
+cat("With caliper:", result_strict$info$n_matched, "\n")
+
+balance_strict <- balance_diagnostics(result_strict, left, right, vars = c("age", "income"))
+print(balance_strict)
+```
+
+**3. Use blocking on problematic variable:**
+
+```{r, eval=FALSE}
+# Block on income tertiles to ensure exact balance
+left$income_cat <- cut(left$income, breaks = 3, labels = c("low", "mid", "high"))
+right$income_cat <- cut(right$income, breaks = 3, labels = c("low", "mid", "high"))
+
+blocks <- matchmaker(left, right, block_type = "group", block_by = "income_cat")
+result_blocked <- match_couples(
+  blocks$left, blocks$right,
+  vars = c("age"),  # Match on age within income blocks
+  block_id = "block_id"
+)
+```
+
+**4. Try different scaling:**
+
+```{r}
+# Compare scaling methods
+for (scale_method in c("robust", "standardize", "range")) {
+  res <- match_couples(left, right, vars = c("age", "income"),
+                       auto_scale = TRUE, scale = scale_method,
+                       method = "hungarian")
+  bal <- balance_diagnostics(res, left, right, vars = c("age", "income"))
+  cat(scale_method, "- max |std_diff|:",
+      round(bal$overall$max_abs_std_diff, 3), "\n")
+}
+```
+
+---
+
+## Performance Issues
+
+### Symptom
+
+`match_couples()` or `lap_solve()` takes too long or doesn't complete.
+
+### Cause
+
+Optimal matching has $O(n^3)$ complexity. For n = 5,000, this means ~125 billion operations.
+
+### Diagnosis
+
+```{r}
+# Estimate runtime
+estimate_runtime <- function(n, seconds_per_billion = 1) {
+  ops <- n^3
+  time_sec <- ops / 1e9 * seconds_per_billion
+
+  if (time_sec < 60) {
+    sprintf("%.1f seconds", time_sec)
+  } else if (time_sec < 3600) {
+    sprintf("%.1f minutes", time_sec / 60)
+  } else {
+    sprintf("%.1f hours", time_sec / 3600)
+  }
+}
+
+cat("Estimated runtime for optimal matching:\n")
+for (n in c(100, 500, 1000, 3000, 5000, 10000)) {
+  cat(sprintf("  n = %5d: %s\n", n, estimate_runtime(n)))
+}
+```
+
+### Solutions
+
+**1. Use greedy matching for large problems:**
+
+```{r}
+set.seed(789)
+n <- 500
+large_left <- tibble(id = 1:n, x1 = rnorm(n), x2 = rnorm(n))
+large_right <- tibble(id = 1:n, x1 = rnorm(n), x2 = rnorm(n))
+
+# Greedy is much faster
+time_greedy <- system.time({
+  result_greedy <- match_couples(
+    large_left, large_right,
+    vars = c("x1", "x2"),
+    strategy = "row_best"
+  , method = "greedy")
+})
+
+cat("Greedy matching (n=500):", round(time_greedy["elapsed"], 2), "seconds\n")
+cat("Quality (mean distance):", round(mean(result_greedy$pairs$distance), 4), "\n")
+```
+
+**2. Use blocking to divide the problem:**
+
+```{r, eval=FALSE}
+# Create clusters to match within
+blocks <- matchmaker(
+  large_left, large_right,
+  block_type = "cluster",
+  block_vars = c("x1", "x2"),
+  n_blocks = 10  # 10 blocks of ~200 each
+)
+
+# Match within blocks (10 x O(200^3) << O(2000^3))
+result_blocked <- match_couples(
+  blocks$left, blocks$right,
+  vars = c("x1", "x2"),
+  block_id = "block_id"
+)
+```
+
+**3. Choose a faster algorithm:**
+
+```{r, eval=FALSE}
+# For n > 1000, auction algorithm often faster
+result <- match_couples(
+  large_left, large_right,
+  vars = c("x1", "x2"),
+  method = "auction"
+)
+
+# For sparse problems (many forbidden pairs)
+result <- match_couples(
+  left, right,
+  vars = vars,
+  max_distance = 0.5,  # Creates sparsity
+  method = "sap"       # Sparse algorithm
+)
+```
+
+**4. Pre-compute and cache distances:**
+
+```{r}
+# Compute once, reuse multiple times
+dist_cache <- compute_distances(
+  large_left, large_right,
+  vars = c("x1", "x2"),
+  scale = "robust"
+)
+
+# Fast: reuse cached distances
+result1 <- match_couples(dist_cache, max_distance = 0.3, method = "hungarian")
+result2 <- match_couples(dist_cache, max_distance = 0.5, method = "hungarian")
+result3 <- match_couples(dist_cache, max_distance = 1.0, method = "hungarian")
+```
+
+---
+
+## Memory Errors
+
+### Symptom
+
+R crashes or shows: "Error: cannot allocate vector of size X GB"
+
+### Cause
+
+A full distance matrix for nxn requires 8n² bytes:
+
+```{r}
+# Memory requirements
+memory_needed <- function(n) {
+  bytes <- 8 * n^2
+  if (bytes < 1e6) {
+    sprintf("%.1f KB", bytes / 1e3)
+  } else if (bytes < 1e9) {
+    sprintf("%.1f MB", bytes / 1e6)
+  } else {
+    sprintf("%.1f GB", bytes / 1e9)
+  }
+}
+
+cat("Memory for full distance matrix:\n")
+for (n in c(1000, 5000, 10000, 20000, 50000)) {
+  cat(sprintf("  n = %5d: %s\n", n, memory_needed(n)))
+}
+```
+
+### Solutions
+
+**1. Use `memory_mode = "lazy"` to avoid materializing the matrix:**
+
+With `method = "jv"` or `"auction"`, `memory_mode = "lazy"` computes each
+pairwise distance on demand from the underlying feature data instead of
+allocating the full n_left x n_right matrix -- a 100k x 100k match needs
+~80GB dense, but the underlying feature data for that same match needs only
+tens of megabytes. `memory_mode = "auto"` (the default) switches to this
+automatically when the dense matrix would use a large share of free RAM,
+with a warning; pass it explicitly to opt in sooner:
+
+```{r, eval=FALSE}
+result <- match_couples(left, right, vars = vars, method = "jv",
+                        memory_mode = "lazy")
+```
+
+This trades RAM for compute -- costs are recomputed as the solver needs
+them rather than read once from a table -- and currently supports built-in
+distance metrics with `method = "jv"`/`"auction"` only; `replace = TRUE`,
+`ratio > 1`, `method = "greedy"`, and custom distance functions still
+require `memory_mode = "dense"`.
+
+**2. Use blocking to create smaller subproblems:**
+
+Blocking reduces the size of each allocated matrix directly -- each block
+gets its own, much smaller cost matrix instead of one large one -- and
+combines with either memory mode.
+
+```{r, eval=FALSE}
+# Each block is much smaller
+blocks <- matchmaker(left, right, block_type = "cluster", n_blocks = 20)
+result <- match_couples(blocks$left, blocks$right, vars = vars, block_id = "block_id")
+```
+
+**3. Increase R's memory limit (Windows):**
+
+```{r, eval=FALSE}
+# Increase to 16 GB (if available)
+memory.limit(size = 16000)
+```
+
+**Note on greedy matching and calipers in `memory_mode = "dense"`:**
+`build_cost_matrix()` allocates the full n_left x n_right matrix before
+matching starts, for every `method`, including `"greedy"`. Greedy and
+calipers change how that matrix is solved, not how much memory it takes: a
+caliper marks distant pairs `Inf` inside the same full-size matrix, and
+solvers like `"sap"` and `"lapmod"` handle a matrix with many forbidden
+cells faster, but they still receive the full matrix. couplr has no sparse
+matrix representation, so neither greedy nor calipers reduce a dense-mode
+allocation -- use `memory_mode = "lazy"` (solution 1) for that.
+
+---
+
+## Different Results with Different Methods
+
+### Symptom
+
+Different algorithms return different assignments:
+
+```{r}
+cost <- matrix(c(1, 2, 2, 2, 1, 2, 2, 2, 1), nrow = 3, byrow = TRUE)
+
+result_jv <- lap_solve(cost, method = "jv")
+result_hungarian <- lap_solve(cost, method = "hungarian")
+
+cat("JV assignment:       ", result_jv$target, "\n")
+cat("Hungarian assignment:", result_hungarian$target, "\n")
+cat("JV total cost:       ", get_total_cost(result_jv), "\n")
+cat("Hungarian total cost:", get_total_cost(result_hungarian), "\n")
+```
+
+### Cause
+
+When multiple optimal solutions exist (tied costs), different algorithms may find different ones. **The total cost should be the same**; if not, report a bug.
+
+### Diagnosis
+
+```{r}
+# Check for ties
+check_ties <- function(cost_matrix) {
+  n <- nrow(cost_matrix)
+  # Check if diagonal dominates (trivial ties)
+  diag_costs <- diag(cost_matrix)
+  if (length(unique(diag_costs)) < n) {
+    cat("Tied costs on diagonal - multiple optima likely\n")
+  }
+
+  # Check cost uniqueness
+  unique_costs <- length(unique(as.vector(cost_matrix)))
+  total_entries <- length(cost_matrix)
+  if (unique_costs < total_entries * 0.5) {
+    cat("Many repeated costs - ties possible\n")
+  }
+}
+
+check_ties(cost)
+```
+
+### Solutions
+
+**1. Verify total costs match:**
+
+```{r}
+# Total cost should be identical
+stopifnot(get_total_cost(result_jv) == get_total_cost(result_hungarian))
+cat("Both methods found optimal solutions (same total cost)\n")
+```
+
+**2. Use Hungarian for deterministic tie-breaking:**
+
+```{r}
+# Hungarian has consistent tie-breaking
+result <- lap_solve(cost, method = "hungarian")
+```
+
+**3. Add small noise to break ties:**
+
+```{r}
+set.seed(42)
+cost_perturbed <- cost + matrix(rnorm(9, 0, 1e-10), 3, 3)
+result <- lap_solve(cost_perturbed)
+```
+
+---
+
+## Missing Values in Data
+
+### Symptom
+
+Matching fails or produces unexpected results due to NA values.
+
+```{r, error=TRUE}
+left <- tibble(id = 1:5, age = c(25, 30, NA, 35, 40))
+right <- tibble(id = 1:5, age = c(28, 32, 33, 36, 42))
+
+# This may fail or give unexpected results
+result <- match_couples(left, right, vars = "age")
+```
+
+### Cause
+
+couplr requires complete cases for distance computation. NA values in matching variables cause issues.
+
+### Solutions
+
+**1. Remove rows with NA (before matching):**
+
+```{r}
+left_clean <- left |> filter(!is.na(age))
+right_clean <- right |> filter(!is.na(age))
+
+result <- match_couples(left_clean, right_clean, vars = "age")
+cat("Matched", result$info$n_matched, "pairs (excluded 1 left unit with NA)\n")
+```
+
+**2. Impute missing values:**
+
+```{r}
+# Simple mean imputation
+left_imputed <- left |>
+  mutate(age = if_else(is.na(age), mean(age, na.rm = TRUE), age))
+
+result <- match_couples(left_imputed, right, vars = "age")
+cat("Matched", result$info$n_matched, "pairs (imputed 1 NA with mean)\n")
+```
+
+**3. Use preprocessing to diagnose:**
+
+```{r}
+health <- preprocess_matching_vars(
+  left, right,
+  vars = "age"
+)
+print(health)
+```
+
+---
+
+## Installation Issues
+
+### C++ Compilation Errors
+
+#### Symptom
+
+```
+Error in .Call("_couplr_assignment_impl"): object not found
+```
+
+or
+
+```
+Error: package 'couplr' was built under R version X.X
+```
+
+#### Cause
+
+C++ code not compiled properly, or object files are stale.
+
+#### Solutions
+
+**1. Clean and reinstall:**
+
+```{r, eval=FALSE}
+# In R:
+remove.packages("couplr")
+install.packages("couplr")
+
+# Or from GitHub:
+devtools::install_github("gcol33/couplr", force = TRUE)
+```
+
+**2. Clean compiled files (development):**
+
+```powershell
+# PowerShell
+Remove-Item src\*.o, src\*.dll -Force
+```
+
+```bash
+# Bash
+rm src/*.o src/*.so
+```
+
+Then rebuild:
+
+```{r, eval=FALSE}
+devtools::clean_dll()
+devtools::load_all()
+```
+
+**3. Check Rtools/compiler (Windows):**
+
+```{r}
+# Check if Rtools is properly configured
+Sys.which("make")
+Sys.which("g++")
+```
+
+Make sure Rtools is installed and PATH is configured correctly.
+
+---
+
+## Common Error Messages
+
+### "method_used attribute is NULL"
+
+**Cause**: Result object wasn't created properly.
+
+**Solution**: Use `lap_solve()` instead of `assignment()` for the tidy interface.
+
+### "Cost matrix contains non-finite values"
+
+**Cause**: NA or NaN values in cost matrix (not Inf).
+
+**Solution**: Replace NA with Inf for forbidden assignments, or remove rows/cols.
+
+```{r}
+cost <- matrix(c(1, NA, 3, 4), 2, 2)
+cost[is.na(cost)] <- Inf  # Mark as forbidden
+result <- lap_solve(cost)
+```
+
+### "All rows assigned to Inf columns"
+
+**Cause**: Caliper is too strict; all potential matches exceed threshold.
+
+**Solution**: Increase `max_distance` or check for overlap issues.
+
+### "subscript out of bounds"
+
+**Cause**: Empty left or right data frame, or ID mismatch.
+
+**Solution**: Check data dimensions and ID column consistency.
+
+```{r}
+# Always verify data before matching
+stopifnot(nrow(left) > 0, nrow(right) > 0)
+```
+
+---
+
+## Getting Help
+
+If you encounter an issue not covered here:
+
+1. **Check function documentation**: `?match_couples`, `?lap_solve`
+
+2. **Search GitHub issues**: [github.com/gcol33/couplr/issues](https://github.com/gcol33/couplr/issues)
+
+3. **Create a minimal reproducible example**:
+
+```{r, eval=FALSE}
+# Minimal example template
+library(couplr)
+
+# Minimal data that reproduces the issue
+set.seed(123)
+left <- tibble(id = 1:10, x = rnorm(10))
+right <- tibble(id = 1:10, x = rnorm(10))
+
+# Code that causes the error
+result <- match_couples(left, right, vars = "x")
+
+# Expected vs actual behavior
+# Expected: ...
+# Actual: [error message]
+
+# Session info
+sessionInfo()
+```
+
+4. **Open an issue** with your example at [github.com/gcol33/couplr/issues/new](https://github.com/gcol33/couplr/issues/new)
+
+---
+
+## See Also
+
+- `vignette("getting-started")` - Basic usage
+
+- `vignette("matching-workflows")` - Production matching pipelines
+
+- `vignette("algorithms")` - Algorithm selection guide
+
+- `vignette("comparison")` - Comparison with other packages
