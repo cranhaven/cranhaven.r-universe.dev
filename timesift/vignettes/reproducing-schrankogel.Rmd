@@ -1,0 +1,431 @@
+---
+title: "Reproducing the Schrankogel grid"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Reproducing the Schrankogel grid}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(collapse = TRUE, comment = "#>", eval = FALSE)
+library(timesift)
+```
+
+The measurement `timesift` exists to make was first run on 894 alpine plots on Schrankogel, in the
+central Austrian Alps: three hydrological years of hourly soil temperature, one logger per plot,
+predicting presence and absence of 101 vascular plant species. The record was read at seven grains,
+from every hour to a single value per year, by three architectures and by logistic models on 188
+hand-built summaries of the same loggers. Skill peaked at the weekly average and fell by 0.08
+toward yearly, and the coldest and warmest day of a grain carried more than its mean.
+
+This vignette says which settings of this package correspond to which part of that grid, and points
+at the script that runs it.
+
+## What the reproduction needs
+
+The soil-temperature series and the species records are the Zenodo deposit of Chytrý et al.
+(doi:10.5281/zenodo.17047026, CC BY 4.0). Four files of it are read:
+
+| file | what it carries |
+|---|---|
+| `spe_wide.csv` | presence and absence, 894 plots by 252 species |
+| `logger_data.csv` | 23,515,776 hourly readings, 26,304 per plot |
+| `seasons.csv` | the season each date of the record belongs to |
+| `output_temperature_variables_scaled.csv` | the 188 hand-aggregated temperature summaries |
+
+The snow arm of the paper reads a daily snow-cover series that is an in-house product of the study
+group and is not in the deposit, so it is not reproduced here. Everything else is.
+
+## The contract
+
+Species in at least 25 plots, then five aggregate taxa removed. That is inherited from the
+published baseline rather than chosen, and it is what fixes the species set at 101.
+
+```{r contract}
+spe <- read.csv(file.path(deposit, "spe_wide.csv"), check.names = FALSE)
+rownames(spe) <- as.character(spe$logger_ID)
+counts <- colSums(spe[setdiff(names(spe), "logger_ID")])
+keep <- setdiff(names(counts)[counts >= 25],
+                c("Alchemilla vulgaris agg.", "Taraxacum sp.", "Festuca halleri agg.",
+                  "Euphrasia sp.", "Phleum alpinum agg."))
+y <- as.matrix(spe[, keep, drop = FALSE])
+dim(y)
+#> [1] 894 101
+```
+
+## The split and the cells
+
+The fold map is an artifact rather than an algorithm: it is built once and read by everything that
+scores, so no arm can regenerate its own. The study wrote one to `folds.csv`, the package ships it
+beside the reproduction script, and reading that file back reproduces its splits exactly.
+
+```{r folds}
+f <- read.csv(system.file("reproduce", "folds.csv", package = "timesift"))
+folds <- setNames(as.integer(f$fold), as.character(f$logger_ID))
+
+cells <- scorable_cells(y, folds)
+sum(cells$scorable)
+#> [1] 1003
+```
+
+1003 of 1010 cells, 99.3 percent, and all 101 species keep at least one scorable fold. Building a
+map here instead gives a different partition of the same design, since `fold_map()` draws on R's
+random stream and `rsample` drew on a different one:
+
+```{r own-folds}
+folds <- fold_map(y, v = 10, seed = 1, strata = 5)
+```
+
+## The seven grains
+
+Six of the seven grains are named ones. The seventh is not: the deposit cuts its seasons at the
+equinoxes and the solstices rather than on the first of a month, and labels every date of the
+record accordingly, which gives 13 bins over the three years rather than 12. Reading that file back
+as a binning function is how the season rung is the deposit's season.
+
+```{r seasons}
+astronomical_seasons <- function(path) {
+  labels <- read.csv(path)
+  key <- paste(labels$season, format(as.Date(labels$day), "%Y"))
+  edges <- sort(as.POSIXct(paste0(labels$day[!duplicated(key)], " 00:00:00"), tz = "UTC"))
+  function(when) edges[findInterval(as.numeric(when), as.numeric(edges))]
+}
+
+binning <- list(native = "native", halfday = "halfday", day = "day", week = "week",
+                month = "month",
+                season = astronomical_seasons(file.path(deposit, "seasons.csv")),
+                year = "year")
+```
+
+Each gives the bin count the paper reports:
+
+| grain | bins |
+|---|---|
+| hour | 26304 |
+| halfday | 2192 |
+| day | 1096 |
+| week | 157 |
+| month | 36 |
+| season | 13 |
+| year | 3 |
+
+The script asserts every one of them before fitting anything.
+
+## The two readings of a grain
+
+The resolution ladder is fitted on the grain mean, the only summary defined at all seven grains.
+The models themselves are reported on the grain's coldest day, its mean and its warmest day, which
+is defined from the weekly grain up because it reduces to whole days first.
+
+```{r stats}
+mean_reading <- grain_matrix(readings, logger_ID, date, temp, grain = "week")
+reported <- grain_matrix(readings, logger_ID, date, temp, grain = "week",
+                          stats = c("cold_day", "mean", "warm_day"))
+```
+
+The paper's other three schemes are the same call with different `stats`: `"min"` and `"max"` alone,
+`c("min", "mean", "max")` for the grain's own extremes, and
+`c("mean_daily_min", "mean", "mean_daily_max")` for the average daily minimum and maximum.
+
+## The channels the encoders are given
+
+An encoder that ends in global pooling discards when a thermal event happened, so the position of
+each bin in the year is supplied as two channels. They are the time index of each bin, not a
+summary of the readings, so they add no hand-built thermal feature to the network arm. At the
+hourly rung the study's networks also read the position of each reading in the day, which is two
+more channels of the same kind.
+
+```{r channels}
+input <- bind_channels(reported, calendar_channels(reported))
+hourly <- grain_matrix(readings, logger_ID, date, temp, grain = "native")
+hourly_input <- bind_channels(hourly, calendar_channels(hourly, cycles = c("year", "day")))
+```
+
+## The arms
+
+The aggregated-feature arms read the deposit's 188 variables. A feature table has no time axis, so
+it enters through `feature_matrix()` and is then an arm of the same ladder, scored on the same cells
+by the same rule.
+
+```{r arms}
+agg <- read.csv(file.path(deposit, "output_temperature_variables_scaled.csv"), check.names = FALSE)
+rownames(agg) <- as.character(agg$logger_ID)
+features <- feature_matrix(as.matrix(agg[rownames(y), setdiff(names(agg), "logger_ID")]),
+                           label = "aggregates")
+
+elastic_net <- grain_ladder(
+  features, y, list(elastic_net = elasticnet(alpha = 0.5, n_inner = 5, squares = TRUE)),
+  folds = folds, metric = "tss")
+```
+
+The study's forward selection fitted each species unweighted, where its elastic net and its
+encoders weighted each presence by the ratio of absences to presences, which is what the shipped
+presence-absence head does. The stepwise arm is fitted under a head that differs from the shipped
+one in that alone:
+
+```{r stepwise}
+register_response("presence_absence_unweighted", list(
+  prepare = function(y) y, activation = "sigmoid", loss = "binary_cross_entropy",
+  metric = "roc_auc", cells = scorable_cells))
+stepwise_arm <- grain_ladder(
+  features, y, list(stepwise = stepwise(max_terms = 3, degree = 2)),
+  folds = folds, metric = "tss", response = "presence_absence_unweighted")
+```
+
+Both redo their predictor selection inside every fold, on the training plots only, which is the
+footing the encoders are fitted on. The encoders are the three the paper reports, at the settings
+the study fitted them at. Those are the constructors' defaults except the residual network's
+dropout, which was 0.2 there, and the batch, 64 plots for the fully connected network and 32 for
+the two convolutional ones:
+
+```{r encoders}
+encoders <- list(mlp = mlp(batch_size = 64), cnn = cnn(batch_size = 32),
+                 rescnn = rescnn(dropout = 0.2, batch_size = 32))
+```
+
+`cnn()` is four blocks of a one-dimensional convolution of kernel width 7, batch normalisation, a
+rectified linear activation and max pooling by two, at 16, 32, 64 and 128 channels, then global
+average pooling and dropout at 0.3. `rescnn()` is a convolutional stem and four stages of 32, 64,
+128 and 256 channels holding two dilated residual blocks each, dilations 1, 2, 4 and 8, with
+squeeze-excitation gates, pooling average and maximum together. `mlp()` flattens the channels
+through two hidden layers of 512 and 256 units.
+
+How all three are trained is `train_control()`. Its defaults are AdamW at a learning rate of 1e-3
+with weight decay 1e-4, cosine annealing over 60 epochs, and a per-species positive-class weight
+capped at 50. The study also stopped early, after ten epochs without an improvement on an inner
+validation split of 15 percent of the fitting plots, under which the validation loss is read as the
+fitting loss is. The package default holds no split back and keeps the last epoch, so the study's
+rule is a control of its own, which every call below is handed.
+
+```{r control}
+study <- train_control(val_frac = 0.15, early_stopping = 10L)
+```
+
+The eleven members of the paper's ensemble are seven convolutional and four residual networks,
+each at its own window, width, kernel, dropout and seed, trained with weight averaging over the
+tail of the epoch budget. On the window mean they read the daily, weekly and half-daily windows;
+on the coldest-day reading the half-daily and daily members move to weekly and the weekly ones to
+monthly:
+
+```{r ensemble}
+members <- data.frame(
+  architecture = c(rep("cnn", 7), rep("rescnn", 4)),
+  window_mean = c("day", "day", "day", "day", "week", "week", "halfday", "day", "day", "day",
+                  "week"),
+  window_extremeday = c("week", "week", "week", "week", "month", "month", "week", "week", "week",
+                        "week", "month"),
+  kernel = c(7, 7, 7, 11, 7, 7, 7, 5, 7, 11, 7),
+  dropout = c(rep(0.3, 7), rep(0.2, 4)),
+  seed = c(1234, 11, 22, 33, 44, 66, 77, 88, 99, 101, 111))
+members$channels <- list(c(16, 32, 64, 128, 128), c(16, 32, 64, 128), c(32, 64, 128, 256),
+                         c(16, 32, 64, 128), c(16, 32, 64, 128), c(32, 64, 128, 256),
+                         c(16, 32, 64, 128), c(32, 64, 128, 256), c(32, 64, 128, 256),
+                         c(32, 64, 128, 256), c(32, 64, 128, 256))
+member <- function(i) {
+  arch <- if (members$architecture[i] == "cnn") cnn else rescnn
+  arch(channels = members$channels[[i]], kernel = members$kernel[i],
+       dropout = members$dropout[i], batch_size = 32, swa = TRUE, seed = members$seed[i])
+}
+```
+
+## The grid
+
+The ladder is one call. Each grain is built once, the calendar channels are joined to it, and
+every encoder is fitted at every rung on the one fold map and the one mask.
+
+```{r grid}
+ladder_input <- timesift_set(setNames(lapply(names(binning), function(w) {
+  x <- grain_matrix(readings, logger_ID, date, temp, grain = binning[[w]])
+  bind_channels(x, calendar_channels(x, cycles = if (w == "native") c("year", "day") else "year"))
+}), names(binning)))
+
+grid <- grain_ladder(ladder_input, y, encoders, folds = folds, metric = "tss", control = study)
+summary(grid)
+```
+
+The ensemble is one further arm. Each member runs as an arm of its own at its own window, and their
+held-out predictions are averaged: a member's out-of-fold prediction on a fold is its held-out
+prediction there, so averaging the eleven and choosing a threshold afterwards is the set scored as
+one model rather than as a vote between eleven decisions.
+
+```{r ensemble-arm}
+oof <- lapply(seq_len(nrow(members)), function(i) {
+  w <- members$window_mean[i]
+  lad <- grain_ladder(ladder_input[w], y, list(m = member(i)), folds = folds, metric = "tss",
+                      control = study)
+  attr(lad, "predictions")[[1]]
+})
+stack <- ensemble_fit(oof, y, scorable_cells(y, folds), folds, spec = ensemble("mean"))
+combined <- ensemble_combine(stack, oof)
+```
+
+`combined` is then scored on the same cells and by the same metric as every other arm, which is
+what the driver appends to the grid under the name `ensemble`.
+
+## The procedure the demonstration reports
+
+The grid above is every candidate scored on the same folds, which is the measurement. The
+demonstration is one step above it: inside each outer training set the study chose one of 33
+candidates on five inner folds by the area under the curve, refitted the winner on the whole
+training set and predicted the held-out plots once. `select_grain()` is that procedure, so
+reproducing the demonstration is this call rather than a description of it.
+
+A candidate is a window and a summary. The mean is defined at all seven windows, the reading-level
+extremes and their three-channel pair from the half-daily window up, and the two day-level pairs
+from the weekly window up, since those reduce to whole days first.
+
+```{r candidates}
+summaries <- list(mean = "mean", min = "min", max = "max",
+                  minmeanmax = c("min", "mean", "max"),
+                  dailyextreme = c("mean_daily_min", "mean", "mean_daily_max"),
+                  extremeday = c("cold_day", "mean", "warm_day"))
+candidates <- timesift_set(unlist(lapply(names(summaries), function(s) {
+  windows <- if (s == "mean") names(binning)
+             else if (s %in% c("dailyextreme", "extremeday")) c("week", "month", "season", "year")
+             else setdiff(names(binning), "native")
+  setNames(lapply(windows, function(w) {
+    x <- grain_matrix(readings, logger_ID, date, temp, grain = binning[[w]], stats = summaries[[s]])
+    bind_channels(x, calendar_channels(x))
+  }), paste(windows, s, sep = "."))
+}), recursive = FALSE))
+length(candidates)
+#> [1] 33
+```
+
+The inner partition is an artifact too. The study wrote one inner fold per outer fold and training
+plot, and the package ships it beside the reproduction script; `select_grain()` takes `inner` as a
+function of the training response, so reading that file back is what makes the inner splits the
+study's own rather than a fresh deal.
+
+```{r inner}
+inner <- read.csv(system.file("reproduce", "inner_folds.csv", package = "timesift"))
+inner$logger_ID <- as.character(inner$logger_ID)
+
+inner_split <- function(y_train) {
+  # The fit is handed its training response and nothing else, so which outer fold it sits in is
+  # read off the plots it does not hold.
+  left_out <- unique(folds[setdiff(names(folds), rownames(y_train))])
+  rows <- inner[inner$outer_fold == left_out, ]
+  setNames(as.integer(rows$inner_fold), rows$logger_ID)[rownames(y_train)]
+}
+
+selection <- select_grain(candidates, y, cnn(epochs = 60, batch_size = 32),
+                          folds = folds, inner = inner_split, metric = "roc_auc", control = study)
+selection$selected
+```
+
+That is ten outer folds by five inner folds by 33 candidates, plus one refit per outer fold: 1,660
+encoder fits, which is an overnight run on a graphics processor and is why the stage is not on by
+default. What comes back is the score of the procedure, selection included, rather than the score
+of the window it happened to choose, and `selection$inner` holds every candidate's inner score in
+every outer fold, which is where a choice made on a hair's difference is visible.
+
+The arm that choice is read against is the penalised model on the same weekly three-channel
+series, which is the study's own comparison:
+
+```{r series}
+weekly <- grain_matrix(readings, logger_ID, date, temp, grain = "week",
+                        stats = c("cold_day", "mean", "warm_day"))
+series <- grain_ladder(timesift_set(list(series = weekly)), y,
+                       list(elastic_net = elasticnet(alpha = 0.5, n_inner = 5, squares = TRUE)),
+                       folds = folds, metric = "tss")
+```
+
+157 weeks by three channels is 471 numbers per plot, and with their squares the penalised fit reads
+942 columns.
+
+## The environment a fitted encoder carries
+
+A representation is arithmetic on the record and reproduces exactly. A fitted network does not: its
+weights depend on the library that trained it and on the device it trained on. The reproduction
+script therefore records both beside every number it writes, in `run.meta`:
+
+```{r environment}
+torch::torch_config()$libtorch_version
+torch::cuda_is_available()
+```
+
+The study's grid ran on one CUDA device; a run on a processor gives the same shapes and not the
+same weights, which is why the network cells are compared to the seed noise the paper measures
+rather than to the digit.
+
+## The grain contrast
+
+The table of every grain against its architecture's best is a mixed model on the per-cell scores,
+`score ~ grain + (1 | species) + (1 | fold)` by restricted maximum likelihood, with Dunnett's
+many-to-one procedure against the reference. The paper's table is in AUC, so the grid's held-out
+predictions are read under it first:
+
+```{r contrasts}
+grid_auc <- do.call(rbind, lapply(names(attr(grid, "predictions")), function(arm) {
+  at <- strsplit(arm, "|", fixed = TRUE)[[1]]
+  cbind(grain = at[1], learner = at[2],
+        score_predictions(y, attr(grid, "predictions")[[arm]], folds, scorable_cells(y, folds),
+                          "roc_auc"))
+}))
+grid_auc <- structure(grid_auc, class = c("timesift_ladder", "data.frame"), metric = "roc_auc")
+grain_contrasts(grid_auc, learner = "cnn", reference = "week")
+```
+
+The design is balanced at 101 species by ten folds by seven grains, so each grain is compared
+within a species and within a fold. Benjamini-Hochberg across all eighteen comparisons is
+`p.adjust(out$p_value, "BH")` over the three architectures' tables stacked.
+
+## Running it
+
+The driver is installed with the package:
+
+```{r script}
+system.file("reproduce", "schrankogel.R", package = "timesift")
+```
+
+```
+Rscript schrankogel.R <deposit_dir> <out_dir> \
+  --stages=contract,representation,baseline,networks,contrasts,inflation \
+  --grains=day,week,month,season,year --learners=cnn,rescnn,mlp,ensemble --folds=folds.csv
+```
+
+It writes one CSV per stage and asserts the input at every step: the plot count, the species count,
+the rarest retained species, the cell count, and the bin count of every grain. A stage runs over
+all 894 plots and all 101 species or it does not run, so there is no setting that quietly shrinks
+what a number was computed on.
+
+The coarse grains are affordable on a processor. The hourly rung is 26,304 steps per plot and
+wants a graphics processor, as it had in the study; the whole grid there was three architectures by
+seven grains by ten folds, refitted under four seeds.
+
+## What the reproduction is checked against
+
+The paper's own numbers, arm by arm. The verified ones, in the order the script produces them:
+
+| quantity | reported | reproduced |
+|---|---|---|
+| plots, species, rarest species | 894, 101, 26 | 894, 101, 26 |
+| scorable cells | 1003 of 1010 | 1003 of 1010 |
+| bins per grain | 26304, 2192, 1096, 157, 36, 13, 3 | same |
+| numbers per plot, weekly three-channel | 471 | 471 |
+| inflation of a level whose truth is 0.60 | +0.110 | +0.110 |
+| elastic net on the 188 aggregates | 0.687 | 0.686 |
+| the weekly series elastic net, TSS and AUC | 0.696, 0.868 | 0.697, 0.868 |
+| the selected procedure, AUC and TSS | 0.877, 0.710 | 0.872, 0.702 |
+| outer folds selecting a weekly candidate | 10 of 10 | 10 of 10 |
+| the procedure over the series elastic net, AUC | +0.009 | +0.003 |
+| stepwise AIC on the 188 aggregates, TSS and AUC | 0.662, 0.844 | 0.662, 0.844 |
+| the convolutional network on the full hourly record, TSS | 0.658 | 0.660 |
+| the weekly coldest-day network, AUC and TSS | 0.878, 0.712 | 0.875, 0.706 |
+| the eleven-member ensemble, AUC and TSS | 0.887, 0.727 | 0.879, 0.714 |
+| network grid cells inside their tolerance | 42 | 40 of 42 |
+
+The selection stage and the grid ran on NVIDIA L40S cards under torch 0.17.0 and libtorch 2.8.0,
+with the study's fold map and inner partition. A model fitted twice does not give the same weights,
+so an encoder's level is compared at three times sqrt(2) times the spread of that level over the
+pipeline's eleven runs of its fixed weekly encoder, 0.0087 AUC and 0.0145 TSS, and each of the
+101 species at its own spread; the procedure's level sits 0.005 AUC below the pipeline's single
+run, inside that tolerance, with all 101 species inside their bands. Its margin over the series
+elastic net is inside the tolerance and does not separate from zero across species, where the
+pipeline's did. The two grid cells outside are the fully connected network at the hourly rung, in
+AUC and in TSS, which sits 0.047 TSS below the study's own four-seed mean; the representation there
+reproduces under the two convolutional networks, and the cause is open. The representation, the fold map, the mask and the elastic-net arms carry no
+such spread and reproduce to the third decimal. The run's environment is in its `run.meta`, and
+the comparison, its tolerances and their derivation are in `inst/reproduce/README.md`.
