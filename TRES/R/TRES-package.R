@@ -1,0 +1,62 @@
+#' Tensor Regression with Envelope Structure
+#'
+#' Provides the ordinary least squares estimator and the three types of tensor envelope structured estimators for tensor response regression (TRR) and tensor predictor regression (TPR) models. The three types of tensor envelope structured approaches are generic and can be applied to any envelope estimation problems. The full Grassmannian (FG) optimization is often associated with likelihood-based estimation but requires heavy computation and good initialization; the one-directional optimization approaches (1D and ECD algorithms) are faster, stable and does not require carefully chosen initial values; the SIMPLS-type is motivated by the partial least squares regression and is computationally the least expensive.
+#'
+#' @author Wenjing Wang, Jing Zeng and Xin Zhang
+#'
+#' @references
+#' Zeng J., Wang W., Zhang X. (2021) TRES: An R Package for Tensor Regression and Envelope Algorithms. Journal of Statistical Software, 99(12), 1-31. doi:10.18637/jss.v099.i12.
+#'
+#' Cook, R.D. and Zhang, X. (2016). Algorithms for envelope estimation. Journal of Computational and Graphical Statistics, 25(1), pp.284-300.
+#'
+#' Li, L. and Zhang, X. (2017). Parsimonious tensor response regression. Journal of the American Statistical Association, 112(519), pp.1131-1146.
+#'
+#' Zhang, X. and Li, L. (2017). Tensor envelope partial least-squares regression. Technometrics, 59(4), pp.426-436.
+#'
+#' Cook, R.D. and Zhang, X. (2018). Fast envelope algorithms. Statistica Sinica, 28(3), pp.1179-1197.
+#'
+#' @docType package
+#' @name TRES-package
+#' @aliases TRES
+#'
+#' @examples
+#' library(TRES)
+#' ## Load data "bat"
+#' data("bat")
+#' x <- bat$x
+#' y <- bat$y
+#'
+#' ## 1. Fitting with OLS method.
+#' fit_ols <- TRR.fit(x, y, method="standard")
+#'
+#' ## Print cofficient
+#' coef(fit_ols)
+#'
+#' ## Print the summary
+#' summary(fit_ols)
+#'
+#' ## Extract the mean squared error, p-value and standard error from summary
+#' summary(fit_ols)$mse
+#' summary(fit_ols)$p_val
+#' summary(fit_ols)$se
+#'
+#' ## Make the prediction on the original dataset
+#' predict(fit_ols, x)
+#'
+#' ## Draw the plots of two-way coefficient tensor (i.e., matrix) and p-value tensor.
+#' plot(fit_ols)
+#'
+#' ## 2. Fitting with 1D envelope algorithm. (time-consuming)
+#' \donttest{
+#' fit_1D <- TRR.fit(x, y, u = c(14,14), method="1D") # pass envelope rank (14,14)
+#' coef(fit_1D)
+#' summary(fit_1D)
+#' predict(fit_1D, x)
+#' plot(fit_1D)}
+#'
+#' @seealso Useful links:
+#' \itemize{
+#'  \item \url{https://github.com/leozeng15/TRES}
+#'  \item Report bugs at \url{https://github.com/leozeng15/TRES/issues}
+#' }
+NULL
