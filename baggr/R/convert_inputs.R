@@ -1,0 +1,526 @@
+#' Convert inputs for baggr models
+#'
+#' Converts data to a list of inputs suitable for Stan models,
+#' checks integrity of data and suggests the appropriate default model
+#' if needed. Typically all of this is
+#' done automatically by [baggr::baggr()], so __this function is included only for debugging__
+#' or running (custom) models "by hand".
+#'
+#' @param data `data.frame`` with desired modelling input
+#' @param model valid model name used by baggr;
+#'              see [baggr::baggr()] for allowed models
+#'              if `model = NULL`, this function will try to find appropriate model
+#'              automatically
+#' @param covariates Character vector with column names in `data`.
+#'                   The corresponding columns are used as
+#'                   covariates (fixed effects) in the meta-regression model.
+#' @param effect Only matters for binary data, use `logOR`, `logRR`, or `RD`. Otherwise ignore.
+#'                See [prepare_ma] for details.
+#' @param quantiles vector of quantiles to use (only applicable if `model = "quantiles"`)
+#' @param group name of the column with grouping variable
+#' @param outcome name of column with outcome variable (designated as string)
+#' @param treatment name of column with treatment variable
+#' @param cluster name of the column with clustering variable for analysing c-RCTs
+#' @param selection same as in [baggr::baggr()]; either a numeric vector of
+#'                  absolute z-value cut-points or a named list with elements
+#'                  `z`, `symmetrical` and `possible`
+#' @param test_data same format as `data` argument, gets left aside for
+#'                  testing purposes (see [baggr::baggr()])
+#' @param silent Whether to print messages when evaluated
+#' @return R structure that's appropriate for use by [baggr::baggr()] Stan models;
+#'         `group_label`, `model`, `effect` and `n_groups` are included as attributes
+#'         and are necessary for [baggr::baggr()] to work correctly
+#' @details Typically this function is only called within [baggr::baggr()] and you do
+#'          not need to use it yourself. It can be useful to understand inputs
+#'          or to run models which you modified yourself.
+#'
+#'
+#' @author Witold Wiecek
+#' @examples
+#' # simple meta-analysis example,
+#' # this is the formatted input for Stan models in baggr():
+#' convert_inputs(schools, "rubin")
+#' @export
+
+convert_inputs <- function(data,
+                           model,
+                           effect = NULL,
+                           quantiles = seq(.05, .95, .1),
+                           group  = "group",
+                           outcome   = "outcome",
+                           treatment = "treatment",
+                           cluster = NULL,
+                           selection = NULL,
+                           covariates = c(),
+                           test_data = NULL,
+                           silent = FALSE) {
+
+  # Fail fast for invalid model names before touching data columns.
+  # This avoids spurious column warnings from custom/tibble inputs.
+  if(!is.null(model) && !(model %in% names(model_data_types)))
+    stop("Unrecognised model, can't format data.")
+
+  # If lazy users forgot to define their group column,
+  # check if the first column is usable
+  # group <- find_group_column(data, group)
+
+  # Step 1: check what data are available (with some conversions) -----
+
+  available_data <- detect_input_type(data, group, treatment, outcome)
+
+  if(!is.null(test_data)){
+    available_data_test <- detect_input_type(test_data, group, treatment, outcome)
+    if(available_data != available_data_test)
+      stop("'test_data' is of type ", available_data_test,
+           " and 'data' is of type ", available_data)
+  }
+  # if(available_data == "unknown")
+  # stop("Cannot automatically determine type of input data.")
+  # let's assume data is individual-level
+  # if we can't determine it
+  # because it may have custom columns
+  if(available_data == "unknown")
+    available_data <- "individual" #in future can call it 'inferred ind.'
+
+  if(grepl("individual", available_data)){
+    check_columns_ipd(data, outcome, group, treatment)
+    if(!is.null(test_data)){
+      # For test data it's OK if we only have treatment == 1 rows (essential for LOO CV)
+      # (see below: Baselines for all these groups should be included in data argument.)
+      check_columns_ipd(test_data, outcome, group, treatment, trt_binary = TRUE)
+    }
+  }
+  if(is.null(model)) {
+    # model <- names(model_data_types)[which(model_data_types == available_data)[1]]
+    model <- data_type_default_model[[available_data]]
+    if(!silent)
+      message(paste0("Automatically chose ", crayon::bold(model_names[model]),
+                     " based on input data."))
+  }
+
+  if(!is.null(selection) && model != "rubin")
+    stop("Selection models are currently available only for model = 'rubin'.")
+
+  # Convert mutau data to Rubin model data if requested
+  if(model == "rubin" && available_data == "pool_wide"){
+    test_data$se <- test_data$se.tau
+    test_data$se.tau <- test_data$se.mu <- test_data$mu <- NULL
+    data$se <- data$se.tau
+    data$se.tau <- data$se.mu <- data$mu <- NULL
+    available_data <- "pool_noctrl_narrow"
+  }
+
+
+
+  # Step 2: check what data are required by the model and match -----
+  required_data <- model_data_types[[model]]
+
+  if(required_data == "individual_binary" && available_data == "pool_binary") {
+    data <- binary_to_individual(data, group, covariates, FALSE)
+    available_data <- "individual_binary"
+    message("Data were automatically converted from summary to individual-level.")
+  }
+
+
+  if(model == "rubin" && available_data == "pool_binary"){
+    if(is.null(effect) || !(effect %in% c("logOR", "logRR", "RD"))) {
+      message('Automatically summarising binary data with logOR.
+              In baggr() set effect to one of "logOR", "logRR", "RD".
+              Alternatively, use ?prepare_ma to do this manually before running.')
+      effect <- "logOR"
+    }
+    data <- prepare_ma(data, effect = effect, group = group)
+    group <- "group"
+    available_data <- required_data
+  }
+
+  if(required_data != available_data)
+    stop(paste(
+      "Data provided is of type", data_type_names[available_data],
+      "and the model requires", data_type_names[required_data]))
+  #for now this means no automatic conversion of individual->pooled
+
+
+  # Step 3: conversions of data into Stan inputs -----
+
+  # 3.1. individual level data
+  if(grepl("individual", required_data)) {
+    groups        <- factor(as.character(data[[group]]),
+                            levels = unique(data[[group]]))
+    group_numeric <- as.numeric(groups)
+    group_label   <- levels(groups)
+    # Creating cluster indicator: each study & cluster combo needs a separate ID
+    # I do not save cluster labels, unlike group labels
+    if(!is.null(cluster))
+      cluster_numeric <- as.integer(interaction(data[[group]], data[[cluster]], drop = TRUE))
+    else
+      cluster_numeric <- numeric(0)
+
+    if(!is.null(test_data)) {
+      groups_test <- as.factor(as.character(test_data[[group]]))
+      group_numeric_test <- as.numeric(groups_test)
+      group_label_test <- levels(groups_test)
+      if(any(group_label_test %in% group_label) && model != "logit")
+        message(
+          "Test data has some groups that have same labels as groups in data. ",
+          "For cross-validation they will be treated as 'new' groups.")
+      if((!all(group_label_test %in% group_label) && model == "logit") || !all(test_data[[treatment]] == 1))
+        message(
+          "Test data for ", model, " model should include treated units only. ",
+          "Baselines for all these groups should be included in data argument.")
+    }
+
+    if(model %in% c("rubin_full", "mutau_full", "logit")){
+
+
+      out <- list(
+        # !preserve this ordering for unit tests!
+        K = max(group_numeric),
+        N = nrow(data),
+        P = 2, #will be dynamic
+        y = data[[outcome]],
+        treatment = data[[treatment]],
+        site = group_numeric,
+        clustered = if(!is.null(cluster)) 1 else 0,
+        cluster = cluster_numeric,
+        Ncluster = if(!is.null(cluster)) max(cluster_numeric) else 0
+      )
+      # Developing this in stages: rubin, then logit, then mutau
+      if(model %in% c("logit", "rubin_full")){
+        # Use typical contrast coding, but drop the matrix
+        trt_matrix <- model.matrix(as.formula(paste0("~ ", treatment)), data = data)[,-1, drop = FALSE]
+        colnames(trt_matrix) <- gsub("^treatment", "", colnames(trt_matrix))
+        out$treatment <- trt_matrix
+        out$P <- ncol(out$treatment)
+      }
+
+      if(is.null(test_data)) {
+        out$N_test <- 0
+        out$K_test <- 0
+        out$test_y <- array(0, dim = 0)
+        out$test_site <- array(0, dim = 0)
+        out$test_treatment <- array(0, dim =  c(out$N_test, out$P))
+        if(model == "rubin_full") {
+          out$test_sigma_y_i <- array(0, dim = 0)
+          out$test_sigma_y_k <- numeric(0) # backward compatibility with precompiled Stan model
+        }
+        if(model == "mutau_full")
+          out$test_sigma_y_k <- array(0, dim = 0)
+
+      } else {
+        out$N_test <- nrow(test_data)
+        if(model %in% c("logit", "rubin_full")) {
+          # For logit/rubin_full CV, test sites must index training-site parameters.
+          group_numeric_test <- match(as.character(test_data[[group]]), group_label)
+          if(any(is.na(group_numeric_test)))
+            stop("For ", model, " with test_data, all test groups must be present in ",
+                 "training data (typically with treatment == 0 rows).")
+        }
+        out$K_test <- length(unique(group_numeric_test))
+        out$test_y <- test_data[[outcome]]
+        # This array() is to ensure formatting for multi-arm experiments (but won't run with P > 1 for now)
+        out$test_treatment <- array(test_data[[treatment]], c(out$N_test, out$P))
+        out$test_site <- group_numeric_test
+        # calculate outcome SDs in each test group and map as needed by Stan model
+        if(model %in% c("rubin_full", "mutau_full")) {
+          test_group_ids <- sort(unique(group_numeric_test))
+          sd_in_each_group <- sapply(
+            test_group_ids,
+            function(i) {
+              sd(test_data[[outcome]][group_numeric_test == i])
+            }
+          )
+          if(any(is.na(sd_in_each_group)))
+            stop("Cannot calculate SD in groups in test data. Each out-of-sample ",
+                 "group must be of size at least 2.")
+
+          if(model == "rubin_full") {
+            out$test_sigma_y_i <- array(sd_in_each_group[match(group_numeric_test, test_group_ids)],
+                                        dim = out$N_test)
+            out$test_sigma_y_k <- as.numeric(sd_in_each_group)
+          }
+          if(model == "mutau_full")
+            out$test_sigma_y_k <- array(sd_in_each_group, dim = out$K_test)
+        }
+      }
+    }
+
+    if(model == "sslab") {
+      # Generic code for dividing observations into positive, negative and == 0 components
+      cat <- ifelse(data[[outcome]] < 0, 1, ifelse(data[[outcome]] == 0, 2, 3))
+      out <- list(
+        K = max(group_numeric),
+        N = nrow(data),
+        M = 3,
+        P = 2, #covariates are taken care of later in this function
+        x = array(cbind(1, data[[treatment]]), c(nrow(data), 2)),
+        N_neg = sum(cat == 1),
+        N_pos = sum(cat == 3),
+        y_neg = -1*data[[outcome]][cat == 1],
+        site_neg = group_numeric[cat == 1],
+        y_pos = data[[outcome]][cat == 3],
+        site_pos = group_numeric[cat == 3],
+        cat = cat,
+        treatment_pos = data[[treatment]][cat == 3],
+        treatment_neg = data[[treatment]][cat == 1],
+        site = group_numeric
+      )
+
+      if(is.null(test_data)){
+        # This will have to be done for v0.8 release
+        out_test <- list()
+      } else {
+        out_test <- list()
+      }
+
+      for(nm in names(out_test))
+        out[[nm]] <- out_test[[nm]]
+    }
+  } else {
+    if(!is.null(cluster))
+      warning("Clustering column defined, but data is not individual level; ignoring.")
+  }
+
+  # 3.2. summary data: treatment effect only -----
+  if(required_data == "pool_noctrl_narrow"){
+    group_label <- data[[group]]
+    if(is.null(data[[group]]) && (group != "group"))
+      warning(paste0("Column '", group,
+                     "' does not exist in data. No labels will be added."))
+    check_columns_numeric(data[,c("tau", "se")])
+    out <- list(
+      K = nrow(data),
+      theta_hat_k = data[["tau"]],
+      se_theta_k = data[["se"]]
+    )
+    if(is.null(test_data)){
+      out$K_test <- 0
+      out$test_theta_hat_k <- array(0, dim = 0)
+      out$test_se_theta_k <- array(0, dim = 0)
+    } else {
+      if(is.null(test_data[["tau"]]) ||
+         is.null(test_data[["se"]]))
+        stop("Test data must be of the same format as input data")
+      out$K_test <- nrow(test_data)
+      # remember that for 1-dim cases we need to pass array()
+      out$test_theta_hat_k <- array(test_data[["tau"]], dim = c(nrow(test_data)))
+      out$test_se_theta_k <- array(test_data[["se"]], dim = c(nrow(test_data)))
+    }
+  }
+
+
+  # 3.3. summary data: baseline & treatment effect -----
+  if(required_data == "pool_wide"){
+    group_label <- data[[group]]
+    if(is.null(data[[group]]) && (group != "group"))
+      warning(paste0("Column '", group,
+                     "' does not exist in data. No labels will be added."))
+    check_columns_numeric(data[,c("tau", "se.tau", "mu", "se.mu")])
+    nr <- nrow(data)
+    out <- list(
+      K = nr,
+      P = 2, #fixed for this case
+      # Remember, first row is always mu (baseline), second row is tau (effect)
+      # (Has to be consistent against ordering of prior values.)
+      theta_hat_k = matrix(c(data[["mu"]], data[["tau"]]), 2, nr, byrow = TRUE),
+      se_theta_k = matrix(c(data[["se.mu"]], data[["se.tau"]]), 2, nr, byrow = TRUE)
+    )
+    if(is.null(test_data)){
+      out$K_test <- as.integer(0)
+      out$test_theta_hat_k <- array(0, dim = c(2,0))
+      out$test_se_theta_k <- array(0, dim = c(2,0))
+    } else {
+      if(is.null(test_data[["mu"]]) ||
+         is.null(test_data[["tau"]]) ||
+         is.null(test_data[["se.mu"]]) ||
+         is.null(test_data[["se.tau"]]))
+        stop("Test data must be of the same format as input data")
+      out$K_test <- nrow(test_data)
+      out$test_theta_hat_k <- matrix(c(test_data[["mu"]], test_data[["tau"]]),
+                                     2, nrow(test_data), byrow = TRUE)
+      out$test_se_theta_k <- matrix(c(test_data[["se.mu"]], test_data[["se.tau"]]),
+                                    2, nrow(test_data), byrow = TRUE)
+    }
+  }
+
+  # 4. Include covariates ------
+  # if(required_data != "individual") {
+  if(length(covariates) > 0) {
+    if(model == "quantiles")
+      stop("Quantiles model cannot regress on covariates.")
+
+    if(!all(covariates %in% names(data)))
+      stop(paste0("Covariates ",
+                  paste(covariates[!(covariates %in% names(data))], collapse=","),
+                  " are not columns in input data"))
+
+    if(model == "rubin_full")
+      .warn_constant_within_site_covariates(data, covariates, group)
+
+    for(cov in covariates)
+      if(any(is.na(data[[cov]])))
+        stop("NA values present in covariates")
+
+    # For individual-level models, check if covariates are fixed within studies.
+    # This indicates if the model can be interpreted as a meta-regression.
+    if(grepl("individual", required_data)) {
+      covariate_is_fixed <- vapply(covariates, function(cov) {
+        all(tapply(data[[cov]], data[[group]], function(x) length(unique(x[!is.na(x)])) <= 1))
+      }, logical(1))
+      varying_covariates <- covariates[!covariate_is_fixed]
+      for(cov in varying_covariates)
+        message("Covariate ", cov,
+                " varies within studies. Model fitting will work but is not a meta-regression.")
+      meta_regression_covariates <- covariates[covariate_is_fixed]
+    } else {
+      meta_regression_covariates <- covariates
+    }
+
+    # Test_data preparation
+    # (sometimes column names may not match in data and test_data, check for it):
+    cov_bind <- tryCatch({
+      cov_bind <- data[, covariates, drop = FALSE]
+      if (!is.null(test_data)) {
+        cov_bind <- rbind(cov_bind, test_data[, covariates, drop = FALSE])
+      }
+      cov_bind
+    },
+    error = function(e) {
+      stop("Cannot bind data and test_data. Ensure that all ",
+           "covariates are present and same levels are used.",
+           call. = FALSE)
+    })
+
+    cov_bind$tau <- 0
+    cov_bind[] <- lapply(cov_bind, function(x) if(is.character(x)) factor(x) else x)
+    cov_mm <- model.matrix(as.formula(
+      paste("tau ~", paste(covariates, collapse="+"))),
+      data=cov_bind)
+    out$X <- cov_mm[1:nrow(data), 2:ncol(cov_mm), drop = FALSE]
+    out$Nc <- ncol(out$X)
+    if(!is.null(test_data))
+      out$X_test <- cov_mm[(nrow(data)+1):nrow(cov_mm), 2:ncol(cov_mm), drop = FALSE]
+    else
+      out$X_test <- array(0, dim=c(0, out$Nc))
+
+    covariate_coding <- colnames(out$X)
+    covariate_levels <- lapply(cov_bind, levels)
+    covariate_levels[["tau"]] <- NULL
+
+  } else {
+    covariate_coding <- c()
+    covariate_levels <- c()
+    meta_regression_covariates <- c()
+    out$Nc <- 0
+    if(model != "quantiles"){
+      out$X <- array(0, dim=c(nrow(data), 0))
+      out$X_test <- array(0, dim=c(ifelse(is.null(test_data), 0, nrow(test_data)), 0))
+    }
+  }
+
+
+
+  # 5. Add selection model cut-offs -----
+  selection_input <- normalise_selection(selection, out$K)
+  out$M <- length(selection_input$z)
+  out$c <- array(selection_input$z, dim = out$M)
+  out$symmetric <- as.integer(selection_input$symmetrical)
+  out$possible_selection <- array(selection_input$possible, dim = out$K)
+
+  na_cols <- unlist(lapply(out, function(x) any(is.na(x))))
+  if(any(na_cols))
+    stop(paste0("baggr() does not allow NA values in inputs (see vectors ",
+                paste(names(out)[na_cols], collapse = ", "), ")"))
+
+  # When using data frames with 1 rows, we need to explicitly define them
+  # as arrays before passing from R to Stan. So here I check if any of them
+  # are length 1 and change them to arrays
+  numeric_to_array_c <- c("theta_hat_k", "se_theta_k")
+  for(nm in numeric_to_array_c) {
+    if(length(out[[nm]]) == 1)
+      out[[nm]] <- array(out[[nm]], dim = 1)
+  }
+
+  out_structure <- structure(
+    out,
+    data_type = available_data,
+    data = data,
+    columns = c("treatment" = treatment,
+                "group" = group,
+                "outcome" = outcome),
+    covariate_coding = covariate_coding,
+    covariate_levels = covariate_levels,
+    meta_regression_covariates = meta_regression_covariates,
+    group_label = group_label,
+    n_groups = out[["K"]],
+    n_re = out[["P"]],
+    treatment_levels =
+      if(model %in% c("rubin_full", "logit") && out[["P"]] > 1)
+        colnames(out$treatment) else 1,
+    model = model,
+    effect = effect)
+
+  return(out_structure)
+}
+
+.warn_constant_within_site_covariates <- function(data, covariates, group) {
+  if(length(covariates) == 0)
+    return(invisible(character(0)))
+
+  constant_covariates <- vapply(covariates, function(cov) {
+    distinct_by_site <- tapply(data[[cov]], data[[group]], function(x) {
+      length(unique(x[!is.na(x)]))
+    })
+    all(distinct_by_site <= 1)
+  }, logical(1))
+
+  flagged_covariates <- covariates[constant_covariates]
+  if(length(flagged_covariates) > 0)
+    warning("covariates ", paste(flagged_covariates, collapse = ", "),
+            " are constant within every site, please adjust pooling baseline behaviour or remove covariates",
+            call. = FALSE)
+
+  invisible(flagged_covariates)
+}
+
+normalise_selection <- function(selection, K) {
+  default <- list(z = numeric(0), symmetrical = FALSE, possible = rep(1L, K))
+  if(is.null(selection))
+    return(default)
+
+  # Numeric input is the public shorthand for symmetric cut-offs applying to
+  # every study; list input is the explicit API used when either flag differs.
+  if(is.numeric(selection)) {
+    z <- selection
+    symmetrical <- TRUE
+    possible <- rep(1L, K)
+  } else if(is.list(selection)) {
+    required_names <- c("z", "symmetrical", "possible")
+    if(is.null(names(selection)) ||
+       !setequal(names(selection), required_names) ||
+       length(selection) != length(required_names))
+      stop("selection list must have named elements z, symmetrical and possible.")
+
+    z <- selection$z
+    symmetrical <- selection$symmetrical
+    possible <- selection$possible
+  } else {
+    stop("selection must be a numeric vector or a named list.")
+  }
+
+  # Keep this validation close to the API normalisation so Stan only sees
+  # positive cut-offs, one symmetry flag, and one 0/1 possible flag per study.
+  if(!is.numeric(z) || length(z) < 1 || any(!is.finite(z)) || any(z <= 0))
+    stop("selection z-values must be a positive finite numeric vector.")
+  if(is.unsorted(z, strictly = TRUE))
+    stop("selection z-values must be strictly increasing.")
+  if(!is.logical(symmetrical) || length(symmetrical) != 1 || is.na(symmetrical))
+    stop("selection$symmetrical must be TRUE or FALSE.")
+  if(!(is.logical(possible) || is.numeric(possible)) ||
+     length(possible) != K ||
+     any(is.na(possible)) ||
+     any(!(possible %in% c(0, 1, FALSE, TRUE))))
+    stop("selection$possible must be a 0/1 or logical vector with one value per study.")
+
+  list(z = z, symmetrical = symmetrical, possible = as.integer(possible))
+}
