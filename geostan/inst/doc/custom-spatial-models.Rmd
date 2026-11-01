@@ -1,0 +1,615 @@
+---
+title: "Custom spatial models with RStan and geostan"
+date: October 2, 2023
+author: Connor Donegan
+output: 
+  rmarkdown::html_vignette:
+    toc: true 
+    toc_depth: 3  # upto three depths of headings (specified by #, ## and ###)
+    number_sections: true    
+header-includes:
+   - \usepackage{amsmath}
+vignette: >
+  %\VignetteIndexEntry{Custom spatial models with RStan and geostan}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+bibliography: spatial-me.bib
+link-citations: yes
+---
+
+
+```{r, include=FALSE}
+knitr::opts_chunk$set(eval = FALSE, echo = TRUE)
+```
+
+The spatial models in geostan use custom Stan functions that are far more efficient than using built-in functions, including the conditional (CAR) and simultaneous spatial autoregressive (SAR) models (both are particular specifications of the multivariate normal distribution). This vignette shows how you can use those functions together with some R functions in geostan to start building custom spatial models.
+
+This tutorial is written with the assumption that the reader is already familiar with [RStan](https://mc-stan.org/users/documentation/). Users are expected to make adjustments to the code as needed, including to prior distributions. For more details, other options, and an explanation of the computational approach, see @donegan_2022. For more background on spatial modeling see @haining_2020. 
+
+# CAR models
+
+The basic scheme for the car model is like this:
+$$y = \mu + \rho * C( y - \mu) + \epsilon$$
+with $y$ being the response variable, $\mu$ contains a constant intercept and possibly covariates $X \beta$, and $\epsilon$ is an error term.
+
+The CAR model is defined by its covariance matrix $$\Sigma = (I - \rho \cdot C)^{-1} M,$$ where $I$ is the identity matrix, $\rho$ a spatial autocorrelation parameter which may be positive or negative, $C$ is a sparse connectivity matrix, and $M$ is a diagonal matrix with scale parameters $\tau_i^2$. There is typically a single scale parameter $\tau$ multiplied by weights $\delta_i$, as in $\tau_i^2 = \tau^2 * \delta_i$.
+
+The term $\tau^2 \cdot \delta_i$ is the conditional variance pertaining to $y_i | y_{n(i)}$ where $n(i)$ lists the areas that neighbor the $i^{th}$ one.
+
+The CAR function presented here is valid for what is sometimes called the WCAR specification. This is the most commonly employed CAR specification. Let $A$ be a symmetric binary connectivity matrix where $a_{ij}= 1$ only if the $i^{th}$ and $j^{th}$ sites are neighbors, all other entries are zero (including the diagonal entries $i=j$). Our matrix $C$ is then the row-standardized version of $A$ (the rows of $C$ sum to one; the elements of $A$ have been divided by their row-sums). This WCAR specification is also valid if $A$ is a (sparse) matrix of inverse-distances.
+
+The `geostan::prep_car_data` function will prepare all of the required inputs for you. The user passes in a binary connectivity matrix $A$ and and specifies `style = "WCAR"`, then the function returns a list of data inputs for the Stan model. (This method also works if a sparse matrix of inverse-distances is provided instead of the binary adjacency matrix.)
+
+In addition to being used as a model for observations (as specified above by $y$), the CAR model can be applied as a prior distribution to parameters within a hierarchical model. We will examine both of these options starting with the former.
+
+## Autonormal model
+
+This first example is an autonormal model which applies the CAR model directly to the data (as described above). This can also be written as $$y \sim Normal(\alpha + x \beta, \Sigma).$$ Here you have $n$ observations of a continuously measured outcome $y$, possibly $k=1$ or more covariates $x$, and you're accounting for spatial autocorrelation in $y$ using the covariance matrix (following the CAR specification). 
+
+We fit a model like this using `geostan::stan_car`:
+
+```{r}
+library(geostan)
+data(georgia)
+A <- shape2mat(georgia, "B")
+car_list <- prep_car_data(A, style = "WCAR")
+
+# prior distributions (to match the Stan model below)
+prior_list <- list(intercept = normal(0, 5),
+ 	           beta = normal(0, 5),
+		   sigma = student_t(10, 0, 5)
+		   )
+
+# an auto-model
+# y = mu + rho * C (y - mu) + error
+# mu = alpha + beta * .x 
+# y = log(income); x = log(population)
+# x will be centered: .x = x - mean(x)
+
+fit <- stan_car(log(income / 10e3) ~ log(population / 10e3),
+    data = georgia, car = car_list, prior = prior_list, centerx = TRUE)
+```
+
+
+The following Stan code implements the above model; if you're following along, copy the Stan code and save it in a file inside your working directory; I'll name it "autonormal.stan" and I'll save the name as an R variable:
+
+```{r}
+autonormal_file <- "autonormal.stan"
+```
+
+Here's the Stan code:
+
+```stan
+functions {
+#include wcar-lpdf.stan
+}
+
+data {
+  // data
+  int<lower=1> n;
+  int<lower=1> k;
+  vector[n] y;
+  matrix[n, k] x;
+
+    // CAR parts
+  int nA_w;
+  vector[nA_w] A_w;
+  array[nA_w] int A_v;
+  array[n + 1] int A_u;
+  vector[n] Delta_inv;
+  real log_det_Delta_inv;
+  vector[n] lambda;
+}
+
+parameters {
+  // spatial autocorrelation (SA) parameter
+  real<lower=1/min(lambda), upper=1/max(lambda)> rho;
+  
+  // scale parameter
+  real<lower=0> tau;
+  
+  // intercept
+  real alpha;
+  
+  // coefficients
+  vector[k] beta;  
+}
+
+model {
+  vector[n] mu = alpha + x * beta;
+
+  // Likelihood: y ~ Normal(Mu, Sigma)
+  target += wcar_normal_lpdf(y |
+			     mu, tau, rho, // mean, scale, SA
+			     A_w, A_v, A_u, // stuff from prep_car_data
+			     Delta_inv, 
+			     log_det_Delta_inv,
+			     lambda, 
+			     n);    
+  
+  // prior for scale parameter
+  target += student_t_lpdf(tau | 10, 0, 5);
+
+  // prior for beta
+  target += normal_lpdf(beta | 0, 5);
+
+  // prior for intercept
+  target += normal_lpdf(alpha | 0, 5);
+}
+
+```
+
+The input file "wcar-lpdf.stan" contains the following code (save this code inside your working directory and name it "wcar-lpdf.stan"):
+
+```stan
+/**
+ * Log probability density of the conditional autoregressive (CAR) model: WCAR specifications only
+ *
+ * @param y Process to model
+ * @param mu Mean vector
+ * @param tau Scale parameter
+ * @param rho Spatial dependence parameter
+ * @param A_w Sparse representation of the symmetric connectivity matrix, A
+ * @param A_v Column indices for values in A_w
+ * @param A_u Row starting indices for values in A_u
+ * @param D_inv The row sums of A; i.e., the diagonal elements from the inverse of Delta, where M = Delta * tau^2 is a diagonal matrix containing the conditional variances.
+ * @param log_det_D_inv Log determinant of Delta inverse.
+ * @param lambda Eigenvalues of C (or of the symmetric, scaled matrix Delta^{-1/2}*C*Delta^{1/2}); for the WCAR specification, C is the row-standardized version of W.
+ * @param n Length of y
+ *
+ * @return Log probability density of CAR prior up to additive constant
+ */
+real wcar_normal_lpdf(vector y, vector mu,
+		      real tau, real rho,
+		      vector A_w,
+		      array[] int A_v,
+		      array[] int A_u,
+		      vector D_inv,
+		      real log_det_D_inv,
+		      vector lambda,
+		      int n) {
+  vector[n] z = y - mu;
+  real ztDz = (z .* D_inv)' * z;
+  real ztAz = z' * csr_matrix_times_vector(n, n, A_w, A_v, A_u, z);
+  real ldet_ImrhoC = sum(log1m(rho * lambda));  
+  return 0.5 * (
+		-n * log( 2 * pi() )
+		-2 * n * log(tau)
+		+ log_det_D_inv
+		+ ldet_ImrhoC
+		- (1 / tau^2) * (ztDz - rho * ztAz));
+}
+
+```
+
+From R, you can use the following code to prepare the input data ($y$, $x$, etc.). I use `prep_car_data` to get a list of parts for the CAR model, then I append the outcome data to the same list and pass it all to a Stan model to draw samples.
+
+```{r}
+library(rstan)
+library(geostan)
+data(georgia)
+
+A <- shape2mat(georgia, "B")
+car_list <- prep_car_data(A, style = "WCAR")
+
+# add data
+## (centering covariates improves sampling efficiency)
+car_list$y <- log(georgia$income / 10e3)
+car_list$x <- scale(log(georgia$population / 10e3), center = TRUE, scale = FALSE)
+car_list$k <- ncol(car_list$x)
+
+# compile Stan model from file
+autonormal_file <- "autonormal.stan"
+car_model <- stan_model(autonormal_file)
+
+# sample from model
+samples <- sampling(car_model, data = car_list)
+```
+
+
+## Hierarchical model
+
+Disease mapping is a common use for CAR models, though these models have many applications. In this class of models, the CAR model is assigned as the prior distribution to a parameter vector $\phi$, which is used to model disease incidence rates across small areas like counties. The disease data consist of counts $y$ together with the size of population at risk $p$, or possibly a different denominator such as the expected number of cases $E$ (which occurs when using indirect age-standardization). These models have the form
+\begin{equation}
+\begin{aligned}
+	&y \sim Poisson( exp((log(p) + \phi) ) \\
+	&\phi \sim Normal(\mu, \Sigma) \\
+	&\mu = \alpha + x \beta.
+\end{aligned}
+\end{equation}
+
+Here you see that the linear predictor $\mu$ is embedded with the CAR model.
+
+Here is another way of writing down the very same model:
+\begin{equation}
+\begin{aligned}
+	&y \sim Poisson(e^\eta) \\
+	&\eta = log(p) + \alpha + x \beta + \phi \\
+	&\phi \sim Normal(0, \Sigma) \\
+\end{aligned}
+\end{equation}
+
+It is possible to build a Stan modeling using either one of these two formulations. They are substantively equivalent, but you may find that one is far more amenable to Stan's MCMC algorithm. The former specification ($\mu$ inside the CAR model) is less commonly presented in papers, but in this author's experience it is often far more stable computationally than forcing the CAR model to have zero mean. (You may well encounter a case where the opposite is true.)
+
+The purpose of the offset term is sometimes unclear in introductory texts. The offset term $p$ is from the denominator of the rates $\frac{y}{p}$. The expectation or mean of the model is
+\begin{equation}
+\begin{aligned}
+	&\mathbb{E}[y] = e^{log(p) + \mu} = e^{log(p)} \cdot e^{\mu} = p \cdot e^\mu \\
+	&\mathbb{E}\Bigl[ \frac{y}{p} \Bigr] = e^\mu
+\end{aligned}
+\end{equation}
+The smaller is the denominator, the less informative is the rate with respect to the characteristic level of risk bearing upon the population of the given period and place. With small denominators, chance renders the rates uninformative (and unstable over time and space), and the Poisson model accounts for this.
+
+
+We can fit this type of model using `geostan::stan_car`:
+
+```{r}
+data(georgia)
+A <- shape2mat(georgia, "B")
+car_list <- prep_car_data(A, style = "WCAR")
+
+# prior distributions (to match the Stan model below)
+prior_list <- list(intercept = normal(0, 5),
+ 	           beta = normal(0, 5),
+		   sigma = student_t(10, 0, 5)
+		   )
+
+
+# Poisson model
+# y ~ Poisson(pop * exp(mu))
+# mu = alpha + beta * x + phi
+# phi ~ CAR(0, Sigma)
+# y = deaths; x = log(income);
+# x will be centered: .x = x - mean(x)
+
+fit <- stan_car(deaths.male ~ offset(log(pop.at.risk.male)) + log(income / 1e3),
+    data = georgia, 
+    car = car_list, 
+    centerx = TRUE,
+    family = poisson()
+    )
+```
+
+
+The following Stan code provides a template for a simple disease mapping model using the CAR model as a prior for $\phi$. As before, you can save the code in your working directory and give it a name like "car_poisson.stan". I'll store the file name in my R environment:
+
+```{r}
+car_poisson_file <- "car_poisson.stan"
+```
+
+```stan
+functions {
+#include wcar-lpdf.stan
+}
+
+data {
+  // data
+  int<lower=1> n;
+  int<lower=1> k;
+  array[n] int<lower=0> y;
+  matrix[n, k] x;
+  vector[n] const_offset;
+
+    // CAR parts
+  int nA_w;
+  vector[nA_w] A_w;
+  array[nA_w] int A_v;
+  array[n + 1] int A_u;
+  vector[n] Delta_inv;
+  real log_det_Delta_inv;
+  vector[n] lambda;
+}
+
+parameters {
+  // spatial autocorrelation (SA) parameter
+  real<lower=1/min(lambda), upper=1/max(lambda)> rho;
+  
+  // scale parameter
+  real<lower=0> tau;
+  
+  // intercept
+  real alpha;
+  
+  // coefficients
+  vector[k] beta;
+  
+  // SA trend component
+  vector[n] phi;
+}
+
+
+model {
+  vector[n] y_mu = exp(const_offset + phi);
+  vector[n] phi_mu = alpha + x * beta;
+  
+  // Likelihood: y ~ Poisson( population * exp(phi) )
+  target += poisson_lpmf(y | y_mu);
+    
+  // phi ~ Normal(Mu, Sigma)
+  target += wcar_normal_lpdf(phi |
+			     phi_mu, tau, rho, // mean, scale, SA
+			     A_w, A_v, A_u, // stuff from prep_car_data
+			     Delta_inv, 
+			     log_det_Delta_inv,
+			     lambda, 
+			     n);
+
+  // prior for scale parameter
+  target += student_t_lpdf(tau | 10, 0, 1);
+
+  // prior for beta
+  target += normal_lpdf(beta | 0, 5);
+
+  // prior for intercept
+  target += normal_lpdf(alpha | 0, 5);
+}
+
+```
+
+Again, you can use `geostan::prep_car_data` to easily convert the spatial weights matrix into the list of required inputs for the CAR model:
+
+```{r}
+library(rstan)
+library(geostan)
+data(georgia)
+
+A <- shape2mat(georgia, "B")
+car_list <- prep_car_data(A, style = "WCAR")
+
+# add data
+car_list$y <- georgia$deaths.male
+car_list$const_offset <- log(georgia$pop.at.risk.male)
+car_list$x <- scale(log(georgia$income / 1e3), center = TRUE, scale = FALSE)
+car_list$k <- ncol(car_list$x)
+
+# compile Stan model from file
+car_poisson_file <- "car_poisson.stan"
+car_poisson <- stan_model(car_poisson_file)
+
+# sample from model
+samples <- sampling(car_poisson, data = car_list)
+```
+
+## Zero-mean parameterization
+
+It was noted above that the hierarchical CAR model can be described in more than one equivalent way. For one, we can apply the CAR model to the log-rates $\phi$ just like we applied it to the outcome $y$:
+
+\begin{equation}
+  \begin{aligned}
+  y &\sim Poisson(pop * exp(\phi)) \\
+  \phi &= \mu + \rho C (\phi - \mu) + \epsilon
+  \end{aligned}	    
+\end{equation}    
+
+where $\mu = \alpha + x * beta$. That is the model we used above for disease mapping.
+
+The alternative is to force $\phi$ to have a mean of zero:
+
+\begin{equation}
+\begin{aligned}
+  y &\sim Poisson(pop * exp(\mu + \phi)) \\
+  \phi &\sim Normal(0, \Sigma). \\
+\end{aligned}
+\end{equation}
+
+Adopting former method often results in more stable and efficient MCMC sampling. But there are times when the former leads to poor MCMC sampling, particularly when many of the populations at risk and observed counts are very small. In such cases, you will find that the model is slow to converge (more MCMC samples are needed to avoid low ESS warnings) and you may also receive obscure warnings about the 'Bayesian fraction of missing information' and perhaps even warnings of divergent transitions. This is a widely-encountered phenomenon in Bayesian analysis. Here we are going to see how to handle the issue with these hierarchical CAR models. 
+
+When this happens, we need to make two changes to our hierarchical Poisson model. The first is to force the mean of $\phi$ to equal zero instead of $\mu=\alpha + x * \beta$. The second change pertains to the CAR covariance matrix for $\phi$: we are going to specify the covariance matrix to have a variance parameter of $\tau^2 = 1$; we symbolize this as $\Sigma_1$. Then we bring the (actual) scale parameter back in by multiplication:
+
+\begin{equation}
+\begin{aligned}
+  y &\sim Poisson(pop * exp(\mu + \phi * \tau)) \\
+  \phi &\sim Normal(0, \Sigma_1) \\
+\end{aligned}
+\end{equation}
+
+The covariance matrix is, again, $\Sigma_1 = (I - \rho C)^{-1}M$, and in this case $M$ contains the variances $m_{i,i} = \tau^2 * \delta_i = \delta_i$ (where the weights $\delta_i$ are equal to one divided by the row sums of $C$).
+
+In the geostan documentation, this method is refered to as the *zero-mean parameterization* (ZMP). For hierarchical CAR models, we can use the ZMP by adding `zmp = TRUE`:
+
+```{r}
+# zero-mean parameterization of the hierarchical CAR model
+car_list <- prep_car_data(shape2mat(georgia, "B", quiet = TRUE))
+fit <- stan_car(deaths.male ~ offset(log(pop.at.risk.male)) + log(income / 1e3),
+    data = georgia, 
+    car = car_list, 
+    centerx = TRUE,
+    family = poisson(),
+    zmp = TRUE
+    )
+```
+
+(This `zmp` option is also available in `stan_sar`.)
+
+To code this in Stan, we take "car_poisson.stan" and change the top of model block to the following:
+
+```stan
+model {
+  vector[n] y_mu = exp(const_offset + alpha + x * beta + phi * tau);
+  vector[n] phi_mu = rep_vector(0, n);
+  
+  // Likelihood: y ~ Poisson( population * exp(phi) )
+  target += poisson_lpmf(y | y_mu);
+    
+  // phi ~ Normal(Mu, Sigma)
+  target += wcar_normal_lpdf(phi |
+  	 phi_mu,
+	 1, // scale: tau = 1
+	 rho, 
+	 A_w, A_v, A_u,
+	 Delta_inv, 
+	 log_det_Delta_inv,
+	 lambda, 
+	 n);
+   // ... (priors, etc.)		 
+}
+
+```
+
+Everything else is the same. However, when you extract the MCMC samples of $\phi$ you have to remember to multiple them by the scale parameter. It can be easier if you complete this step inside the Stan model; to do so, you can append the following generated quantity to the model:
+
+```stan
+generated quantities {
+  vector[n] eta = phi * tau;  
+}
+```
+
+NB: these ways of parameterizing a hierarchical model are sometimes referred to as 'centered' and 'non-centered' parameterizations (these are good search terms to learn more about it). We use the term ZMP here because it seems more intuitive: it is obvious which parameterization of the CAR model has mean of zero; it is not obvious which of these two is the 'non-centered' parameterization.
+
+# SAR models
+
+There are two variants of the simultaneously-specified spatial autoregression (SAR) model. One is known as a spatial lag or spatial lag of y model (SLM). The SLM is now implemented in geostan (as of version 0.8.0). The second type of SAR model is known as the spatial error model (SEM). This vignette only covers the SEM, but it may be updated in the future with instructions for the SLM. The SLM introduces various complications for interpretation, as referenced in the `geostan::stan_sar` documentation.
+
+The SEM is written as
+\begin{equation}
+  \begin{aligned}
+    y = \mu + (I - \rho \cdot W)^{-1} \epsilon \\
+    \epsilon \sim Normal(0, \sigma^2 \cdot I)
+    \end{aligned}
+\end{equation}	
+where $W$ is a row-standardized spatial weights matrix, $I$ is the n-by-n identity matrix, and $\rho$ is a spatial autocorrelation parameter. (The spatial econometrics literature refers to this as the spatial error model.) This is also a multivariate normal distribution but with a different covariance matrix than the CAR model:
+\begin{equation}
+  \Sigma = \sigma^2 \cdot (I - \rho \cdot W)^{-1} (I - \rho \cdot W^T)^{-1},
+\end{equation}
+where $T$ is the matrix transpose operator. The SA parameter $\rho$ for the SAR model has a more intuitive connection to the degree of SA than the CAR model (it behaves more similarly to a correlation coefficient). 
+
+Using `geostan::stan_sar`, we can fit spatial data to the SAR (SEM) model as follows:
+
+```{r}
+W <- shape2mat(georgia, "W")
+fit <- stan_sar(log(income / 1e3) ~ log(population / 1e3), 
+                data = georgia,
+		type = "SEM",
+                C = W, 
+                centerx = TRUE,
+                iter = 1e3)
+```
+
+The Stan function that is used by `geostan::stan_sar` is as follows (the R code below will assume that you have saved this as "sar-lpdf.stan"):
+
+```stan
+/**
+ * Log probability density of the simultaneous autoregressive (SAR) model (spatial error model)
+ *
+ * @param y Process to model
+ * @param mu Mean vector
+ * @param sigma Scale parameter
+ * @param rho Spatial dependence parameter
+ * @param W Sparse representation of W (its non-zero values)
+ * @param W_v Column indices for values in W
+ * @param W_u Row starting indices for values in W
+ * @param lambda Eigenvalues of W
+ * @param n Length of y
+ *
+ * @return Log probability density of SAR model up to additive constant
+*/
+  real  sar_normal_lpdf(vector y,
+		      vector mu,
+		      real sigma,
+		      real rho,
+		      vector W_w,
+		      array[] int W_v,
+		      array[] int W_u,
+		      vector lambda,
+		      int n) {
+    vector[n] z = y - mu;
+    real tau = 1 / sigma^2;
+    vector[n] ImrhoWz = z - csr_matrix_times_vector(n, n, rho * W_w, W_v , W_u , z);
+    real zVz = tau * dot_self(ImrhoWz);
+    real ldet_V = 2 * sum(log1m(rho * lambda)) - 2 * n * log(sigma);
+    return  0.5 * ( -n * log(2 * pi()) + ldet_V - zVz );		 
+ }    
+
+```
+
+The following Stan model provides an example of how to use this function to build a SAR model. Again, its an autonormal model for continuous outcome variable with $k$ covariates. 
+
+```{r}
+sar_model_file <- "sar_model.stan"
+```
+
+```stan
+functions {
+#include sar-lpdf.stan
+}
+
+data {
+  // data
+  int<lower=1> n;
+  int<lower=1> k;
+  vector[n] y;
+  matrix[n, k] x;
+
+
+// SAR
+  int nW_w;
+  vector[nW_w] W_w;
+  array[nW_w] int W_v;
+  array[n + 1] int W_u;
+  vector[n] eigenvalues_w;
+}
+
+parameters {
+  // SA parameter
+  real<lower=1/min(eigenvalues_w), upper=1/max(eigenvalues_w)> rho;     
+
+  // scale parameter
+  real<lower=0> sigma;
+
+  // intercept
+  real alpha;
+
+  // coefficients
+  vector[k] beta;
+}
+
+model{
+  vector[n] mu = alpha + x * beta;
+
+  // Likelihood: Y ~ Normal(Mu, Sigma)
+  target += sar_normal_lpdf(y |
+                  mu, sigma, rho,
+                  W_w,
+                  W_v,
+                  W_u,
+                  eigenvalues_w,
+                  n);
+
+  // prior for scale parameter
+  target += student_t_lpdf(sigma | 10, 0, 5);
+
+  // prior for beta
+  target += normal_lpdf(beta | 0, 5);
+
+  // prior for intercept
+  target += normal_lpdf(alpha | 0, 5);
+}
+
+```
+
+
+```{r}
+library(geostan)
+library(rstan)
+data(georgia)
+
+W <- shape2mat(georgia, "W")
+sar_list <- prep_sar_data(W)
+
+# add data
+sar_list$y <- log(georgia$income / 1e3)
+sar_list$x <- scale(log(georgia$population / 1e3), center = TRUE, scale = FALSE)
+sar_list$k <- ncol(sar_list$x)
+
+# compile Stan model from file (SEM)
+sar_model_file <- "sar_model.stan"
+sar_model <- stan_model(sar_model_file)
+
+# sample from model (SEM)
+samples <- sampling(sar_model, data = sar_list, iter = 1e3)
+```
+
+One can also use the SAR (SEM) model as a prior distribution for a parameter vector, just as was done above with the CAR model. 
+
+
+# References
