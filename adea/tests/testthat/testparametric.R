@@ -1,0 +1,92 @@
+library('adea')
+library('ROI.plugin.glpk')
+library('testthat')
+
+data('cardealers4')
+
+test_that("Test adea_parametric: General case (default orientation)", {
+    ## skip_on_cran()
+    sol <- try(adea_parametric(input = cardealers4[, c('Employees', 'Depreciation')], output = cardealers4[, c('CarsSold', 'WorkOrders')], name = 'Test adea_parametric'))
+    expect_s3_class(sol, "adeaparametric")
+    expect_length(sol, 12)
+    expect_equal(names(sol), c('name', 'orientation', 'load.orientation', 'loads', 'models', 'ninputs', 'noutputs', 'nvariables', 'inputnames', 'outputnames', 'out', 'solver'))
+    expect_equal(sol$name, "Test adea_parametric")
+    expect_equal(sol$orientation , 'input')
+    expect_equal(sol$load.orientation , 'inoutput')
+    expect_equal(sol$loads, c(0, 1, .95756716, .66666666))
+    expect_length(sol$models, 4)
+    expect_equal(sol$models[[1]], NULL)
+    expect_s3_class(sol$models[[2]], 'adea')
+    expect_length(sol$models[[2]], 12)
+    expect_equal(sol$models[[2]]$eff, c('Dealer A' = 0.7875, 'Dealer B' = .75, 'Dealer C' = 0.3, 'Dealer D' = 0.8653846, 'Dealer E' = 1, 'Dealer F' = 0.54))
+    expect_equal(class(sol$models[[3]]), 'adea')
+    expect_length(sol$models[[3]], 12)
+    expect_equal(sol$models[[3]]$eff, c('Dealer A' = 0.99159292, 'Dealer B' = 1, 'Dealer C' = 0.89285714, 'Dealer D' = 0.86538461, 'Dealer E' = 1, 'Dealer F' = 0.65150442))
+    expect_equal(class(sol$models[[4]]), 'adea')
+    expect_length(sol$models[[4]], 12)
+    expect_equal(sol$models[[4]]$eff, c('Dealer A' = 0.99159292, 'Dealer B' = 1, 'Dealer C' = 0.89285714, 'Dealer D' = 0.86538461, 'Dealer E' = 1, 'Dealer F' = 0.65150442))
+    expect_equal(sol$ninputs, c(0, 1, 1, 2))
+    expect_equal(sol$noutputs, c(0, 1, 2, 2))
+    expect_equal(sol$nvariables, c(1, 2, 3, 4))
+    expect_equal(sol$inputnames, c('', 'Depreciation', 'Depreciation', 'Employees, Depreciation'))
+    expect_equal(sol$outputnames, c('', 'CarsSold', 'CarsSold, WorkOrders', 'CarsSold, WorkOrders'))
+    expect_equal(sol$out, c('', '', 'WorkOrders', 'Employees'))
+    expect_equal(sol$solver, 'glpk')
+})
+
+test_that("Test adea_parametric: Summary", {
+    skip_on_cran()
+    sol <- try(adea_parametric(input = cardealers4[, c('Employees', 'Depreciation')], output = cardealers4[, c('CarsSold', 'WorkOrders')], name = 'Test adea_parametric'))
+    ssol <- summary(sol)
+    expect_s3_class(ssol, 'summary.adeaparametric')
+    expect_length(ssol, 4)
+    expect_equal(ssol$models$Load, c(.66666666, .95756716, 1))
+})
+
+
+test_that("Test adea_parametric: General case (output orientation)", {
+    skip_on_cran()
+    sol <- try(adea_parametric(input = cardealers4[, c('Employees', 'Depreciation')], output = cardealers4[, c('CarsSold', 'WorkOrders')], orientation = 'output'))
+    expect_s3_class(sol, "adeaparametric")
+    expect_length(sol, 12)
+    expect_equal(sol$loads,  c(0, 1, .93417912, .58660118))
+    expect_s3_class(sol$models[[2]], 'adea')
+    expect_length(sol$models[[2]], 12)
+    expect_equal(sol$models[[2]]$eff, c('Dealer A' = 1.2698412, 'Dealer B' = 1.33333333, 'Dealer C' = 3.33333333, 'Dealer D' = 1.15555555, 'Dealer E' = 1, 'Dealer F' = 1.85185186))
+})
+
+
+test_that("Test adea_parametric: Single input case", {
+    skip_on_cran()
+    sol <- try(adea_parametric(input = cardealers4[, 'Employees'], output = cardealers4[, c('CarsSold', 'WorkOrders')]))
+    expect_s3_class(sol, "adeaparametric")
+    expect_length(sol, 12)
+    expect_equal(sol$loads,  c(0, 1, 1))
+    expect_s3_class(sol$models[[2]], 'adea')
+    expect_length(sol$models[[2]], 12)
+    expect_equal(sol$models[[2]]$eff, c('Dealer A' = .48125, 'Dealer B' = .6250, 'Dealer C' = .15714285, 'Dealer D' = .57291666, 'Dealer E' = 1, 'Dealer F' = .36666666))
+})
+
+
+test_that("Test adea_parametric: Single output case", {
+    skip_on_cran()
+    sol <- try(adea_parametric(input = cardealers4[, c('Employees', 'Depreciation')], output = cardealers4[, 'CarsSold']))
+    expect_s3_class(sol, "adeaparametric")
+    expect_length(sol, 12)
+    expect_equal(sol$loads,  c(0, 1, .33333333))
+    expect_s3_class(sol$models[[2]], 'adea')
+    expect_length(sol$models[[2]], 12)
+    expect_equal(sol$models[[2]]$eff, c('Dealer A' = .7875, 'Dealer B' = .75, 'Dealer C' = .3, 'Dealer D' = .8653846, 'Dealer E' = 1, 'Dealer F' = .54))
+})
+
+
+test_that("Test adea_parametric: Single input and output case", {
+    skip_on_cran()
+    sol <- try(adea_parametric(input = cardealers4[, 'Employees', drop = FALSE], output = cardealers4[, 'CarsSold', drop = FALSE]))
+    expect_s3_class(sol, "adeaparametric")
+    expect_length(sol, 12)
+    expect_equal(sol$loads,  c(0, 1))
+    expect_s3_class(sol$models[[2]], 'adea')
+    expect_length(sol$models[[2]], 12)
+    expect_equal(sol$models[[2]]$eff, c('Dealer A' = .48125, 'Dealer B' = .6250, 'Dealer C' = .15714285, 'Dealer D' = .57291666, 'Dealer E' = 1, 'Dealer F' = .36666666))
+})
