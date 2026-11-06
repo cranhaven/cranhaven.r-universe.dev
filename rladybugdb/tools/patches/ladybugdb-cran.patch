@@ -1,0 +1,636 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 05de547..8fceada 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -368,6 +368,7 @@ option(BUILD_SINGLE_FILE_HEADER "Build single file header. Requires Python >= 3.
+ option(BUILD_LBUG "Build Lbug." TRUE)
+ option(BUILD_SHARED_LBUG "Build the shared liblbug library." TRUE)
+ option(BUILD_STATIC_LBUG "Build the bundled static liblbug archive." TRUE)
++option(LBUG_R_PACKAGE "Build the CRAN-safe static library used by rladybugdb." FALSE)
+ option(LBUG_API_USE_PRECOMPILED_LIB "Link language bindings against a precompiled static liblbug archive." FALSE)
+ set(LBUG_API_PRECOMPILED_LIB_PATH "" CACHE FILEPATH "Path to the precompiled static liblbug archive used by language bindings.")
+ option(LBUG_NODEJS_USE_PRECOMPILED_LIB "Deprecated alias for LBUG_API_USE_PRECOMPILED_LIB." FALSE)
+@@ -507,7 +508,7 @@ endif()
+ if (ENABLE_BACKTRACES)
+     list(APPEND LBUG_LINK_LIBRARIES cpptrace::cpptrace)
+ endif()
+-if (NOT BUILD_WASM)
++if (NOT BUILD_WASM AND NOT LBUG_R_PACKAGE)
+     find_package(OpenSSL 3 REQUIRED)
+     # Prefer modern imported targets when available (OpenSSL 3 provides OpenSSL::SSL/OpenSSL::Crypto)
+     if (TARGET OpenSSL::SSL AND TARGET OpenSSL::Crypto)
+diff --git a/tmp/lbug-crate.hqrpOe/lbug-0.20.4/lbug-src/LICENSE b/LICENSE
+new file mode 100644
+index 0000000..9bb12b2
+--- /dev/null
++++ b/LICENSE
+@@ -0,0 +1,22 @@
++MIT License
++
++Copyright (c) 2022-2025 Kùzu Inc.
++Copyright (c) 2025-2026 Ladybug Memory Inc.
++
++Permission is hereby granted, free of charge, to any person obtaining a copy
++of this software and associated documentation files (the "Software"), to deal
++in the Software without restriction, including without limitation the rights
++to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
++copies of the Software, and to permit persons to whom the Software is
++furnished to do so, subject to the following conditions:
++
++The above copyright notice and this permission notice shall be included in all
++copies or substantial portions of the Software.
++
++THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
++AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
++OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
++SOFTWARE.
+diff --git a/cmake/BundleStaticLibrary.cmake b/cmake/BundleStaticLibrary.cmake
+index 75b7bb1..601d2b6 100644
+--- a/cmake/BundleStaticLibrary.cmake
++++ b/cmake/BundleStaticLibrary.cmake
+@@ -20,7 +20,7 @@ if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Darwin")
+         COMMAND libtool -static -o "${BUNDLED_LIBRARY}" "${MAIN_LIBRARY}" ${STATIC_LIBRARY_LIST}
+         RESULT_VARIABLE BUNDLE_RESULT
+         COMMAND_ERROR_IS_FATAL ANY)
+-elseif(CMAKE_HOST_WIN32)
++elseif(CMAKE_HOST_WIN32 AND MSVC)
+     execute_process(
+         COMMAND "${AR_EXECUTABLE}" "/OUT:${BUNDLED_LIBRARY}" "${MAIN_LIBRARY}" ${STATIC_LIBRARY_LIST}
+         RESULT_VARIABLE BUNDLE_RESULT
+@@ -42,6 +42,6 @@ else()
+ endif()
+ 
+ file(RENAME "${BUNDLED_LIBRARY}" "${OUTPUT}")
+-if(DEFINED RANLIB_EXECUTABLE AND NOT CMAKE_HOST_WIN32)
++if(DEFINED RANLIB_EXECUTABLE AND NOT MSVC)
+     execute_process(COMMAND "${RANLIB_EXECUTABLE}" "${OUTPUT}" COMMAND_ERROR_IS_FATAL ANY)
+ endif()
+diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
+index 91c6153..5c33d18 100644
+--- a/src/CMakeLists.txt
++++ b/src/CMakeLists.txt
+@@ -64,6 +64,7 @@ if(TARGET lbug)
+                         "-DSTATIC_LIBRARIES_FILE=${LBUG_STATIC_ARCHIVE_PATH_FILE}"
+                         "-DAR_EXECUTABLE=${CMAKE_AR}"
+                         "-DRANLIB_EXECUTABLE=${CMAKE_RANLIB}"
++                        "-DMSVC=${MSVC}"
+                         -P "${PROJECT_SOURCE_DIR}/cmake/BundleStaticLibrary.cmake"
+                 VERBATIM)
+ endif()
+diff --git a/src/common/task_system/terminal_progress_bar_display.cpp b/src/common/task_system/terminal_progress_bar_display.cpp
+index 444a89c..96a63e9 100644
+--- a/src/common/task_system/terminal_progress_bar_display.cpp
++++ b/src/common/task_system/terminal_progress_bar_display.cpp
+@@ -20,15 +20,12 @@ void TerminalProgressBarDisplay::updateProgress(uint64_t /*queryID*/, double new
+         newNumPipelinesFinished > numPipelinesFinished) {
+         pipelineProgress.store(newPipelineProgress);
+         numPipelinesFinished.store(newNumPipelinesFinished);
+-        printProgressBar();
++        // R's console API is not thread-safe. Keep progress state without
++        // writing from LadybugDB worker threads.
+     }
+ }
+ 
+ void TerminalProgressBarDisplay::finishProgress(uint64_t /*queryID*/) {
+-    if (printing) {
+-        std::cout << "\033[2A\033[2K\033[1B\033[2K\033[1A";
+-        std::cout.flush();
+-    }
+     printing = false;
+     numPipelines = 0;
+     numPipelinesFinished = 0;
+@@ -36,30 +33,8 @@ void TerminalProgressBarDisplay::finishProgress(uint64_t /*queryID*/) {
+ }
+ 
+ void TerminalProgressBarDisplay::printProgressBar() {
+-    // If a different thread is already printing the progress skip the current update
+-    // As we do not require the displayed value to be perfectly up to date
+-    bool falseValue{false};
+-    if (currentlyPrintingProgress.compare_exchange_strong(falseValue, true)) {
+-        setGreenFont();
+-        if (printing) {
+-            if (pipelineProgress == 0) {
+-                std::cout << "\033[1A\033[2K\033[1A";
+-                printing = false;
+-            } else {
+-                std::cout << "\033[1A";
+-            }
+-        }
+-        if (!printing) {
+-            std::cout << "Pipelines Finished: " << numPipelinesFinished << "/" << numPipelines
+-                      << "\n";
+-            printing = true;
+-        }
+-        std::cout << "Current Pipeline Progress: " << uint32_t(pipelineProgress * 100.0) << "%"
+-                  << "\n";
+-        setDefaultFont();
+-        std::cout.flush();
+-        currentlyPrintingProgress.store(false);
+-    }
++    // Intentionally empty for R: native worker threads must not write to the
++    // R console, stdout, or stderr.
+ }
+ 
+ } // namespace common
+diff --git a/src/extension/CMakeLists.txt b/src/extension/CMakeLists.txt
+index b902c4b..0bdcfee 100644
+--- a/src/extension/CMakeLists.txt
++++ b/src/extension/CMakeLists.txt
+@@ -56,7 +56,11 @@ add_library(lbug_extension
+         loaded_extension.cpp
+ )
+ 
+-if (NOT BUILD_WASM)
++if (LBUG_R_PACKAGE)
++    target_compile_definitions(lbug_extension PRIVATE LBUG_R_PACKAGE)
++endif ()
++
++if (NOT BUILD_WASM AND NOT LBUG_R_PACKAGE)
+     target_compile_definitions(lbug_extension PRIVATE CPPHTTPLIB_OPENSSL_SUPPORT)
+     target_include_directories(lbug_extension PRIVATE ${OPENSSL_INCLUDE_DIR})
+ endif ()
+diff --git a/src/extension/extension_installer.cpp b/src/extension/extension_installer.cpp
+index eefe38b..c18eaec 100644
+--- a/src/extension/extension_installer.cpp
++++ b/src/extension/extension_installer.cpp
+@@ -1,5 +1,43 @@
+ #include "extension/extension_installer.h"
+ 
++#ifdef LBUG_R_PACKAGE
++
++#include "common/exception/io.h"
++
++namespace lbug {
++namespace extension {
++
++namespace {
++
++[[noreturn]] void throwRemoteExtensionUnsupported() {
++    throw common::IOException(
++        "Remote extension installation is unavailable in the rladybugdb CRAN build.");
++}
++
++} // namespace
++
++void ExtensionInstaller::tryDownloadExtensionFile(const ExtensionRepoInfo& /*repoInfo*/,
++    const std::string& /*localFilePath*/) {
++    throwRemoteExtensionUnsupported();
++}
++
++bool ExtensionInstaller::install() {
++    throwRemoteExtensionUnsupported();
++}
++
++bool ExtensionInstaller::installExtension() {
++    throwRemoteExtensionUnsupported();
++}
++
++void ExtensionInstaller::installDependencies() {
++    throwRemoteExtensionUnsupported();
++}
++
++} // namespace extension
++} // namespace lbug
++
++#else
++
+ #include <atomic>
+ #include <thread>
+ 
+@@ -157,3 +195,5 @@ void ExtensionInstaller::installDependencies() {
+ 
+ } // namespace extension
+ } // namespace lbug
++
++#endif
+diff --git a/src/include/common/task_system/terminal_progress_bar_display.h b/src/include/common/task_system/terminal_progress_bar_display.h
+index 7cd2387..0fdfee0 100644
+--- a/src/include/common/task_system/terminal_progress_bar_display.h
++++ b/src/include/common/task_system/terminal_progress_bar_display.h
+@@ -1,7 +1,5 @@
+ #pragma once
+ 
+-#include <iostream>
+-
+ #include "progress_bar_display.h"
+ 
+ namespace lbug {
+@@ -18,10 +16,6 @@ public:
+     void finishProgress(uint64_t queryID) override;
+ 
+ private:
+-    void setGreenFont() const { std::cerr << "\033[1;32m"; }
+-
+-    void setDefaultFont() const { std::cerr << "\033[0m"; }
+-
+     void printProgressBar();
+ 
+ private:
+diff --git a/src/include/storage/table/ice_disk_utils.h b/src/include/storage/table/ice_disk_utils.h
+index 1954bc4..71495bb 100644
+--- a/src/include/storage/table/ice_disk_utils.h
++++ b/src/include/storage/table/ice_disk_utils.h
+@@ -96,10 +96,6 @@ public:
+         }
+ 
+         if (!found) {
+-            std::cerr << "Warning: " << path
+-                      << ": parquet file is missing icebug_disk_version metadata; continuing "
+-                         "without version compatibility check"
+-                      << std::endl;
+             return;
+         }
+ 
+diff --git a/src/storage/index/art_index.cpp b/src/storage/index/art_index.cpp
+index 3f068b2..6b3da75 100644
+--- a/src/storage/index/art_index.cpp
++++ b/src/storage/index/art_index.cpp
+@@ -76,11 +76,6 @@ void appendString(std::vector<uint8_t>& bytes, std::string_view value) {
+     bytes.push_back(0);
+ }
+ 
+-bool shouldPrintDestructorStats() {
+-    const auto* value = std::getenv("LBUG_ART_INDEX_DESTRUCTOR_STATS");
+-    return value != nullptr && value[0] != '\0' && std::strcmp(value, "0") != 0;
+-}
+-
+ } // namespace
+ 
+ ArtPrimaryKeyIndex::Node::Node() = default;
+@@ -321,30 +316,7 @@ ArtPrimaryKeyIndex::ArtPrimaryKeyIndex(IndexInfo indexInfo,
+ }
+ 
+ ArtPrimaryKeyIndex::~ArtPrimaryKeyIndex() {
+-    if (!shouldPrintDestructorStats()) {
+-        clear();
+-        return;
+-    }
+-    const auto allocatedNodes = numAllocatedNodes;
+-    const auto numBlocks = nodeBlocks.size();
+-    const auto numNode4 = numNodesByKind[0];
+-    const auto numNode16 = numNodesByKind[1];
+-    const auto numNode48 = numNodesByKind[2];
+-    const auto numNode256 = numNodesByKind[3];
+-    const auto start = std::chrono::steady_clock::now();
+     clear();
+-    const auto end = std::chrono::steady_clock::now();
+-    const auto elapsedMs =
+-        std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+-    std::fprintf(stderr,
+-        "ART destructor index=%s table=%llu allocated_nodes=%llu arena_nodes=%llu blocks=%llu "
+-        "node4=%llu node16=%llu node48=%llu node256=%llu elapsed_ms=%lld\n",
+-        indexInfo.name.c_str(), static_cast<unsigned long long>(indexInfo.tableID),
+-        static_cast<unsigned long long>(allocatedNodes),
+-        static_cast<unsigned long long>(allocatedNodes - 1),
+-        static_cast<unsigned long long>(numBlocks), static_cast<unsigned long long>(numNode4),
+-        static_cast<unsigned long long>(numNode16), static_cast<unsigned long long>(numNode48),
+-        static_cast<unsigned long long>(numNode256), static_cast<long long>(elapsedMs));
+ }
+ 
+ void ArtPrimaryKeyIndex::clear() {
+diff --git a/src/storage/wal/CMakeLists.txt b/src/storage/wal/CMakeLists.txt
+index 5c5cf13..c57a47d 100644
+--- a/src/storage/wal/CMakeLists.txt
++++ b/src/storage/wal/CMakeLists.txt
+@@ -1,20 +1,22 @@
+-find_package(Python3 3.9...4 REQUIRED)
++if(NOT LBUG_R_PACKAGE)
++        find_package(Python3 3.9...4 REQUIRED)
+ 
+-file(GLOB WAL_TYPESPEC_RECORD_SPECS CONFIGURE_DEPENDS
+-        ${PROJECT_SOURCE_DIR}/src/storage/wal/typespec/records/*.tsp)
+-file(GLOB WAL_TYPESPEC_TEMPLATES CONFIGURE_DEPENDS
+-        ${PROJECT_SOURCE_DIR}/src/storage/wal/typespec/templates/*.j2)
++        file(GLOB WAL_TYPESPEC_RECORD_SPECS CONFIGURE_DEPENDS
++                ${PROJECT_SOURCE_DIR}/src/storage/wal/typespec/records/*.tsp)
++        file(GLOB WAL_TYPESPEC_TEMPLATES CONFIGURE_DEPENDS
++                ${PROJECT_SOURCE_DIR}/src/storage/wal/typespec/templates/*.j2)
+ 
+-add_custom_target(generate_wal_typespec
+-        COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/scripts/generate_wal_typespec.py
+-        DEPENDS
+-                ${PROJECT_SOURCE_DIR}/scripts/generate_wal_typespec.py
+-                ${PROJECT_SOURCE_DIR}/src/storage/wal/typespec/common.tsp
+-                ${WAL_TYPESPEC_RECORD_SPECS}
+-                ${WAL_TYPESPEC_TEMPLATES}
+-        WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+-        COMMENT "Generating WAL record files from TypeSpec"
+-        VERBATIM)
++        add_custom_target(generate_wal_typespec
++                COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/scripts/generate_wal_typespec.py
++                DEPENDS
++                        ${PROJECT_SOURCE_DIR}/scripts/generate_wal_typespec.py
++                        ${PROJECT_SOURCE_DIR}/src/storage/wal/typespec/common.tsp
++                        ${WAL_TYPESPEC_RECORD_SPECS}
++                        ${WAL_TYPESPEC_TEMPLATES}
++                WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
++                COMMENT "Generating WAL record files from TypeSpec"
++                VERBATIM)
++endif()
+ 
+ add_library(lbug_storage_wal
+         OBJECT
+diff --git a/third_party/antlr4_runtime/src/ConsoleErrorListener.cpp b/third_party/antlr4_runtime/src/ConsoleErrorListener.cpp
+index c7925e4..9d3304f 100755
+--- a/third_party/antlr4_runtime/src/ConsoleErrorListener.cpp
++++ b/third_party/antlr4_runtime/src/ConsoleErrorListener.cpp
+@@ -10,6 +10,6 @@ using namespace antlr4;
+ ConsoleErrorListener ConsoleErrorListener::INSTANCE;
+ 
+ void ConsoleErrorListener::syntaxError(Recognizer * /*recognizer*/, Token * /*offendingSymbol*/,
+-  size_t line, size_t charPositionInLine, const std::string &msg, std::exception_ptr /*e*/)  {
+-  std::cerr << "line " << line << ":" << charPositionInLine << " " << msg << std::endl;
++  size_t /*line*/, size_t /*charPositionInLine*/, const std::string & /*msg*/,
++  std::exception_ptr /*e*/)  {
+ }
+diff --git a/third_party/antlr4_runtime/src/Parser.cpp b/third_party/antlr4_runtime/src/Parser.cpp
+index 337bcba..5b032d5 100755
+--- a/third_party/antlr4_runtime/src/Parser.cpp
++++ b/third_party/antlr4_runtime/src/Parser.cpp
+@@ -56,22 +56,16 @@ Parser::TraceListener::TraceListener(Parser *outerInstance_) : outerInstance(out
+ Parser::TraceListener::~TraceListener() {
+ }
+ 
+-void Parser::TraceListener::enterEveryRule(ParserRuleContext *ctx) {
+-  std::cout << "enter   " << outerInstance->getRuleNames()[ctx->getRuleIndex()]
+-    << ", LT(1)=" << outerInstance->_input->LT(1)->getText() << std::endl;
++void Parser::TraceListener::enterEveryRule(ParserRuleContext * /*ctx*/) {
+ }
+ 
+-void Parser::TraceListener::visitTerminal(tree::TerminalNode *node) {
+-  std::cout << "consume " << node->getSymbol() << " rule "
+-    << outerInstance->getRuleNames()[outerInstance->getContext()->getRuleIndex()] << std::endl;
++void Parser::TraceListener::visitTerminal(tree::TerminalNode * /*node*/) {
+ }
+ 
+ void Parser::TraceListener::visitErrorNode(tree::ErrorNode * /*node*/) {
+ }
+ 
+-void Parser::TraceListener::exitEveryRule(ParserRuleContext *ctx) {
+-  std::cout << "exit    " << outerInstance->getRuleNames()[ctx->getRuleIndex()]
+-    << ", LT(1)=" << outerInstance->_input->LT(1)->getText() << std::endl;
++void Parser::TraceListener::exitEveryRule(ParserRuleContext * /*ctx*/) {
+ }
+ 
+ Parser::TrimToSizeListener Parser::TrimToSizeListener::INSTANCE;
+@@ -588,22 +582,6 @@ std::vector<std::string> Parser::getDFAStrings() {
+ }
+ 
+ void Parser::dumpDFA() {
+-  atn::ParserATNSimulator *simulator = getInterpreter<atn::ParserATNSimulator>();
+-  if (!simulator->decisionToDFA.empty()) {
+-    UniqueLock<Mutex> lck(_mutex);
+-    bool seenOne = false;
+-    for (size_t d = 0; d < simulator->decisionToDFA.size(); d++) {
+-      dfa::DFA &dfa = simulator->decisionToDFA[d];
+-      if (!dfa.states.empty()) {
+-        if (seenOne) {
+-          std::cout << std::endl;
+-        }
+-        std::cout << "Decision " << dfa.decision << ":" << std::endl;
+-        std::cout << dfa.toString(getVocabulary());
+-        seenOne = true;
+-      }
+-    }
+-  }
+ }
+ 
+ std::string Parser::getSourceName() {
+@@ -667,4 +645,3 @@ void Parser::InitializeInstanceFields() {
+   _tracer = nullptr;
+   _ctx = nullptr;
+ }
+-
+diff --git a/third_party/antlr4_runtime/src/RuntimeMetaData.cpp b/third_party/antlr4_runtime/src/RuntimeMetaData.cpp
+index cf30d68..68a37fb 100755
+--- a/third_party/antlr4_runtime/src/RuntimeMetaData.cpp
++++ b/third_party/antlr4_runtime/src/RuntimeMetaData.cpp
+@@ -15,26 +15,8 @@ std::string RuntimeMetaData::getRuntimeVersion() {
+ }
+ 
+ void RuntimeMetaData::checkVersion(const std::string &generatingToolVersion, const std::string &compileTimeVersion) {
+-  std::string runtimeVersion = VERSION;
+-  bool runtimeConflictsWithGeneratingTool = false;
+-  bool runtimeConflictsWithCompileTimeTool = false;
+-
+-  if (generatingToolVersion != "") {
+-    runtimeConflictsWithGeneratingTool = runtimeVersion != generatingToolVersion
+-      && getMajorMinorVersion(runtimeVersion) != getMajorMinorVersion(generatingToolVersion);
+-  }
+-
+-  runtimeConflictsWithCompileTimeTool = runtimeVersion != compileTimeVersion
+-    && getMajorMinorVersion(runtimeVersion) != getMajorMinorVersion(compileTimeVersion);
+-
+-  if (runtimeConflictsWithGeneratingTool) {
+-    std::cerr << "ANTLR Tool version " << generatingToolVersion << " used for code generation does not match "
+-      "the current runtime version " << runtimeVersion << std::endl;
+-  }
+-  if (runtimeConflictsWithCompileTimeTool) {
+-    std::cerr << "ANTLR Runtime version " << compileTimeVersion << " used for parser compilation does not match "
+-      "the current runtime version " << runtimeVersion << std::endl;
+-  }
++  (void)generatingToolVersion;
++  (void)compileTimeVersion;
+ }
+ 
+ std::string RuntimeMetaData::getMajorMinorVersion(const std::string &version) {
+diff --git a/third_party/antlr4_runtime/src/TokenStreamRewriter.cpp b/third_party/antlr4_runtime/src/TokenStreamRewriter.cpp
+index 1740b11..4acdf6d 100755
+--- a/third_party/antlr4_runtime/src/TokenStreamRewriter.cpp
++++ b/third_party/antlr4_runtime/src/TokenStreamRewriter.cpp
+@@ -355,7 +355,6 @@ std::unordered_map<size_t, TokenStreamRewriter::RewriteOperation*> TokenStreamRe
+         rewrites[prevRop->instructionIndex] = nullptr; // kill first delete
+         rop->index = std::min(prevRop->index, rop->index);
+         rop->lastIndex = std::max(prevRop->lastIndex, rop->lastIndex);
+-        std::cout << "new rop " << rop << std::endl;
+       }
+       else if (!disjoint) {
+         throw IllegalArgumentException("replace op boundaries of " + rop->toString() +
+diff --git a/third_party/antlr4_runtime/src/atn/ATNState.cpp b/third_party/antlr4_runtime/src/atn/ATNState.cpp
+index 43deb25..126d34b 100755
+--- a/third_party/antlr4_runtime/src/atn/ATNState.cpp
++++ b/third_party/antlr4_runtime/src/atn/ATNState.cpp
+@@ -42,7 +42,6 @@ void ATNState::addTransition(size_t index, ConstTransitionPtr e) {
+   if (transitions.empty()) {
+     epsilonOnlyTransitions = e->isEpsilon();
+   } else if (epsilonOnlyTransitions != e->isEpsilon()) {
+-    std::cerr << "ATN state %d has both epsilon and non-epsilon transitions.\n" << stateNumber;
+     epsilonOnlyTransitions = false;
+   }
+ 
+diff --git a/third_party/antlr4_runtime/src/atn/ParserATNSimulator.cpp b/third_party/antlr4_runtime/src/atn/ParserATNSimulator.cpp
+index 3a15375..68b178c 100755
+--- a/third_party/antlr4_runtime/src/atn/ParserATNSimulator.cpp
++++ b/third_party/antlr4_runtime/src/atn/ParserATNSimulator.cpp
+@@ -1233,27 +1233,7 @@ std::string ParserATNSimulator::getLookaheadName(TokenStream *input) {
+   return getTokenName(input->LA(1));
+ }
+ 
+-void ParserATNSimulator::dumpDeadEndConfigs(NoViableAltException &nvae) {
+-  std::cerr << "dead end configs: ";
+-  for (const auto &c : nvae.getDeadEndConfigs()->configs) {
+-    std::string trans = "no edges";
+-    if (c->state->transitions.size() > 0) {
+-      const Transition *t = c->state->transitions[0].get();
+-      if (t != nullptr && t->getTransitionType() == TransitionType::ATOM) {
+-        const AtomTransition *at = static_cast<const AtomTransition*>(t);
+-        trans = "Atom " + getTokenName(at->_label);
+-      } else if (t != nullptr && t->getTransitionType() == TransitionType::SET) {
+-        const SetTransition *st = static_cast<const SetTransition*>(t);
+-        trans = "Set ";
+-        trans += st->set.toString();
+-      } else if (t != nullptr && t->getTransitionType() == TransitionType::NOT_SET) {
+-        const SetTransition *st = static_cast<const NotSetTransition*>(t);
+-        trans = "~Set ";
+-        trans += st->set.toString();
+-      }
+-    }
+-    std::cerr << c->toString(true) + ":" + trans;
+-  }
++void ParserATNSimulator::dumpDeadEndConfigs(NoViableAltException & /*nvae*/) {
+ }
+ 
+ NoViableAltException ParserATNSimulator::noViableAlt(TokenStream *input, ParserRuleContext *outerContext,
+diff --git a/third_party/re2/include/logging.h b/third_party/re2/include/logging.h
+index e589b2d..9e1db91 100644
+--- a/third_party/re2/include/logging.h
++++ b/third_party/re2/include/logging.h
+@@ -13,6 +13,7 @@
+ 
+ #include <ostream>
+ #include <sstream>
++#include <stdexcept>
+ 
+ #include "util.h"
+ 
+@@ -103,9 +104,9 @@ private:
+ class LogMessageFatal : public LogMessage {
+ public:
+     LogMessageFatal(const char* file, int line) : LogMessage(file, line) {}
+-    ATTRIBUTE_NORETURN ~LogMessageFatal() {
++    ATTRIBUTE_NORETURN ~LogMessageFatal() noexcept(false) {
+         Flush();
+-        abort();
++        throw std::runtime_error("RE2 internal consistency check failed");
+     }
+ 
+ private:
+diff --git a/third_party/roaring_bitmap/CMakeLists.txt b/third_party/roaring_bitmap/CMakeLists.txt
+index 91d24c9..e6be73c 100644
+--- a/third_party/roaring_bitmap/CMakeLists.txt
++++ b/third_party/roaring_bitmap/CMakeLists.txt
+@@ -4,6 +4,10 @@ endif ()
+ 
+ add_library(roaring_bitmap STATIC roaring.c)
+ 
++if (LBUG_R_PACKAGE)
++    target_compile_definitions(roaring_bitmap PRIVATE LBUG_R_PACKAGE)
++endif ()
++
+ target_include_directories(
+         roaring_bitmap
+         PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>)
+diff --git a/third_party/roaring_bitmap/roaring.c b/third_party/roaring_bitmap/roaring.c
+index 4ab4f66..8f92c14 100644
+--- a/third_party/roaring_bitmap/roaring.c
++++ b/third_party/roaring_bitmap/roaring.c
+@@ -54,6 +54,17 @@
+  * SPDX-License-Identifier: MIT
+  */
+ 
++#ifdef LBUG_R_PACKAGE
++// CRoaring's public debug printers are not used by LadybugDB's R interface.
++// Compile them as no-ops so the library never writes around R's console.
++#include <stdio.h>
++static int lbug_r_no_printf(const char *format, ...) {
++    (void)format;
++    return 0;
++}
++#define printf(...) lbug_r_no_printf(__VA_ARGS__)
++#endif
++
+ #include "roaring.h"
+ 
+ /* used for http://dmalloc.com/ Dmalloc - Debug Malloc Library */
+diff --git a/src/storage/buffer_manager/buffer_manager.cpp b/src/storage/buffer_manager/buffer_manager.cpp
+index f04a338..c5f7af5 100644
+--- a/src/storage/buffer_manager/buffer_manager.cpp
++++ b/src/storage/buffer_manager/buffer_manager.cpp
+@@ -174,7 +174,7 @@ uint8_t* BufferManager::pin(FileHandle& fileHandle, page_idx_t pageIdx,
+     }
+ }
+ 
+-#if defined(WIN32)
++#if defined(_MSC_VER) && !BM_MALLOC
+ class AccessViolation : public std::exception {
+ public:
+     AccessViolation(const uint8_t* location) : location{location} {}
+@@ -216,11 +216,11 @@ inline bool try_func(const std::function<void(uint8_t*)>& func, uint8_t* frame,
+     pageState->addReader();
+ #endif
+ 
+-#if defined(_WIN32) && !BM_MALLOC
++#if defined(_MSC_VER) && !BM_MALLOC
+     try {
+ #endif
+         func(frame);
+-#if defined(_WIN32) && !BM_MALLOC
++#if defined(_MSC_VER) && !BM_MALLOC
+     } catch (AccessViolation& exc) {
+         // If we encounter an acess violation within the VM region,
+         // the page was decomitted by another thread
+@@ -241,7 +241,7 @@ inline bool try_func(const std::function<void(uint8_t*)>& func, uint8_t* frame,
+ void BufferManager::optimisticRead(FileHandle& fileHandle, page_idx_t pageIdx,
+     const std::function<void(uint8_t*)>& func) {
+     auto pageState = fileHandle.getPageState(pageIdx);
+-#if defined(_WIN32)
++#if defined(_MSC_VER) && !BM_MALLOC
+     // Change the Structured Exception handling just for the scope of this function
+     auto translator = ScopedTranslator(handleAccessViolation);
+ #endif
+diff --git a/third_party/thrift/transport/TTransport.h b/third_party/thrift/transport/TTransport.h
+index 2b10d32..ebf3ee6 100644
+--- a/third_party/thrift/transport/TTransport.h
++++ b/third_party/thrift/transport/TTransport.h
+@@ -22,6 +22,7 @@
+ 
+ #include "Thrift.h"
+ #include "transport/TTransportException.h"
++#include <stdint.h>
+ #include <memory>
+ #include <string>
+ 
+diff --git a/third_party/roaring_bitmap/roaring.h b/third_party/roaring_bitmap/roaring.h
+index 7ba9d0e..82fd816 100644
+--- a/third_party/roaring_bitmap/roaring.h
++++ b/third_party/roaring_bitmap/roaring.h
+@@ -8279,7 +8279,11 @@ bool roaring_bitmap_remove_checked(roaring_bitmap_t *r, uint32_t x);
+ /**
+  * Check if value is present
+  */
++#if defined(__MINGW32__) || defined(__MINGW64__)
++static inline bool roaring_bitmap_contains(const roaring_bitmap_t *r, uint32_t val) {
++#else
+ inline bool roaring_bitmap_contains(const roaring_bitmap_t *r, uint32_t val) {
++#endif
+     // For performance reasons, this function is inline and uses internal
+     // functions directly.
+ #ifdef __cplusplus
+diff --git a/third_party/roaring_bitmap/roaring.c b/third_party/roaring_bitmap/roaring.c
+index 8f92c14..406a0b9 100644
+--- a/third_party/roaring_bitmap/roaring.c
++++ b/third_party/roaring_bitmap/roaring.c
+@@ -14500,8 +14500,10 @@ namespace api {
+ 
+ #define CROARING_SERIALIZATION_ARRAY_UINT32 1
+ #define CROARING_SERIALIZATION_CONTAINER 2
++#if !defined(__MINGW32__) && !defined(__MINGW64__)
+ extern inline bool roaring_bitmap_contains(const roaring_bitmap_t *r,
+                                            uint32_t val);
++#endif
+ extern inline int roaring_trailing_zeroes(unsigned long long input_num);
+ extern inline int roaring_leading_zeroes(unsigned long long input_num);
+ extern inline void roaring_bitmap_init_cleared(roaring_bitmap_t *r);

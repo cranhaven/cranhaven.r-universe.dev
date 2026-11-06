@@ -1,0 +1,84 @@
+---
+title: "Stored databases and engine migration"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Stored databases and engine migration}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(collapse = TRUE, comment = "#>")
+```
+
+`rladybugdb` 0.4.3 embeds LadybugDB 0.20.4. Earlier native releases of the
+package embedded LadybugDB 0.15.2. LadybugDB 0.20.4 can read the storage
+version produced by 0.15.x; the package tests this with a database created by
+the old engine rather than only testing a newly created file.
+
+## Safe upgrade workflow
+
+Treat a database file as application data, not as a disposable package cache.
+Before opening it with a newer engine:
+
+1. Stop all processes that can write to the database.
+2. Copy the database file and any associated WAL file to a backup location.
+3. Open the copied database with the new package and run representative
+   read-only validation queries.
+4. Open the production copy for writing only after those checks pass.
+
+LadybugDB 0.20 uses a single database file, so pass a file path rather than a
+directory path:
+
+```{r eval=FALSE}
+library(rladybugdb)
+
+db <- lb_database("analytics.lbug", read_only = TRUE)
+conn <- lb_connection(db)
+on.exit({
+  lb_close(conn)
+  lb_close(db)
+}, add = TRUE)
+
+lb_query(conn, "CALL SHOW_TABLES() RETURN *")
+lb_query(conn, "MATCH (n) RETURN label(n) AS label, count(*) AS rows")
+```
+
+## Export and import migration
+
+If a future engine cannot open an old storage version, use the original engine
+to export the database, then use the target engine to import into a fresh file.
+Export defaults to a directory containing Parquet data and Cypher schema.
+
+With the original engine:
+
+```{r eval=FALSE}
+old_db <- lb_database("old.lbug")
+old_conn <- lb_connection(old_db)
+lb_close(lb_execute(old_conn, "EXPORT DATABASE 'migration-export'"))
+lb_close(old_conn)
+lb_close(old_db)
+```
+
+With the upgraded package:
+
+```{r eval=FALSE}
+new_db <- lb_database("new.lbug")
+new_conn <- lb_connection(new_db)
+on.exit({
+  lb_close(new_conn)
+  lb_close(new_db)
+}, add = TRUE)
+lb_close(lb_execute(new_conn, "IMPORT DATABASE 'migration-export'"))
+```
+
+Use parameters for values in ordinary queries. Export and import paths are
+Cypher syntax rather than value parameters, so carefully quote paths or run
+these commands only with trusted, application-controlled paths.
+
+## Incompatible-file errors
+
+When the native engine reports a storage-version mismatch, `lb_database()`
+adds an actionable message pointing to this vignette. Do not edit the database
+file or retry it with concurrent writers. Restore the backup and use the
+export/import workflow with an engine version that can still open the source.

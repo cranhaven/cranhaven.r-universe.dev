@@ -1,0 +1,186 @@
+---
+title: "Getting started with rladybugdb"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Getting started with rladybugdb}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include=FALSE}
+library(rladybugdb)
+knitr::opts_chunk$set(collapse = TRUE, comment = "#>")
+```
+
+`rladybugdb` is a native R interface to LadybugDB, an embedded columnar graph
+database formerly known as Kuzu. It links directly to the LadybugDB 0.20.4 C
+API and requires neither Python nor a database server.
+
+Optional integrations use packages such as `arrow`, `igraph`, and `tidygraph`
+that must already be installed. Functions and examples do not install packages;
+examples using an optional package are skipped when it is unavailable.
+
+## Open a database
+
+Use `":memory:"` for an ephemeral database or a file path for persistence.
+Connections keep their database reachable, but explicit cleanup gives errors a
+predictable scope.
+
+```{r}
+db <- lb_database(":memory:")
+conn <- lb_connection(db)
+```
+
+For code that should automatically clean up, use a scoped connection:
+
+```{r}
+with_lb_connection(":memory:", {
+  ladybugdb_version()
+})
+```
+
+## Create and query a property graph
+
+Node and relationship tables define a graph schema.
+
+```{r}
+lb_close(lb_execute(
+  conn,
+  "CREATE NODE TABLE Person (name STRING, age INT64, PRIMARY KEY(name))"
+))
+lb_close(lb_execute(
+  conn,
+  "CREATE NODE TABLE City (name STRING, PRIMARY KEY(name))"
+))
+lb_close(lb_execute(
+  conn,
+  "CREATE REL TABLE LivesIn (FROM Person TO City, since INT64)"
+))
+
+lb_close(lb_execute(
+  conn,
+  "CREATE (:Person {name: $name, age: $age})",
+  parameters = list(name = "Alice", age = 30L)
+))
+lb_close(lb_execute(conn, "CREATE (:City {name: 'London'})"))
+lb_close(lb_execute(
+  conn,
+  paste(
+    "MATCH (p:Person {name: 'Alice'}), (c:City {name: 'London'})",
+    "CREATE (p)-[:LivesIn {since: 2018}]->(c)"
+  )
+))
+
+lb_query(
+  conn,
+  paste(
+    "MATCH (p:Person)-[r:LivesIn]->(c:City)",
+    "RETURN p.name AS person, p.age AS age, c.name AS city, r.since AS since"
+  )
+)
+```
+
+Parameters must be a named list with unique, non-empty names. Logical,
+integer, double, character, factor, `Date`, `POSIXct`, `integer64`, raw, list,
+array, and struct-like named-list values are supported. Typed missing scalars
+become database `NULL`.
+
+## Reusable and streaming results
+
+`lb_query()` materializes and closes a result automatically. Use
+`lb_execute()` when you want result metadata, conversion to another format, or
+bounded streaming.
+
+```{r}
+result <- lb_execute(
+  conn,
+  "UNWIND range(1, 25) AS id RETURN id, 'row ' + CAST(id AS STRING) AS label"
+)
+
+print(result, n = 3)
+first <- lb_fetch(result, n = 10)
+second <- lb_fetch(result, n = 10)
+lb_result_info(result)
+lb_query_summary(result)
+
+lb_reset(result)
+identical(as.data.frame(result), as.data.frame(result))
+lb_close(result)
+```
+
+Printing, formatting, and `as.data.frame()` preserve the current cursor.
+Successive `lb_fetch()` calls advance it; `lb_reset()` starts again.
+
+## Arrow and data loading
+
+With the optional `arrow` package, conversion uses the Arrow C Data Interface
+instead of first creating a data frame.
+
+```{r eval=requireNamespace("arrow", quietly=TRUE)}
+result <- lb_execute(conn, "MATCH (p:Person) RETURN p.name AS name, p.age AS age")
+arrow_table <- as_arrow_table(result)
+lb_close(result)
+arrow_table
+```
+
+Create a target table before bulk loading. `lb_copy_from_df()` prefers the
+Arrow path, which preserves empty strings and missing strings distinctly, and
+warns if it must use CSV instead.
+
+```{r eval=requireNamespace("arrow", quietly=TRUE)}
+lb_close(lb_execute(
+  conn,
+  "CREATE NODE TABLE Event (id INT64, note STRING, PRIMARY KEY(id))"
+))
+copy_result <- lb_copy_from_df(
+  conn,
+  data.frame(id = c(1, 2), note = c("", NA_character_)),
+  "Event"
+)
+lb_close(copy_result)
+lb_query(conn, "MATCH (e:Event) RETURN e.* ORDER BY e.id")
+```
+
+Use `lb_copy_from_csv()` for explicit file ingestion and
+`lb_copy_from_arrow()` for an Arrow Table or RecordBatch.
+
+## DBI
+
+The DBI backend supports queries, binding, bounded fetches, transactions,
+quoting, and table metadata.
+
+```{r}
+dbi_conn <- DBI::dbConnect(Ladybug(), dbname = ":memory:")
+DBI::dbGetQuery(dbi_conn, "RETURN $value AS value", params = list(value = 42L))
+DBI::dbDisconnect(dbi_conn)
+```
+
+## Graph objects
+
+Return full nodes and relationships to construct `igraph` or `tidygraph`
+objects. Scalar property projections alone do not contain graph structure.
+
+```{r eval=requireNamespace("igraph", quietly=TRUE)}
+graph_result <- lb_execute(
+  conn,
+  "MATCH (p:Person)-[r:LivesIn]->(c:City) RETURN p, r, c"
+)
+graph <- as_igraph(graph_result)
+lb_close(graph_result)
+graph
+```
+
+Recursive relationship paths are supported as well. Internal identifiers are
+kept as exact character components rather than converted through floating
+point.
+
+## Close resources
+
+```{r}
+lb_close(conn)
+lb_close(db)
+```
+
+Calling `lb_close()` twice is harmless. Closing a connection with a live result
+or a database with a live connection raises a clear error rather than risking
+use-after-free.

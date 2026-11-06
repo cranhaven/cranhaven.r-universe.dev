@@ -1,0 +1,233 @@
+#!/bin/sh
+# Build the pinned LadybugDB source with R's compiler toolchain.
+
+set -eu
+
+LBUG_VERSION=$(tr -d '[:space:]' < tools/lbug_version)
+SOURCE_ARCHIVE="$(pwd)/tools/vendor/ladybugdb-${LBUG_VERSION}.tar.xz"
+SOURCE_CHECKSUMS="$(pwd)/tools/lbug_source_checksums"
+VENDOR_ROOT="$(pwd)/src/vendor"
+VENDOR_INC="${VENDOR_ROOT}/include"
+VENDOR_LIB="${VENDOR_ROOT}/lib"
+LBUG_HEADER="${VENDOR_INC}/lbug.h"
+LBUG_LIB="${VENDOR_LIB}/liblbug.a"
+
+if [ ! -f "$SOURCE_ARCHIVE" ]; then
+  echo "configure: ERROR: missing vendored LadybugDB source archive:" >&2
+  echo "configure: ${SOURCE_ARCHIVE}" >&2
+  exit 1
+fi
+
+EXPECTED_SHA=$(awk -v archive="$(basename "$SOURCE_ARCHIVE")" \
+  '$1 == archive { print $2 }' "$SOURCE_CHECKSUMS")
+if [ -z "$EXPECTED_SHA" ]; then
+  echo "configure: ERROR: no SHA-256 recorded for $(basename "$SOURCE_ARCHIVE")." >&2
+  exit 1
+fi
+
+sha256_file() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{ print $1 }'
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | awk '{ print $1 }'
+  else
+    echo "configure: ERROR: sha256sum or shasum is required." >&2
+    exit 1
+  fi
+}
+
+ACTUAL_SHA=$(sha256_file "$SOURCE_ARCHIVE")
+if [ "$ACTUAL_SHA" != "$EXPECTED_SHA" ]; then
+  echo "configure: ERROR: SHA-256 mismatch for $(basename "$SOURCE_ARCHIVE")." >&2
+  echo "configure: expected ${EXPECTED_SHA}, got ${ACTUAL_SHA}." >&2
+  exit 1
+fi
+
+if ! command -v cmake >/dev/null 2>&1; then
+  echo "configure: ERROR: CMake 3.15 or newer is required." >&2
+  exit 1
+fi
+
+CMAKE_VERSION=$(cmake --version | sed -n '1s/[^0-9]*\([0-9][0-9.]*\).*/\1/p')
+CMAKE_MAJOR=$(printf '%s' "$CMAKE_VERSION" | cut -d. -f1)
+CMAKE_MINOR=$(printf '%s' "$CMAKE_VERSION" | cut -d. -f2)
+if [ -z "$CMAKE_MAJOR" ] || [ -z "$CMAKE_MINOR" ] || \
+   [ "$CMAKE_MAJOR" -lt 3 ] || \
+   { [ "$CMAKE_MAJOR" -eq 3 ] && [ "$CMAKE_MINOR" -lt 15 ]; }; then
+  echo "configure: ERROR: CMake 3.15 or newer is required; found ${CMAKE_VERSION}." >&2
+  exit 1
+fi
+
+BUILD_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/rladybugdb-lbug.XXXXXX")
+cleanup_build() {
+  if [ -n "${BUILD_ROOT:-}" ] && [ -d "$BUILD_ROOT" ]; then
+    rm -rf -- "$BUILD_ROOT"
+  fi
+}
+trap cleanup_build EXIT HUP INT TERM
+
+echo "configure: extracting verified LadybugDB v${LBUG_VERSION} source."
+tar -xJf "$SOURCE_ARCHIVE" -C "$BUILD_ROOT"
+LBUG_SOURCE="${BUILD_ROOT}/lbug-src"
+LBUG_BUILD="${BUILD_ROOT}/build"
+if [ ! -f "${LBUG_SOURCE}/CMakeLists.txt" ] || \
+   [ ! -f "${LBUG_SOURCE}/src/include/c_api/lbug.h" ]; then
+  echo "configure: ERROR: vendored LadybugDB source archive is incomplete." >&2
+  exit 1
+fi
+
+if [ -n "${R_HOME:-}" ] && [ -x "${R_HOME}/bin/R" ]; then
+  R_CONFIG="${R_HOME}/bin/R"
+else
+  R_CONFIG=R
+fi
+
+CC_CONFIG=$("$R_CONFIG" CMD config CC)
+CXX_CONFIG=$("$R_CONFIG" CMD config CXX20)
+CFLAGS_CONFIG=$("$R_CONFIG" CMD config CFLAGS)
+CXXFLAGS_CONFIG=$("$R_CONFIG" CMD config CXX20FLAGS)
+CPPFLAGS_CONFIG=$("$R_CONFIG" CMD config CPPFLAGS)
+LDFLAGS_CONFIG=$("$R_CONFIG" CMD config LDFLAGS)
+
+set -- $CC_CONFIG
+CMAKE_CC=$1
+shift
+CC_DRIVER_FLAGS=$*
+set -- $CXX_CONFIG
+CMAKE_CXX=$1
+shift
+CXX_DRIVER_FLAGS=$*
+
+# R's diagnostic flags still apply to this package's own sources through
+# src/Makevars. They are deliberately not forwarded to the bundled LadybugDB
+# build: its vendored third-party code relies on documented compiler
+# extensions whose diagnostics are not actionable here. Every other flag R
+# configures, including optimisation, debugging, architecture, hardening, and
+# sanitizer settings, is passed through unchanged.
+drop_diagnostic_flags() {
+  set -f
+  filtered=''
+  for flag in $1; do
+    case "$flag" in
+      -Wall|-Wextra|-W|-Wpedantic|-pedantic|-pedantic-errors|-Weverything)
+        continue
+        ;;
+    esac
+    filtered="${filtered:+$filtered }$flag"
+  done
+  set +f
+  printf '%s' "$filtered"
+}
+
+CFLAGS_BUILD=$(drop_diagnostic_flags "$CFLAGS_CONFIG")
+CXXFLAGS_BUILD=$(drop_diagnostic_flags "$CXXFLAGS_CONFIG")
+
+# LadybugDB uses a 16-byte std::atomic<EvictionCandidate>. Some Linux Clang
+# toolchains lower this to __atomic_compare_exchange in libatomic. Test an
+# executable rather than a shared object because ELF shared-object links may
+# otherwise leave the symbol unresolved until R tries to load the package.
+ATOMIC_TEST_SOURCE="${BUILD_ROOT}/atomic-check.cpp"
+ATOMIC_TEST_BINARY="${BUILD_ROOT}/atomic-check"
+cat > "$ATOMIC_TEST_SOURCE" <<'EOF'
+#include <atomic>
+#include <cstdint>
+
+struct AtomicCandidate {
+    std::uint32_t fileIdx;
+    std::uint64_t pageIdx;
+};
+
+std::atomic<AtomicCandidate> candidate{};
+
+int main() {
+    AtomicCandidate expected{};
+    AtomicCandidate desired{1u, 1u};
+    candidate.compare_exchange_strong(expected, desired);
+    return 0;
+}
+EOF
+
+ATOMIC_LIBS=''
+if "$CMAKE_CXX" $CXX_DRIVER_FLAGS $CPPFLAGS_CONFIG $CXXFLAGS_CONFIG \
+    $LDFLAGS_CONFIG "$ATOMIC_TEST_SOURCE" -o "$ATOMIC_TEST_BINARY" \
+    >/dev/null 2>&1; then
+  echo "configure: 16-byte atomics are provided by the C++ toolchain."
+elif "$CMAKE_CXX" $CXX_DRIVER_FLAGS $CPPFLAGS_CONFIG $CXXFLAGS_CONFIG \
+    $LDFLAGS_CONFIG "$ATOMIC_TEST_SOURCE" -o "$ATOMIC_TEST_BINARY" \
+    -latomic >/dev/null 2>&1; then
+  ATOMIC_LIBS='-latomic'
+  echo "configure: using libatomic for 16-byte atomic operations."
+else
+  echo "configure: ERROR: the C++20 toolchain cannot link 16-byte atomic operations." >&2
+  echo "configure: Install the compiler's libatomic runtime and try again." >&2
+  exit 1
+fi
+
+OS=$(uname -s)
+case "$OS" in
+  MINGW*|MSYS*|CYGWIN*)
+    MALLOC_BUFFER_MANAGER=ON
+    ;;
+  *)
+    MALLOC_BUFFER_MANAGER=OFF
+    ;;
+esac
+
+echo "configure: building LadybugDB v${LBUG_VERSION} from source (maximum 2 jobs)."
+cmake -S "$LBUG_SOURCE" -B "$LBUG_BUILD" \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_C_COMPILER="$CMAKE_CC" \
+  -DCMAKE_CXX_COMPILER="$CMAKE_CXX" \
+  -DCMAKE_C_FLAGS="$CC_DRIVER_FLAGS $CPPFLAGS_CONFIG $CFLAGS_BUILD" \
+  -DCMAKE_CXX_FLAGS="$CXX_DRIVER_FLAGS $CPPFLAGS_CONFIG $CXXFLAGS_BUILD" \
+  -DCMAKE_C_FLAGS_RELEASE=-DNDEBUG \
+  -DCMAKE_CXX_FLAGS_RELEASE=-DNDEBUG \
+  -DBUILD_SHARED_LBUG=OFF \
+  -DBUILD_STATIC_LBUG=ON \
+  -DBUILD_SHELL=OFF \
+  -DBUILD_SINGLE_FILE_HEADER=OFF \
+  -DAUTO_UPDATE_GRAMMAR=OFF \
+  -DBUILD_TESTS=OFF \
+  -DBUILD_EXTENSION_TESTS=OFF \
+  -DBUILD_EXAMPLES=OFF \
+  -DBUILD_BENCHMARK=OFF \
+  -DBUILD_WAL_DUMP=OFF \
+  -DENABLE_BACKTRACES=OFF \
+  -DENABLE_MALLOC_BUFFER_MANAGER="$MALLOC_BUFFER_MANAGER" \
+  -DLBUG_ENABLE_SIMD=OFF \
+  -DLBUG_R_PACKAGE=ON
+cmake --build "$LBUG_BUILD" --target lbug --parallel 2
+
+BUILT_LBUG=$(find "$LBUG_BUILD" -type f \( -name liblbug.a -o -name lbug.lib \) \
+  | head -n 1)
+if [ -z "$BUILT_LBUG" ]; then
+  echo "configure: ERROR: source build did not produce a static LadybugDB library." >&2
+  exit 1
+fi
+
+mkdir -p "$VENDOR_INC" "$VENDOR_LIB"
+cp "${LBUG_SOURCE}/src/include/c_api/lbug.h" "$LBUG_HEADER"
+cp "$BUILT_LBUG" "$LBUG_LIB"
+
+case "$OS" in
+  Darwin*)
+    MAKEVARS_TEMPLATE=src/Makevars.in
+    SYSTEM_LIBS=''
+    ;;
+  MINGW*|MSYS*|CYGWIN*)
+    MAKEVARS_TEMPLATE=src/Makevars.win.in
+    SYSTEM_LIBS='-pthread -lws2_32 -lshell32 -lole32 -ladvapi32 -lcrypt32 -luser32'
+    ;;
+  *)
+    MAKEVARS_TEMPLATE=src/Makevars.in
+    SYSTEM_LIBS='-ldl -pthread'
+    ;;
+esac
+
+sed -e "s|@VENDOR_INC@|${VENDOR_INC}|g" \
+    -e "s|@LBUG_LIB@|${LBUG_LIB}|g" \
+    -e "s|@SYSTEM_LIBS@|${SYSTEM_LIBS}|g" \
+    -e "s|@ATOMIC_LIBS@|${ATOMIC_LIBS}|g" \
+    "$MAKEVARS_TEMPLATE" > src/Makevars
+
+echo "configure: built and configured LadybugDB v${LBUG_VERSION} for ${OS}."

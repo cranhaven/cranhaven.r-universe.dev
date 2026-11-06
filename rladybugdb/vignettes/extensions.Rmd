@@ -1,0 +1,161 @@
+---
+title: "LadybugDB extensions from R"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{LadybugDB extensions from R}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(collapse = TRUE, comment = "#>")
+```
+
+LadybugDB extensions add graph algorithms, indexes, and external data sources.
+The CRAN build intentionally excludes the engine's native networking stack:
+`lb_install_extension()` and `lb_update_extension()` therefore report an
+unsupported-operation error. A compatible extension installed outside R can
+still be loaded with `lb_load_extension()`. The examples are not executed while
+this vignette is built.
+
+```{r eval=FALSE}
+library(rladybugdb)
+
+db <- lb_database("extensions.lbug")
+conn <- lb_connection(db)
+on.exit({
+  lb_close(conn)
+  lb_close(db)
+}, add = TRUE)
+
+lb_list_extensions(conn)
+lb_close(lb_load_extension(conn, "algo"))
+```
+
+The helpers validate official extension names. The CRAN build supports `LOAD`
+for compatible extension files installed outside R.
+
+## PageRank and Louvain
+
+Algorithms run on a projected graph. Given `Person` nodes and `KNOWS`
+relationships:
+
+```{r eval=FALSE}
+lb_close(lb_execute(
+  conn,
+  "CALL project_graph('SocialGraph', ['Person'], ['KNOWS'])"
+))
+
+page_rank <- lb_query(
+  conn,
+  paste(
+    "CALL page_rank('SocialGraph')",
+    "RETURN node.name AS name, rank AS pagerank",
+    "ORDER BY rank DESC"
+  )
+)
+
+communities <- lb_query(
+  conn,
+  paste(
+    "CALL louvain('SocialGraph')",
+    "RETURN louvain_id, collect(node.name) AS members",
+    "ORDER BY louvain_id"
+  )
+)
+```
+
+## BM25 full-text search
+
+The `FTS` extension indexes string properties on node tables and ranks matches
+with Okapi BM25.
+
+```{r eval=FALSE}
+lb_close(lb_load_extension(conn, "fts"))
+lb_close(lb_execute(
+  conn,
+  paste0(
+    "CALL CREATE_FTS_INDEX(",
+    "'Book', 'book_index', ['title', 'abstract'], stemmer := 'porter')"
+  )
+))
+
+hits <- lb_query(
+  conn,
+  paste(
+    "CALL QUERY_FTS_INDEX('Book', 'book_index', $query, top := 10)",
+    "RETURN node.title AS title, score ORDER BY score DESC"
+  ),
+  parameters = list(query = "quantum machine")
+)
+```
+
+## HNSW vector similarity search
+
+The `vector` extension provides a native disk-backed HNSW index over fixed
+FLOAT or DOUBLE arrays.
+
+```{r eval=FALSE}
+lb_close(lb_load_extension(conn, "vector"))
+lb_close(lb_execute(
+  conn,
+  paste0(
+    "CALL CREATE_VECTOR_INDEX(",
+    "'Book', 'book_title_index', 'title_embedding', metric := 'cosine')"
+  )
+))
+
+nearest <- lb_query(
+  conn,
+  paste(
+    "CALL QUERY_VECTOR_INDEX('Book', 'book_title_index', $embedding, 5)",
+    "RETURN node.title AS title, distance ORDER BY distance"
+  ),
+  parameters = list(embedding = as.numeric(query_embedding))
+)
+```
+
+## DuckDB, PostgreSQL, and SQLite
+
+Install and load the corresponding extension, attach the external database,
+then scan its tables with `LOAD FROM`. Credentials and paths below are
+placeholders and must come from trusted configuration.
+
+```{r eval=FALSE}
+for (extension in c("duckdb", "postgres", "sqlite")) {
+  lb_close(lb_load_extension(conn, extension))
+}
+
+lb_close(lb_execute(conn, "ATTACH 'warehouse.duckdb' AS wh (dbtype duckdb)"))
+duck_rows <- lb_query(conn, "LOAD FROM wh.events RETURN * LIMIT 100")
+
+lb_close(lb_execute(
+  conn,
+  "ATTACH 'host=localhost dbname=app' AS pg (dbtype postgres)"
+))
+postgres_rows <- lb_query(conn, "LOAD FROM pg.public.events RETURN * LIMIT 100")
+
+lb_close(lb_execute(conn, "ATTACH 'app.sqlite' AS sq (dbtype sqlite)"))
+sqlite_rows <- lb_query(conn, "LOAD FROM sq.events RETURN * LIMIT 100")
+```
+
+## Parquet, Iceberg, and ADBC
+
+Parquet can be scanned directly by the core import syntax. Iceberg and ADBC
+use extensions and expose their sources through the same `LOAD FROM` model.
+
+```{r eval=FALSE}
+parquet_rows <- lb_query(conn, "LOAD FROM 'events/*.parquet' RETURN *")
+
+lb_close(lb_load_extension(conn, "iceberg"))
+# Configure the catalog according to the LadybugDB Iceberg documentation,
+# then scan the attached catalog.table with LOAD FROM.
+
+lb_close(lb_load_extension(conn, "adbc"))
+# Install the database vendor's ADBC driver, attach it using that driver's
+# connection options, then query its tables with LOAD FROM.
+```
+
+Extension availability and parameters follow the installed LadybugDB engine.
+Use `lb_list_extensions()` and the upstream extension documentation as the
+source of truth for a deployment.
