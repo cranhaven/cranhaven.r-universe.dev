@@ -1,0 +1,940 @@
+---
+title: "Building Transformer Network for Remaining Trace Task"
+author: "Ivan"
+date: "2022-12-21"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, message=F}
+library(tidyverse)
+library(magrittr)
+library(tensorflow)
+library(keras)
+library(processpredictR)
+```
+
+## Main building blocks
+* encoder
+  + `TokenAndPositionalEmbedding`
+  + `GlobalSelfAttention`
+  + `FeedForward` (network)
+
+* decoder
+
+## Input embeddings and positioning
+Neural networks learn through numbers so each word (=input) maps to a vector with continuous values to represent that word. The next step is to inject positional information into the embeddings. Because the transformer encoder has no recurrence like recurrent neural networks, we must add some information about the positions into the input embeddings. This is done using positional encoding. The following layer combines both the token embedding and it's positional embedding. The positional embedding is different from the original defined in the paper "Attention is all you need". Instead, `keras::layer_embedding` is used, where the input dimension is set to the maximum case length (in an event log).
+```{r}
+TokenAndPositionEmbedding  <- function() {
+  super <- NULL
+  self <- NULL
+  keras::new_layer_class(
+    classname = "TokenAndPositionEmbedding",
+    initialize = function(self, maxlen, vocab_size, d_model, ...) {
+      super$initialize()
+      self$maxlen <- maxlen
+      self$vocab_size <- vocab_size
+      self$d_model <- d_model
+
+      self$token_emb <- keras::layer_embedding(input_dim = vocab_size, output_dim = d_model, mask_zero = TRUE) #layers.Embedding(input_dim=vocab_size, output_dim=embed_dim)
+      self$pos_emb <- keras::layer_embedding(input_dim = maxlen, output_dim = d_model) #layers.Embedding(input_dim=maxlen, output_dim=embed_dim)
+
+    },
+    call = function(self, x) {
+      maxlen <- tf$shape(x)[-1]  #tf.shape(x)[-1] NA, NULL, -1 is all the same
+      positions <- tf$range(start=0, limit=maxlen, delta=1)
+      positions <- self$pos_emb(positions)
+      x <- self$token_emb(x)
+      x <- x + positions
+      return(x)
+      #return(x + positions)
+    },
+
+    get_config = function() {
+      # base_config <- super(TokenAndPositionEmbedding, self)$get_config()
+      # list(maxlen = self$maxlen,
+      #      vocab_size = self$vocab_size,
+      #      embed_dim = self$embed_dim)
+
+      # CUSTOM OBJECTS section (https://tensorflow.rstudio.com/guides/keras/serialization_and_saving)
+      config <- super()$get_config()
+      config$maxlen <- self$maxlen
+      config$vocab_size <- self$vocab_size
+      config$d_model <- self$d_model
+      config
+    }
+  )
+}
+
+```
+
+## Attention layers
+### The base attention layer
+`BaseAttention` layer initializes multihead attention, normalization and add layer (in order to add a list of input tensors together). `BaseAttention` is a super class which will be consequently called by the other layers as methods (`GlobalSelfAttention`, `CrossAttention`, `CausalAttention`).
+```{r}
+BaseAttention <- keras::new_layer_class(
+    classname = "BaseAttention",
+    initialize = function(self, ...) {
+      super$initialize()
+      self$mha <- keras::layer_multi_head_attention(...) # **kwargs (key: value)
+      self$layernorm <- keras::layer_normalization()
+      self$add <- layer_add()
+    }
+  )
+```
+
+### The global self attention layer
+This layer is responsible for processing the context sequence, and propagating information along its length. Here, the target sequence `x` is passed as both `query` and `value` in the `mha` (multi-head attention) layer. This is self-attention.
+```{r}
+GlobalSelfAttention(BaseAttention) %py_class% {
+    call <- function(self, x) {
+      attn_output <- self$mha(
+        query=x,
+        key=x,
+        value=x
+        )
+      
+      x <- self$add(list(x, attn_output))
+      x <- self$layernorm(x)
+
+    return(x)
+    }
+}
+```
+
+```{r, eval=F, echo=F}
+# GlobalSelfAttention <- function() {
+#   keras::new_layer_class(
+#     classname = "GlobalSelfAttention",
+#     keras::layer  = "BaseAttention",
+#     call = function(self, x) {
+#       attn_output <- self$mha(
+#         query=x,
+#         key=x,
+#         value=x #, return_attention_scores=True
+#         )
+#       
+#       x <- self$add(list(x, attn_output))
+#       x <- self$layernorm(x)
+# 
+#     return(x)
+#     }
+#   )
+# }
+
+# class GlobalSelfAttention(BaseAttention):
+#   def call(self, x):
+#     attn_output = self.mha(
+#         query=x,
+#         value=x,
+#         key=x)
+#     x = self.add([x, attn_output])
+#     x = self.layernorm(x)
+#     return x
+```
+
+### The cross attention layer
+At the literal center of the transformer network is the cross-attention layer. This layer connects the encoder and decoder. As opposed to `GlobalSelfAttention` layer, in the `CrossAttention` layer a target sequence `x` is passed as a `query`, whereas the attended/learned representations `context` by the encoder (described later) is passed as `key` and `value` in the `mha` (multi-head attention) layer.
+```{r}
+CrossAttention(BaseAttention) %py_class% {
+    call <- function(self, x, context) {
+      attn_output <- self$mha(
+        query=x,
+        key=context,
+        value=context, return_attention_scores=FALSE ######### SHOULD IT BE TRUE? DOCUMENTATION??
+        )
+      
+      x <- self$add(list(x, attn_output))
+      x <- self$layernorm(x)
+
+    return(x)
+    }
+}
+```
+
+```{r, eval=F, echo=F}
+# CrossAttention <- function(BaseAttention) {
+#   keras::new_layer_class(
+#     classname = "CrossAttention",
+#     call = function(self, x, context) {
+#       attn_output <- self$mha(
+#         query=x,
+#         key=context,
+#         value=context #, return_attention_scores=True
+#         )
+#
+#       x <- self$add(list(x, attn_output))
+#       x <- self$layernorm(x)
+#
+#     return(x)
+#     }
+#   )
+# }
+
+# class CrossAttention(BaseAttention):
+#   def call(self, x, context):
+#     attn_output, attn_scores = self.mha(
+#         query=x,
+#         key=context,
+#         value=context,
+#         return_attention_scores=True)
+#
+#     # Cache the attention scores for plotting later.
+#     self.last_attn_scores = attn_scores
+#
+#     x = self.add([x, attn_output])
+#     x = self.layernorm(x)
+#
+#     return x
+```
+
+### The causal self attention layer
+This layer does a similar job as the `GlobalSelfAttention` layer, for the output sequence. This needs to be handled differently from the encoder's `GlobalSelfAttention` layer. The causal mask ensures that each location only has access to the locations that come before it. The `attention_mask` argument is set to `True`. Thus, the output for early sequence elements doesn't depend on later elements. 
+```{r}
+CausalSelfAttention(BaseAttention) %py_class% {
+    call <- function(self, x) {
+      attn_output <- self$mha(
+        query=x,
+        key=x,
+        value=x,
+        use_causal_mask = TRUE
+        )
+      
+      x <- self$add(list(x, attn_output))
+      x <- self$layernorm(x)
+
+    return(x)
+    }
+}
+```
+
+```{r, eval=F, echo=F}
+# CausalSelfAttention <- function(BaseAttention) {
+#   keras::new_layer_class(
+#     classname = "CausalSelfAttention",
+#     call = function(self, x) {
+#       attn_output <- self$mha(
+#         query=x,
+#         key=x,
+#         value=x,
+#         attention_mask = TRUE
+#         #, return_attention_scores=True
+#         )
+#       
+#       x <- self$add(list(x, attn_output))
+#       x <- self$layernorm(x)
+# 
+#     return(x)
+#     }
+#   )
+# }
+
+# class CausalSelfAttention(BaseAttention):
+#   def call(self, x):
+#     attn_output = self.mha(
+#         query=x,
+#         value=x,
+#         key=x,
+#         use_causal_mask = True)
+#     x = self.add([x, attn_output])
+#     x = self.layernorm(x)
+#     return x
+```
+
+## The feed forward network
+The transformer also includes this point-wise feed-forward network in both the encoder and decoder. The network consists of two linear layers (tf.keras.layers.Dense) with a ReLU activation in-between, and a dropout layer. As with the attention layers the code here also includes the residual connection and normalization.
+```{r}
+FeedForward(keras$layers$Layer) %py_class% {
+    initialize <- function(self, d_model, dff, dropout_rate = 0.1) { # dff = ff_dim, d_model = embed_dim, dropout_rate = rate
+      super$initialize()
+      self$seq <- keras::keras_model_sequential() %>%
+        layer_dense(dff, activation="relu") %>%
+        layer_dense(d_model) %>% 
+        layer_dropout(rate = dropout_rate)
+      
+      self$add <- keras::layer_add()
+      self$layer_norm <- keras::layer_normalization()
+    }
+    
+    call <- function(self, x) {
+      x <- self$add(list(x, self$seq(x)))
+      x <- self$layer_norm(x)
+      return(x)
+    }
+}
+```
+
+```{r, echo=F, eval=F}
+# FeedForward <- function() {
+#   keras::new_layer_class(
+#     classname = "FeedForward",
+#     initialize = function(self, d_model, dff, dropout_rate = 0.1) { # dff = ff_dim, d_model = embed_dim, dropout_rate = rate
+#       super$initialize()
+#       self$seq <- keras::keras_model_sequential() %>%
+#         layer_dense(dff, activation="relu") %>%
+#         layer_dense(d_model) %>% 
+#         layer_dropout(rate = dropout_rate)
+#       
+#       self$add <- keras::layer_add()
+#       self$layer_norm <- keras::layer_normalization()
+#     },
+#     
+#     call = function(self, x) {
+#       x <- self$add(list(x, self$seq(x)))
+#       x <- self$layer_norm(x)
+#       return(x)
+#     }
+#   )
+# }
+
+# class FeedForward(tf.keras.layers.Layer):
+#   def __init__(self, d_model, dff, dropout_rate=0.1):
+#     super().__init__()
+#     self.seq = tf.keras.Sequential([
+#       tf.keras.layers.Dense(dff, activation='relu'),
+#       tf.keras.layers.Dense(d_model),
+#       tf.keras.layers.Dropout(dropout_rate)
+#     ])
+#     self.add = tf.keras.layers.Add()
+#     self.layer_norm = tf.keras.layers.LayerNormalization()
+# 
+#   def call(self, x):
+#     x = self.add([x, self.seq(x)])
+#     x = self.layer_norm(x) 
+#     return x
+```
+
+## The encoder layer (= TransformerBlock in ProcessTransformer)
+Now we have the encoder layer. The encoder layer's job is to map all input sequences into an abstract continuous representation that holds the learned information for that entire sequence. It contains 2 sub-modules: multi-headed attention, followed by a fully connected network (`GlobalSelfAttention` and `FeedForward` layer, respectively). There are also residual connections around each of the two sublayers followed by a layer normalization.
+```{r}
+EncoderLayer_sub(keras$layers$Layer) %py_class% {
+    initialize <- function(self, d_model, num_heads, dff, dropout_rate = 0.1, ...) { # dff = ff_dim, d_model = embed_dim, dropout_rate = rate
+      super$initialize()
+      
+      self$self_attention <- GlobalSelfAttention(num_heads = num_heads,
+                                                 key_dim = d_model, 
+                                                 dropout = dropout_rate
+                                                 )
+      self$ffn <- FeedForward(d_model, dff)
+    }
+    
+    call <- function(self, x) {
+      x <- self$self_attention(x)
+      x <- self$ffn(x)
+      return(x)
+    }
+}
+```
+
+## The encoder layer using new_class_layer wrapper (for using with pipe `%>%`)
+```{r}
+EncoderLayer <- new_layer_class(
+  classname = "EncoderLayer",
+  initialize = function(self, d_model, num_heads, dff, dropout_rate = 0.1, ...) { # dff = ff_dim, d_model = embed_dim, dropout_rate = rate
+    super$initialize()
+    
+    self$self_attention <- GlobalSelfAttention(num_heads = num_heads,
+                                               key_dim = d_model, 
+                                               dropout = dropout_rate
+    )
+    self$ffn <- FeedForward(d_model, dff)
+  },
+  
+  call = function(self, x) {
+    x <- self$self_attention(x)
+    x <- self$ffn(x)
+    return(x)
+  }
+)
+```
+
+
+```{r, eval=F, echo=F}
+# EncoderLayer <- function() {
+#   keras::new_layer_class(
+#     classname = "EncoderLayer",
+#     initialize = function(self, d_model, num_heads, dff, dropout_rate = 0.1, ...) { # dff = ff_dim, d_model = embed_dim, dropout_rate = rate
+#       super$initialize()
+#       
+#       self$self_attention <- GlobalSelfAttention(num_heads = num_heads,
+#                                                  key_dim = d_model, 
+#                                                  dropout = dropout_rate
+#                                                  )
+#       self$ffn <- FeedForward(d_model, dff)
+#     },
+#     
+#     call = function(self, x) {
+#       x <- self$self_attention(x)
+#       x <- self$ffn(x)
+#       return(x)
+#     }
+#   )
+# }
+
+# class EncoderLayer(tf.keras.layers.Layer):
+#   def __init__(self,*, d_model, num_heads, dff, dropout_rate=0.1):
+#     super().__init__()
+# 
+#     self.self_attention = GlobalSelfAttention(
+#         num_heads=num_heads,
+#         key_dim=d_model,
+#         dropout=dropout_rate)
+# 
+#     self.ffn = FeedForward(d_model, dff)
+# 
+#   def call(self, x):
+#     x = self.self_attention(x)
+#     x = self.ffn(x)
+#     return x
+```
+
+```{r,eval=F, echo=F}
+# Encoder <- function() {
+#   keras::new_layer_class(
+#     classname = "Encoder",
+#     initialize = function(self, d_model, num_heads, #num_layers,
+#                           dff, vocab_size, dropout_rate = 0.1, ...) { # dff = ff_dim, d_model = embed_dim, dropout_rate = rate
+#       super$initialize()
+#       
+#       self$d_model <- d_model
+#       #self$num_layers <- num_layers
+#       self$max_case_length <- vocab_size ############# AANPASSEN AAN MAX_CASE_LENGTH
+#       
+#       #self$pos_embedding <- PositionalEmbedding(vocab_size = vocab_size, d_model = d_model)
+#       self$pos_embedding <- TokenAndPositionEmbedding(vocab_size = vocab_size, d_model = d_model)
+#       
+#       # Only one layer stack
+#       self$enc_layers <- EncoderLayer(d_model = d_model, num_heads = num_heads, 
+#                                       dff = dff, dropout_rate = dropout_rate)
+#       self$dropout <- keras::layer_dropout(dropout_rate)
+#     },
+#     
+#     call = function(self, x) {
+#       # `x` is token-IDs shape: (batch, seq_len)
+#       x <- self$pos_embedding(x) # Shape `(batch_size, seq_len, d_model)`.
+#       # Add dropout
+#       x <- self$dropout(x)
+#       
+#       x <- self$enc_layers(x)
+#       
+#       return(x)
+#     }
+#   )
+# }
+
+# class Encoder(tf.keras.layers.Layer):
+#   def __init__(self, *, num_layers, d_model, num_heads,
+#                dff, vocab_size, dropout_rate=0.1):
+#     super().__init__()
+# 
+#     self.d_model = d_model
+#     self.num_layers = num_layers
+# 
+#     self.pos_embedding = PositionalEmbedding(
+#         vocab_size=vocab_size, d_model=d_model)
+# 
+#     self.enc_layers = [
+#         EncoderLayer(d_model=d_model,
+#                      num_heads=num_heads,
+#                      dff=dff,
+#                      dropout_rate=dropout_rate)
+#         for _ in range(num_layers)]
+#     self.dropout = tf.keras.layers.Dropout(dropout_rate)
+# 
+#   def call(self, x):
+#     # `x` is token-IDs shape: (batch, seq_len)
+#     x = self.pos_embedding(x)  # Shape `(batch_size, seq_len, d_model)`.
+# 
+#     # Add dropout.
+#     x = self.dropout(x)
+# 
+#     for i in range(self.num_layers):
+#       x = self.enc_layers[i](x)
+# 
+#     return x  # Shape `(batch_size, seq_len, d_model)`.
+```
+
+
+## The decoder layer
+The decoder's stack is slightly more complex, with each `DecoderLayer` containing a `CausalSelfAttention`, a `CrossAttention`, and a `FeedForward` layer. 
+```{r}
+DecoderLayer_sub(keras$layers$Layer) %py_class% {
+    initialize <- function(self, d_model, num_heads, dff, dropout_rate = 0.1, ...) { # dff = ff_dim, d_model = embed_dim, dropout_rate = rate
+      super$initialize()
+      
+      self$causal_self_attention <- CausalSelfAttention(
+        num_heads=num_heads,
+        key_dim=d_model,
+        dropout=dropout_rate)
+
+    self$cross_attention <- CrossAttention(
+        num_heads=num_heads,
+        key_dim=d_model,
+        dropout=dropout_rate)
+
+    self$ffn <- FeedForward(d_model, dff)
+    
+    #self$final_layer <- keras::layer_dense(vocab_size) # or maxlen?
+    }
+    
+    call <- function(self, x, context) {
+      
+      x <- self$causal_self_attention(x=x)
+      x <- self$cross_attention(x=x, context=context)
+
+    # # Cache the last attention scores for plotting later
+    # self$last_attn_scores = self.cross_attention.last_attn_scores
+      
+      x <- self$ffn(x)  # Shape `(batch_size, seq_len, d_model)`.
+      
+      #x <- self$final_layer(x)
+      return(x)
+    }
+}
+```
+
+
+```{r, eval=F, echo=F}
+# DecoderLayer <- function() {
+#   keras::new_layer_class(
+#     classname = "DecoderLayer",
+#     initialize = function(self, d_model, num_heads, dff, dropout_rate = 0.1, ...) { # dff = ff_dim, d_model = embed_dim, dropout_rate = rate
+#       super$initialize()
+#       
+#       self$causal_self_attention <- CausalSelfAttention(
+#         num_heads=num_heads,
+#         key_dim=d_model,
+#         dropout=dropout_rate)
+# 
+#     self$cross_attention = CrossAttention(
+#         num_heads=num_heads,
+#         key_dim=d_model,
+#         dropout=dropout_rate)
+# 
+#     self$ffn = FeedForward(d_model, dff)
+#     },
+#     
+#     call = function(self, x, context) {
+#       
+#       x <- self$causal_self_attention(x=x)
+#       x <- self$cross_attention(x=x, context=context)
+# 
+#     # # Cache the last attention scores for plotting later
+#     # self$last_attn_scores = self.cross_attention.last_attn_scores
+#       
+#       x <- self$ffn(x)  # Shape `(batch_size, seq_len, d_model)`.
+#       return(x)
+#     }
+#   )
+# }
+
+# class DecoderLayer(tf.keras.layers.Layer):
+#   def __init__(self,
+#                *,
+#                d_model,
+#                num_heads,
+#                dff,
+#                dropout_rate=0.1):
+#     super(DecoderLayer, self).__init__()
+# 
+#     self.causal_self_attention = CausalSelfAttention(
+#         num_heads=num_heads,
+#         key_dim=d_model,
+#         dropout=dropout_rate)
+# 
+#     self.cross_attention = CrossAttention(
+#         num_heads=num_heads,
+#         key_dim=d_model,
+#         dropout=dropout_rate)
+# 
+#     self.ffn = FeedForward(d_model, dff)
+# 
+#   def call(self, x, context):
+#     x = self.causal_self_attention(x=x)
+#     x = self.cross_attention(x=x, context=context)
+# 
+#     # Cache the last attention scores for plotting later
+#     self.last_attn_scores = self.cross_attention.last_attn_scores
+# 
+#     x = self.ffn(x)  # Shape `(batch_size, seq_len, d_model)`.
+#     return x
+```
+
+## The decoder layer using new_class_layer wrapper (for using with pipe `%>%`)
+```{r}
+DecoderLayer <- keras::new_layer_class(
+  classname = "DecoderLayer",
+  initialize = function(self, d_model, num_heads, dff, dropout_rate = 0.1, ...) { # dff = ff_dim, d_model = embed_dim, dropout_rate = rate
+    super$initialize()
+    
+    self$causal_self_attention <- CausalSelfAttention(
+      num_heads=num_heads,
+      key_dim=d_model,
+      dropout=dropout_rate)
+    
+    self$cross_attention <- CrossAttention(
+      num_heads=num_heads,
+      key_dim=d_model,
+      dropout=dropout_rate)
+    
+    self$ffn <- FeedForward(d_model, dff) 
+  },
+  
+  #self$final_layer <- keras::layer_dense(vocab_size) # or maxlen?
+  
+  call = function(x, context) {
+    
+    x <- self$causal_self_attention(x=x)
+    x <- self$cross_attention(x=x, context=context)
+    
+    # # Cache the last attention scores for plotting later
+    # self$last_attn_scores = self.cross_attention.last_attn_scores
+    
+    x <- self$ffn(x)  # Shape `(batch_size, seq_len, d_model)`.
+    
+    #x <- self$final_layer(x)
+    return(x)
+  }
+)
+```
+
+## Transformer class
+```{r}
+Transformer <- keras::new_model_class(
+  classname = "Transformer",
+  initialize = function(d_model = 128, dff = 512, num_heads = 8,
+                        dropout_rate = 0.1, vocab_size = 20, 
+                        input_maxlen = 12, target_maxlen = 12, ...) { # dff = ff_dim, d_model = embed_dim, dropout_rate = rate
+    super$initialize()
+    
+    self$embedding_layer <- TokenAndPositionEmbedding()(maxlen = input_maxlen, vocab_size = vocab_size, d_model = d_model)
+    self$dropout <- keras::layer_dropout(dropout_rate)
+    self$encoder <- EncoderLayer(d_model = d_model, num_heads = num_heads, dff = dff, dropout_rate = dropout_rate)
+    self$final_layer <- keras::layer_dense(vocab_size, activation = "linear")
+    },
+  
+  call = function(inputs) {
+    context <- inputs #[1]
+    #x <- inputs[2]
+    
+    context <- self$embedding_layer(context)
+    context <- self$dropout(context)
+    context <- self$encoder(context)
+    context <- self$final_layer(context)
+    }
+)
+```
+
+
+
+################# ################# ################# ################# ################# ################# 
+
+# Tokenize
+```{r}
+prepare_examples(eventdataR::traffic_fines, "remaining_trace") -> df
+
+# adding "startpoint" to prefix_list
+df$remaining_trace_list <- df$remaining_trace_list %>% map(~append("startpoint", .))
+
+prep_toks_remaining_trace <- function(df, trace_prefix) {
+vocabulary <- df %>% attr("vocabulary")
+vocabulary$keys_x <- vocabulary$keys_x %>% append(list("endpoint")) %>% append(list("startpoint"))
+df$prefix_list <- df %>% pull(trace_prefix)
+
+  token_x <- list()
+  for (i in (1:nrow(df))) {
+    #case_trace <- list()
+    case_trace <- c()
+
+    for (j in (1:length(df$prefix_list[[i]]))) {
+      #if (processed_df$trace[[i]][j] == x_word_dict$values_x) {}
+      tok <- which(df$prefix_list[[i]][j] == vocabulary$keys_x)
+      case_trace <- case_trace %>% append(tok-1)
+    }
+
+    case_trace <- case_trace %>% list()
+    token_x <- token_x %>% append(case_trace)
+  }
+  attr(token_x, "vocabulary") <- vocabulary$keys_x
+  return(token_x)
+}
+
+remaining_toks <- prep_toks_remaining_trace(df, "remaining_trace_list")
+remaining_toks_shifted <- remaining_toks %>% map_depth(.depth = 1, lead, n=1, default = 0)
+current_toks <- prep_toks_remaining_trace(df, "prefix_list")
+
+vocab <- attr(current_toks, "vocabulary")
+
+remaining_toks <- remaining_toks %>% keras::pad_sequences(padding = "post")
+remaining_toks_shifted <- remaining_toks_shifted %>% keras::pad_sequences(padding = "post")
+current_toks <- current_toks %>% keras::pad_sequences()
+```
+
+## define, compile, fit
+### define
+```{r}
+d_model <- 128
+dff <- 512
+num_heads <- 8
+dropout_rate <- 0.1
+vocab_size <- df %>% attr("vocab_size") + 2 # 9 + 1 ("endpoint")
+input_maxlen <- current_toks %>% ncol() # 6 tokens patients df
+target_maxlen <- remaining_toks %>% ncol() # 6 tokens patients df
+
+# NB: context is current trace sequence, x must be remaining trace sequence
+input_context <- keras::layer_input(shape = c(input_maxlen))
+target_sequence <- keras::layer_input(shape = c(target_maxlen))
+
+# fixed
+context <- input_context %>% 
+  TokenAndPositionEmbedding()(maxlen = input_maxlen, vocab_size = vocab_size, d_model = d_model) %>%
+  keras::layer_dropout(dropout_rate) %>% 
+  EncoderLayer(d_model = d_model, num_heads = num_heads, dff = dff, dropout_rate = dropout_rate)
+#context
+#keras::keras_model(target_sequence, context)
+
+
+# initiate decoder layer
+decoder <- DecoderLayer(d_model = d_model, num_heads = num_heads, dff = dff, dropout_rate = dropout_rate)
+
+x <- target_sequence %>%
+  TokenAndPositionEmbedding()(maxlen = target_maxlen, vocab_size = vocab_size, d_model = d_model) %>%
+  keras::layer_dropout(dropout_rate)
+
+x <- decoder(x = x, context = context) %>% 
+  keras::layer_dense(vocab_size, activation = "linear")
+
+keras::keras_model(list(input_context, target_sequence), x) -> model
+```
+
+### compile
+> [NB]
+original architecture defines a custom loss and metric
+
+```{r}
+compile(model, optimizer = keras::optimizer_adam(0.001), 
+        loss = keras::loss_sparse_categorical_crossentropy(from_logits = T),
+        metrics = keras::metric_sparse_categorical_crossentropy(from_logits = T))
+```
+
+### fit 
+```{r}
+fit(model, list(current_toks, remaining_toks), remaining_toks_shifted)
+```
+
+################# ################# ################# ################# ################# ################# 
+
+
+```{r, eval=F, echo=F}
+prepare_examples(eventdataR::patients, "remaining_trace") -> df
+df$prefix %>% append(df$remaining_trace) -> current_and_remaining_traces
+text_tokenizer() %>% fit_text_tokenizer(current_and_remaining_traces) -> tokenizer
+tokenizer %>% texts_to_sequences(df$prefix) %>% keras::pad_sequences() -> input1
+
+tokenizer %>% texts_to_sequences(df$remaining_trace) %>% keras::pad_sequences() -> input2
+
+tokenizer$get_config()
+
+input2 %>% as_tensor()
+
+tokenizer %>% texts_to_sequences(df$remaining_trace) -> tmp
+  
+tmp %>% map_depth(.depth = 1, lead, n=1, default = 0) -> tmp
+
+tmp %>% keras::pad_sequences() -> input2_shifted
+
+#tmp %>% map_depth(.depth = 1, na.omit) -> tmp
+
+
+fit(model, list(input1, input2), input2_shifted)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+## Trace generator
+```{r}
+model(list(input1, input2), training=FALSE)
+
+for (i in 1:6) { #max_case_length)
+  
+}
+    # for i in tf.range(max_length):
+    #   output = tf.transpose(output_array.stack())
+    #   predictions = self.transformer([encoder_input, output], training=False)
+    # 
+    #   # Select the last token from the `seq_len` dimension.
+    #   predictions = predictions[:, -1:, :]  # Shape `(batch_size, 1, vocab_size)`.
+    # 
+    #   predicted_id = tf.argmax(predictions, axis=-1)
+    # 
+    #   # Concatenate the `predicted_id` to the output which is given to the
+    #   # decoder as its input.
+    #   output_array = output_array.write(i+1, predicted_id[0])
+    # 
+    #   if predicted_id == end:
+    #     break
+```
+
+### tokenizing
+```{r, eval=F, echo=F}
+prepare_examples(eventdataR::patients, "remaining_trace") -> df
+
+layer_text_vectorization(standardize = NULL) -> tmp
+tmp %>% adapt(df$prefix)
+tmp(df$remaining_trace)
+tmp$get_vocabulary()
+tmp$get_config()
+
+# vocab <- c("Registration", "Triage and Assessment", "Check-out")
+# layer_string_lookup(vocabulary = vocab) -> layer
+# layer$get_config()
+# layer(df$prefix)
+```
+
+## FIXING
+```{r, eval=F}
+d_model <- 128
+dff <- 512
+num_heads <- 8
+dropout_rate <- 0.1
+vocab_size <- 9
+maxlen <- 7 
+
+# NB: context is current trace sequence, x must be remaining trace sequence
+x <- context <- inputs <- keras::layer_input(shape = c(7))
+
+# fixed
+context <- context %>% 
+  TokenAndPositionEmbedding()(maxlen = maxlen, vocab_size = vocab_size, d_model = d_model) %>%
+  keras::layer_dropout(dropout_rate) %>% 
+  EncoderLayer(d_model = d_model, num_heads = num_heads, dff = dff, dropout_rate = dropout_rate)
+
+context
+
+###################### DEBUG LAYERS ##############################
+x <- inputs %>%
+  TokenAndPositionEmbedding()(maxlen = maxlen, vocab_size = vocab_size, d_model = d_model) %>%
+  keras::layer_dropout(dropout_rate) 
+x
+
+# fixed
+cross_att <- CrossAttention(num_heads = 8, key_dim = 512)
+cross_att(x, context) #$shape
+cross_att$submodules # interesting to know
+
+# check CausalAttention
+causal_att <- CausalSelfAttention(num_heads = 8, key_dim = 512)
+causal_att(x)
+
+x <- inputs %>%
+  TokenAndPositionEmbedding()(maxlen = maxlen, vocab_size = vocab_size, d_model = d_model) %>%
+  keras::layer_dropout(dropout_rate)
+
+
+##################################################################
+# Goal: using encoder (not work)
+# x <- inputs %>%
+#   TokenAndPositionEmbedding()(maxlen = maxlen, vocab_size = vocab_size, d_model = d_model) %>%
+#   keras::layer_dropout(dropout_rate) %>% 
+#   DecoderLayer(context = context, d_model = d_model, num_heads = num_heads, dff = dff, dropout_rate = dropout_rate) %>% 
+#   keras::layer_dense(vocab_size, activation = "linear")
+##################################################################
+
+###################################### SOLUTION #############################################################
+
+# initiate decoder layer
+decoder <- DecoderLayer(d_model = d_model, num_heads = num_heads, dff = dff, dropout_rate = dropout_rate)
+
+x <- inputs %>%
+  TokenAndPositionEmbedding()(maxlen = maxlen, vocab_size = vocab_size, d_model = d_model) %>%
+  keras::layer_dropout(dropout_rate)
+
+x <- x %>% 
+  decoder(context = context) %>% 
+  keras::layer_dense(vocab_size, activation = "linear")
+
+keras::keras_model(inputs, x)
+
+###################################### ###################################### ###############################
+
+
+# # ANOTHER OPTION WITHOUT DecoderLayer abstraction from attention layers and feedforward layer
+# # create_layer_wrapper() for using with pipe
+# cross_att <- create_layer_wrapper(CrossAttention)
+# x <- inputs %>%
+#   TokenAndPositionEmbedding()(maxlen = maxlen, vocab_size = vocab_size, d_model = d_model) %>%
+#   keras::layer_dropout(dropout_rate) %>%
+#   cross_att()
+  
+```
+
+## The TRANSFORMER (_ignore_)
+You now have Encoder and Decoder. To complete the Transformer model, you need to put them together and add a final linear (Dense) layer which converts the resulting vector at each location into output token probabilities.
+The output of the decoder is the input to this final linear layer.
+```{r, eval=F}
+Transformer <- keras::new_model_class(
+    classname = "Transformer",
+    initialize = function(self, d_model, num_heads, #num_layers,
+                          dff, vocab_size, dropout_rate = 0.1, ...) { # dff = ff_dim, d_model = embed_dim, dropout_rate = rate
+      super$initialize()
+      
+      
+      
+      self$encoder_layer_sub <- EncoderLayer_sub(d_model=d_model, #num_layers=num_layers, 
+                                                 num_heads=num_heads, dff=dff,
+                                                 vocab_size=vocab_size,
+                                                 dropout_rate=dropout_rate)
+
+      self$decoder_layer_sub <- DecoderLayer_sub(d_model=d_model, #num_layers=num_layers, 
+                                                 num_heads=num_heads, dff=dff,
+                                                 vocab_size=vocab_size,
+                                                 dropout_rate=dropout_rate)
+
+      self$final_layer <- keras::layer_dense(vocab_size) # linear layer_output # OR maxlen??
+    },
+    
+    call = function(self, inputs) {
+      # To use a Keras model with `.fit` you must pass all your inputs in the first argument.
+      
+      context <- inputs # context, x = inputs
+      x <- inputs
+      context <- self$encoder_layer_sub(context)  # (batch_size, context_len, d_model)
+
+      x <- self$decoder_layer_sub(x, context)  # (batch_size, target_len, d_model)
+
+      # Final linear layer output.
+      logits <- self$final_layer(x)  # (batch_size, target_len, target_vocab_size)
+      
+      # try:
+      #   # Drop the keras mask, so it doesn't scale the losses/metrics.
+      #   # b/250038731
+      #   del logits._keras_mask
+      # except AttributeError:
+      #   pass
+
+    # Return the final output and the attention weights.
+    return(logits)
+    }
+  )
+```
+
+
