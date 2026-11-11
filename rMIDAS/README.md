@@ -1,0 +1,180 @@
+
+<!-- README.md is generated from README.Rmd. Please edit that file -->
+
+# rMIDAS <img src='man/figures/logo.png' align="right" height="105" />
+
+<!-- badges: start -->
+
+[![CRAN
+status](https://www.r-pkg.org/badges/version/rMIDAS)](https://cran.r-project.org/package=rMIDAS/)
+[![lifecycle](https://img.shields.io/badge/lifecycle-deprecated-orange.svg)](https://lifecycle.r-lib.org/articles/stages.html#deprecated)
+[![Last-changedate](https://img.shields.io/badge/last%20change-2026--03--12-yellowgreen.svg)](https://github.com/MIDASverse/rMIDAS/commits/master/)
+<!-- badges: end -->
+
+> **⚠ Deprecation notice**
+>
+> **rMIDAS is deprecated.** Please use
+> [**rMIDAS2**](https://CRAN.R-project.org/package=rMIDAS2), which replaces
+> rMIDAS with a faster PyTorch-based backend, a simpler API (no manual
+> preprocessing), and no `reticulate` dependency at runtime. rMIDAS will
+> remain on CRAN for existing users but will not receive new features or
+> bug fixes.
+> Source repository: <https://github.com/MIDASverse/rMIDAS2>
+>
+> A migration guide is included as a vignette in both packages:
+> `vignette("migrating-to-rMIDAS2", package = "rMIDAS")`.
+>
+> Install the replacement:
+>
+> ``` r
+> install.packages("rMIDAS2")
+> ```
+
+------------------------------------------------------------------------
+
+## Overview
+
+**rMIDAS** is an R package for accurate and efficient multiple
+imputation using deep learning methods. The package provides a
+simplified workflow for imputing and then analyzing data:
+
+- `convert()` carries out all necessary preprocessing steps
+- `train()` constructs and trains a MIDAS imputation model
+- `complete()` generates multiple completed datasets from the trained
+  model
+- `combine()` runs regression analysis across the complete data,
+  following Rubin’s combination rules
+
+**rMIDAS** is based on the Python package
+[MIDASpy](https://github.com/MIDASverse/MIDASpy).
+
+### Efficient handling of large data
+
+rMIDAS also incorporates several features to streamline and improve the
+the efficiency of multiple imputation analysis:
+
+- Optimisation for large datasets using `data.table` and `mltools`
+  packages
+- Automatic reversing of all pre-processing steps prior to analysis
+- Built-in regression function based on `glm` (applying Rubin’s
+  combination rules)
+
+### Background and suggested citations
+
+For more information on MIDAS, the method underlying the software, see:
+
+Lall, Ranjit, and Thomas Robinson. 2022. "The MIDAS Touch: Accurate and
+Scalable Missing-Data Imputation with Deep Learning." *Political
+Analysis* 30, no. 2: 179-196. [Published
+version](https://ranjitlall.github.io/assets/pdf/Lall%20and%20Robinson%202022%20PA.pdf).
+
+Lall, Ranjit, and Thomas Robinson. 2023. "Efficient Multiple Imputation for Diverse Data in Python and R: MIDASpy and rMIDAS." _Journal of Statistical Software_ 107, no. 9: 1-38. doi:10.18637/jss.v107.i09. [Published version](https://ranjitlall.github.io/assets/pdf/Lall%20and%20Robinson%202023%20JSS.pdf).
+
+## Installation
+
+rMIDAS is available on
+[CRAN](https://cran.r-project.org/package=rMIDAS). To install the
+package in R, you can use the following code:
+
+``` r
+install.packages("rMIDAS")
+```
+
+To install the latest development version, use the following code:
+
+``` r
+# install.packages("devtools")
+devtools::install_github("MIDASverse/rMIDAS")
+```
+
+Note that rMIDAS uses the
+[reticulate](https://github.com/rstudio/reticulate) package to interface
+with Python. When the package is first loaded, it will prompt the user
+on whether to set up a Python environment and its dependencies
+automatically. Users that choose to set up the environment and
+dependencies manually, or who use rMIDAS in headless mode can specify a
+Python binary using `set_python_env()` (examples below). Currently,
+Python versions from 3.6 to 3.10 are supported. For a custom Python
+environment the following dependencies are also required:
+
+- matplotlib
+- numpy
+- pandas
+- scikit-learn
+- scipy
+- statsmodels
+- tensorflow (\<2.12.0)
+- tensorflow-addons (\<0.20.0)
+
+Setting a custom Python install must be performed *before* training or
+imputing data occurs. To manually set up a Python environment:
+
+``` r
+library(rMIDAS)
+# Decline the automatic setup
+
+# Point to a Python binary
+set_python_env(x = "path/to/python/binary")
+
+# Or point to a virtualenv binary
+set_python_env(x = "virtual_env", type = "virtualenv")
+
+# Or point to a conda environment
+set_python_env(x = "conda_env", type = "conda")
+
+# Now run rMIDAS::train() and rMIDAS::complete()...
+```
+
+You can also download the
+[`rmidas-env.yml`](https://github.com/MIDASverse/rMIDAS/blob/master/rmidas-env.yml)
+conda environment file from this repository to set up all dependencies
+in a new conda environment. To do so, download the .yml file, navigate
+to the download directory in your console and run:
+
+``` bash
+conda env create -f rmidas-env.yml
+```
+
+Then, prior to training a MIDAS model, make sure to load this
+environment in R:
+
+``` r
+# First load the rMIDAS package
+library(rMIDAS)
+# Decline the automatic setup
+
+set_python_env(x = "rmidas", type = "conda")
+```
+
+*Note*: **reticulate** only allows you to set a Python binary once per R
+session, so if you wish to switch to a different Python binary, or have
+already run `train()` or `convert()`, you will need to restart or
+terminate R prior to using `set_python_env()`.
+
+## Vignettes (including simple example)
+
+**rMIDAS** is packaged with four vignettes:
+
+1.  [`vignette("imputation_demo", "rMIDAS")`](https://github.com/MIDASverse/rMIDAS/blob/master/vignettes/imputation_demo.md)
+    demonstrates the basic workflow and capacities of **rMIDAS**
+2.  [`vignette("custom_python_versions", "rMIDAS")`](https://github.com/MIDASverse/rMIDAS/blob/master/vignettes/custom_python_versions.md)
+    provides detailed guidance on configuring Python binaries and
+    environments, including some troubleshooting tips
+3.  [`vignette("use_server", "rMIDAS")`](https://github.com/MIDASverse/rMIDAS/blob/master/vignettes/use-server.md)
+    provides guidance for running **rMIDAS** in headless mode
+4.  `vignette("migrating-to-rMIDAS2", "rMIDAS")` guides migration to the
+    new **rMIDAS2** package
+
+An additional example that showcases rMIDAS core functionalities can be
+found
+[here](https://github.com/MIDASverse/rMIDAS/blob/master/examples/rmidas_demo.md).
+
+## Getting help
+
+rMIDAS is deprecated and is being retained for existing workflows. If
+you need new development or a simpler installation path, please migrate
+to [**rMIDAS2**](https://CRAN.R-project.org/package=rMIDAS2). The
+successor package source repository is
+<https://github.com/MIDASverse/rMIDAS2>. If you encounter an issue that
+affects an existing rMIDAS workflow, please raise it
+[here](https://github.com/MIDASverse/rMIDAS/issues).
