@@ -1,0 +1,444 @@
+# Universal cap on tool-result text before it reaches model context.
+#
+# Every tool result - shell, run_r, read_handle, grep_files, fetch_url,
+# a custom skill, anything - funnels through .flatten_mcp_result() in
+# .make_tool_handler() (R/turn.R) on its way to llm.api. A single
+# unbounded result (e.g. a bash command that prints 57k lines) lands in
+# session$history via the history_callback and wedges the next model
+# call against the provider token limit. admit_tool_result() is the
+# guard at that chokepoint: it caps the model-facing text and stashes
+# the full output as a handle so nothing is lost.
+#
+# compact_message_text() is the sibling for /compact: do_compact()
+# pastes message bodies into one summarization prompt, so a giant result
+# already in history would blow that prompt too. Eliding oversized
+# bodies lets /compact recover an already-wedged session.
+
+# Caps. Constants for now; promote to config if tuning is needed.
+# Preview is intentionally a bit under the cap so the marker header
+# (~6 lines / ~250 chars) plus the preview body stays under both caps.
+.tool_output_max_chars <- 5000L
+.tool_output_max_lines <- 50L
+.tool_output_preview_lines <- 40L
+.tool_output_preview_chars <- 4000L
+
+# Deliberate content-read tools (read_file, git_diff): the agent asked
+# to see the file, so give them a far larger budget than chatty tools --
+# otherwise a whole-file read gets sliced into 50-line re-reads. Still
+# bounded: a pathological multi-megabyte file stashes to a handle rather
+# than wedging the model.
+.tool_output_read_tools <- c("read_file", "skill_instructions", "git_diff")
+.tool_output_read_max_chars <- 100000L
+.tool_output_read_max_lines <- 2000L
+
+.compact_max_chars_per_message <- 16000L
+.compact_max_total_chars <- 120000L
+
+#' Per-tool output caps from the session config.
+#'
+#' `config$tool_output_caps` is a named list keyed by tool name; each
+#' entry is a list with `max_chars` and/or `max_lines`. A host whose own
+#' tool returns a large result the model must see whole (a game board,
+#' a table) raises the cap for that tool alone. A field left out keeps
+#' the tool's default budget, which is the read budget for the
+#' content-read tools.
+#'
+#' @param config Session config list, or NULL.
+#' @param tool Tool name.
+#' @return NULL when the tool has no entry, else a list with integer
+#'   `max_chars` and `max_lines`.
+#' @noRd
+.tool_output_caps_for <- function(config, tool) {
+    caps <- config$tool_output_caps
+    if (!is.list(caps) || length(tool) != 1L || is.null(caps[[tool]])) {
+        return(NULL)
+    }
+    spec <- caps[[tool]]
+    if (!is.list(spec)) {
+        stop("config$tool_output_caps$", tool,
+             " must be a list with max_chars and/or max_lines", call. = FALSE)
+    }
+    read <- tool %in% .tool_output_read_tools
+    pick <- function(field, default) {
+        value <- spec[[field]]
+        if (is.null(value)) {
+            return(default)
+        }
+        value <- suppressWarnings(as.numeric(value))
+        if (length(value) != 1L || is.na(value) || value < 1) {
+            stop("config$tool_output_caps$", tool, "$", field,
+                 " must be a positive number", call. = FALSE)
+        }
+        as.integer(min(value, .Machine$integer.max))
+    }
+    list(max_chars = pick("max_chars", if (read) {
+                .tool_output_read_max_chars
+            } else {
+                .tool_output_max_chars
+            }),
+         max_lines = pick("max_lines", if (read) {
+                .tool_output_read_max_lines
+            } else {
+                .tool_output_max_lines
+            }))
+}
+
+#' Reject a malformed `config$tool_output_caps` before any tool runs.
+#' @noRd
+.validate_tool_output_caps <- function(config) {
+    caps <- config$tool_output_caps
+    if (is.null(caps)) {
+        return(invisible(NULL))
+    }
+    if (!is.list(caps) || is.null(names(caps)) || any(!nzchar(names(caps)))) {
+        stop("config$tool_output_caps must be a named list keyed by tool name",
+             call. = FALSE)
+    }
+    for (tool in names(caps)) {
+        .tool_output_caps_for(config, tool)
+    }
+    invisible(NULL)
+}
+
+#' admit_tool_result() under the session's cap for one tool.
+#'
+#' The full text of a cut result goes in the session's own handle store
+#' when it has one (session_handle_store()), and the marker says how
+#' this session can get at it, which depends on the tools it has.
+#' @noRd
+.admit_tool_result_for <- function(session, text, tool) {
+    caps <- .tool_output_caps_for(session$config, tool)
+    own <- .tool_output_session_store(session)
+    args <- list(text, tool = tool, how = function(handle, shown) {
+        .tool_output_how(session, handle, shown, own = !is.null(own))
+    })
+    if (!is.null(own)) {
+        args$store <- own
+        args$prefix <- SESSION_HANDLE_PREFIX
+    }
+    if (!is.null(caps)) {
+        args$max_chars <- caps$max_chars
+        args$max_lines <- caps$max_lines
+    }
+    do.call(admit_tool_result, args)
+}
+
+#' The store a session's cut results go in, or NULL for the process's.
+#'
+#' A session that runs R in a worker process gets a store of its own
+#' here if it has none. `read_handle` for such a session asks the
+#' worker, which never saw a result cut in this process; without a
+#' store the session reads first, the marker would name a handle that
+#' reads back "Unknown handle".
+#' @noRd
+.tool_output_session_store <- function(session) {
+    own <- session_handle_store(session)
+    if (!is.null(own) || !is.environment(session)) {
+        return(own)
+    }
+    mode <- tryCatch(.run_r_mode(list(session = session)),
+                     error = function(e) "in_process")
+    if (identical(mode, "worker")) {
+        session$handle_store <- new.env(parent = emptyenv())
+    }
+    session_handle_store(session)
+}
+
+#' How this session can read a cut result: one line for the marker.
+#'
+#' Names only a tool the session has. A marker that points at a tool
+#' the model was not given reads as a way forward and is not one.
+#' @param shown Lines shown complete in the marker's preview.
+#' @param own TRUE when the handle is in the session's own store, which
+#'   `run_r` code cannot see.
+#' @noRd
+.tool_output_how <- function(session, handle, shown, own = FALSE) {
+    has <- function(tool) {
+        is.null(session$tools_filter) || tool %in% session$tools_filter
+    }
+    if (has("read_handle")) {
+        return(.tool_output_how_read(handle, shown))
+    }
+    if (!own && has("run_r")) {
+        return(sprintf(paste0(
+                              .TOOL_OUTPUT_SEARCH_FIRST,
+                              " In run_r it is the character vector `%s`, one ",
+                              "element per line: grep(\"...\", %s, value = TRUE)."),
+                       handle, handle))
+    }
+    paste("No tool in this session can open it, so what is not shown is",
+          "unknown. Ask again for less: a narrower pattern, a smaller range,",
+          "or one item.")
+}
+
+# A model shown the start of a list will say what the list lacks. The
+# marker tells it to look first.
+.TOOL_OUTPUT_SEARCH_FIRST <- paste("Before saying what this output does not",
+                                   "contain, search the rest.")
+
+.tool_output_how_read <- function(handle, shown) {
+    sprintf(paste0(.TOOL_OUTPUT_SEARCH_FIRST,
+                   " read_handle(\"%s\", op = \"grep\", pattern = \"...\") ",
+                   "finds lines; op = \"lines\", start = %d reads on."),
+            handle, shown + 1L)
+}
+
+#' Cap a flattened tool-result string before it reaches model context.
+#'
+#' Under both limits the text passes through unchanged. Over either
+#' limit the full text is stashed as a line-vector handle (retrievable
+#' with `read_handle` / via the `/last` buffer) and a compact marker is
+#' returned in its place. The marker names the tool, the original
+#' line/char counts, what's shown, and the handle to recover the rest.
+#'
+#' @param text Flattened tool-result string (length-1 character). Other
+#'   shapes pass through untouched.
+#' @param tool Tool name, for the marker.
+#' @param store Handle store that should own an oversized result.
+#' @param prefix What the handle's name starts with (see with_handle()).
+#' @param how `function(handle, shown)` returning the marker's line on
+#'   how to read the rest. Defaults to `read_handle`, and `/last` for a
+#'   person at a prompt.
+#' @param max_chars,max_lines Caps that trigger truncation.
+#' @param preview_lines,preview_chars Size of the preview head kept in
+#'   the marker.
+#' @return A length-1 character string: either `text` unchanged or a
+#'   truncation marker.
+#' @noRd
+admit_tool_result <- function(text, tool = "tool", store = .handle_store,
+                              prefix = ".h_", how = NULL,
+                              max_chars = .tool_output_max_chars,
+                              max_lines = .tool_output_max_lines,
+                              preview_lines = .tool_output_preview_lines,
+                              preview_chars = .tool_output_preview_chars) {
+    # Deliberate content reads (read_file, git_diff) get a far larger
+    # budget so a whole-file read isn't sliced into 50-line re-reads --
+    # but only when the caller didn't pin explicit caps.
+    if (missing(max_chars) && missing(max_lines) &&
+        tool %in% .tool_output_read_tools) {
+        max_chars <- .tool_output_read_max_chars
+        max_lines <- .tool_output_read_max_lines
+    }
+    # Only guard plain strings. A non-string here would be a flatten
+    # bug; pass it through rather than mangle it.
+    if (!is.character(text) || length(text) != 1L) {
+        return(text)
+    }
+    admitted <- text
+    on.exit(.audit_safe(.audit_tool_payload(.audit_runtime$active, text, admitted, tool)), add = TRUE)
+    n_chars <- nchar(text)
+    lines <- strsplit(text, "\n", fixed = TRUE)[[1L]]
+    n_lines <- length(lines)
+    if (n_chars <= max_chars && n_lines <= max_lines) {
+        return(text)
+    }
+
+    # Stash the full output as a vector of lines so read_handle's
+    # grep / lines ops work on it later.
+    stash <- with_handle(lines, summary_fn = function(x) {
+        sprintf("captured %s output: %d lines, %d chars", tool, n_lines,
+                n_chars)
+    }, store = store, prefix = prefix)
+
+    # The preview is cut by characters as well as by lines, so long
+    # lines mean fewer of them are shown. `whole` lines are shown
+    # complete, and reading on starts at the one after.
+    head_lines <- utils::head(lines, preview_lines)
+    whole <- sum(cumsum(nchar(head_lines) + 1L) - 1L <= preview_chars)
+    shown <- min(length(head_lines), whole + 1L)
+    preview <- .tool_output_preview(lines, preview_lines, preview_chars)
+    how_line <- if (is.function(how)) {
+        how(stash$handle, whole)
+    } else {
+        paste(.tool_output_how_read(stash$handle, whole), "Or use /last.")
+    }
+    admitted <- sprintf(paste0(
+                   "[tool output truncated]\n",
+                   "tool: %s\n",
+                   "original: %d lines, %d chars\n",
+                   "showing: first %d lines / %d chars\n",
+                   "full output stored as: %s\n",
+                   "%s\n\n%s"
+        ),
+            tool, n_lines, n_chars,
+            shown, min(preview_chars, n_chars),
+            stash$handle, how_line, preview)
+    admitted
+}
+
+# Preview head: first preview_lines lines, then hard-capped to
+# preview_chars so a single pathologically long line can't blow the cap.
+.tool_output_preview <- function(lines, preview_lines, preview_chars) {
+    preview <- paste(utils::head(lines, preview_lines), collapse = "\n")
+    if (nchar(preview) > preview_chars) {
+        preview <- substr(preview, 1L, preview_chars)
+    }
+    preview
+}
+
+#' Render a message body for the compaction prompt, eliding huge ones.
+#'
+#' Short bodies render as-is. Bodies over `max_chars` are replaced with
+#' an elision marker (line/char counts) plus a preview head, so a giant
+#' tool result already in history can't blow the compaction prompt past
+#' the model limit.
+#'
+#' @param text Message body (coerced to a length-1 string).
+#' @param max_chars Bodies longer than this are elided.
+#' @return A length-1 character string.
+#' @noRd
+compact_message_text <- function(text,
+                                 max_chars = .compact_max_chars_per_message) {
+    if (!is.character(text) || length(text) != 1L) {
+        text <- paste(as.character(text), collapse = "\n")
+    }
+    n_chars <- nchar(text)
+    if (n_chars <= max_chars) {
+        return(text)
+    }
+    n_lines <- length(strsplit(text, "\n", fixed = TRUE)[[1L]])
+    sprintf("[large message elided: %d lines, %d chars, first %d chars shown]\n%s",
+            n_lines, n_chars, max_chars, substr(text, 1L, max_chars))
+}
+
+#' Render one history entry as "[label]: body" for the compaction
+#' prompt.
+#'
+#' History entries are provider-native, so shapes vary: Anthropic and
+#' OpenAI chat messages carry a `role`; OpenAI Responses (codex)
+#' entries carry only a `type` (".openai_codex_output" holding the raw
+#' output items, "function_call_output" for tool results) and no role
+#' at all. sprintf() with a NULL argument returns character(0), so a
+#' role-less entry used to kill do_compact()'s vapply -- exactly when
+#' /compact was needed to recover a wedged session. This renderer
+#' guarantees a length-1 string for any shape.
+#'
+#' @param m One history entry (any provider-native shape).
+#' @return A length-1 character string.
+#' @noRd
+.compact_render_entry <- function(m) {
+    if (!is.list(m)) {
+        return(sprintf("[unknown]: %s",
+                       compact_message_text(paste(as.character(m), collapse = "\n"))))
+    }
+    label <- .compact_scalar(m$role) %||% .compact_scalar(m$type) %||%
+    "unknown"
+    sprintf("[%s]: %s", label, compact_message_text(.compact_entry_body(m)))
+}
+
+# x if it is a length-1 non-NA character, else NULL (for %||% chains).
+.compact_scalar <- function(x) {
+    if (is.character(x) && length(x) == 1L && !is.na(x)) {
+        x
+    } else {
+        NULL
+    }
+}
+
+# Extract a text body from one provider-native history entry.
+.compact_entry_body <- function(m) {
+    # Codex assistant turn: raw Responses output items, no role/content.
+    if (identical(m$type, ".openai_codex_output")) {
+        return(.compact_codex_output_text(m$output))
+    }
+    # Codex tool result: output is the result string.
+    if (identical(m$type, "function_call_output")) {
+        return(paste(as.character(m$output %||% ""), collapse = "\n"))
+    }
+    body <- if (is.list(m$content)) {
+        parts <- vapply(m$content, .compact_block_text, character(1L))
+        paste(parts[nzchar(parts)], collapse = "\n")
+    } else {
+        paste(as.character(m$content %||% ""), collapse = "\n")
+    }
+    # OpenAI chat-completions assistant turns put tool invocations in
+    # tool_calls beside (often empty) content; name them so the
+    # summary sees what ran.
+    calls <- vapply(m$tool_calls %||% list(), function(tc) {
+        tc$name %||% tc$`function`$name %||% "?"
+    }, character(1L))
+    if (length(calls) > 0L) {
+        body <- paste(c(body[nzchar(body)], sprintf("<tool call: %s>", calls)),
+                      collapse = "\n")
+    }
+    body
+}
+
+# Text of one Anthropic-style content block (text, tool_use,
+# tool_result, or anything else).
+.compact_block_text <- function(block) {
+    if (!is.list(block)) {
+        return(paste(as.character(block), collapse = "\n"))
+    }
+    if (!is.null(block$text)) {
+        return(paste(as.character(block$text), collapse = "\n"))
+    }
+    type <- block$type %||% ""
+    if (identical(type, "tool_use")) {
+        return(sprintf("<tool call: %s>", block$name %||% "?"))
+    }
+    if (identical(type, "tool_result")) {
+        inner <- block$content
+        if (is.list(inner)) {
+            return(paste(vapply(inner, .compact_block_text, character(1L)),
+                         collapse = "\n"))
+        }
+        return(paste(as.character(inner %||% ""), collapse = "\n"))
+    }
+    ""
+}
+
+# Text of a Codex Responses output-item list: message items contribute
+# their text, function_call items their name. Reasoning items are
+# skipped (encrypted payloads, useless in a summary).
+.compact_codex_output_text <- function(output) {
+    parts <- character()
+    for (item in output %||% list()) {
+        type <- item$type %||% ""
+        if (identical(type, "message")) {
+            for (content in item$content %||% list()) {
+                if (!is.null(content$text)) {
+                    parts <- c(parts, content$text)
+                }
+            }
+        } else if (identical(type, "function_call")) {
+            parts <- c(parts, sprintf("<tool call: %s>", item$name %||% "?"))
+        }
+    }
+    paste(parts, collapse = "\n")
+}
+
+# Drop oldest rendered messages until the joined text fits the total
+# budget, prepending a note about what was dropped. Per-message elision
+# (compact_message_text) handles one giant result; this handles the
+# case where many large messages still overflow in aggregate. Keeps the
+# most recent messages, which matter most for continuing the work.
+.compact_trim_total <- function(rendered,
+                                max_total = .compact_max_total_chars) {
+    n <- length(rendered)
+    if (n == 0L) {
+        return(rendered)
+    }
+    sep <- 2L # "\n\n" between messages
+    if (sum(nchar(rendered)) + sep * (n - 1L) <= max_total) {
+        return(rendered)
+    }
+    keep <- logical(n)
+    running <- 0L
+    for (i in rev(seq_len(n))) {
+        running <- running + nchar(rendered[i]) + sep
+        if (running > max_total) {
+            break
+        }
+        keep[i] <- TRUE
+    }
+    dropped <- sum(!keep)
+    kept <- rendered[keep]
+    if (dropped > 0L) {
+        kept <- c(sprintf(
+                          "[%d earlier message(s) elided to fit the compaction budget]",
+                          dropped),
+                  kept)
+    }
+    kept
+}

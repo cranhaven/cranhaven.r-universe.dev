@@ -1,0 +1,255 @@
+library(tinytest)
+
+expect_true(is.function(corteza::add_observer))
+expect_true(is.function(corteza::observer_progress))
+
+# observer_progress prints a start block and a completion summary.
+# The observer is verbose-gated; force-enable for the duration of this
+# block since the test asserts on its output.
+local({
+    op <- options(corteza.verbose = TRUE)
+    on.exit(options(op), add = TRUE)
+    obs <- corteza::observer_progress()
+    out <- capture.output({
+        obs(list(
+            call = list(tool = "read_file", args = list(path = "/x/y.R")),
+            outcome = "start"
+        ))
+        obs(list(
+            call = list(tool = "read_file", args = list(path = "/x/y.R")),
+            outcome = "ran", result = "a\nb\n", success = TRUE,
+            elapsed_ms = 2
+        ))
+    })
+    expect_true(any(grepl("Read File\\(/x/y.R\\)", out)))
+    expect_true(any(grepl("Path: /x/y.R", out, fixed = TRUE)))
+    expect_true(any(grepl("Running...", out, fixed = TRUE)))
+    expect_true(any(grepl("2 lines in 2ms", out, fixed = TRUE)))
+
+    out2 <- capture.output(obs(list(
+        call = list(tool = "grep_files", args = list(pattern = "foo")),
+        outcome = "start"
+    )))
+    expect_true(any(grepl("Grep Files\\(/foo/\\)", out2)))
+    expect_true(any(grepl("Pattern: foo", out2, fixed = TRUE)))
+
+    out3 <- capture.output(obs(list(
+        call = list(tool = "list_files", args = list(path = ".")),
+        outcome = "deny", result = "[denied]", success = FALSE
+    )))
+    expect_true(any(grepl("List Files\\(\\.\\)", out3)))
+    expect_true(any(grepl("denied", out3, fixed = TRUE)))
+})
+
+# observer_progress prints the model's running commentary once per model
+# response (call_index == 1), independent of any approval prompt, so an
+# auto-approved run is not silent.
+local({
+    op <- options(corteza.verbose = TRUE)
+    on.exit(options(op), add = TRUE)
+    obs <- corteza::observer_progress()
+    mc <- function(text, idx = 1L) {
+        list(assistant_text = text, call_index = idx, call_count = 2L)
+    }
+
+    out <- capture.output(obs(list(
+        call = list(tool = "bash", args = list(command = "ls"),
+                    model_context = mc("Tracing the request body path.")),
+        outcome = "start"
+    )))
+    expect_true(any(grepl("Tracing the request body path.", out, fixed = TRUE)))
+
+    # The second call of the same batch does not repeat the commentary.
+    out2 <- capture.output(obs(list(
+        call = list(tool = "bash", args = list(command = "cat x"),
+                    model_context = mc("Tracing the request body path.", 2L)),
+        outcome = "start"
+    )))
+    expect_false(any(grepl("Tracing the request body path.", out2,
+                           fixed = TRUE)))
+
+    # Empty narration prints nothing extra.
+    out3 <- capture.output(obs(list(
+        call = list(tool = "bash", args = list(command = "ls"),
+                    model_context = mc("")),
+        outcome = "start"
+    )))
+    expect_false(any(grepl("Tracing", out3, fixed = TRUE)))
+
+    # A denied first call fires no "start", but its commentary must still
+    # show; a later approved call in the same response does not repeat it.
+    out4 <- capture.output(obs(list(
+        call = list(tool = "write_file", args = list(path = "x"),
+                    model_context = mc("Editing the config to fix the path.")),
+        outcome = "declined", result = "[declined]", success = FALSE
+    )))
+    expect_true(any(grepl("Editing the config to fix the path.", out4,
+                          fixed = TRUE)))
+    out5 <- capture.output(obs(list(
+        call = list(tool = "bash", args = list(command = "ls"),
+                    model_context = mc("Editing the config to fix the path.", 2L)),
+        outcome = "start"
+    )))
+    expect_false(any(grepl("Editing the config to fix the path.", out5,
+                           fixed = TRUE)))
+})
+
+# Observer receives event for allow+success.
+local({
+    seen <- list()
+    s <- corteza::new_session("cli",
+                             approval_cb = function(call, decision) TRUE)
+    corteza::add_observer(s, function(event) {
+        seen[[length(seen) + 1L]] <<- event
+    })
+
+    tmp <- tempfile("obs-")
+    dir.create(tmp)
+    file.create(file.path(tmp, "x.txt"))
+    on.exit(unlink(tmp, recursive = TRUE), add = TRUE)
+
+    op <- options(
+        corteza.code_paths = c(tmp),
+        corteza.personal_paths = character(),
+        corteza.policy = NULL
+    )
+    on.exit(options(op), add = TRUE)
+
+    h <- corteza:::.make_tool_handler(s)
+    h("list_files", list(path = tmp))
+
+    expect_equal(length(seen), 2L)
+    expect_equal(seen[[1]]$outcome, "start")
+    expect_equal(seen[[2]]$outcome, "ran")
+    expect_true(seen[[2]]$success)
+    expect_equal(seen[[2]]$turn_number, 1L)
+    expect_true(is.numeric(seen[[2]]$elapsed_ms))
+})
+
+# Additive executor metadata reaches observers without changing the text that
+# existing tool handlers return to the model.
+local({
+    seen <- list()
+    s <- corteza::new_session("cli",
+                             approval_cb = function(call, decision) TRUE)
+    corteza::add_observer(s, function(event) {
+        seen[[length(seen) + 1L]] <<- event
+    })
+    custom <- function(name, args) {
+        out <- corteza:::ok("same text")
+        out$execution <- list(status = "ok", worker_generation = 2L)
+        out$structuredContent <- list(report = list(status = "done"))
+        out
+    }
+    op <- options(corteza.personal_paths = character(),
+                  corteza.policy = function(call) "allow")
+    on.exit(options(op), add = TRUE)
+
+    h <- corteza:::.make_tool_handler(s, tool_executor = custom)
+    result <- h("list_files", list(path = "/tmp"))
+    ran <- Filter(function(event) identical(event$outcome, "ran"), seen)[[1L]]
+
+    expect_equal(result, "same text")
+    expect_equal(ran$execution$status, "ok")
+    expect_equal(ran$execution$worker_generation, 2L)
+    expect_equal(ran$structured$report$status, "done")
+})
+
+# Observer fires on deny.
+local({
+    seen <- list()
+    op <- options(
+        corteza.personal_paths = c("~/Documents"),
+        corteza.policy = NULL
+    )
+    on.exit(options(op), add = TRUE)
+
+    s <- corteza::new_session("matrix")
+    corteza::add_observer(s, function(event) {
+        seen[[length(seen) + 1L]] <<- event
+    })
+
+    h <- corteza:::.make_tool_handler(s)
+    h("write_file", list(path = "~/Documents/secret.md", content = "x"))
+
+    expect_equal(length(seen), 1L)
+    expect_equal(seen[[1]]$outcome, "deny")
+    expect_false(seen[[1]]$success)
+})
+
+# The per-call model-context snapshot from llm.api lands on
+# call$model_context; a two-argument call leaves it NULL (back-compat).
+local({
+    tmp <- tempfile("ctx-")
+    dir.create(tmp)
+    file.create(file.path(tmp, "x.txt"))
+    on.exit(unlink(tmp, recursive = TRUE), add = TRUE)
+    op <- options(corteza.code_paths = c(tmp),
+                  corteza.personal_paths = character(),
+                  corteza.policy = NULL)
+    on.exit(options(op), add = TRUE)
+
+    ran_of <- function(seen) Filter(function(e) identical(e$outcome, "ran"), seen)[[1]]
+
+    seen <- list()
+    s <- corteza::new_session("cli", approval_cb = function(call, decision) TRUE)
+    corteza::add_observer(s, function(event) seen[[length(seen) + 1L]] <<- event)
+    h <- corteza:::.make_tool_handler(s)
+    h("list_files", list(path = tmp),
+      context = list(assistant_text = "looking at the files", agent_turn = 1L,
+                     call_index = 1L, call_count = 1L, provider = "anthropic"))
+    mc <- ran_of(seen)$call$model_context
+    expect_equal(mc$assistant_text, "looking at the files")
+    expect_equal(mc$call_index, 1L)
+    expect_equal(mc$provider, "anthropic")
+
+    seen2 <- list()
+    s2 <- corteza::new_session("cli", approval_cb = function(call, decision) TRUE)
+    corteza::add_observer(s2, function(event) seen2[[length(seen2) + 1L]] <<- event)
+    h2 <- corteza:::.make_tool_handler(s2)
+    h2("list_files", list(path = tmp))
+    expect_null(ran_of(seen2)$call$model_context)
+})
+
+# Observer error doesn't break tool dispatch.
+local({
+    s <- corteza::new_session("cli",
+                             approval_cb = function(call, decision) TRUE)
+    corteza::add_observer(s, function(event) {
+        stop("boom")
+    })
+
+    tmp <- tempfile("obs-")
+    dir.create(tmp)
+    on.exit(unlink(tmp, recursive = TRUE), add = TRUE)
+
+    op <- options(corteza.personal_paths = character(),
+                  corteza.policy = NULL)
+    on.exit(options(op), add = TRUE)
+
+    h <- corteza:::.make_tool_handler(s)
+    # Should not raise.
+    out <- h("list_files", list(path = tmp))
+    expect_true(is.character(out))
+})
+
+# Multiple observers run in order.
+local({
+    order <- character()
+    s <- corteza::new_session("cli",
+                             approval_cb = function(call, decision) TRUE)
+    corteza::add_observer(s, function(event) order <<- c(order, "a"))
+    corteza::add_observer(s, function(event) order <<- c(order, "b"))
+
+    tmp <- tempfile("obs-")
+    dir.create(tmp)
+    on.exit(unlink(tmp, recursive = TRUE), add = TRUE)
+
+    op <- options(corteza.personal_paths = character(),
+                  corteza.policy = NULL)
+    on.exit(options(op), add = TRUE)
+
+    h <- corteza:::.make_tool_handler(s)
+    h("list_files", list(path = tmp))
+    expect_equal(order, c("a", "b", "a", "b"))
+})

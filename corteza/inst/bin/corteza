@@ -1,0 +1,862 @@
+#!/usr/bin/env Rscript
+#
+# corteza - An open-source interactive CLI agent in R
+#
+# Usage: corteza [options]
+#   --provider   anthropic|openai|moonshot|openai_codex|ollama (default: anthropic)
+#   --model      model name (default: provider-specific)
+#   --port       MCP server port (default: 7850)
+#   --session    Session key (resume if exists, create if not)
+#   --list       List sessions
+#
+
+# Load .Renviron explicitly (littler may not load it automatically)
+renviron <- path.expand("~/.Renviron")
+if (file.exists(renviron)) readRenviron(renviron)
+
+suppressPackageStartupMessages({
+  library(jsonlite)
+  library(llm.api)
+  library(corteza)
+})
+
+# ============================================================================
+# CLI argument parsing
+# ============================================================================
+
+parse_args <- function() {
+  args <- commandArgs(trailingOnly = TRUE)
+
+  # Load config for defaults
+  config <- corteza:::load_config(getwd())
+
+  opts <- list(
+    provider = NULL,  # Only explicit flags override a resumed provider/model
+    model = NULL,
+    base_url = config$base_url,  # openai_compatible endpoint (NULL = unset)
+    port = config$port,
+    tools = config$tools,  # NULL = all tools
+    context_warn_pct = config$context_warn_pct,
+    context_high_pct = config$context_high_pct,
+    context_crit_pct = config$context_crit_pct,
+    context_compact_pct = config$context_compact_pct,  # Auto-compact threshold
+    session = NULL,  # Session key (resume if exists, create if not)
+    resume = FALSE,  # Resume latest session
+    list = FALSE,
+    dry_run = config$dry_run,  # Dry-run mode
+    context_edit = NULL,
+    trace = isTRUE(config$trace) || isTRUE(getOption("corteza.trace", FALSE)),
+    web_search = config$web_search  # Provider-native search (NULL = default on)
+  )
+
+  i <- 1
+  while (i <= length(args)) {
+    arg <- args[i]
+    if (arg == "--provider" && i < length(args)) {
+      opts$provider <- args[i + 1]
+      i <- i + 2
+    } else if (arg == "--model" && i < length(args)) {
+      opts$model <- args[i + 1]
+      i <- i + 2
+    } else if (arg == "--base-url" && i < length(args)) {
+      opts$base_url <- args[i + 1]
+      i <- i + 2
+    } else if (arg == "--port" && i < length(args)) {
+      opts$port <- as.integer(args[i + 1])
+      i <- i + 2
+    } else if ((arg == "--session" || arg == "-s") && i < length(args)) {
+      opts$session <- args[i + 1]
+      i <- i + 2
+    } else if (arg == "--resume" || arg == "-r") {
+      opts$resume <- TRUE
+      i <- i + 1
+    } else if (arg == "--list") {
+      opts$list <- TRUE
+      i <- i + 1
+    } else if (arg == "--tools" && i < length(args)) {
+      opts$tools <- strsplit(args[i + 1], ",")[[1]]
+      i <- i + 2
+    } else if (arg == "--dry-run") {
+      opts$dry_run <- TRUE
+      i <- i + 1
+    } else if (arg == "--context-edit") {
+      opts$context_edit <- TRUE
+      i <- i + 1
+    } else if (arg == "--trace") {
+      opts$trace <- TRUE
+      i <- i + 1
+    } else if (arg == "--web-search") {
+      opts$web_search <- TRUE
+      i <- i + 1
+    } else if (arg == "--no-web-search") {
+      opts$web_search <- FALSE
+      i <- i + 1
+    } else if (arg == "--help" || arg == "-h") {
+      cat("
+corteza - An open-source interactive CLI agent
+
+Usage: corteza [options]
+
+Options:
+  --provider      LLM provider: anthropic, openai, moonshot, openai_codex, ollama, openai_compatible (default: anthropic)
+  --model         Model name (default: auto per provider)
+  --base-url      Endpoint for --provider openai_compatible (OpenRouter, DeepSeek, a gateway).
+                  Also reads config base_url / OPENAI_COMPATIBLE_BASE_URL.
+  --port          MCP server port (default: 7850)
+  --tools         Tool filter: core, file, code, git, r, data, web, chat (default: all)
+                  Example: --tools core or --tools file,git,code
+  --dry-run       Preview tool calls without executing
+  --context-edit  Enable conversation context editing for this session
+  --trace         Print structured tool-call events to stderr
+  --web-search    Provider-native web search, on by default for hosted providers
+  --no-web-search Disable provider-native web search (e.g. to rely on the Tavily tool)
+  --session, -s   Session key (resume if exists, create if not)
+  --resume, -r    Resume the most recent session (including its provider/model)
+  --list          List sessions
+  --help, -h      Show this help
+
+Commands (in chat):
+  /quit, /exit   Exit corteza
+  /context, /status  Session header + context meter (model, dir, tokens by component)
+  /context-edit on|off|status  Control conversation context editing
+  /doctor        Check provider, git, MCP, and context health
+  /tools         List available tools
+  /diff [ref]    Show git diff against HEAD or a ref
+  /review [ref]  Review local changes with the current model
+  /config        Show active runtime configuration
+  /permissions   Show tool approval and sandbox settings
+  /plan [task]   Toggle plan mode (reads only, LLM proposes plan)
+  /auto [--exec] [goal]  Continue the current task unattended, or start a goal
+  /auto status|resume   Inspect or resume the last unattended run
+  /max-tokens [N|default]  Show or change the response output budget
+  /remote-control [--bot ID] [room]  Continue this live session from Matrix
+  /rc [--bot ID] [room]  Alias for /remote-control
+  /clear         Clear conversation (keeps session)
+  /compact       Summarize conversation to free context
+  /paste [text]  Multi-line. Collects every line verbatim until /end.
+  /copy          Copy the last assistant response to the system clipboard.
+  /tasks [clear] Show (or clear) the current task list.
+  /jobs [id]     List delegated jobs (talker mode), or show one.
+  /cancel <id>   Cancel a delegated job.
+  /r <expr>      Eval R locally (skips policy/dryrun); output staged for next prompt.
+  ! <cmd>        Run shell locally (skips policy/dryrun); output staged for next prompt.
+  /sessions      List sessions
+  /model [name]  List models or switch by name/number
+  /effort [level | default]  Show or set reasoning effort
+  /provider <p>  Switch provider
+
+Keys:
+  Ctrl+C         Interrupt the current turn and return to the prompt.
+                 (Esc does nothing here — terminals send a raw ^[ byte,
+                 not a signal. In RStudio's corteza::chat() the split is
+                 reversed: Esc interrupts, Ctrl+C is copy.)
+
+Project context is loaded from saber::briefing() and saber::agent_context().
+Additional files can be loaded via the `context_files` config key.
+
+Config files:
+  tools::R_user_dir('corteza', 'config')/config.json   Global defaults
+  .corteza/config.json                                 Project overrides
+
+")
+      quit(save = "no", status = 0)
+    } else {
+      i <- i + 1
+    }
+  }
+
+  opts
+}
+
+# Read a single line of user input. On Unix we shell out to bash's
+# `read -e` so arrow keys and history work in Rscript contexts where
+# R's own readline() is gimped. On Windows the bash hack breaks under
+# PowerShell / cmd (quote mangling, no TTY through system2), so we
+# fall back to readLines(stdin). Line editing on Windows is handled
+# by the terminal itself.
+cli_read_line <- function(prompt_str = "> ") {
+  corteza:::read_prompt_input(prompt_str, use_readline = FALSE)
+}
+
+# CLI /help text. Injected into run_repl_loop via ctx$help_text so the
+# terminal surface can keep its own phrasing (the command set itself is
+# shared with chat()).
+cli_help_text <- function() {
+  "
+Commands:
+  /remote-control [--bot ID] [room]  Continue this live session from Matrix
+  /rc [--bot ID] [room]  Alias for /remote-control
+  /auto [--exec] [goal]  Continue the current task unattended, or start a goal
+  /auto status|resume   Inspect or resume the last unattended run
+  /max-tokens [N|default]  Show or change the response output budget
+  /quit, /exit   Exit corteza
+  /status        Alias for /context
+  /doctor        Check provider, git, MCP, and context health
+  /tools         List available tools
+  /diff [ref]    Show git diff against HEAD or a ref
+  /review [ref]  Review local changes with the current model
+  /config        Show active runtime configuration
+  /permissions   Show tool approval and sandbox settings
+  /plan [task]   Toggle plan mode (reads only, LLM proposes plan)
+  /clear         Clear conversation (keeps session)
+  /compact       Summarize conversation to free context
+  /flush         Write durable memories from the conversation
+  /paste [text]  Multi-line. Collects every line verbatim until /end.
+  /copy          Copy the last assistant response to the system clipboard.
+  /tasks [clear] Show (or clear) the current task list.
+  /jobs [id]     List delegated jobs (talker mode), or show one.
+  /cancel <id>   Cancel a delegated job.
+  /r <expr>      Eval R locally (skips policy/dryrun); output staged for next prompt.
+  ! <cmd>        Run shell locally (skips policy/dryrun); output staged for next prompt.
+  /sessions      List sessions for this directory
+  /context       Show live context usage and loaded context files
+  /context-edit on|off|status  Control conversation context editing
+  /spent, /cost  Approximate USD spent this run (main-agent turns)
+  /model [name]  List models or switch by name/number
+  /effort [level | default]  Show or set reasoning effort
+  /provider <p>  Switch provider (anthropic, openai, moonshot, openai_codex, ollama, openai_compatible)
+  /dryrun        Toggle dry-run mode (preview tools without executing)
+  /trace [N]     Show last N tool executions (default: 20)
+
+Subagents:
+  /spawn <task>                          Spawn a subagent for task
+  /spawn <task> --model <name>           Spawn with specific model
+  /spawn <task> --preset <name>          investigate (default), work, minimal
+  /spawn <task> --tools <a,b,c>          Explicit tool filter (overrides preset)
+  /agents                                List active subagents
+  /ask <id> <prompt>                     Query a subagent (waits up to 60 s; then /collect)
+  /queue <id> <prompt>                   Fire a query and return; collect later
+  /collect <id>                          Collect a pending reply
+  /kill <id>                             Terminate a subagent
+
+Skills:
+  /skill list                 List installed skills
+  /skill install <path|url>   Install a skill
+  /skill remove <name>        Remove a skill
+  /skill test <path>          Run skill tests
+
+Tool output:
+  /last [N]      Show tool output (1=most recent)
+  /outputs       List recent tool outputs
+  /help          Show this help
+
+"
+}
+
+# ============================================================================
+# Display helpers
+# ============================================================================
+
+# Source of truth for ANSI support + the color palette is the package
+# (R/cli-colors.R). The CLI used to keep its own copies of both, which
+# meant chat() and the CLI could disagree about whether to emit colors
+# (e.g. RStudio's R console is not a tty but does render ANSI). The
+# duplicate is gone; both surfaces now share one decision.
+color <- corteza:::ansi_colors()
+
+print_banner <- function(session_id = NULL, model = NULL,
+                         provider = NULL, tools_count = 0L) {
+  # No leading newline -- the blank line above the banner comes
+  # from the trailing "\n\n" on the "Connected." line. Trailing
+  # "\n\n" after session leaves a blank line before the prompt.
+  cat(corteza:::corteza_startup_banner(
+        version = as.character(utils::packageVersion("corteza")),
+        model = model %||% "(no model)",
+        provider = provider %||% "(no provider)",
+        tools_count = as.integer(tools_count),
+        palette = color
+      ),
+      "\n\n",
+      if (!is.null(session_id)) {
+        sprintf("  %ssession %s%s\n", color$dim, session_id, color$reset)
+      } else {
+        ""
+      },
+      "\n", sep = "")
+}
+
+print_tool <- function(name, args) {
+  # Function-style: tool_name("arg1", "arg2")
+  if (length(args) > 0) {
+    args_str <- paste(sapply(args, function(x) {
+      if (is.character(x)) {
+        s <- if (nchar(x) > 40) paste0(substr(x, 1, 37), "...") else x
+        sprintf('"%s"', s)
+      } else {
+        as.character(x)
+      }
+    }), collapse = ", ")
+    cat(sprintf("%s%s(%s)%s\n", color$dim, name, args_str, color$reset))
+  } else {
+    cat(sprintf("%s%s()%s\n", color$dim, name, color$reset))
+  }
+}
+
+print_result <- function(text) {
+  # Minimal output - just show line count, model will summarize
+  lines <- strsplit(text, "\n")[[1]]
+  n <- length(lines)
+  if (n > 1) {
+    cat(sprintf("%s(%d lines)%s\n", color$dim, n, color$reset))
+  }
+  # Single line results shown inline with tool call
+}
+
+print_response <- function(text) {
+  rendered <- corteza:::render_md_ansi(text, palette = color)
+  cat(sprintf("\n%s%s\n", rendered, color$reset))
+}
+
+# ============================================================================
+# Context tracking
+# ============================================================================
+# Context-budget helpers (estimate_text_tokens, estimate_history_tokens,
+# estimate_tool_tokens, estimate_live_context_tokens, context_limit_for_model,
+# context_usage_pct, format_tokens) live in the corteza package; they're
+# already attached via library(corteza) above and used unprefixed below.
+
+print_context_indicator <- function(used, limit, warn_pct = 75, high_pct = 90, crit_pct = 95) {
+  pct <- (used / limit) * 100
+
+  # Don't show until we hit warning threshold
+  if (pct < warn_pct) return(invisible(NULL))
+
+  used_str <- format_tokens(used)
+  limit_str <- format_tokens(limit)
+
+  # Color based on usage: yellow -> orange -> red
+  if (pct >= crit_pct) {
+    col <- color$bright_red
+    warn <- " (consider /clear)"
+  } else if (pct >= high_pct) {
+    col <- "\033[38;5;208m"  # Orange (256-color)
+    warn <- ""
+  } else {
+    col <- color$yellow
+    warn <- ""
+  }
+
+  cat(sprintf("%s[%s / %s tokens %.0f%%]%s%s\n",
+              col, used_str, limit_str, pct, warn, color$reset))
+}
+
+# ============================================================================
+# Tool output buffer (for /last command)
+# ============================================================================
+
+# Per-session tool output buffer moved to R/tool-buffer.R so the
+# package can key it by sessionId and the chat() surface gets the
+# same behavior. CLI call sites below pass `session` (the persistent
+# session list) instead of the old global-env handle.
+
+# ============================================================================
+# Tool approval system
+# ============================================================================
+
+# requires_approval() lived here in the split-brain era; the unified
+# approval path uses corteza::policy(call, config = ...) + the
+# approval_cb hand-off in corteza::new_session() so this local copy is
+# no longer needed.
+
+# Load approvals from project-local file
+load_approvals <- function(cwd) {
+  path <- file.path(cwd, ".corteza", "approvals.json")
+  if (file.exists(path)) {
+    tryCatch(
+      jsonlite::fromJSON(path, simplifyVector = FALSE),
+      error = function(e) list()
+    )
+  } else {
+    list()
+  }
+}
+
+# Save approval to project-local file
+save_approval <- function(cwd, tool_name) {
+  approvals <- load_approvals(cwd)
+  approvals[[tool_name]] <- TRUE
+
+  path <- file.path(cwd, ".corteza", "approvals.json")
+  dir.create(dirname(path), showWarnings = FALSE, recursive = TRUE)
+  jsonlite::write_json(approvals, path, auto_unbox = TRUE, pretty = TRUE)
+}
+
+# Check if tool is already approved for this project
+is_approved <- function(cwd, tool_name) {
+  approvals <- load_approvals(cwd)
+  isTRUE(approvals[[tool_name]])
+}
+
+# The CLI's memory-flush helper moved into package R code as
+# corteza:::run_memory_flush(ctx) (R/chat-slash.R) so chat() and the
+# CLI share one /flush implementation through run_repl_loop(). The
+# in-process turn() path means it no longer needs a cli_executor.
+
+# Build the approval callback the CLI hands to corteza::new_session().
+# Replaces the historical split-brain setup where corteza::turn() had
+# a no-op approval_cb (`function(...) TRUE`) and the CLI's outer
+# tool_handler ran its own requires_approval / ask_approval / persist
+# pipeline. Now everything routes through policy(config) -> approval_cb
+# so config$permissions ("ask", "allow", "deny") is honored uniformly
+# in chat() and CLI alike, including per-tool overrides like
+# permissions = list(read_file = "ask") or list(bash = "allow").
+#
+# The callback persists "Allow always for this project" choices to
+# .corteza/approvals.json via save_approval(), and short-circuits
+# subsequent prompts via is_approved().
+cli_approval_cb <- function(cwd) {
+  function(call, decision) {
+    name <- call$tool %||% ""
+    if (is_approved(cwd, name)) {
+      return(TRUE)
+    }
+
+    persistent_label <- "Allow always for this project"
+    # Terminal CLI catches Ctrl+C as the interrupt that aborts the
+    # turn -- same outcome as picking Deny. Surface the shortcut so
+    # users don't have to type "3" + Enter.
+    lines <- corteza:::cli_approval_lines(
+      call,
+      decision,
+      cwd = cwd,
+      persistent_label = persistent_label,
+      deny_label = "Deny (Ctrl+C)"
+    )
+    cat(paste(lines, collapse = "\n"), "\n")
+
+    response <- cli_read_line(sprintf("%sChoice: %s",
+                                      color$yellow, color$reset))
+    if (length(response) == 0) response <- ""
+    response <- trimws(response)
+    if (response == "") response <- "1"
+
+    # "Allow always for this project" persists to .corteza/approvals.json
+    # so future runs skip the prompt for this tool.
+    if (response == "2") {
+      save_approval(cwd, name)
+    }
+
+    # Replace the verbose approval block with a one-line `User replied:`
+    # summary. Erase (length(lines) + 1) lines: the approval lines
+    # themselves plus the `Choice: ` prompt line. Gated on ANSI;
+    # when escapes aren't honored we just print the summary below the
+    # prompt instead of erasing.
+    ansi <- nzchar(color$reset)
+    if (ansi) {
+      cat(sprintf("\033[%dF\033[J", length(lines) + 1L))
+    }
+    summary <- corteza:::cli_user_replied_line(
+      call, response,
+      persistent_label = persistent_label,
+      cwd = cwd
+    )
+    cat(sprintf("%s●%s User replied:\n  %s⎿  %s%s\n\n",
+                color$cyan, color$reset,
+                color$dim, summary, color$reset))
+
+    if (response == "3") {
+      stop(corteza:::user_deny_condition(call$tool %||% ""))
+    }
+    response %in% c("1", "2")
+  }
+}
+
+# Construct the CLI's live turn session from the same context bundle used for
+# token accounting and /context provenance. Kept as a separate helper so the
+# actual entrypoint path can be exercised without entering the interactive loop.
+cli_new_turn_session <- function(provider, model, context_bundle, history,
+                                 tools, approval_cb, plan_mode = FALSE,
+                                 web_search = NULL) {
+  session <- corteza::new_session(
+    channel = "cli",
+    provider = provider,
+    model_map = list(
+      cloud = corteza:::resolve_provider_model(provider, model),
+      local = corteza::default_local_model()
+    ),
+    system = context_bundle$system,
+    history = history,
+    tools_filter = tools,
+    approval_cb = approval_cb,
+    max_turns = 50L,
+    plan_mode = isTRUE(plan_mode),
+    web_search = web_search
+  )
+  session$context_manifest <- context_bundle$manifest
+  session$context_prefix_sources <- context_bundle$prefix_sources
+  session$instruction_catalog <- context_bundle$instruction_catalog
+  session
+}
+
+# ============================================================================
+# CLI status helpers
+# ============================================================================
+#
+# The formatters and shell/git utilities that used to live here moved
+# into R/cli-helpers.R so the chat() slash commands can use the same
+# implementations. The CLI calls them via corteza:::*** below. The
+# stubs that remain in this file are just the LLM-driven /compact
+# call and any CLI-specific glue (UI banners, color wrapping).
+
+# ============================================================================
+# Main agent loop
+# ============================================================================
+
+run_agent <- function(opts) {
+  cwd <- getwd()
+  config <- corteza:::load_config(cwd)
+
+  # Handle --list (exit early)
+  if (isTRUE(opts$list)) {
+    sessions <- corteza:::session_list()
+    cat(corteza:::format_session_list(sessions), "\n")
+    return(invisible(NULL))
+  }
+
+  # Handle --resume: find latest session key
+  if (isTRUE(opts$resume) && is.null(opts$session)) {
+    latest <- corteza:::session_latest()
+    if (!is.null(latest)) {
+      opts$session <- latest$sessionKey
+      cat(sprintf("%sResuming latest session: %s%s\n", color$dim, latest$sessionKey, color$reset))
+    } else {
+      cat(sprintf("%sNo sessions to resume. Starting fresh.%s\n", color$dim, color$reset))
+    }
+  }
+
+  # Load or create session
+  session <- NULL
+  ws_enabled <- isTRUE(config$workspace$enabled)
+  route <- corteza:::.session_model_pair(opts$provider, opts$model, config)
+
+  if (!is.null(opts$session)) {
+    # Try to resume session by key, create if not found
+    session <- corteza:::session_load(opts$session)
+    if (is.null(session)) {
+      # Create new session with specified key
+      cat(sprintf("%sCreating session: %s%s\n", color$dim, opts$session, color$reset))
+      session <- corteza:::session_new(route$provider, route$model, cwd, session_key = opts$session)
+    } else {
+      # Resuming existing session
+      cat(sprintf("%sResuming session: %s%s\n", color$dim, opts$session, color$reset))
+      route <- corteza:::.session_model_pair(opts$provider, opts$model,
+                                             config, saved = session)
+      # Restore workspace
+      if (ws_enabled) {
+        loaded <- corteza:::ws_load(session$sessionId)
+        if (loaded) {
+          cat(sprintf("%sWorkspace restored.%s\n", color$dim, color$reset))
+        }
+      }
+    }
+  } else {
+    # No session key specified - create new session
+    session <- corteza:::session_new(route$provider, route$model, cwd)
+    # Scan globalenv for existing objects
+    if (ws_enabled && isTRUE(config$workspace$scan_globalenv)) {
+      registered <- corteza:::ws_scan_globalenv(
+        max_bytes = config$workspace$scan_max_bytes)
+      if (length(registered) > 0) {
+        cat(sprintf("%sWorkspace: registered %d objects%s\n",
+                    color$dim, length(registered), color$reset))
+      }
+    }
+  }
+
+  opts$provider <- session$provider <- route$provider
+  opts$model <- session$model <- route$model
+
+  # Banner is deferred until after provider / model / tool count are
+  # resolved (below) so it can show them. The session id is the only
+  # piece available here.
+
+  # Tools run IN-PROCESS via corteza::turn(); there is no worker
+  # subprocess to spawn or connect for tool execution (CLI/chat
+  # unification, Milestone 2).
+
+  # Register built-in skills, user-installed skills from the data
+  # dir + project's .corteza/skills, and any skill packages declared
+  # in config — matching chat()'s session_setup load order so both
+  # surfaces advertise the same tool set to the LLM. Without the
+  # user-skill loads the CLI tool count drifted below chat()'s.
+  corteza::ensure_skills()
+  corteza:::load_skills(corteza:::corteza_data_path("skills"))
+  corteza:::load_skills(file.path(cwd, ".corteza", "skills"))
+  corteza:::load_skill_packages(config)
+  tools <- corteza::schema_from_registry(opts$tools)
+
+  cat(sprintf("%s%d tools available.%s\n\n",
+              color$dim, length(tools), color$reset))
+
+  # Load skill docs (SKILL.md files)
+  corteza:::load_skill_docs(corteza:::corteza_data_path("skills"))
+  corteza:::load_skill_docs(file.path(cwd, ".corteza", "skills"))
+  # Load context files
+  context_files <- corteza:::list_context_files(cwd)
+  context_bundle <- corteza:::load_context_bundle(
+    cwd,
+    include_instruction_catalog =
+      corteza:::instruction_reader_selected(opts$tools)
+  )
+  system_prompt <- context_bundle$system
+  skill_docs <- vapply(
+    context_bundle$instruction_catalog$entries,
+    function(entry) entry$name,
+    character(1L)
+  )
+
+  if (length(context_files) > 0 || length(skill_docs) > 0) {
+    cat(sprintf("%sLoaded context:%s\n", color$dim, color$reset))
+    for (f in context_files) {
+      cat(sprintf("  %s%s%s\n", color$cyan, basename(f), color$reset))
+    }
+    if (length(skill_docs) > 0) {
+      cat(sprintf("  %s%d skill(s): %s%s\n", color$cyan, length(skill_docs),
+                  paste(skill_docs, collapse = ", "), color$reset))
+    }
+    cat("\n")
+  }
+
+  # `tools` already built in-process above via schema_from_registry().
+
+  # CLI tool-progress observer. Tools now run IN-PROCESS via
+  # corteza::turn()'s default call_skill dispatcher (no tool_executor,
+  # no worker round-trip), so the rich per-call UI the old tool_handler
+  # drew has to live in an observer fired by .make_tool_handler. This
+  # reproduces the previous terminal output: a colored `●` header with
+  # label + preview, indented detail lines, "Running...", then either a
+  # rendered diff or a `⎿ N lines in Xms` summary. The tool_buffer and
+  # trace recording are handled by the separate observers registered
+  # below (tool_buffer_observer + chat_trace_observer), matching chat().
+  cli_progress_observer <- function(event) {
+    event <- event$display %||% event
+    outcome <- event$outcome %||% ""
+    if (identical(outcome, "progress")) {
+      cat("\n", event$result, "\n\n", sep = "")
+      return(invisible(NULL))
+    }
+    name <- event$call$tool %||% ""
+    args <- event$call$args %||% list()
+
+    # The model's running commentary, once per model response and
+    # independent of the approval prompt, so an auto-approved run isn't
+    # silent. cli_commentary_lines() keys once-per-response on the batch's
+    # first call, so cover every event that can be a first call: "start",
+    # "task", and a denied/refused first call ("deny"/"declined", which
+    # fires no "start"). "ran" is excluded so an approved call narrates once.
+    if (outcome %in% c("start", "task", "deny", "declined")) {
+      for (line in corteza:::cli_commentary_lines(event)) {
+        cat(sprintf("\n%s\n", line))
+      }
+    }
+
+    if (identical(outcome, "start")) {
+      preview <- corteza:::cli_tool_preview(name, args)
+      cat(sprintf("\n%s●%s %s", color$cyan, color$reset,
+                  corteza:::cli_tool_label(name)))
+      if (nzchar(preview)) {
+        cat(sprintf("(%s)", preview))
+      }
+      cat("\n")
+      detail_lines <- corteza:::cli_tool_detail_lines(name, args,
+                                                      cwd = cwd, width = 84L)
+      if (length(detail_lines) > 0L) {
+        for (line in detail_lines) {
+          cat(sprintf("  %s%s%s\n", color$dim, line, color$reset))
+        }
+      }
+      cat(sprintf("  %sRunning...%s\n", color$dim, color$reset))
+      return(invisible())
+    }
+
+    if (identical(outcome, "deny") || identical(outcome, "declined")) {
+      cat(sprintf("  %s⎿ %s%s\n", color$bright_magenta,
+                  sub("^\\[", "", sub("\\]$", "", event$result %||% "")),
+                  color$reset))
+      return(invisible())
+    }
+
+    if (!identical(outcome, "ran")) {
+      return(invisible())
+    }
+    for (line in corteza:::cli_result_lines(event)) cat("  ", line, "\n", sep = "")
+
+    if (!isTRUE(event$success)) {
+      cat(sprintf("  %s⎿ failed: %s%s\n", color$bright_magenta,
+                  sub("^Error:\\s*", "", event$result %||% ""), color$reset))
+      return(invisible())
+    }
+
+    # File-edit tools (replace_in_file, write_file) attach a diff
+    # payload alongside the LLM-facing text. Render it inline so the
+    # user sees what changed instead of just a "N lines" summary.
+    if (!is.null(event$diff)) {
+      corteza:::render_tool_diff(event$diff)
+      return(invisible())
+    }
+    text <- event$result %||% ""
+    lines <- length(strsplit(text, "\n")[[1]])
+    cat(sprintf("  %s⎿%s %d line%s in %dms\n",
+                color$dim, color$reset,
+                lines,
+                if (identical(lines, 1L)) "" else "s",
+                round(event$elapsed_ms %||% 0)))
+    invisible()
+  }
+
+  # Conversation state - restore from session
+  provider <- opts$provider
+  model <- opts$model
+
+  # Display model
+  display_model <- corteza:::resolve_provider_model(provider, model)
+
+  print_banner(session_id = session$sessionKey,
+               model = display_model,
+               provider = provider,
+               tools_count = length(tools))
+
+  # Track estimated live context, not cumulative billed API usage.
+  session_tokens <- estimate_live_context_tokens(session, system_prompt, tools)
+  session$tokens <- session_tokens
+  context_limit <- context_limit_for_model(display_model, provider = provider)
+
+  # Show resumed message count
+  if (length(session$messages) > 0) {
+    cat(sprintf("%sResumed session with %d messages.%s\n",
+                color$dim, length(session$messages), color$reset))
+    if (session_tokens > 0) {
+      print_context_indicator(session_tokens, context_limit,
+                              opts$context_warn_pct, opts$context_high_pct, opts$context_crit_pct)
+    }
+  }
+
+  # Build the shared REPL context and hand off to corteza:::run_repl_loop
+  # (R/repl.R) -- the same loop chat() drives. The CLI supplies
+  # terminal-flavored hooks (colored reply renderer, bash-backed input,
+  # CLI help text) but the command set, prompt handling, and tool
+  # execution are shared. Tools run IN-PROCESS via corteza::turn() with
+  # no tool_executor, so model-driven and slash-driven subagents share
+  # one .subagent_registry per CLI session.
+
+  # --dry-run sets config$dry_run so the /dryrun toggle in
+  # run_repl_loop (which flips ctx$session$config$dry_run) stays
+  # coherent. .make_tool_handler reads session$config$dry_run at call
+  # time, matching chat()'s model.
+  config$dry_run <- isTRUE(opts$dry_run)
+
+  # Endpoint for the openai_compatible provider. turn() reads it from
+  # session$config$base_url (via .session_base_url) and applies it with
+  # llm.api::llm_base() for the duration of each agent call. A --base-url
+  # flag overrides the config-file value.
+  config$base_url <- opts$base_url
+
+  # Seed the turn session's live history from the resumed disk session.
+  api_history <- lapply(session$messages %||% list(), function(m) {
+    text <- if (is.list(m$content) && length(m$content) > 0 &&
+                !is.null(m$content[[1]]$text)) {
+      m$content[[1]]$text
+    } else {
+      m$content
+    }
+    list(role = m$role, content = text)
+  })
+
+  # One persistent turn session for the whole CLI run. Approval is
+  # unified through policy(call, config = ...) + cli_approval_cb(cwd).
+  turn_session <- cli_new_turn_session(
+    provider = provider,
+    model = model,
+    context_bundle = context_bundle,
+    history = api_history,
+    tools = opts$tools,
+    approval_cb = cli_approval_cb(cwd),
+    plan_mode = opts$plan_mode,
+    web_search = opts$web_search
+  )
+  turn_session$config <- config
+  turn_session$context_edit <- opts$context_edit
+  turn_session$cwd <- cwd
+  turn_session$sessionId <- session$sessionId
+  turn_session$disk_session <- session
+  turn_session$tasks <- session$tasks %||% list()
+  # task_create's approval prompt routes through cli_read_line so stdin
+  # reads work under the non-interactive Rscript launch.
+  turn_session$task_approval_cb <- function() {
+    ans <- cli_read_line("Approve this plan? [y/n] ")
+    tolower(trimws(ans)) %in% c("", "y", "yes")
+  }
+
+  # Observers: CLI tool-progress UI, the /last + /outputs buffer, and
+  # the trace recorder. chat_trace_observer records trace rows to disk
+  # (drives /trace) and is always on, matching chat().
+  corteza:::add_observer(turn_session, cli_progress_observer)
+  tool_buf_obs <- corteza:::tool_buffer_observer(session)
+  attr(tool_buf_obs, "kind") <- "tool_buffer"
+  corteza:::add_observer(turn_session, tool_buf_obs)
+  corteza:::add_observer(turn_session, corteza:::chat_trace_observer(turn_session))
+
+  # --trace: render structured tool-call events to stderr as they fire.
+  # Tools run in-process, so .cli_render_event pretty-prints each event
+  # straight off the observer.
+  if (isTRUE(opts$trace)) {
+    options(corteza.trace = TRUE)
+    tty_ok <- isTRUE(tryCatch(isatty(stderr()), error = function(e) FALSE)) ||
+      isTRUE(tryCatch(isatty(stdout()), error = function(e) FALSE))
+    trace_pretty <- tty_ok && !nzchar(Sys.getenv("NO_COLOR"))
+    corteza:::add_observer(turn_session, function(event) {
+      if ((event$outcome %||% "") %in% c("start", "ran", "deny", "declined")) {
+        corteza:::.cli_render_event(event, pretty = trace_pretty)
+      }
+    })
+  }
+
+  # Build the ctx env. run_repl_loop reassigns mutable state on it, so
+  # it must be an environment.
+  ctx <- new.env(parent = emptyenv())
+  ctx$session <- turn_session
+  ctx$disk_session <- list(session = session, sessionId = session$sessionId,
+                           resumed = !is.null(opts$session))
+  ctx$config <- config
+  ctx$cwd <- cwd
+  ctx$ws_enabled <- ws_enabled
+  ctx$provider <- provider
+  ctx$model <- model
+  ctx$pending_r_context <- character(0)
+  ctx$last_assistant_response <- ""
+  ctx$read_input <- function(p) cli_read_line(p)
+  ctx$palette <- color
+  ctx$render_reply <- function(txt) print_response(txt)
+  ctx$help_text <- cli_help_text
+  ctx$new_session_fn <- function() {
+    # Read provider/model from ctx (not captured locals): /model and
+    # /provider mutate ctx, so a later /clear must spin up the fresh
+    # session with the current model/provider.
+    fresh <- corteza:::session_new(ctx$provider, ctx$model, cwd)
+    list(session = fresh, sessionId = fresh$sessionId, resumed = FALSE)
+  }
+  ctx$handle_copy <- corteza:::chat_handle_copy
+  ctx$format_tools <- corteza:::chat_format_tools_list
+  # IN-PROCESS turn: no tool_executor. This is the core unification --
+  # one R process, one skill registry, one .subagent_registry.
+  ctx$turn_fn <- function(p, s) corteza::turn(p, s)
+
+  corteza:::run_repl_loop(ctx)
+
+  # Final save (ctx$disk_session$session, not the original local:
+  # /clear reassigns it).
+  corteza:::session_save(ctx$disk_session$session)
+
+  # run_repl_loop already prints the farewell on exit (shared with
+  # chat()); no second goodbye here.
+}
+
+
+# ============================================================================
+# Entry point
+# ============================================================================
+
+if (!interactive()) {
+  opts <- parse_args()
+  run_agent(opts)
+}

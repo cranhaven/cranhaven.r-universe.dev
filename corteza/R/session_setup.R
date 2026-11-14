@@ -1,0 +1,166 @@
+# Shared pre-session setup.
+#
+# Every channel (cli, console, matrix) needs the same configuration,
+# skill loading, and system-prompt assembly before it can run turns.
+# session_setup() does that work once, returning a session environment
+# the channel's loop can drive.
+
+#' Configure and construct a session for any channel
+#'
+#' Performs pre-turn setup common to all channels:
+#'
+#' \enumerate{
+#'   \item Loads project + global corteza config from \code{cwd}.
+#'   \item Resolves provider, model, and verifies the required API
+#'     environment variable is set.
+#'   \item Registers built-in skills and loads user/project skills and
+#'     skill docs from \code{tools::R_user_dir("corteza", "data")/skills}
+#'     and \code{<cwd>/.corteza/skills}.
+#'   \item Loads skill packages declared in the config.
+#'   \item Optionally builds the system prompt and source manifest via
+#'     \code{load_context_bundle(cwd)}.
+#'   \item Returns a \code{new_session()} built from the above.
+#' }
+#'
+#' @param channel Character, one of \code{"cli"}, \code{"console"},
+#'   \code{"matrix"}.
+#' @param cwd Working directory. Defaults to the current directory.
+#' @param provider Character or NULL. LLM provider override. NULL falls
+#'   back to \code{config$provider}, then \code{"anthropic"}.
+#' @param model Character or NULL. Model override. NULL falls back to
+#'   \code{config$model}, then the provider default.
+#' @param tools Character vector, NULL, or the string \code{"all"}.
+#'   Tool filter passed through to \code{get_tools()}. NULL is treated
+#'   as \code{"all"}.
+#' @param system Character or NULL. System prompt. NULL auto-builds via the
+#'   saber-backed context manifest when \code{load_project_context = TRUE},
+#'   otherwise left NULL (channel supplies its own).
+#' @param approval_cb Function or NULL. Approval callback for
+#'   \code{"ask"} verdicts; see \code{\link{new_session}}.
+#' @param history List or NULL. Prior conversation messages to seed
+#'   the session with (each entry a list with \code{role} and
+#'   \code{content}).
+#' @param load_project_context Logical. When TRUE, auto-call
+#'   the saber manifest and rendered system prompt. Channels that supply
+#'   their own system prompt pass FALSE.
+#' @param validate_api_key Logical. When TRUE, error if the provider's
+#'   API key env var is unset or empty.
+#' @param verbose Logical. Passed through to \code{new_session}.
+#' @param max_turns Integer. Passed through to \code{new_session}.
+#'   Defaults to 50, a safety net for interactive channels where a
+#'   multi-step request (read + edit + verify several files) can easily
+#'   exceed the \code{new_session()} default of 10.
+#' @param web_search Logical or NULL. Provider-native web search toggle
+#'   passed through to \code{\link{new_session}}. NULL falls back to
+#'   \code{config$web_search}, then on by default for supported providers.
+#'   The endpoint for the \code{"openai_compatible"} provider is read
+#'   from \code{config$base_url} (falling back to the
+#'   \code{OPENAI_COMPATIBLE_BASE_URL} environment variable); a missing
+#'   endpoint or model errors here rather than at the first request.
+#'
+#' @return A session environment from \code{\link{new_session}}, with an
+#'   extra \code{cwd} field and, for an auto-built system prompt, a
+#'   \code{context_manifest} field.
+#' @examples
+#' \dontrun{
+#' # Requires the relevant provider API key in the environment.
+#' s <- session_setup("cli", provider = "anthropic",
+#'                    load_project_context = FALSE)
+#' s$model
+#' }
+#' @export
+session_setup <- function(channel = c("cli", "console", "matrix"),
+                          cwd = getwd(), provider = NULL, model = NULL,
+                          tools = NULL, system = NULL, approval_cb = NULL,
+                          history = NULL, load_project_context = TRUE,
+                          validate_api_key = TRUE, verbose = FALSE,
+                          max_turns = 50L, web_search = NULL) {
+    channel <- match.arg(channel)
+    cwd <- path.expand(cwd)
+    config <- load_config(cwd)
+
+    provider <- provider %||% config$provider %||% "anthropic"
+    ensure_llm_api_provider(provider)
+    if (is.null(model) &&
+        identical(provider, config$provider %||% "anthropic")) {
+        model <- config$model
+    }
+    web_search <- web_search %||% config$web_search %||% TRUE
+    base_url <- config$base_url
+
+    if (isTRUE(validate_api_key)) {
+        key_var <- switch(provider, anthropic = "ANTHROPIC_API_KEY",
+                          openai = "OPENAI_API_KEY",
+                          moonshot = "MOONSHOT_API_KEY", NULL)
+        if (!is.null(key_var) && nchar(Sys.getenv(key_var, "")) == 0L) {
+            stop(sprintf("%s not set. Add it to ~/.Renviron", key_var),
+                 call. = FALSE)
+        }
+
+        # openai_compatible has no built-in endpoint: it must come from
+        # config$base_url or llm.api's OPENAI_COMPATIBLE_BASE_URL env var.
+        # A keyless gateway is fine (no key check), but a missing endpoint
+        # is not, so fail here with corteza-flavored guidance rather than
+        # at the first request. Model is likewise required and
+        # caller-supplied. Gated with the key check so validate_api_key =
+        # FALSE (build-for-inspection) skips it too.
+        if (identical(provider, "openai_compatible")) {
+            endpoint <- base_url %||% Sys.getenv("OPENAI_COMPATIBLE_BASE_URL", "")
+            if (!nzchar(endpoint %||% "")) {
+                stop("provider \"openai_compatible\" needs an endpoint: set ",
+                     "\"base_url\" in .corteza/config.json or the ",
+                     "OPENAI_COMPATIBLE_BASE_URL environment variable.",
+                     call. = FALSE)
+            }
+            if (is.null(model) || !nzchar(model)) {
+                stop("provider \"openai_compatible\" needs a model: set ",
+                     "\"model\" in .corteza/config.json (the id your gateway ",
+                     "expects, e.g. \"meta-llama/llama-3-70b-instruct\").",
+                     call. = FALSE)
+            }
+        }
+    }
+
+    # Skill registration + user overrides
+    ensure_skills()
+    load_skills(corteza_data_path("skills"))
+    load_skills(file.path(cwd, ".corteza", "skills"))
+    load_skill_docs(corteza_data_path("skills"))
+    load_skill_docs(file.path(cwd, ".corteza", "skills"))
+    load_skill_packages(config)
+    options(corteza.tools = tools)
+
+    context_manifest <- NULL
+    instruction_catalog <- build_instruction_catalog(cwd)
+    if (is.null(system) && isTRUE(load_project_context)) {
+        context_bundle <- load_context_bundle(
+            cwd,
+            instruction_catalog = instruction_catalog,
+            include_instruction_catalog = instruction_reader_selected(tools)
+        )
+        system <- context_bundle$system
+        context_manifest <- context_bundle$manifest
+    }
+
+    session <- new_session(
+                           channel = channel,
+                           history = history,
+                           model_map = list(cloud = model, local = default_local_model()),
+                           provider = provider,
+                           tools_filter = tools,
+                           system = system,
+                           approval_cb = approval_cb,
+                           max_turns = max_turns,
+                           verbose = verbose,
+                           web_search = web_search,
+                           base_url = base_url
+    )
+    session$cwd <- cwd
+    session$config <- config
+    session$instruction_catalog <- instruction_catalog
+    if (!is.null(context_manifest)) {
+        session$context_manifest <- context_manifest
+        session$context_prefix_sources <- context_bundle$prefix_sources
+    }
+    session
+}
