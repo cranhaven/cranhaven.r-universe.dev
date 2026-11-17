@@ -1,0 +1,67 @@
+#' Graph to select m
+#'
+#' This function allows to draw a graph that relates the average efficiency score and the choice of m
+#'
+#' @param output matrix (or vector) of outputs along which the units are evaluated.
+#' @param input matrix (or vector) of inputs along which the units are evaluated.
+#' @param mseries vector containing the different values of m that needed to be tested.
+#' @param B number of bootstrap replicates
+#' @param RTS For more details see the dea function in the package Benchmarking. Text string or a number defining the underlying DEA technology / returns to scale assumption.
+#' 0	fdh	Free disposability hull, no convexity assumption
+#' 1	vrs	Variable returns to scale, convexity and free disposability
+#' 2	drs	Decreasing returns to scale, convexity, down-scaling and free disposability
+#' 3	crs	Constant returns to scale, convexity and free disposability
+#' 4	irs	Increasing returns to scale, (up-scaling, but not down-scaling), convexity and free disposability
+#' 5	irs2	Increasing returns to scale (up-scaling, but not down-scaling), additivity, and free disposability
+#' 6	add	Additivity (scaling up and down, but only with integers), and free disposability; also known af replicability and free disposability, the free disposability and replicability hull (frh) -- no convexity assumption
+#' 7	fdh+	A combination of free disposability and restricted or local constant return to scale
+#' 10	vrs+	As vrs, but with restrictions on the individual lambdas via param
+#' @param ORIENTATION For more details see the dea function in the package Benchmarking. Input efficiency "in" (1), output efficiency "out" (2), and graph efficiency "graph" (3). For use with DIRECT, an additional option is "in-out" (0).
+#' @param print If print = TRUE, the number of the unit under evaluation is printed. In case of large sample the function could require some time, so it could be useful to control how many units have already been evaluated and which one still have to be evaluated. By default print = FALSE.
+#' @examples
+#'  #Example with a very small sample to decrease computational time.
+#'  x1 <-runif(20, 50, 75)
+#'  x2 <-runif(20, 30, 75)
+#'  x <- cbind(x1, x2)
+#'  e <- rnorm(20, 0, 36)
+#'  a1 <- 0.4
+#'  a2 <- 0.6
+#'  y <- a1*x1 + a2*x2 + e
+#'
+#'  graph2_m_DEA(input = x, output = y,  mseries = c(5, 10, 15, 20),
+#'               B = 50, RTS = "crs", ORIENTATION = "in")
+#'
+#' \donttest{
+#'  #An example with a larger sample size.
+#'  x1 <-runif(100, 50, 75)
+#'  x2 <-runif(100, 30, 75)
+#'  x <- cbind(x1, x2)
+#'  y <- cbind(x+runif(100, -10, 0), rnorm(100, 15, 4))
+#'
+#'  graph2_m_DEA(input = x, output = y,
+#'               mseries = c(20, 30, 40, 50, 60, 70, 80), B = 50,
+#'               RTS = "crs", ORIENTATION = "in") }
+#'
+#' @return This function return a plot representing the average score from the robust analysis for the different values of m chosen.
+#'
+#' @export
+
+graph2_m_DEA <- function(input, output, mseries, B,
+                         RTS = "crs", ORIENTATION = "in", print = TRUE) {
+  input <- as.data.frame(input)
+  output <- as.data.frame(output)
+  meff <- rep(0, length(mseries))
+
+  for (m in 1:length(mseries)) {
+    if (print == TRUE) {
+      sprintf("The code is now computing the Robust BOD scores for m = %s", mseries[m])
+    }
+    DEA <- robust_DEA(input, output, m = mseries[m], B, RTS= RTS, ORIENTATION= ORIENTATION)$eff
+    meff[m] <- mean(DEA)
+  }
+
+  plot(x=mseries, y=meff, type = "b", col = "black", lwd = 2,
+       xlab = c("m"),
+       ylab = c("Average DEA"),
+       main = "Average DEA for increasing values of m")
+}
