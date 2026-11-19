@@ -1,0 +1,231 @@
+test_that("Subset download produces expected data", {
+  skip_on_cran()
+  has_account_details()
+  skip_if_offline("data.marine.copernicus.eu")
+  expect_true({
+    data_sub <-
+      cms_download_subset(
+        product       = "GLOBAL_ANALYSISFORECAST_PHY_001_024",
+        layer         = "cmems_mod_glo_phy-cur_anfc_0.083deg_P1D-m",
+        variable      = c("uo"),
+        region        = c(-1, 50, 10, 55),
+        timerange     = c("2025-01-01"),
+        verticalrange = c(0, -.4)
+      ) |>
+      suppressMessages()
+    
+    file_reference <- file.path(tempdir(), "test_data_python.nc")
+    download.file("https://raw.githubusercontent.com/pepijn-devries/CopernicusMarine/refs/heads/master/data-raw/test_data_python.nc",
+                  file_reference, method = "curl", quiet = TRUE)
+    data_reference <- stars::read_ncdf(file_reference) |> suppressMessages()
+    unlink(file_reference)
+    
+    matching_bbox <-
+      abs(as.numeric(
+        sf::st_distance(
+          sf::st_bbox(data_sub) |> sf::st_as_sfc(),
+          sf::st_bbox(data_reference) |> sf::st_as_sfc()
+        )
+      )) < 1e-2
+    
+    dm <- c("longitude", "latitude")
+    matching_dimensions <- all(dim(data_sub)[dm] == dim(data_reference)[dm])
+    matching_values <- all(na.omit(c(data_reference["uo",,,1,1][["uo"]])) ==
+                            na.omit(c(data_sub["uo",,,,][["uo"]])))
+    matching_bbox && matching_dimensions && matching_values
+  })
+})
+
+test_that("Downloaded subset is scaled correctly", {
+  skip_on_cran()
+  has_account_details()
+  skip_if_offline("data.marine.copernicus.eu")
+  expect_true({
+    dat <- cms_download_subset(
+      product       = "GLOBAL_MULTIYEAR_PHY_001_030",
+      layer         = "cmems_mod_glo_phy_my_0.083deg_P1M-m_202311",
+      variable      = "bottomT",
+      region        = c(0, 50, 1, 55),
+      timerange     = c("2020-01-01 UTC", "2025-01-01 UTC"),
+      progress      = FALSE
+    )
+    min(as.numeric(dat[[1]]), na.rm = TRUE) > 3 &&
+      max(as.numeric(dat[[1]]), na.rm = TRUE) < 22
+  })
+})
+
+test_that("Subsetting out of range results in error", {
+  skip_on_cran()
+  has_account_details()
+  skip_if_offline("data.marine.copernicus.eu")
+  expect_error({
+    data_sub <-
+      cms_download_subset(
+        product       = "GLOBAL_ANALYSISFORECAST_PHY_001_024",
+        layer         = "cmems_mod_glo_phy-cur_anfc_0.083deg_P1D-m",
+        variable      = c("uo"),
+        region        = c(-1, 50, 10, 55),
+        timerange     = c("1900-01-01", "1900-01-02"),
+        verticalrange = c(0, -2)
+      ) |>
+      suppressMessages()
+  })
+})
+
+test_that("Subsetting with incorrect layer id throws error", {
+  skip_on_cran()
+  has_account_details()
+  skip_if_offline("data.marine.copernicus.eu")
+  expect_error({
+    data_sub <-
+      cms_download_subset(
+        product       = "GLOBAL_ANALYSISFORECAST_PHY_001_024",
+        layer         = "foobar",
+        variable      = c("uo"),
+        region        = c(-1, 50, 10, 55),
+        timerange     = c("2026-01-01", "2026-01-02"),
+        verticalrange = c(0, -2)
+      ) |>
+      suppressMessages()
+  }, "Layer not found")
+})
+
+test_that("A static map can be downloaded", {
+  skip_on_cran()
+  has_account_details()
+  skip_if_offline("data.marine.copernicus.eu")
+  expect_no_error({
+    cms_download_subset(
+      product       = "GLOBAL_ANALYSISFORECAST_PHY_001_024",
+      layer         = "cmems_mod_glo_phy_anfc_0.083deg_static_202211--ext--coords",
+      variable      = c("e1t"),
+      region        = c(-1, 50, 10, 55)
+    ) |>
+      suppressMessages()
+  })
+})
+
+test_that("Codes are converted correctly to periods", {
+  expect_true({
+    all((lapply(c("PT1H", "PT5H", "P1D", "P1M"), CopernicusMarine:::.code_to_period) |>
+           lapply(as.numeric) |>
+           unlist()) == c(3600, 18000, 86400, 2629800))
+  })
+})
+
+test_that("Unknown time code throws error", {
+  expect_error({
+    CopernicusMarine:::.code_to_period("XXX")
+  })
+})
+
+test_that("A proxy object can be created from zarr", {
+  skip_on_cran()
+  skip_if_offline("data.marine.copernicus.eu")
+  expect_true({
+    myproxy <- cms_zarr_proxy(
+      product       = "GLOBAL_ANALYSISFORECAST_PHY_001_024",
+      layer         = "cmems_mod_glo_phy-cur_anfc_0.083deg_P1D-m",
+      variable      = NULL,
+      asset         = "timeChunked")
+    mystars <- stars::st_as_stars(myproxy["uo",1:200,1:100,50,1])
+    all(dim(mystars) == c(200, 100, 1, 1))
+  })
+})
+
+test_that("Object with a fifth indexing dimension can be subsetted", {
+  skip_on_cran()
+  has_account_details()
+  skip_if_offline("data.marine.copernicus.eu")
+  expect_no_error({
+    cms_download_subset(
+      product   = "MEDSEA_MULTIYEAR_PHY_006_004",
+      layer     = "cmems_mod_med_phy_my_4.2km-climatology_P1M-m",
+      variable  = "bottomT_avg",
+      region    = c(xmin = 3, ymin = 41, xmax = 7, ymax = 44),
+      timerange = c("1993-01-01", "1993-01-31"),
+      progress  = FALSE
+    )
+  })
+})
+
+test_that("Requests beyond available range produces warning", {
+  skip_on_cran()
+  has_account_details()
+  skip_if_offline("data.marine.copernicus.eu")
+  expect_warning({
+    cms_download_subset(
+      product   = "GLOBAL_MULTIYEAR_PHY_001_030",
+      layer     = "cmems_mod_glo_phy_my_0.083deg_P1D-m",
+      variable  = "mlotst",
+      region    = c(179, 10, 220, 30),
+      timerange = c("1993-01-01 UTC", "1993-01-01 UTC"),
+      progress  = FALSE
+    )
+  }, "'longitude' well beyond available range")
+})
+
+test_that("Subsetting time range can handle udunits", {
+  skip_on_cran()
+  has_account_details()
+  skip_if_offline("data.marine.copernicus.eu")
+  expect_no_error({
+    result <- cms_download_subset(
+      product   = "MEDSEA_MULTIYEAR_PHY_006_004",
+      layer     = "cmems_mod_med_phy-tem_my_4.2km_P1Y-m",
+      variable  = "bottomT",
+      region    = c(xmin = 3, ymin = 42.5, xmax = 7, ymax = 44),
+      timerange = c("1998-01-01", "1999-01-01"),
+      progress  = FALSE
+    )
+  })
+})
+
+test_that("Expect no problems with variables with different number of dimensions", {
+  skip_on_cran()
+  has_account_details()
+  skip_if_offline("data.marine.copernicus.eu")
+  expect_true({
+    result <-
+      cms_download_subset(
+        "GLOBAL_ANALYSISFORECAST_PHY_001_024",
+        "cmems_mod_glo_phy_anfc_0.083deg_static_202211--ext--coords",
+        asset = "static",
+        variable = c("e2t", "e3t"),
+        verticalrange = c(-2,  -0.48),
+        region = c(3, 53, 13, 58),
+        progress = FALSE
+      )
+    all(dim(result) == c(121, 61, 3))
+  })
+})
+
+test_that("Subset can be written correctly to ncdf", {
+  skip_on_cran()
+  has_account_details()
+  skip_if_offline("data.marine.copernicus.eu")
+  expect_true({
+    dat <- cms_download_subset(
+      product       = "GLOBAL_MULTIYEAR_PHY_001_030",
+      layer         = "cmems_mod_glo_phy_my_0.083deg_P1M-m_202311",
+      variable      = "bottomT",
+      region        = c(0, 50, 1, 55),
+      timerange     = c("2020-01-01 UTC", "2025-01-01 UTC"),
+      progress      = FALSE)
+    fl <- tempfile(fileext = ".nc")
+    cms_write_ncdf(dat, fl)
+    datnc <- stars::read_mdim(
+      fl,
+      bounds = c(
+        longitude = "longitude_bnds",
+        latitude  = "latitude_bnds")
+      )
+    unlink(fl, force = TRUE)
+    all(
+      stars::st_get_dimension_values(datnc, "time") |>
+        as.POSIXct() ==
+        stars::st_get_dimension_values(dat, "time")
+    ) &&
+      all(is.na(datnc$bottomT) | datnc$bottomT == dat$bottomT)
+  })
+})

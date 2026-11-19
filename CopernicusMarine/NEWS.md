@@ -1,0 +1,198 @@
+CopernicusMarine v0.5.0
+-------------
+
+ * Fix for issue [202](https://github.com/pepijn-devries/CopernicusMarine/issues/202)
+ * Fixed quirk resulting from update in `paws.common`.
+
+CopernicusMarine v0.4.9
+-------------
+
+ * Added `cms_write_ncdf()`
+ * Fix for issue [186](https://github.com/pepijn-devries/CopernicusMarine/issues/186)
+ * Fix for issue [198](https://github.com/pepijn-devries/CopernicusMarine/issues/198)
+ * Improved test coverage
+ * Switched from using `paws` to `paws.storage`,
+   this reduces dependency footprint considerably
+ * Updated documentation
+
+CopernicusMarine v0.4.8
+-------------
+
+ * Moved `paws` dependency from `Imports` to `Suggests`.
+ * Redesigned logo
+ * Updated documentation
+ * Wrapped all examples accessing online resources
+   in `if (interactive()) {}`
+
+CopernicusMarine v0.4.7
+-------------
+
+ * Fixed tests
+ * Updated documentation
+ * Switched from `aws.s3` to `paws` dependency
+ * Promoted previously 'experimental' functions to 'stable'
+ * Updated glossary
+
+CopernicusMarine v0.4.6
+-------------
+
+ * Added `time` and `depth` arguments to `addCmsWMTSTiles()`
+ * Fixed some issues in `addCmsWMTSTiles()`
+ * Added `vignette("glossary")` and `cms_glossary()`
+ * Updated README.md
+ * Added more safeguards to vignette to pass CRAN checks
+ * Added more tests
+ * Fixed [issue 164](https://github.com/pepijn-devries/CopernicusMarine/issues/164)
+
+CopernicusMarine v0.4.5
+-------------
+
+ * Added `vignette("product-info")`
+ * Omitting subset-arguments in `cms_download_subset()` calls is now allowed
+ * Removed deprecated argument 'crop' in `cms_download_subset()`
+ * Added warnings for mismatch between requested and available
+   dimension ranges for `cms_download_subset()`
+ * Fix for [issue 143](https://github.com/pepijn-devries/CopernicusMarine/issues/143)
+ * Added tests
+ * Updated documentation
+
+CopernicusMarine v0.4.4
+-------------
+
+ * Added `vignette("proxy")` and `vignette("blosc")`
+ * In order to pass CRAN checks:
+   * Added safeguards to vignette
+   * Improved handling of comparing floating point numbers
+     when slicing stars_proxy objects
+   * Added more rigorous checking of availability of required dependencies
+ * Added credentials check to all functions downloading
+   from S3 storage.
+
+CopernicusMarine v0.4.0
+-------------
+
+ * `cms_download_subset()` now uses GDAL library with Zarr driver. Advantages:
+   * Simpler code, easier to maintain
+   * Smaller dependency footprint
+ * Added `cms_zarr_proxy()` and `cms_native_proxy()`. Both can create
+   [`stars_proxy` objects](https://r-spatial.github.io/stars/articles/stars2.html#stars-proxy-objects).
+ * Let `httr2` handle request errors, it has become a lot better at it
+
+CopernicusMarine v0.3.7
+-------------
+
+ * Fix for [issue #111](https://github.com/pepijn-devries/CopernicusMarine/issues/111)
+
+CopernicusMarine v0.3.6
+-------------
+
+ * Updated documentation
+ * Small fix to pass CRAN checks
+
+CopernicusMarine v0.3.5
+-------------
+
+ * Updated documentation
+ * Fix for [issue #100](https://github.com/pepijn-devries/CopernicusMarine/issues/100)
+ * Fix for [issue #102](https://github.com/pepijn-devries/CopernicusMarine/issues/102)
+
+CopernicusMarine v0.3.2
+-------------
+
+ * Added `cms_translate()`
+ * Added `vignette("translate")`
+ * Fix in dimensioning of Zarr data
+
+CopernicusMarine v0.3.1
+-------------
+
+ * Added support for sub-setting OMI, and downsampled4
+   assets
+ * Some minor fixes
+ * Moved dependency "blosc" to suggests as
+   per CRAN request
+
+CopernicusMarine v0.3.0
+-------------
+
+ * `cms_download_subset()` is operational again!
+ * Some fixes in native download routines
+ * Improved test coverage
+
+CopernicusMarine v0.2.6
+-------------
+
+ * Decommissioned STAC functions in order to
+   pass pass CRAN checks.
+ * Implemented `cms_list_native_files()` and `csm_download_native()`
+   as alternatives to STAC.
+ * Updated login routine
+ * Improved test coverage
+ * Added code of conduct
+
+CopernicusMarine v0.2.5
+-------------
+
+ * Fix to pass CRAN checks
+
+CopernicusMarine v0.2.4
+-------------
+
+ * Added check workflow
+ * Added code coverage workflow
+ * Removed deprecated functions
+ * Updated documentation
+ * Fix in `addCmsWMTSTiles`
+ * Fix for change in remote API
+ * Fix in login function
+
+CopernicusMarine v0.2.3
+-------------
+
+ * Some fixes in the subset download routine
+ * Additions to documentation
+
+CopernicusMarine v0.2.0
+-------------
+
+ * Added functions for new services (subset, STAC and WMTS)
+ * Added warnings to functions interacting with
+   deprecated Copernicus Marine services.
+ * Added login function
+ * Switched from `httr` to `httr2` dependency
+ * Switch from `magrittr`'s pipe to R's native pipe operator
+
+CopernicusMarine v0.1.1
+-------------
+
+ * Fix to pass CRAN checks
+
+CopernicusMarine v0.1.0
+-------------
+
+ * Fix for migrated Copernicus server
+
+CopernicusMarine v0.0.9
+-------------
+
+  * Updates in order to comply with latest CRAN
+    policies
+  * Bug fix in log-in routine
+
+CopernicusMarine v0.0.6
+-------------
+
+  * Fix in tests in order to comply with CRAN
+    policy
+  * Catch and handle errors and warnings when connecting
+    with internet resources and return gracefully
+  * Update documentation on GDAL utils dependency
+    in WMS functions
+
+CopernicusMarine v0.0.3
+-------------
+
+  * Initial implementation features data imports via:
+    - MOTU service
+    - File Transfer Protocol (FTP)
+    - Web Map Service (WMS)

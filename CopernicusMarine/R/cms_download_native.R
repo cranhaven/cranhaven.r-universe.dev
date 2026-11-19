@@ -1,0 +1,284 @@
+#' @include generics.r
+NULL
+
+#' Navigate Through Copernicus Marine Native File via S3
+#' 
+#' `r lifecycle::badge('experimental')`
+#' Native files (i.e. files as provided by suppliers) are hosted with the
+#' [Amazon Simple Storage Service (s3)](https://aws.amazon.com/s3/).
+#' This function generates a [paws.storage::s3()] object, that can be
+#' used to navigate and download these files.
+#' 
+#' Note that alternative functions in this package provide more
+#' convenient routes:
+#'  * [cms_list_native_files()]
+#'  * [cms_download_native()]
+#'  * [cms_native_proxy()]
+#' @inheritParams paws.storage::s3
+#' @param ... Ignored
+#' @returns Returns a [paws.storage::s3()] object, specifically representing
+#' the service that hosts Copernicus Marine native data.
+#' @examples
+#' if (interactive() && requireNamespace("paws.storage")) {
+#'   my_s3 <- cms_native_s3()
+#'   my_s3$list_objects_v2("mdl-native-14", MaxKeys = 5)
+#' }
+#' @family download
+#' @export
+cms_native_s3 <- function(
+    config      = list(),
+    credentials = list( anonymous = TRUE ),
+    endpoint    = "https://s3.waw3-1.cloudferro.com",
+    region      = "us-east-1",
+    ...) {
+  
+  if (requireNamespace("paws.storage")) {
+    paws.storage::s3(
+      config      = config,
+      credentials = credentials,
+      endpoint    = endpoint,
+      region      = region
+    )
+  } else {
+    # nocov start
+    rlang::abort(c(
+      x = "This function needs package 'paws.storage'",
+      i = "Please install and try again"
+    ))
+    # nocov end
+  }
+}
+
+#' Download Raw Files as Provided to Copernicus Marine
+#' 
+#' `r lifecycle::badge('stable')` Full marine data sets can be downloaded using the functions
+#' documented here. Use `cms_list_native_files()` to list available files, and
+#' `cms_download_native()` to download specific files. Files are usually organised per product,
+#' layer, year, month and day.
+#' @inheritParams cms_download_subset
+#' @param destination Path where to store the downloaded file(s).
+#' @param pattern A regular expression ([regex](https://en.wikipedia.org/wiki/Regular_expression))
+#' pattern. Only paths that match the pattern will be returned. It can be used
+#' to select specific files. For instance if `pattern = "2022/06/"`, only files for the
+#' year 2022 and the month June will be listed (assuming that the file path is structured as such, see
+#' examples)
+#' @param prefix A `character` string. A prefix to be added to the search path of the files.
+#' Only the matching file (info) is downloaded (generally faster then using `pattern`)
+#' @param progress A `logical` value. When `TRUE` a progress bar is shown.
+#' @param max A maximum number of records to be returned.
+#' @param ... Ignored
+#' @returns Returns `NULL` invisibly.
+#' @author Pepijn de Vries
+#' @examples
+#' if (interactive() && requireNamespace("paws.storage")) {
+#'   cms_list_native_files(
+#'     product       = "GLOBAL_ANALYSISFORECAST_PHY_001_024",
+#'     layer         = "cmems_mod_glo_phy_anfc_0.083deg_PT1H-m",
+#'     prefix        = "2022/06/"
+#'   )
+#' 
+#' ## If you omit the prefix, you may want to limit the
+#' ## number of results by setting `max`
+#'   cms_list_native_files(
+#'     product       = "GLOBAL_ANALYSISFORECAST_PHY_001_024",
+#'     layer         = "cmems_mod_glo_phy_anfc_0.083deg_PT1H-m",
+#'     max           = 10
+#'   )
+#'   
+#' ## Prefix can be omitted when not relevant:
+#'   cms_list_native_files(product = "SEALEVEL_GLO_PHY_MDT_008_063")
+#'   
+#' ## Use 'pattern' to download a file for a specific day:
+#'   cms_download_native(
+#'     destination   = tempdir(),
+#'     product       = "GLOBAL_ANALYSISFORECAST_PHY_001_024",
+#'     layer         = "cmems_mod_glo_phy_anfc_0.083deg_PT1H-m",
+#'     prefix        = "2022/06/",
+#'     pattern       = "m_20220630"
+#'   )
+#' }
+#' @rdname cms_download_native
+#' @family download
+#' @export
+cms_download_native <- function(destination, product, layer, pattern, prefix, progress = TRUE, ...,
+                                username = cms_get_username(),
+                                password = cms_get_password()) {
+  if (missing(pattern)) pattern <- ""
+  if (missing(prefix)) prefix <- ""
+  .try_login(username, password)
+  
+  file_list <- cms_list_native_files(product, layer, pattern, prefix)
+  
+  for (i in nrow(file_list)) {
+    path_out <- unlist(strsplit(file_list$Key[[i]], "/"))[-1:-2]
+    file_out <- path_out[length(path_out)]
+    path_out <- do.call(file.path, as.list(utils::head(path_out, -1)))
+    path_out <- file.path(destination, path_out)
+    
+    j <- 0
+    while (!dir.exists(path_out)) {
+      dir.create(path_out, recursive = TRUE)
+      j <- j + 1
+      if (j > 10) stop("Failed to create directory for downloaded file")
+    }
+    con_out <- file(file.path(path_out, file_out), "wb")
+    url <- sprintf("%s/%s/%s", file_list$base_url[[1]], file_list$Bucket[[1]], file_list$Key[[1]])
+    con_in <-
+      httr2::request(url) |>
+      httr2::req_perform_connection()
+    
+    if (progress) cli::cli_inform("Downloading file {i} of {nrow(file_list)}.")
+    if (progress) cli::cli_progress_bar(type = "download", total = as.numeric(file_list$Size))
+    
+    testing_mode <- Sys.getenv("R_COPERNICUS_MARINE_TESTING") == "TRUE"
+    tryCatch({
+      while (TRUE) {
+        chunk <- httr2::resp_stream_raw(con_in)
+        writeBin(chunk, con_out)
+        if (progress) cli::cli_progress_update(length(chunk) |> as.numeric())
+        if (length(chunk) == 0 || testing_mode) break
+      }
+      
+    },
+    error = function(e) {
+      stop(e)
+    },
+    finally = {
+      
+      close(con_in)
+      close(con_out)
+      
+    })
+    if (progress) cli::cli_progress_done()
+  }
+  return (invisible())
+}
+
+#' @rdname cms_download_native
+#' @family product
+#' @export
+cms_list_native_files <- function(product, layer, pattern, prefix, max = Inf, ...) {
+  if (missing(pattern)) pattern <- ""
+  if (missing(layer)) layer <- ""
+  if (missing(prefix)) prefix <- NULL
+  s3_info <- .preprocess_s3(product, layer, "native_href")
+  if (!is.finite(max)) max <- NULL
+  cms_s3 <- cms_native_s3(endpoint = s3_info$endpoint_url)
+  
+  result <- list()
+  token <- NULL
+  repeat {
+    chunk <-
+      cms_s3$list_objects_v2(
+        s3_info$bucket,
+        Prefix  = paste(c(s3_info$path, prefix), collapse = "/"),
+        MaxKeys = max,
+        ContinuationToken = token
+      )
+    
+    result <- c(result, chunk$Contents)
+    token <- chunk$NextContinuationToken
+    if (length(token) == 0 ||
+        length(result) >= ifelse(is.null(max), Inf, max)) break
+  }
+  
+  result |> lapply(function(x) {
+    x[lengths(x) == 1] |> as.data.frame()
+  }) |>
+    dplyr::bind_rows() |>
+    dplyr::filter(grepl(pattern, .data$Key, perl = TRUE)) |>
+    dplyr::mutate(
+      Bucket   = s3_info$bucket,
+      base_url = s3_info$endpoint)
+}
+
+.preprocess_s3 <- function(product, layer, what, ...) {
+  services <-
+    cms_product_services(product)
+  services <-
+    services |>
+    dplyr::filter(startsWith(.data$id, layer))
+  service_url <- services[[what]]
+  service_url <- unlist(service_url)
+  if (length(service_url) > 1) stop("Unexpected multiple URLs")
+  
+  ## regex used in python toolbox to parse url
+  parse_regex <- "^(http|https):\\/\\/([\\w\\-\\.]+)(:[\\d]+)?(\\/.*)"
+  
+  m <- gregexpr(parse_regex, service_url, perl = TRUE)
+  m_start  <- attr(m[[1]], "capture.start")
+  m_length <- attr(m[[1]], "capture.length")
+  fragments <-
+    mapply(function(start, len) {
+      substr(service_url, start, start + len - 1)
+    }, start = m_start, len = m_length)
+  segments <- strsplit(fragments[4], "/") |> unlist()
+  
+  list(
+    endpoint     = fragments[2],
+    endpoint_url = paste(fragments[1], "://", fragments[2], sep = ""),
+    full_path    = fragments[4],
+    bucket       = segments[[2]],
+    path         = segments[-1:-2] |> paste(collapse = "/")
+  )
+  
+}
+
+#' Get a Proxy 'stars' Object from a Native Service
+#' 
+#' `r lifecycle::badge('stable')` The advantage of
+#' [`stars_proxy` objects](https://r-spatial.github.io/stars/articles/stars2.html#stars-proxy-objects),
+#' is that they do not contain any data. They are therefore fast to handle
+#' and consume only limited memory. You can still manipulate the object
+#' lazily (like selecting slices). These operation are only executed when
+#' calling [stars::st_as_stars()] or `plot()` on the object.
+#' 
+#' For more details see `vignette("proxy")`.
+#' @inheritParams cms_download_native
+#' @param variable The variable name for which to create the `stars_proxy`.
+#' If omitted it will include all variables in the layer.
+#' @returns A [`stars_proxy` object](https://r-spatial.github.io/stars/articles/stars2.html#stars-proxy-objects)
+#' @examples
+#' if (interactive() && requireNamespace("paws.storage")) {
+#'   native_proxy <-
+#'     cms_native_proxy(
+#'       product       = "GLOBAL_ANALYSISFORECAST_PHY_001_024",
+#'       layer         = "cmems_mod_glo_phy_anfc_0.083deg_PT1H-m",
+#'       prefix        = "2022/06/",
+#'       pattern       = "20220621"
+#'     )
+#'   plot(native_proxy["zos", 1:1000, 1:500, 1, 1], axes = TRUE)
+#' }
+#' @author Pepijn de Vries
+#' @family download
+#' @export
+cms_native_proxy <- function(product, layer, pattern, prefix, variable, ...,
+                             username = cms_get_username(),
+                             password = cms_get_password()) {
+  if (missing(pattern)) pattern <- ""
+  if (missing(prefix)) prefix <- ""
+  .try_login(username, password)
+  if (missing(variable) || is.null(variable)) variable <- character(0)
+  
+  file_list <- cms_list_native_files(product, layer, pattern, prefix)
+  if (nrow(file_list) > 1)
+    rlang::warn(c(
+      "Arguments match multiple files",
+      i = "Returning the first in the list",
+      i = "Add a specific 'pattern' to reduce the number of matches"
+    ))
+  file_list <- file_list[1,]
+  
+  fmt <- if (grepl("\\.nc$|\\.ncf$|\\.ncdf$|\\.netcdf$|\\.h5$", file_list$Key) &
+             sf::st_drivers("raster", "^HDF5$")$vsi)
+    "HDF5:%s" else "%s"
+  paste0(
+    "https://",
+    file_list$base_url, "/",
+    file_list$Bucket, "/",
+    file_list$Key) |>
+    .uri_to_vsi(FALSE, add_zarr = FALSE, streaming = FALSE) |>
+    sprintf(fmt = fmt) |>
+    .get_stars_proxy(variable)
+  
+}

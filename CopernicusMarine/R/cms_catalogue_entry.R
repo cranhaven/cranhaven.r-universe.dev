@@ -1,0 +1,21 @@
+#' Get Information About Copernicus Marine Clients
+#' 
+#' `r lifecycle::badge('stable')` This function retrieves the client information
+#' from the Copernicus Marine Service.
+#' Among others, it lists where to find the catalogues required by this package
+#' @param ... Ignored
+#' @returns In case of success it returns a named `list` with information about the available
+#' Copernicus Marine clients.
+#' @author Pepijn de Vries
+#' @examples
+#' if (interactive()) {
+#'   cms_get_client_info()
+#' }
+#' @family supporting
+#' @export
+cms_get_client_info <- function(...) {
+  "https://stac.marine.copernicus.eu/clients-config-v1" |>
+    httr2::request() |>
+    httr2::req_perform() |>
+    httr2::resp_body_json()
+}
