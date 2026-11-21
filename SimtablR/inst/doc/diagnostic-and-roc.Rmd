@@ -1,0 +1,174 @@
+---
+title: "diag_test() & roc(): Diagnostic Accuracy and Biomarker Discrimination"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{diag_test() & roc(): Diagnostic Accuracy and Biomarker Discrimination}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  fig.width = 7,
+  fig.height = 4.5
+)
+library(SimtablR)
+data(epitabl)
+has_pROC <- requireNamespace("pROC", quietly = TRUE)
+has_ggplot2 <- requireNamespace("ggplot2", quietly = TRUE)
+```
+
+Diagnostic evaluations in clinical epidemiology assess how accurately an index test identifies the presence or absence of a target condition compared against a gold-standard reference.
+
+In this guide, we follow the acute diagnostic phase of the **ESTROBE-ACS study**. Across six emergency departments, patients presenting with suspected acute coronary syndrome (ACS) were enrolled in a point-of-care (POC) biomarker substudy. We evaluate whether qualitative bedside point-of-care high-sensitivity troponin (`poc_hstn_positive`) or quantitative troponin concentrations (`poc_hstn_value`) can accurately rule out or identify adjudicated ACS (`adjudicated_acs`), adhering to the **STARD 2015** (Standards for Reporting Diagnostic Accuracy Studies) guidelines.
+
+---
+
+## 1. Defining the Diagnostic Cohort
+
+> **Clinical Context & Research Question:** Within the ESTROBE-ACS emergency cohort, how was the point-of-care biomarker substudy sampled, and what are the observed test completion counts?
+
+Before evaluating test performance, clinical investigators must document participant accounting:
+
+```{r diagnostic-sample}
+# Subset participants enrolled in the bedside biomarker substudy
+diagnostic <- subset(epitabl, diagnostic_substudy == "Yes")
+
+c(
+  total_enrolled = nrow(epitabl),
+  substudy_enrolled = nrow(diagnostic),
+  observed_index_tests = sum(!is.na(diagnostic$poc_hstn_positive)),
+  observed_reference_standards = sum(!is.na(diagnostic$adjudicated_acs))
+)
+```
+
+---
+
+## 2. Binary Diagnostic Test Accuracy with `diag_test()`
+
+> What is the clinical accuracy (Sensitivity, Specificity, PPV, NPV, and Likelihood Ratios) of a qualitative bedside troponin test for detecting adjudicated ACS?
+
+`diag_test()` evaluates binary index tests against a reference standard. To ensure clinical transparency, you must explicitly declare which factor levels represent positive status:
+- `positive`: The target condition level in the reference standard (`"Yes"`).
+- `test_positive`: The positive result level in the index test (`"Positive"`).
+
+```{r diag-accuracy}
+accuracy <- diag_test(
+  diagnostic,
+  test = poc_hstn_positive,
+  ref = adjudicated_acs,
+  positive = "Yes",
+  test_positive = "Positive",
+  ci = "exact"
+)
+accuracy
+```
+
+### Key Metrics Computed:
+- **Sensitivity & Specificity:** Probability of a positive test given true disease, and negative test given absence of disease.
+- **PPV & NPV (Predictive Values):** Positive and Negative predictive values calculated at the cohort prevalence.
+- **Positive & Negative Likelihood Ratios ($\text{LR}^+, \text{LR}^-$):** Prevalence-independent measures of diagnostic revision.
+- **Diagnostic Odds Ratio (DOR):** Ratio of odds of positive test in diseased vs non-diseased ($\frac{\text{TP} \times \text{TN}}{\text{FP} \times \text{FN}}$).
+- **Confidence Intervals (`ci`):** Supports exact Clopper-Pearson binomial intervals (`"exact"`) or score-based Wilson intervals (`"wilson"`).
+
+---
+
+### 2.1 Confusion Matrix Visualization
+
+SimtablR provides a fourfold display of the confusion matrix via `plot()`:
+
+```{r diag-plot, fig.alt="Fourfold plot showing true positives, false positives, false negatives, and true negatives"}
+plot(accuracy, main = "Point-of-Care Troponin Confusion Matrix")
+```
+
+The four quadrants represent True Positives, False Positives, False Negatives, and True Negatives, visually scaling cell counts and odds ratios.
+
+---
+
+### 2.2 Tidy Metric Extraction
+
+All underlying metrics, standard errors, and confidence intervals are stored without destructive rounding in `$data` and can be extracted as a tidy data frame:
+
+```{r diag-extract}
+# Extract structured evidence table
+head(as.data.frame(accuracy, tidy = TRUE), 8)
+```
+
+---
+
+## 3. Continuous Biomarker Discrimination with `roc()`
+
+> How well does quantitative bedside troponin concentration discriminate adjudicated ACS across the entire spectrum of decision cutoffs, and what is the optimal threshold by Youden's J index?
+
+When an index marker is measured on a continuous numerical scale (such as `poc_hstn_value` in ng/L), `roc()` computes the Receiver Operating Characteristic curve.
+
+### 3.1 Empirical AUC and DeLong Confidence Intervals
+
+Evaluating the marker without cutpoint hunting provides an unbiased assessment of overall discriminatory capacity:
+
+```{r roc-curve, eval=has_pROC}
+troponin_roc <- roc(
+  diagnostic,
+  marker = poc_hstn_value,
+  outcome = adjudicated_acs,
+  positive = "Yes",
+  cutpoint = "none"
+)
+troponin_roc
+```
+
+The estimated Area Under the Curve (AUC) is reported alongside asymptotic DeLong 95% confidence intervals.
+
+---
+
+### 3.2 Threshold Optimization with Youden's J
+
+In clinical practice, emergency physicians often require a single decision cutoff to trigger admission or discharge. Passing `cutpoint = "youden"` optimizes the trade-off between Sensitivity and Specificity by maximizing Youden's $J = \text{Sensitivity} + \text{Specificity} - 1$:
+
+```{r roc-youden, eval=has_pROC}
+troponin_youden <- roc(
+  diagnostic,
+  marker = poc_hstn_value,
+  outcome = adjudicated_acs,
+  positive = "Yes",
+  cutpoint = "youden"
+)
+troponin_youden
+```
+
+SimtablR automatically displays educational advice reminding analysts that data-derived thresholds exhibit optimistic bias and require external cohort validation before clinical deployment.
+
+---
+
+### 3.3 Publication ROC Plot
+
+SimtablR includes an `autoplot()` method that produces a publication-ready ROC curve:
+
+```{r roc-plot, eval=has_pROC && has_ggplot2, fig.alt="ROC curve displaying sensitivity versus 1 - specificity"}
+ggplot2::autoplot(troponin_roc) +
+  ggplot2::labs(
+    title = "ROC Discrimination: Point-of-Care Troponin",
+    subtitle = "ESTROBE-ACS Diagnostic Substudy"
+  )
+```
+
+---
+
+## 4. Reporting Guidelines: STARD Checklist & Automated Methods
+
+> How do we verify methodological compliance against the STARD 2015 diagnostic checklist and generate publication-ready methods text?
+
+SimtablR facilitates guideline adherence through the `stard()` reporting verb:
+
+```{r stard-check}
+stard_report <- stard(accuracy)
+head(as.data.frame(stard_report), 8)
+```
+
+Furthermore, `as_methods()` translates the exact analytical choices, confidence interval formulas, and software implementations into concise prose ready for manuscript submission:
+
+```{r stard-methods}
+cat(as_methods(accuracy))
+```

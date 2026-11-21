@@ -1,0 +1,253 @@
+---
+title: "simtab Grammar, Reviewer Analyses, and Export: From Protocol to Manuscript"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{simtab Grammar, Reviewer Analyses, and Export: From Protocol to Manuscript}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  fig.width = 7,
+  fig.height = 4.5
+)
+library(SimtablR)
+data(epitabl)
+has_gt <- requireNamespace("gt", quietly = TRUE)
+has_flextable <- requireNamespace("flextable", quietly = TRUE)
+has_office <- has_flextable &&
+  requireNamespace("officer", quietly = TRUE) &&
+  requireNamespace("openxlsx", quietly = TRUE)
+has_ggplot2 <- requireNamespace("ggplot2", quietly = TRUE)
+```
+
+In academic and clinical epidemiology, producing an analysis is only the beginning: investigators must document analysis plans, respond to peer-review critique with sensitivity and bias analyses, reconcile participant flow, and format manuscript-ready tables for scientific journals.
+
+In this guide, we finalize the **ESTROBE-ACS study** for publication. We demonstrate how SimtablR's declarative grammar (`simtab`), composite reporting (`simtablr`), reviewer toolkit (`sensitivity`, `e_value`, `flow`), methodological auditor (`advise`), and multi-format export engines transition research from protocol to publication.
+
+---
+
+## 1. The Declarative SimtablR Grammar
+
+> **Clinical Context & Research Question:** In pre-registered study protocols, how do we define an inert, audit-ready analysis specification before executing calculations, and how does verb closure allow post-hoc refinements?
+
+While direct functions like `table1()` and `tb()` provide quick entry points, the declarative grammar allows you to define, inspect, and modify an analysis plan explicitly before computation.
+
+### 1.1 Building an Inert Specification (`simtab_spec`)
+
+Calling `simtab()` records data references, variables, summary policies, and formatting into an inert `simtab_spec` object without executing statistical tests:
+
+```{r grammar-spec}
+plan <- simtab(epitabl) |>
+  describe(c(age, sex, bmi, renal_impairment)) |>
+  stratify(adjudicated_acs) |>
+  set_summary("auto") |>
+  missingness(display = TRUE) |>
+  overall(TRUE) |>
+  test("auto") |>
+  label(
+    age = "Age (years)",
+    bmi = "Body mass index (kg/m²)"
+  ) |>
+  fmt(d = 1)
+
+# Printing displays the declared plan without computing
+plan
+```
+
+### 1.2 Plan Validation & Evaluation
+
+Before running calculations, `validate()` confirms the plan is internally consistent. Then `evaluate()` computes the numerical evidence:
+
+```{r grammar-eval}
+validate(plan)
+
+baseline_result <- evaluate(plan)
+baseline_result
+```
+
+### 1.3 Verb Closure: Modifying Existing Results
+
+A core design feature of SimtablR is **verb closure**: grammar verbs can be piped directly into computed `simtab_result` objects. SimtablR updates the stored specification and recomputes without mutating the original object:
+
+```{r verb-closure}
+# Add Standardized Mean Differences (SMD) to the computed baseline table
+baseline_smd <- baseline_result |> test(smd = TRUE)
+baseline_smd
+```
+
+---
+
+## 2. Composite Manuscript Reports with `simtablr()`
+
+> How do we assemble a complete epidemiological study report—pairing a descriptive Table 1 (demographics) with an inferential Table 2 (crude and adjusted associations)—in a single call?
+
+Scientific manuscripts standardly report baseline characteristics (Table 1) alongside multivariable associations for the primary exposure (Table 2). `simtablr()` builds this combined report in one call:
+
+```{r simtablr-report}
+report <- simtablr(
+  epitabl,
+  outcome = adjudicated_acs,
+  exposure = renal_impairment,
+  vars = c(age, sex, smoking, hypertension, diabetes, renal_impairment),
+  adjust = c(age, sex, smoking, hypertension),
+  design = "cohort"
+)
+report
+```
+
+You can inspect individual components directly:
+- `report$table1`: Baseline descriptive table.
+- `report$table2`: Bivariate and multivariable association table.
+
+---
+
+## 3. Reviewer Analyses, Sensitivity, and Bias Auditing
+
+> When responding to journal peer reviewers, how do we evaluate sensitivity to alternative scales, quantify resilience to unmeasured confounding via E-values, and account for patient attrition?
+
+During peer review, reviewers frequently request sensitivity tests, bias assessments, and methodological justifications.
+
+### 3.1 Sensitivity Analysis with `sensitivity()`
+
+`sensitivity()` tests how results behave under alternative modeling decisions without overwriting the primary analysis:
+
+```{r sensitivity-demo}
+# Primary association
+primary <- tb(
+  epitabl,
+  renal_impairment,
+  adjudicated_acs,
+  flags = c("row", "rr"),
+  design = "cohort"
+)
+
+# Test sensitivity to odds ratio scale and complete-case denominator
+sens_res <- sensitivity(
+  primary,
+  measure = "OR",
+  denominator = "complete"
+)
+sens_res
+```
+
+### 3.2 Unmeasured Confounding: E-Value Analysis
+
+To evaluate vulnerability to unmeasured confounding, `e_value()` computes the minimum association strength that an unmeasured confounder must have with both the exposure and outcome to explain away the observed estimate:
+
+```{r evalue-demo}
+ev <- e_value(primary)
+ev
+```
+
+### 3.3 Methodological Advice and Decision Audit
+
+SimtablR's advice engine audits analyses against methodological best practices:
+
+```{r advise-audit}
+# Review fired advice entries
+advise(primary)
+
+# Conduct an exhaustive audit of all rules (fired and silent)
+audit_report <- advise(primary, audit = TRUE)
+audit_report
+```
+
+To explain the internal statistical decisions and fallback rules applied during computation:
+
+```{r why-decisions}
+why(primary)
+```
+
+### 3.4 Participant Flow and Flowchart Visualization
+
+Reconcile initial participant enrollment against the analyzed sample using `flow()`:
+
+```{r flow-demo}
+study_flow <- flow(report)
+study_flow
+```
+
+```{r flow-plot, eval=has_ggplot2, fig.alt="Participant flowchart showing study attrition"}
+ggplot2::autoplot(study_flow) +
+  ggplot2::labs(title = "Participant Flow: ESTROBE-ACS Cohort")
+```
+
+### 3.5 Reporting Checklists and Codebooks
+
+To verify reporting compliance against international standards (STROBE for observational studies; STARD for diagnostic accuracy):
+
+```{r strobe-demo}
+strobe_summary <- strobe(report)
+head(as.data.frame(strobe_summary), 6)
+```
+
+Generate a structured data dictionary / codebook:
+
+```{r codebook-demo}
+cb <- codebook(epitabl[, c("age", "sex", "hypertension", "adjudicated_acs")])
+head(cb)
+```
+
+---
+
+## 4. Publication Rendering, Journal Styling, and File Export
+
+> How do we apply target journal formatting (e.g., JAMA, NEJM) and export final tables directly to Microsoft Word (.docx), Excel (.xlsx), and interactive HTML?
+
+SimtablR strictly separates statistical computation from journal presentation. Tables can be styled according to target journal guidelines and exported natively to Office formats.
+
+### 4.1 Journal Presets
+
+Apply journal formatting presets via `style()`:
+
+```{r journal-style}
+# List registered journal presets
+list_journals()
+
+# Apply JAMA styling (formatting, confidence intervals, p-value thresholds)
+jama_table <- style(primary, "jama")
+jama_table
+```
+
+### 4.2 Interactive Tables (`gt`) and Office Tables (`flextable`)
+
+SimtablR outputs directly to `gt` for HTML documents and `flextable` for Microsoft Word / PowerPoint:
+
+```{r table-rendering, eval=has_gt}
+as_gt(report$table2)
+```
+
+```{r flextable-rendering, eval=has_flextable}
+flextable::as_flextable(report$table2)
+```
+
+### 4.3 Native Export to Word and Excel
+
+Export complete tables and composite reports directly to `.docx` or `.xlsx` files:
+
+```{r export-demo, eval=has_office}
+tmp_docx <- tempfile(fileext = ".docx")
+tmp_xlsx <- tempfile(fileext = ".xlsx")
+
+export_docx(report, path = tmp_docx)
+export_xlsx(report, path = tmp_xlsx)
+
+# Verify exported files exist
+file.exists(tmp_docx)
+file.exists(tmp_xlsx)
+
+# Clean up temporary demonstration files
+unlink(c(tmp_docx, tmp_xlsx))
+```
+
+### 4.4 Automated Methodology Prose
+
+Finally, SimtablR automatically composes a reproducible Methods section describing the analytical steps taken:
+
+```{r methods-prose}
+cat(as_methods(report))
+```

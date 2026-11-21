@@ -1,0 +1,196 @@
+---
+title: "regtab() & survtab(): Multivariable Modeling and Longitudinal Outcomes"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{regtab() & survtab(): Multivariable Modeling and Longitudinal Outcomes}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  fig.width = 7,
+  fig.height = 4.5
+)
+library(SimtablR)
+data(epitabl)
+has_survival <- requireNamespace("survival", quietly = TRUE)
+has_logistf <- requireNamespace("logistf", quietly = TRUE)
+has_ggplot2 <- requireNamespace("ggplot2", quietly = TRUE)
+```
+
+Epidemiological modeling requires aligning statistical models with study design, estimands, confounding adjustment, and potential data sparsity.
+
+In this guide, we follow the hospital course and 1-year longitudinal follow-up of the **ESTROBE-ACS study**. We demonstrate how `regtab()` and `survtab()` allow epidemiologists to estimate adjusted odds ratios, robust sandwich standard errors, Firth penalized likelihood for rare clinical conditions, and Cox proportional hazards for time-to-MACE survival.
+
+---
+
+## 1. Study Design & Effect Measure Alignment
+
+> **Clinical Context & Research Question:** In observational cardiovascular research, how does the underlying study design dictate whether the target estimand is a Risk Ratio, Odds Ratio, or Hazard Ratio?
+
+In SimtablR, the study design can be explicitly declared via `design = "cohort"`, `"case_control"`, or `"cross_sectional"`. SimtablR aligns the estimand and advises when a chosen model or measure might deviate from sound epidemiological practice:
+
+- **Prospective Cohort:** Risk Ratio (RR) in binary tables or Hazard Ratio (HR) in time-to-event analysis.
+- **Case-Control:** Odds Ratio (OR).
+- **Cross-Sectional:** Prevalence Ratio (PR).
+
+```{r design-resolution}
+# Declaring cohort design in bivariate analysis resolves to Risk Ratio (RR)
+tb_cohort <- tb(
+  epitabl,
+  renal_impairment,
+  adjudicated_acs,
+  flags = "row",
+  design = "cohort",
+  ref = "No"
+)
+tb_cohort
+```
+
+---
+
+## 2. Multivariable GLMs with `regtab()`
+
+> After adjusting for age, sex, smoking, hypertension, and diabetes, does renal impairment remain independently associated with confirmed acute coronary syndrome?
+
+`regtab()` fits generalized linear models for binary, continuous, or count outcomes over a shared predictor formula.
+
+### 2.1 Logistic Regression & Robust Sandwich Covariance
+
+For binary endpoints, logistic regression yields adjusted Odds Ratios (ORs):
+
+```{r logistic-regtab}
+fit_logistic <- regtab(
+  epitabl,
+  outcomes = "adjudicated_acs",
+  predictors = ~ age + sex + smoking + hypertension + diabetes + renal_impairment,
+  family = stats::binomial("logit"),
+  robust = TRUE,
+  predictor_labels = c(
+    smokingCurrent = "Current Smoker",
+    hypertensionYes = "Hypertension",
+    diabetesYes = "Diabetes Mellitus",
+    renal_impairmentYes = "Renal Impairment"
+  )
+)
+fit_logistic
+```
+
+#### Robust Standard Errors:
+By default, `regtab()` applies HC0 heteroscedasticity-consistent standard errors (`robust = TRUE`). You can request small-sample corrected estimators such as `robust = "HC3"` or classical model-based variance with `robust = FALSE`.
+
+---
+
+### 2.2 Multi-Outcome Regression
+
+> **Clinical Context & Research Question:** Does baseline renal impairment confer similar adjusted risks for acute ACS presentation as it does for 1-year hospital readmission?
+
+In multi-morbidity studies, the same predictor set is frequently evaluated against multiple clinical outcomes. `regtab()` fits all models concurrently and presents a consolidated table:
+
+```{r multi-outcome-regtab}
+fit_multi <- regtab(
+  epitabl,
+  outcomes = c("adjudicated_acs", "rehospitalized"),
+  predictors = ~ age + sex + renal_impairment,
+  family = stats::binomial("logit"),
+  robust = TRUE,
+  labels = c(
+    adjudicated_acs = "Acute Coronary Syndrome",
+    rehospitalized = "1-Year Readmission"
+  )
+)
+fit_multi
+```
+
+---
+
+### 2.3 Model Extraction & Multicollinearity Diagnostics
+
+`regtab()` objects implement standard broom generics for downstream inspection:
+
+```{r model-extract}
+# Broom-style tidy coefficients
+head(generics::tidy(fit_logistic), 5)
+
+# Model-level statistics including Generalized Variance Inflation Factors (GVIF)
+generics::glance(fit_logistic, vif = TRUE)
+```
+
+---
+
+## 3. Sparse Data & Firth Penalized Likelihood Regression
+
+>In patients presenting with acute symptoms who are on maintenance dialysis (a rare clinical condition with small event counts), how do we avoid infinite odds ratios caused by sparse-data separation?
+
+When outcomes or exposures are rare, classical maximum likelihood estimation can suffer from quasi-complete separation or small-sample bias, producing unstable Wald confidence intervals or infinite point estimates.
+
+`regtab()` supports Firth's penalized likelihood method via `method = "firth"` (powered by `logistf`):
+
+```{r firth-regtab, eval=has_logistf}
+fit_firth <- regtab(
+  epitabl,
+  outcomes = "adjudicated_acs",
+  predictors = ~ age + sex + dialysis,
+  family = stats::binomial("logit"),
+  method = "firth"
+)
+fit_firth
+```
+
+Firth's penalized likelihood adds a Jeffreys prior penalty to the score equations, constructing reliable profile-penalized likelihood confidence bounds.
+
+---
+
+## 4. Time-to-Event Survival Analysis with `survtab()`
+
+> Over 365 days of follow-up after the index emergency visit, which baseline clinical factors independently predict the hazard of Major Adverse Cardiovascular Events (MACE)?
+
+When follow-up time varies and participants are subject to right-censoring, `survtab()` fits Cox proportional hazards models. In `epitabl`, participants were followed for MACE (`mace_event`) over `mace_time_days`:
+
+```{r survtab-cox, eval=has_survival}
+fit_cox <- survtab(
+  epitabl,
+  time = mace_time_days,
+  event = mace_event,
+  predictors = ~ age + sex + renal_impairment + hypertension + smoking,
+  design = "cohort"
+)
+fit_cox
+```
+
+---
+
+### 4.1 Proportional Hazards Diagnostics & Advisory Audit
+
+`survtab()` integrates with SimtablR's advice engine to audit proportional hazards assumptions:
+
+```{r cox-advise, eval=has_survival}
+# Inspect model fit and Schoenfeld residual diagnostics
+generics::glance(fit_cox)
+
+# Review methodological audit rules
+advise(fit_cox, audit = TRUE)
+```
+
+---
+
+### 4.2 Forest Plot Visualization & Methods Generation
+
+`survtab()` results can be visualized directly with `autoplot()`:
+
+```{r cox-plot, eval=has_survival && has_ggplot2, fig.alt="Forest plot displaying adjusted hazard ratios and 95% confidence intervals"}
+ggplot2::autoplot(fit_cox) +
+  ggplot2::labs(
+    title = "Adjusted Hazard Ratios for 365-Day MACE",
+    subtitle = "ESTROBE-ACS Prospective Cohort"
+  )
+```
+
+Finally, `as_methods()` produces publication-ready text describing the Cox modeling strategy:
+
+```{r cox-methods, eval=has_survival}
+cat(as_methods(fit_cox))
+```
