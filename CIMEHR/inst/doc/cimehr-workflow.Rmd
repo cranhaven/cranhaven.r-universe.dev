@@ -1,0 +1,488 @@
+---
+title: "From EHR visit records to fitted biomarker trajectories"
+output:
+  rmarkdown::html_vignette:
+    toc: true
+vignette: >
+  %\VignetteIndexEntry{From EHR visit records to fitted biomarker trajectories}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(collapse = TRUE, comment = "#>",
+                      fig.width = 7, fig.height = 4, warning = TRUE)
+```
+
+This workflow starts with a participant roster and a separate table of clinic
+visits. It fits the four CIMEHR variants, inspects their estimation stages, and
+constructs baseline and population mean curves using simulated data with
+1,000 participants. The generating parameters and random seed
+are stored in `cimehr_example$truth`. `Y` is a simulated continuous outcome in
+arbitrary units, not a clinical laboratory measurement. See `?cimehr_example`
+for the generating equations and parameter values.
+
+CIMEHR distinguishes a clinic visit from recording a particular biomarker at
+that visit. The roster must include eligible participants without visits, and
+the visit table must include visits at which this biomarker was not recorded.
+A table containing only observed biomarker values cannot reconstruct that
+information.
+
+## 1. Prepare the participant and visit data
+
+```{r load-data}
+library(CIMEHR)
+data("cimehr_example", package = "CIMEHR")
+participants <- cimehr_example$participants
+visits <- cimehr_example$visits
+truth <- cimehr_example$truth
+cimehr_example$truth[c("seed", "n")]
+head(participants)
+head(visits)
+```
+
+The participant table contains one row per eligible participant. `C` is their
+end of follow-up in months; it is 60 for every participant in these data.
+`Z` is a binary exposure and `X` is a continuous baseline covariate. The visit
+table contains actual clinic visits only: `R = 0` means that the visit occurred
+but the biomarker is missing.
+
+The supplied `Z` is already numeric. The following round trip illustrates how
+to encode an exposure stored as a factor without changing its original 0/1
+values. `Reference` is the reference group. For a factor with more levels,
+retain the non-intercept columns from `model.matrix()` and use the same coding
+for prediction profiles.
+
+```{r prepare-data}
+stopifnot(!anyDuplicated(participants$id),
+          all(visits$id %in% participants$id),
+          all(participants$Z %in% c(0, 1)))
+original_Z <- participants$Z
+participants$group <- factor(participants$Z, levels = c(0, 1),
+                             labels = c("Reference", "Exposed"))
+group_matrix <- model.matrix(~ group, data = participants)
+participants$Z <- unname(group_matrix[, "groupExposed"])
+stopifnot(all(participants$Z == original_Z))
+
+analysis_data <- merge(participants, visits, by = "id", all.x = TRUE,
+                       sort = FALSE)
+analysis_data <- analysis_data[order(analysis_data$id, analysis_data$time,
+                                    na.last = TRUE), ]
+rownames(analysis_data) <- NULL
+
+no_visit <- is.na(analysis_data$time)
+stopifnot(all(is.na(analysis_data$R[no_visit])),
+          all(is.na(analysis_data$Y[no_visit])),
+          all(analysis_data$R[!no_visit] %in% c(0, 1)))
+measured <- !no_visit & analysis_data$R == 1
+unmeasured_visit <- !no_visit & analysis_data$R == 0
+stopifnot(all(is.finite(analysis_data$Y[measured])),
+          all(is.na(analysis_data$Y[unmeasured_visit])))
+
+sample_counts <- data.frame(
+  eligible_participants = nrow(participants),
+  participants_with_visits = length(unique(visits$id)),
+  participants_with_measurements = length(unique(analysis_data$id[measured])),
+  clinic_visits = nrow(visits),
+  recorded_measurements = sum(measured)
+)
+sample_counts
+```
+
+Do not replace an unrecorded biomarker by zero. The missing outcome and its
+recording indicator have different roles. Participants without visits contribute
+to the visiting-process risk sets; actual visits contribute recording indicators;
+recorded biomarker values contribute to the outcome equation. Here follow-up
+starts at zero, and visiting risk sets are `(0, C]`. For delayed entry, supply
+an additional participant-level entry-time column through `entry_col`.
+
+The simulation follows the CIMEHR shared-latent-variable construction.
+A standard normal shared variable drives lognormal visiting frailty and the
+conditional means of the recording and outcome random effects. Their residual
+random effects are generated independently conditional on that shared variable
+and the baseline covariates. Follow-up ends at 60 months for every participant.
+The common outcome baseline is $-2 + 0.1t$, with fixed coefficients
+$\beta_Z=-0.5$ and $\beta_X=0.5$. The reproducible generator is installed at
+`system.file("examples", "simulate_example.R", package = "CIMEHR")`.
+
+## 2. State the designs and fit the four variants
+
+The example uses `Z` and `X` in all three fixed-effects designs. Both the
+recording and outcome random-effects designs contain an intercept and `Z`.
+The intercepts are supplied by CIMEHR: do not add a constant fixed-effect column
+to the visiting or outcome design. The population exposure contrast is constant
+over time in these data; the random coefficient of `Z` describes individual
+heterogeneity and is not a fixed exposure-by-time interaction.
+
+All covariate sets and the follow-up column are specified explicitly, so the
+model does not depend on differences between wrapper defaults. `CIMEHR()` uses
+native argument names, whereas `fit_method()` supplies a shared interface across
+methods; this workflow consistently uses `fit_method()`.
+
+```{r fit-models}
+method_keys <- c("cimehr", "cimehr_hl", "cimehr_spline", "cimehr_spline_hl")
+method_labels <- setNames(c("CIMEHR", "CIMEHR-HL", "CIMEHR-spline",
+                            "CIMEHR-spline-HL"), method_keys)
+model_arguments <- list(
+  data = analysis_data,
+  id = "id", time = "time", outcome = "Y",
+  obs_indicator = "R", censor_col = "C",
+  visit_covs = c("Z", "X"),
+  cimehr_visit_covs = c("Z", "X"),
+  obs_fixed_covs = c("Z", "X"),
+  long_covs = c("Z", "X"),
+  outcome_random_covs = "Z", obs_random_covs = "Z",
+  outcome_random_intercept = TRUE
+)
+
+fits <- setNames(lapply(method_keys, function(key) {
+  do.call(fit_method, c(list(method = key), model_arguments))
+}), method_keys)
+```
+
+CIMEHR uses the ordinary Laplace posterior approximation; CIMEHR-HL uses
+higher-order corrected posterior moments. The spline versions replace the
+unspecified common outcome baseline by a regression spline. They are different
+estimation choices, so their finite-sample estimates need not be identical.
+Higher-order approximation does not guarantee smaller bias for every dataset.
+The spline fits use the package default of five baseline spline degrees of
+freedom, with knot locations determined from the observed visit times.
+To model a time-varying exposure contrast in a spline fit, specify
+`trajectory_covars = "Z"` and its spline settings deliberately; that changes
+the fixed mean design and the interpretation of `beta.Z`. It is not the fixed
+effect used to generate these data, so this workflow leaves it off.
+
+## 3. Inspect estimates and uncertainty by stage
+
+```{r outcome-results}
+outcome_results <- do.call(rbind, lapply(names(fits), function(key) {
+  tab <- summary_outcome(fits[[key]])
+  theta0 <- if ("theta.Intercept" %in% tab$parameter)
+    "theta.Intercept" else "theta.(Intercept)"
+  at <- match(c("beta.Z", "beta.X", theta0, "theta.Z"), tab$parameter)
+  stopifnot(!anyNA(at))
+  tab <- tab[at, ]
+  data.frame(
+    method = unname(method_labels[key]),
+    parameter = c("beta_Z", "beta_X", "theta_0", "theta_Z"),
+    truth = as.numeric(c(truth$beta[c("Z", "X")], truth$theta[c("b0", "bZ")])),
+    estimate = tab$estimate, se = tab$se, lower = tab$lower, upper = tab$upper,
+    inference_valid = tab$inference_valid, row.names = NULL
+  )
+}))
+outcome_display <- data.frame(
+  Method = outcome_results$method, Parameter = outcome_results$parameter,
+  Truth = outcome_results$truth, Estimate = outcome_results$estimate,
+  SE = outcome_results$se,
+  `95% CI` = sprintf("(%.4f, %.4f)", outcome_results$lower,
+                    outcome_results$upper), check.names = FALSE
+)
+knitr::kable(outcome_display, digits = 4, row.names = FALSE,
+             caption = paste("Outcome fixed-effect and shared-loading estimates.",
+                             "SEs and 95% CIs use the fitted stacked covariance."))
+```
+
+Here `beta.Z` is the adjusted mean biomarker difference comparing `Z = 1`
+with `Z = 0`, and `beta.X` is the adjusted difference per unit increase in `X`.
+The `theta_0` and `theta_Z` rows are population loading parameters in
+$E(b_i\mid U_i)=\theta U_i$; they are not estimated patient-specific random
+effects. The fixed-effect coefficients describe associations under the fitted
+model, not causal effects. Because the example outcome was not log-transformed,
+these coefficients and the curves below are in the same arbitrary outcome units.
+For an analysis fitted to a log-transformed outcome, the returned mean curves
+remain on the log scale; simply exponentiating them does not produce an
+arithmetic mean on the original scale.
+
+Inspect the nuisance stages separately, rather than treating every coefficient
+returned by `coef()` as an outcome association.
+
+```{r stage-results}
+all_stage_results <- do.call(rbind, lapply(names(fits), function(key) {
+  do.call(rbind, lapply(c("visiting", "observation", "outcome"), function(stage) {
+    tab <- switch(stage,
+      visiting = summary_visiting(fits[[key]]),
+      observation = summary_observation(fits[[key]]),
+      outcome = summary_outcome(fits[[key]]))
+    data.frame(method = unname(method_labels[key]), stage = stage,
+      tab[, c("parameter", "estimate", "se", "lower", "upper",
+              "inference_valid", "inference_status")], row.names = NULL)
+  }))
+}))
+summary_visiting(fits[["cimehr"]])
+summary_observation(fits[["cimehr"]])
+confint(fits[["cimehr"]])
+```
+
+The default `inference = "stacked"` propagates the available identifiable
+visiting-, recording-, and outcome-stage uncertainty, including their
+cross-stage covariance. At a selected variance boundary its scope can be
+conditional on that branch or face. `ci_available` means that numerical limits
+are present; read `inference_status`, `inference_scope`, and `inference_reason`
+as well. A conditional interval is not a guarantee of coverage after selecting
+the boundary model. Descriptive weak-identification warnings do not erase
+computed intervals, and do not certify those intervals as reliable under weak
+identification. Confirmed fitting or covariance failures are reported separately.
+
+```{r inspect-diagnostics}
+fit <- fits[["cimehr"]]
+outcome_diagnostics <- summary_outcome(fit)
+outcome_diagnostics[, c("parameter", "ci_available", "inference_valid",
+                        "inference_status", "inference_reason")]
+fit$diagnostics$warnings
+```
+
+## 4. Construct baseline and population trajectories
+
+`meanfit()` returns a curve object; calling `plot()` on that object does not
+refit the model. By default no bootstrap is run and no curve intervals are
+computed. The same commands work for each of the four fitted variants.
+
+```{r point-curves}
+time_grid <- seq(0, 60, length.out = 121L)
+profiles <- data.frame(Z = c(0, 1), X = c(0, 0))
+profiles
+
+baseline_curves <- lapply(fits, meanfit, type = "baseline", times = time_grid)
+profile_curves <- lapply(fits, meanfit, newdata = profiles, times = time_grid)
+head(as.data.frame(baseline_curves[["cimehr"]]))
+head(as.data.frame(profile_curves[["cimehr"]]))
+```
+
+The baseline curve is the common mean for the zero fixed-covariate profile
+(`Z = 0`, `X = 0`). The population trajectories average random effects to
+their model population mean and compare the two supplied profiles, rather than
+predicting particular patients' random effects. With `newdata`, each row defines
+one curve. The legend's profile numbers correspond to the rows shown above.
+
+```{r plot-profiles, fig.width=7, fig.height=4}
+plot(profile_curves[["cimehr"]], xlab = "Months since baseline",
+     ylab = "Population mean biomarker (arbitrary units)")
+```
+
+
+Ordinary CIMEHR recovers the baseline by local smoothing of compensated
+increments; spline fits evaluate their fitted basis directly. For local recovery,
+`bandwidth` is in the time units of the fit. Sparse regions can have unavailable
+curve points. Changing the bandwidth changes this post-estimation smoothing,
+not the original fitted coefficients. Do not extrapolate beyond the stored
+follow-up range.
+
+To average over a common participant population, supply its profiles explicitly.
+This also makes the target population clear when comparing methods that retain
+different participant subsets.
+
+```{r standardized-curve}
+reference_profiles <- participants[, c("Z", "X")]
+standardized <- meanfit(fits[["cimehr"]], newdata = reference_profiles,
+                        aggregate = TRUE, times = time_grid)
+head(summary(standardized))
+```
+
+## 5. Request pointwise 95% intervals explicitly
+
+For the spline fits, the joint coefficient covariance includes the baseline
+spline uncertainty, so `se.fit = TRUE` can give analytical pointwise intervals.
+Ordinary CIMEHR coefficient SEs alone do not include recovered-baseline
+uncertainty; use the participant bootstrap for its curve intervals.
+
+```{r spline-intervals}
+spline_intervals <- meanfit(fits[["cimehr_spline"]], newdata = profiles,
+                            times = time_grid, se.fit = TRUE, conf.int = .95)
+head(summary(spline_intervals))
+```
+
+The bootstrap is opt-in. The following calls request it explicitly for each
+method and curve type. Its default is `B = 50L`; the variable below shows where
+to change the number of resamples. Each resample draws whole participants,
+including zero-visit participants, and refits all three stages. Cached nuisance
+fits are not reused.
+
+For the population figure, the target is an equal mixture of `Z = 0` and
+`Z = 1`, both at `X = 0`. This differs from averaging over the empirical
+participant distribution above. Its generating mean is $-2.25+0.1t$; the common
+baseline is $-2+0.1t$. The grid spans months 0 to 60 at 121 points. The
+local-smoothing bandwidth is 12 months for ordinary CIMEHR and CIMEHR-HL;
+spline methods evaluate their fitted basis directly.
+
+```{r bootstrap-intervals, eval = FALSE}
+B <- 50L
+bootstrap_seed <- 20261014L
+profile_weights <- c(.5, .5)
+population_intercept <- truth$baseline_intercept +
+  sum(profile_weights * (truth$beta["Z"] * profiles$Z +
+                         truth$beta["X"] * profiles$X))
+bootstrap_curves <- list()
+curve_rows <- list()
+bootstrap_rows <- list()
+for (key in names(fits)) {
+  for (type in c("baseline", "population")) {
+    args <- list(object = fits[[key]], type = type, times = time_grid,
+                 bandwidth = 12, bootstrap = TRUE, B = B,
+                 seed = bootstrap_seed, workers = 1L, conf.int = .95)
+    if (type == "population") {
+      args$newdata <- profiles
+      args$aggregate <- TRUE
+      args$weights <- profile_weights
+    }
+    curve <- do.call(meanfit, args)
+    name <- paste(key, type)
+    bootstrap_curves[[name]] <- curve
+    tab <- as.data.frame(curve)
+    tab$method <- unname(method_labels[key])
+    tab$type <- type
+    intercept <- if (type == "baseline") truth$baseline_intercept else
+      population_intercept
+    tab$truth <- intercept + truth$baseline_slope * tab$time
+    curve_rows[[name]] <- tab
+    bootstrap_rows[[name]] <- data.frame(
+      method = unname(method_labels[key]), type = type, B = B,
+      successful = curve$bootstrap$successful_fits, n_points = nrow(tab),
+      min_n_boot = min(tab$n_boot),
+      max_absolute_curve_error = max(abs(tab$fit - tab$truth)),
+      all_finite_CI = all(is.finite(tab$lower) & is.finite(tab$upper))
+    )
+  }
+}
+curve_results <- do.call(rbind, curve_rows)
+curve_results$method <- factor(curve_results$method,
+                               levels = unname(method_labels))
+bootstrap_summary <- do.call(rbind, bootstrap_rows)
+```
+
+The bootstrap above refits every stage 50 times for each method and curve
+type, which takes several minutes, so it is not rerun when this vignette is
+built. The results below were produced by exactly that code and are installed
+with the package:
+
+```{r load-bootstrap-results}
+results_directory <- system.file("examples", "results", package = "CIMEHR")
+curve_results <- read.csv(file.path(results_directory,
+                                    "baseline_population_curves.csv"))
+curve_results$method <- factor(curve_results$method,
+                               levels = unname(method_labels))
+bootstrap_summary <- read.csv(file.path(results_directory,
+                                        "bootstrap_summary.csv"))
+```
+
+The curve SE is the sample standard deviation of finite bootstrap estimates,
+not that standard deviation divided by the square root of `B`. Intervals use
+the original fitted curve plus or minus the normal critical value times this
+SE. They quantify pointwise uncertainty in the fitted mean, not prediction
+intervals for future individual biomarker values.
+
+Inspect the number of usable bootstrap estimates at each time. Failed attempts
+are recorded and are not replaced by new samples. Use more resamples when
+stable final interval estimates are required. A parent analytical-covariance
+failure alone does not invalidate full-refit bootstrap variability; the parent
+point fit must still be valid, and the bootstrap has its own assumptions and
+diagnostics.
+
+```{r bootstrap-diagnostics}
+knitr::kable(bootstrap_summary[, c("method", "type", "B", "successful",
+                                  "n_points", "min_n_boot", "all_finite_CI")],
+             row.names = FALSE,
+             col.names = c("Method", "Curve", "Resamples", "Successful fits",
+                           "Time points", "Minimum usable resamples",
+                           "Finite intervals"))
+```
+
+The next two figures use these bootstrap results. Purple lines and
+ribbons show estimates and pointwise 95% confidence intervals; black dashed
+lines show the generating means. The same plotting function gives each method
+its own panel and keeps both curve types on a common display scale.
+
+```{r comparison-plot-function}
+library(ggplot2)
+comparison_plot <- function(type) {
+  tab <- curve_results[curve_results$type == type, ]
+  ggplot(tab, aes(x = time)) +
+    geom_ribbon(aes(ymin = lower, ymax = upper), fill = "#7B3294", alpha = .17) +
+    geom_line(aes(y = fit, colour = "Estimate", linetype = "Estimate"),
+              linewidth = .85) +
+    geom_line(aes(y = truth, colour = "True curve", linetype = "True curve"),
+              linewidth = .7) +
+    facet_wrap(~ method, ncol = 2) +
+    scale_colour_manual(values = c("Estimate" = "#7B3294",
+                                   "True curve" = "#111111"), name = NULL) +
+    scale_linetype_manual(values = c("Estimate" = "solid",
+                                     "True curve" = "22"), name = NULL) +
+    scale_x_continuous(breaks = seq(0, 60, by = 12),
+                       expand = expansion(mult = c(.02, .02))) +
+    scale_y_continuous(breaks = seq(-2, 4, by = 1)) +
+    labs(x = "Months since baseline",
+         y = if (type == "baseline") "Baseline mean outcome" else
+           "Population-average mean outcome") +
+    theme_classic(base_size = 12, base_family = "sans") +
+    theme(legend.position = "right", legend.key.width = grid::unit(1, "cm"),
+          strip.background = element_blank(),
+          strip.text = element_text(size = 12, face = "bold"),
+          panel.spacing = grid::unit(1.2, "lines"),
+          plot.margin = margin(10, 10, 10, 10))
+}
+baseline_figure <- comparison_plot("baseline")
+population_figure <- comparison_plot("population")
+```
+
+```{r baseline-comparison, fig.width=9.4, fig.height=6.3, fig.cap="Baseline mean estimates with pointwise 95% participant-bootstrap confidence intervals. All four methods use 50 resamples, with every stage re-estimated in each resample. The black dashed curve is the generating baseline mean."}
+baseline_figure
+```
+
+```{r population-comparison, fig.width=9.4, fig.height=6.3, fig.cap="Population mean trajectories with pointwise 95% participant-bootstrap confidence intervals. Each curve averages Z = 0 and Z = 1 equally at X = 0. All four methods use 50 resamples, with every stage re-estimated in each resample. The black dashed curve is the generating population mean."}
+population_figure
+```
+
+The native interface remains available: for example,
+`plot(bootstrap_curves[["cimehr population"]])` draws one fitted curve object.
+Set `conf.int = FALSE` in `plot()` to hide stored intervals without refitting.
+Change `conf.int` in `meanfit()` to request another confidence level. The
+bootstrap interface is also available for the supported Liang and EHRJoint
+methods.
+
+## 6. Locate the included results or export your own
+
+The package includes PDFs of the two comparison figures and CSV tables, as well
+as the code used above. These are available after installation without rerunning
+the fits or bootstrap:
+
+```{r installed-results}
+results_directory <- system.file("examples", "results", package = "CIMEHR")
+list.files(results_directory)
+system.file("examples", "cimehr_workflow.R", package = "CIMEHR")
+```
+
+`all_stage_results` contains the complete visiting, observation, and outcome
+parameter table calculated above. `outcome_results` is its 16-row fixed-effect
+and shared-loading comparison. `curve_results` contains the unrounded fitted
+curves, SEs, intervals, and generating means used in the figures.
+
+The function below exports these newly calculated results only when called with
+an explicit destination. Running the workflow does not automatically write
+result files in the working directory.
+
+```{r export-results}
+export_results <- function(directory) {
+  stopifnot(is.character(directory), length(directory) == 1L,
+            !is.na(directory), nzchar(directory))
+  dir.create(directory, recursive = TRUE, showWarnings = FALSE)
+  if (!dir.exists(directory)) stop("The output directory could not be created.")
+  write.csv(outcome_results, file.path(directory, "outcome_estimates.csv"),
+             row.names = FALSE)
+  write.csv(all_stage_results, file.path(directory, "all_stage_estimates.csv"),
+             row.names = FALSE)
+  write.csv(curve_results, file.path(directory, "baseline_population_curves.csv"),
+             row.names = FALSE)
+  write.csv(bootstrap_summary, file.path(directory, "bootstrap_summary.csv"),
+             row.names = FALSE)
+  ggsave(file.path(directory, "baseline_95CI.pdf"), plot = baseline_figure,
+         width = 9.4, height = 6.3, device = grDevices::pdf, useDingbats = FALSE)
+  ggsave(file.path(directory, "population_trajectory_95CI.pdf"),
+         plot = population_figure, width = 9.4, height = 6.3,
+         device = grDevices::pdf, useDingbats = FALSE)
+  invisible(list.files(directory, full.names = TRUE))
+}
+```
+
+For example, call `export_results("~/CIMEHR_results")` after running the script
+to save the regenerated files in that directory. See `?CIMEHR`,
+`?CIMEHR_spline`, `?summary_outcome`, and `?meanfit` for the full argument
+definitions and the scope of each inference option.
