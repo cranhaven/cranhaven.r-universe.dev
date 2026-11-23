@@ -1,0 +1,35 @@
+#' CoDaLoMic
+#'
+#' This package contain functions to model compositional and longitudinal microbiome datasets. This package contains the functions needed to execute the models published in the articles:
+#' \itemize{
+#'   \item Creus-Martí, I., Moya, A., Santonja, F. J. (2018), A Statistical Model with a Lotka-Volterra Structure for Microbiota Data, Lucas Jodar, Juan Carlos Cortes and Luis Acedo,  Modelling for engineering and human behavior 2018, Instituto Universitario de Matematica Multidisciplinar, ISBN: 978-84-09-07541-6.
+#'   \item Creus-Martí, I., Moya, A., Santonja, F. J. (2021). A Dirichlet autoregressive model for the analysis of microbiota time-series data. Complexity, 2021, 1-16.
+#'   \item Creus-Martí, I., Moya, A., Santonja, F. J. (2022). Bayesian hierarchical compositional models for analysing longitudinal abundance data from microbiome studies. Complexity, 2022.
+#' }
+#'In addition, the package contains one real dataset extracted from:
+#'\itemize{
+#'   \item Marín-Miret, J., Pérez-Cobas, A. E., Domínguez-Santos, R., Pérez-Rocher, B., Latorre, A., & Moya, A. (2024). Adaptability of the gut microbiota of the German cockroach Blattella germanica to a periodic antibiotic treatment. Microbiological Research, 287, 127863.
+#'   }
+#'
+#'
+#' We refer to the model described in Creus-Martí (2018) as Dirich-gLV, we refer to the model described in Creus-Martí (2021) as FBM and we refer to the model described in Creus-Martí (2022) as BPBM.
+#'
+#'
+#' @section  Access to Additional Files:
+#' This package includes files in the directory `inst/extdata`.  Users can access these files using `system.file()`. The following files are available:
+#' \itemize{
+#'   \item \code{README.pdf}, \code{README.Rmd}, \code{README.R}: Basic instructions for using the package.
+#'   \item \code{1-s2.0-S0944501324002647-mmc6.xlsx}: Original cockroach dataset extracted from Marín-Miret et al (2024).
+#'   \item  \code{Simulated.R}: Code use to obtain the Simulated dataset.
+#'   \item \code{cockroach.R}: Code use to obtain the cockroach dataset.
+#' }
+#'
+#'  To access these files, use:
+#' \code{base::system.file("extdata", "filename", package = "CoDaLoMic")}
+#'
+#' For instance:
+#'\code{base::system.file("extdata", "README.pdf", package = "CoDaLoMic")}
+#'
+#'On Windows, the PDF can be opened as follows:
+#'\code{base::shell.exec(system.file("extdata", "README.pdf", package = "CoDaLoMic"))}
+"_PACKAGE"
