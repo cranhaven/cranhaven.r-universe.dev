@@ -1,0 +1,601 @@
+test_data <- tibble(
+  text = c(
+    "I would not eat them here or there.",
+    "I would not eat them anywhere.",
+    "I would not eat green eggs and ham.",
+    "I do not like them, Sam-I-am."
+  )
+)
+
+rec <- recipe(~., data = test_data)
+
+test_that("step_tfidf works as intended", {
+  rec <- rec |>
+    step_tokenize(text) |>
+    step_tfidf(text)
+
+  obj <- rec |>
+    prep()
+
+  rec_answer <- unname(as.data.frame(bake(obj, new_data = NULL)))
+
+  manual_answer <- unname(
+    data.frame(
+      am = c(0 / 8, 0 / 6, 0 / 8, 1 / 8) * log(1 + 4 / 1),
+      and = c(0 / 8, 0 / 6, 1 / 8, 0 / 8) * log(1 + 4 / 1),
+      anywhere = c(0 / 8, 1 / 6, 0 / 8, 0 / 8) * log(1 + 4 / 1),
+      do = c(0 / 8, 0 / 6, 0 / 8, 1 / 8) * log(1 + 4 / 1),
+      eat = c(1 / 8, 1 / 6, 1 / 8, 0 / 8) * log(1 + 4 / 3),
+      eggs = c(0 / 8, 0 / 6, 1 / 8, 0 / 8) * log(1 + 4 / 1),
+      green = c(0 / 8, 0 / 6, 1 / 8, 0 / 8) * log(1 + 4 / 1),
+      ham = c(0 / 8, 0 / 6, 1 / 8, 0 / 8) * log(1 + 4 / 1),
+      here = c(1 / 8, 0 / 6, 0 / 8, 0 / 8) * log(1 + 4 / 1),
+      i = c(1 / 8, 1 / 6, 1 / 8, 2 / 8) * log(1 + 4 / 4),
+      like = c(0 / 8, 0 / 6, 0 / 8, 1 / 8) * log(1 + 4 / 1),
+      not = c(1 / 8, 1 / 6, 1 / 8, 1 / 8) * log(1 + 4 / 4),
+      or = c(1 / 8, 0 / 6, 0 / 8, 0 / 8) * log(1 + 4 / 1),
+      sam = c(0 / 8, 0 / 6, 0 / 8, 1 / 8) * log(1 + 4 / 1),
+      them = c(1 / 8, 1 / 6, 0 / 8, 1 / 8) * log(1 + 4 / 3),
+      there = c(1 / 8, 0 / 6, 0 / 8, 0 / 8) * log(1 + 4 / 1),
+      would = c(1 / 8, 1 / 6, 1 / 8, 0 / 8) * log(1 + 4 / 3)
+    )
+  )
+
+  expect_equal(
+    as.matrix(rec_answer),
+    as.matrix(manual_answer)
+  )
+
+  expect_equal(dim(tidy(rec, 2)), c(1, 4))
+  expect_equal(dim(tidy(obj, 2)), c(17, 4))
+})
+
+test_that("step_tfidf() with sublinear_tf applies the transform to raw counts, not normalized values (#317)", {
+  # https://github.com/tidymodels/textrecipes/issues/317
+  # sublinear_tf must be applied to raw term counts BEFORE normalization,
+  # otherwise 1 + log(fraction) can go negative, which is mathematically
+  # impossible for standard sublinear TF-IDF.
+  sublinear_data <- tibble(
+    text = c(
+      "a a a a a a a b",
+      "a b b b b b b b"
+    )
+  )
+
+  rec <- recipe(~text, data = sublinear_data) |>
+    step_tokenize(text) |>
+    step_tfidf(text, sublinear_tf = TRUE, norm = "l1")
+
+  obj <- rec |> prep()
+
+  rec_answer <- unname(as.data.frame(bake(obj, new_data = NULL)))
+
+  # idf = log(1 + n_docs / df); both "a" and "b" appear in both documents
+  idf <- log(1 + 2 / 2)
+
+  # sublinear tf applied to RAW counts first: 1 + log(raw_count)
+  # doc 1: a = 7, b = 1 -> sub_tf = 1 + log(7), 1 + log(1)
+  # doc 2: a = 1, b = 7 -> sub_tf = 1 + log(1), 1 + log(7)
+  # then l1-normalize the sublinear-scaled row, then multiply by idf
+  doc1_sub <- c(a = 1 + log(7), b = 1 + log(1))
+  doc2_sub <- c(a = 1 + log(1), b = 1 + log(7))
+
+  manual_answer <- unname(
+    data.frame(
+      a = c(doc1_sub["a"] / sum(doc1_sub), doc2_sub["a"] / sum(doc2_sub)) * idf,
+      b = c(doc1_sub["b"] / sum(doc1_sub), doc2_sub["b"] / sum(doc2_sub)) * idf
+    )
+  )
+
+  expect_equal(
+    as.matrix(rec_answer),
+    as.matrix(manual_answer)
+  )
+
+  # doc 1, term "a": (1 + log(7)) / (1 + log(7) + 1 + log(1)) * log(2)
+  expect_equal(rec_answer[[1]][1], (1 + log(7)) / (1 + log(7) + 1) * log(2))
+
+  expect_true(all(rec_answer[[1]] >= 0))
+  expect_true(all(rec_answer[[2]] >= 0))
+
+  # Also check on a more realistic corpus that all sublinear_tf values stay
+  # non-negative, regardless of norm.
+  for (norm_type in c("l1", "l2", "none")) {
+    realistic_answer <- recipe(~text, data = test_data) |>
+      step_tokenize(text) |>
+      step_tfidf(text, sublinear_tf = TRUE, norm = norm_type) |>
+      prep() |>
+      bake(new_data = NULL)
+
+    realistic_answer <- realistic_answer[
+      vapply(realistic_answer, is.numeric, logical(1))
+    ]
+
+    expect_true(all(as.matrix(realistic_answer) >= 0))
+  }
+})
+
+test_that("step_tfidf works with vocabulary argument", {
+  rec <- rec |>
+    step_tokenize(text) |>
+    step_tfidf(text, vocabulary = letters)
+
+  obj <- rec |>
+    prep()
+
+  expect_length(
+    bake(obj, new_data = NULL),
+    26
+  )
+})
+
+test_that("check_name() is used", {
+  dat <- test_data
+  dat$tfidf_text_i <- dat$text
+
+  rec <- recipe(~., data = dat) |>
+    step_tokenize(text) |>
+    step_tfidf(text)
+
+  expect_snapshot(
+    error = TRUE,
+    prep(rec, training = dat)
+  )
+})
+
+test_that("idf valeus are trained on training data and applied on test data", {
+  data <- tibble(text = c("i g", "i i i"))
+
+  rec <- recipe(~text, data) |>
+    step_tokenize(text) |>
+    step_tfidf(text) |>
+    prep()
+
+  expect_equal(
+    bake(rec, data |> slice(1)),
+    bake(rec, data) |> slice(1)
+  )
+
+  expect_equal(
+    rec$steps[[2]]$res[[1]],
+    c(g = log(1 + 2 / 1), i = log(1 + 2 / 2))
+  )
+})
+
+test_that("Backwards compatibility with 1592690d36581fc5f4952da3e9b02351b31f1a2e", {
+  # Test that recipes trained with version <= 0.5.0 keep previous behavoir and
+  # throw warning about the data leakage.
+
+  data <- tibble(text = c("i g", "i i i"))
+
+  rec <- recipe(~text, data) |>
+    step_tokenize(text) |>
+    step_tfidf(text) |>
+    prep()
+
+  rec$steps[[2]]$res <- list(c("g", "i"))
+
+  expect_snapshot(
+    expect_equal(
+      bake(rec, data) |> slice(1),
+      tibble(
+        tfidf_text_g = log(1 + 2 / 1) / 2,
+        tfidf_text_i = log(1 + 2 / 2) / 2
+      )
+    )
+  )
+
+  expect_snapshot(
+    expect_equal(
+      bake(rec, data |> slice(1)),
+      tibble(
+        tfidf_text_g = log(1 + 2 / 2) / 2,
+        tfidf_text_i = log(1 + 2 / 2) / 2
+      )
+    )
+  )
+})
+
+test_that("bad args", {
+  expect_snapshot(
+    error = TRUE,
+    recipe(~., data = mtcars) |>
+      step_tfidf(vocabulary = 1:10) |>
+      prep()
+  )
+  expect_snapshot(
+    error = TRUE,
+    recipe(~., data = mtcars) |>
+      step_tfidf(smooth_idf = "yes") |>
+      prep()
+  )
+  expect_snapshot(
+    error = TRUE,
+    recipe(~., data = mtcars) |>
+      step_tfidf(norm = "yes") |>
+      prep()
+  )
+  expect_snapshot(
+    error = TRUE,
+    recipe(~., data = mtcars) |>
+      step_tfidf(sublinear_tf = "yes") |>
+      prep()
+  )
+  expect_snapshot(
+    error = TRUE,
+    recipe(~., data = mtcars) |>
+      step_tfidf(prefix = NULL) |>
+      prep()
+  )
+})
+
+test_that("sparse = 'yes' works", {
+  rec <- recipe(~., data = test_data)
+
+  dense <- rec |>
+    step_tokenize(text) |>
+    step_tfidf(text, norm = "l1", sparse = "no") |>
+    prep() |>
+    bake(NULL)
+  sparse <- rec |>
+    step_tokenize(text) |>
+    step_tfidf(text, norm = "l1", sparse = "yes") |>
+    prep() |>
+    bake(NULL)
+
+  expect_identical(dense, sparse)
+
+  expect_false(any(vapply(dense, sparsevctrs::is_sparse_double, logical(1))))
+  expect_true(all(vapply(sparse, sparsevctrs::is_sparse_double, logical(1))))
+
+  dense <- rec |>
+    step_tokenize(text) |>
+    step_tfidf(text, norm = "l2", sparse = "no") |>
+    prep() |>
+    bake(NULL)
+  sparse <- rec |>
+    step_tokenize(text) |>
+    step_tfidf(text, norm = "l2", sparse = "yes") |>
+    prep() |>
+    bake(NULL)
+
+  expect_identical(dense, sparse)
+
+  expect_false(any(vapply(dense, sparsevctrs::is_sparse_double, logical(1))))
+  expect_true(all(vapply(sparse, sparsevctrs::is_sparse_double, logical(1))))
+
+  dense <- rec |>
+    step_tokenize(text) |>
+    step_tfidf(text, norm = "none", sparse = "no") |>
+    prep() |>
+    bake(NULL)
+  sparse <- rec |>
+    step_tokenize(text) |>
+    step_tfidf(text, norm = "none", sparse = "yes") |>
+    prep() |>
+    bake(NULL)
+
+  expect_identical(dense, sparse)
+
+  expect_false(any(vapply(dense, sparsevctrs::is_sparse_double, logical(1))))
+  expect_true(all(vapply(sparse, sparsevctrs::is_sparse_double, logical(1))))
+
+  dense <- rec |>
+    step_tokenize(text) |>
+    step_tfidf(text, sublinear_tf = TRUE, sparse = "no") |>
+    prep() |>
+    bake(NULL)
+  sparse <- rec |>
+    step_tokenize(text) |>
+    step_tfidf(text, sublinear_tf = TRUE, sparse = "yes") |>
+    prep() |>
+    bake(NULL)
+
+  expect_identical(dense, sparse)
+
+  expect_false(any(vapply(dense, sparsevctrs::is_sparse_double, logical(1))))
+  expect_true(all(vapply(sparse, sparsevctrs::is_sparse_double, logical(1))))
+})
+
+test_that("sparse argument is backwards compatible", {
+  rec <- recipe(~., data = test_data) |>
+    step_tokenize(text) |>
+    step_tfidf(text, sparse = "no") |>
+    prep()
+
+  exp <- bake(rec, test_data)
+
+  # Simulate old recipe
+  rec$steps[[1]]$sparse <- NULL
+
+  expect_identical(
+    bake(rec, test_data),
+    exp
+  )
+})
+
+test_that(".recipes_toggle_sparse_args works", {
+  rec <- recipe(~., data = test_data) |>
+    step_tokenize(text) |>
+    step_tfidf(text, sparse = "auto")
+
+  exp <- rec |> prep() |> bake(NULL) |> sparsevctrs::sparsity()
+
+  expect_true(.recipes_estimate_sparsity(rec) >= exp)
+})
+
+# Infrastructure ---------------------------------------------------------------
+
+test_that("bake method errors when needed non-standard role columns are missing", {
+  tokenized_test_data <- recipe(~text, data = test_data) |>
+    step_tokenize(text) |>
+    prep() |>
+    bake(new_data = NULL)
+
+  rec <- recipe(tokenized_test_data) |>
+    update_role(text, new_role = "predictor") |>
+    step_tfidf(text) |>
+    update_role(text, new_role = "potato") |>
+    update_role_requirements(role = "potato", bake = FALSE)
+
+  trained <- prep(rec, training = tokenized_test_data, verbose = FALSE)
+
+  expect_snapshot(
+    error = TRUE,
+    bake(trained, new_data = tokenized_test_data[, -1])
+  )
+})
+
+test_that("empty printing", {
+  rec <- recipe(mpg ~ ., mtcars)
+  rec <- step_tfidf(rec)
+
+  expect_snapshot(rec)
+
+  rec <- prep(rec, mtcars)
+
+  expect_snapshot(rec)
+})
+
+test_that("empty selection prep/bake is a no-op", {
+  rec1 <- recipe(mpg ~ ., mtcars)
+  rec2 <- step_tfidf(rec1)
+
+  rec1 <- prep(rec1, mtcars)
+  rec2 <- prep(rec2, mtcars)
+
+  baked1 <- bake(rec1, mtcars)
+  baked2 <- bake(rec2, mtcars)
+
+  expect_identical(baked1, baked1)
+})
+
+test_that("empty selection tidy method works", {
+  rec <- recipe(mpg ~ ., mtcars)
+  rec <- step_tfidf(rec)
+
+  expect <- tibble(
+    terms = character(),
+    token = character(),
+    weight = double(),
+    id = character()
+  )
+
+  expect_identical(tidy(rec, number = 1), expect)
+
+  rec <- prep(rec, mtcars)
+
+  expect_identical(tidy(rec, number = 1), expect)
+})
+
+test_that("keep_original_cols works", {
+  new_names <- c(
+    "tfidf_text_am",
+    "tfidf_text_and",
+    "tfidf_text_anywhere",
+    "tfidf_text_do",
+    "tfidf_text_eat",
+    "tfidf_text_eggs",
+    "tfidf_text_green",
+    "tfidf_text_ham",
+    "tfidf_text_here",
+    "tfidf_text_i",
+    "tfidf_text_like",
+    "tfidf_text_not",
+    "tfidf_text_or",
+    "tfidf_text_sam",
+    "tfidf_text_them",
+    "tfidf_text_there",
+    "tfidf_text_would"
+  )
+
+  rec <- recipe(~text, data = test_data) |>
+    step_tokenize(text) |>
+    step_tfidf(text, keep_original_cols = FALSE)
+
+  rec <- prep(rec)
+  res <- bake(rec, new_data = NULL)
+
+  expect_equal(
+    colnames(res),
+    new_names
+  )
+
+  rec <- recipe(~text, data = test_data) |>
+    step_tokenize(text) |>
+    step_tfidf(text, keep_original_cols = TRUE)
+
+  rec <- prep(rec)
+  res <- bake(rec, new_data = NULL)
+
+  expect_equal(
+    colnames(res),
+    c("text", new_names)
+  )
+})
+
+test_that("keep_original_cols - can prep recipes with it missing", {
+  rec <- recipe(~text, data = test_data) |>
+    step_tokenize(text) |>
+    step_tfidf(text)
+
+  rec$steps[[2]]$keep_original_cols <- NULL
+
+  expect_snapshot(
+    rec <- prep(rec)
+  )
+
+  expect_no_error(
+    bake(rec, new_data = test_data)
+  )
+})
+
+test_that("printing", {
+  rec <- rec |>
+    step_tokenize(text) |>
+    step_tfidf(text)
+
+  expect_snapshot(print(rec))
+  expect_snapshot(prep(rec))
+})
+
+test_that("0 and 1 rows data work in bake method", {
+  data <- tibble(
+    text = c(
+      "I would not eat them here or there.",
+      "I would not eat them anywhere.",
+      "I do not like them, Sam-I-am."
+    )
+  )
+  rec <- recipe(~text, data = data) |>
+    step_tokenize(text) |>
+    step_tfidf(text) |>
+    prep()
+
+  expect_identical(nrow(bake(rec, dplyr::slice(data, 1))), 1L)
+  expect_identical(nrow(bake(rec, dplyr::slice(data, 0))), 0L)
+})
+
+# Value-level tests (#328) -----------------------------------------------------
+
+# Counts, with vocabulary a, b, c, d:
+#   "a b a d"   -> a = 2, b = 1, c = 0, d = 1
+#   "b"         -> a = 0, b = 1, c = 0, d = 0
+#   "c c c a"   -> a = 1, b = 0, c = 3, d = 0
+# Document frequencies: a = 2, b = 2, c = 1, d = 1 (3 documents).
+value_data <- tibble(text = c("a b a d", "b", "c c c a"))
+
+bake_tfidf_values <- function(...) {
+  recipe(~text, data = value_data) |>
+    step_tokenize(text) |>
+    step_tfidf(text, ...) |>
+    prep() |>
+    bake(new_data = NULL) |>
+    as.data.frame()
+}
+
+test_that("step_tfidf norm = 'none' gives hand-computed values", {
+  idf <- log(1 + 3 / c(2, 2, 1, 1))
+
+  expected <- data.frame(
+    tfidf_text_a = c(2, 0, 1) * idf[1],
+    tfidf_text_b = c(1, 1, 0) * idf[2],
+    tfidf_text_c = c(0, 0, 3) * idf[3],
+    tfidf_text_d = c(1, 0, 0) * idf[4]
+  )
+
+  expect_equal(bake_tfidf_values(norm = "none"), expected)
+  expect_equal(bake_tfidf_values(norm = "none", sparse = "yes"), expected)
+})
+
+test_that("step_tfidf norm = 'l1' gives hand-computed values", {
+  idf <- log(1 + 3 / c(2, 2, 1, 1))
+
+  # row sums of counts are 4, 1 and 4
+  expected <- data.frame(
+    tfidf_text_a = c(2 / 4, 0 / 1, 1 / 4) * idf[1],
+    tfidf_text_b = c(1 / 4, 1 / 1, 0 / 4) * idf[2],
+    tfidf_text_c = c(0 / 4, 0 / 1, 3 / 4) * idf[3],
+    tfidf_text_d = c(1 / 4, 0 / 1, 0 / 4) * idf[4]
+  )
+
+  expect_equal(bake_tfidf_values(norm = "l1"), expected)
+})
+
+test_that("step_tfidf norm = 'l2' gives hand-computed values", {
+  idf <- log(1 + 3 / c(2, 2, 1, 1))
+
+  # euclidean norms of the count rows: sqrt(4 + 1 + 1), 1 and sqrt(1 + 9)
+  l2 <- c(sqrt(6), 1, sqrt(10))
+
+  expected <- data.frame(
+    tfidf_text_a = c(2, 0, 1) / l2 * idf[1],
+    tfidf_text_b = c(1, 1, 0) / l2 * idf[2],
+    tfidf_text_c = c(0, 0, 3) / l2 * idf[3],
+    tfidf_text_d = c(1, 0, 0) / l2 * idf[4]
+  )
+
+  expect_equal(bake_tfidf_values(norm = "l2"), expected)
+  expect_equal(bake_tfidf_values(norm = "l2", sparse = "yes"), expected)
+})
+
+test_that("step_tfidf smooth_idf = FALSE gives hand-computed values", {
+  # without smoothing idf = log(n_docs / df)
+  idf <- log(3 / c(2, 2, 1, 1))
+
+  expected <- data.frame(
+    tfidf_text_a = c(2, 0, 1) * idf[1],
+    tfidf_text_b = c(1, 1, 0) * idf[2],
+    tfidf_text_c = c(0, 0, 3) * idf[3],
+    tfidf_text_d = c(1, 0, 0) * idf[4]
+  )
+
+  expect_equal(bake_tfidf_values(norm = "none", smooth_idf = FALSE), expected)
+
+  obj <- recipe(~text, data = value_data) |>
+    step_tokenize(text) |>
+    step_tfidf(text, smooth_idf = FALSE) |>
+    prep()
+
+  expect_equal(
+    obj$steps[[2]]$res$text,
+    c(a = log(3 / 2), b = log(3 / 2), c = log(3 / 1), d = log(3 / 1))
+  )
+})
+
+test_that("step_tfidf sublinear_tf with norm = 'none' and 'l2' gives hand-computed values", {
+  idf <- log(1 + 3 / c(2, 2, 1, 1))
+
+  sub <- function(x) ifelse(x > 0, 1 + log(pmax(x, 1)), 0)
+  counts <- cbind(a = c(2, 0, 1), b = c(1, 1, 0), c = c(0, 0, 3), d = c(1, 0, 0))
+  sub_counts <- sub(counts)
+
+  expected_none <- as.data.frame(sweep(sub_counts, 2, idf, "*"))
+  names(expected_none) <- paste0("tfidf_text_", colnames(counts))
+
+  expect_equal(
+    bake_tfidf_values(norm = "none", sublinear_tf = TRUE),
+    expected_none
+  )
+
+  l2 <- sqrt(rowSums(sub_counts^2))
+  expected_l2 <- as.data.frame(sweep(sub_counts / l2, 2, idf, "*"))
+  names(expected_l2) <- paste0("tfidf_text_", colnames(counts))
+
+  expect_equal(
+    bake_tfidf_values(norm = "l2", sublinear_tf = TRUE),
+    expected_l2
+  )
+})
+
+test_that("step_tfidf gives zeros for documents with no known tokens", {
+  obj <- recipe(~text, data = value_data) |>
+    step_tokenize(text) |>
+    step_tfidf(text) |>
+    prep()
+
+  res <- bake(obj, new_data = tibble(text = c("zzz", "b")))
+
+  expect_equal(unlist(res[1, ], use.names = FALSE), rep(0, 4))
+  expect_equal(res$tfidf_text_b[2], log(1 + 3 / 2))
+})

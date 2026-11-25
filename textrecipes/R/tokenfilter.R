@@ -1,0 +1,313 @@
+#' Filter Tokens Based on Term Frequency
+#'
+#' `step_tokenfilter()` creates a *specification* of a recipe step that will
+#' convert a [`token`][tokenlist()] variable to be filtered based on frequency.
+#'
+#' @template args-recipe
+#' @template args-dots
+#' @template args-role_no-new
+#' @template args-trained
+#' @template args-columns
+#' @param max_times A number. Maximal number of times a token can appear before
+#'   getting removed. An integer count, or a proportion between 0 and 1 if
+#'   `percentage = TRUE`. Defaults to `Inf`.
+#' @param min_times A number. Minimum number of times a token must appear to
+#'   avoid getting removed. An integer count, or a proportion between 0 and 1
+#'   if `percentage = TRUE`. Defaults to `0`.
+#' @param percentage A logical. Should `max_times` and `min_times` be
+#'   interpreted as a proportion of all token occurrences in the training data
+#'   instead of a count? For example, with `percentage = TRUE` and
+#'   `min_times = 0.01`, tokens that make up less than 1 percent of all tokens
+#'   are removed. Defaults to `FALSE`.
+#' @param max_tokens An integer. Will only keep the top `max_tokens` tokens
+#'   after filtering done by `max_times` and `min_times`. Defaults to `100`.
+#' @param filter_fun A function. This function should take a vector of
+#'   characters and return a logical vector of the same length. It will be
+#'   applied to each observation of the data set. If `NULL`, the default,
+#'   tokens are filtered using `max_times`, `min_times`, `percentage`, and
+#'   `max_tokens`, which are otherwise ignored.
+#' @param res A named list of the tokens that will be kept for each selected
+#'   variable. This is `NULL` until the step is trained by
+#'   [recipes::prep.recipe()] and should not be set by hand.
+#' @template args-skip
+#' @template args-id
+#'
+#' @template returns
+#'
+#' @details
+#'
+#' This step allows you to limit the tokens you are looking at by filtering on
+#' their occurrence in the corpus. You are able to exclude tokens if they appear
+#' too many times or too few times in the data. It can be specified as counts
+#' using `max_times` and `min_times` or as percentages by setting `percentage`
+#' as `TRUE`. In addition one can filter to only use the top `max_tokens` used
+#' tokens. If `max_tokens` is set to `Inf` then all the tokens will be used.
+#' This will generally lead to very large data sets when then tokens are words
+#' or trigrams. A good strategy is to start with a low token count and go up
+#' according to how much RAM you want to use.
+#'
+#' It is strongly advised to filter before using [step_tf] or [step_tfidf] to
+#' limit the number of variables created.
+#'
+#' # Tidying
+#'
+#' When you [`tidy()`][recipes::tidy.recipe()] this step, a tibble is returned with
+#' columns `terms`, `value`, and `id`:
+#'
+#' \describe{
+#'   \item{terms}{character, the selectors or variables selected}
+#'   \item{value}{integer, number of unique tokens}
+#'   \item{id}{character, id of this step}
+#' }
+#'
+#' ```{r, echo = FALSE, results="asis"}
+#' step <- "step_tokenfilter"
+#' result <- knitr::knit_child("man/rmd/tunable-args.Rmd")
+#' cat(result)
+#' ```
+#'
+#' @template case-weights-not-supported
+#'
+#' @seealso [step_tokenize()] to turn characters into [`tokens`][tokenlist()]
+#' @family Steps for Token Modification
+#'
+#' @examplesIf rlang::is_installed("modeldata")
+#' library(recipes)
+#' library(modeldata)
+#' data(tate_text)
+#'
+#' tate_rec <- recipe(~., data = tate_text) |>
+#'   step_tokenize(medium) |>
+#'   step_tokenfilter(medium)
+#'
+#' tate_obj <- tate_rec |>
+#'   prep()
+#'
+#' bake(tate_obj, new_data = NULL, medium) |>
+#'   slice(1:2)
+#'
+#' bake(tate_obj, new_data = NULL) |>
+#'   slice(2) |>
+#'   pull(medium)
+#'
+#' tidy(tate_rec, number = 2)
+#' tidy(tate_obj, number = 2)
+#' @export
+step_tokenfilter <-
+  function(
+    recipe,
+    ...,
+    role = NA,
+    trained = FALSE,
+    columns = NULL,
+    max_times = Inf,
+    min_times = 0,
+    percentage = FALSE,
+    max_tokens = 100,
+    filter_fun = NULL,
+    res = NULL,
+    skip = FALSE,
+    id = rand_id("tokenfilter")
+  ) {
+    add_step(
+      recipe,
+      step_tokenfilter_new(
+        terms = enquos(...),
+        role = role,
+        trained = trained,
+        columns = columns,
+        max_times = max_times,
+        min_times = min_times,
+        percentage = percentage,
+        max_tokens = max_tokens,
+        filter_fun = filter_fun,
+        res = res,
+        skip = skip,
+        id = id
+      )
+    )
+  }
+
+step_tokenfilter_new <-
+  function(
+    terms,
+    role,
+    trained,
+    columns,
+    max_times,
+    min_times,
+    percentage,
+    max_tokens,
+    filter_fun,
+    res,
+    skip,
+    id
+  ) {
+    step(
+      subclass = "tokenfilter",
+      terms = terms,
+      role = role,
+      trained = trained,
+      columns = columns,
+      max_times = max_times,
+      min_times = min_times,
+      percentage = percentage,
+      max_tokens = max_tokens,
+      filter_fun = filter_fun,
+      res = res,
+      skip = skip,
+      id = id
+    )
+  }
+
+#' @export
+prep.step_tokenfilter <- function(x, training, info = NULL, ...) {
+  col_names <- recipes_eval_select(x$terms, training, info)
+
+  check_bool(x$percentage, arg = "percentage")
+  if (x$percentage) {
+    check_number_decimal(x$max_times, min = 0, max = 1, arg = "max_times")
+    check_number_decimal(x$min_times, min = 0, max = 1, arg = "min_times")
+  } else {
+    check_number_whole(
+      x$max_times,
+      min = 0,
+      allow_infinite = TRUE,
+      arg = "max_times"
+    )
+    check_number_whole(x$min_times, min = 0, arg = "min_times")
+  }
+  check_number_whole(x$max_tokens, min = 0, arg = "max_tokens")
+  check_function(x$filter_fun, allow_null = TRUE, arg = "filter_fun")
+
+  check_type(training[, col_names], types = "tokenlist")
+
+  retain_words <- list()
+  n_words <- integer()
+
+  if (is.null(x$filter_fun)) {
+    for (col_name in col_names) {
+      retain_words[[col_name]] <- tokenfilter_fun(
+        training[[col_name]],
+        x$max_times,
+        x$min_times,
+        x$max_tokens,
+        x$percentage
+      )
+      n_words[[col_name]] <- length(unique(unlist(training[[col_name]])))
+    }
+  }
+
+  step_tokenfilter_new(
+    terms = x$terms,
+    role = x$role,
+    trained = TRUE,
+    columns = col_names,
+    max_times = x$max_times,
+    min_times = x$min_times,
+    percentage = x$percentage,
+    max_tokens = n_words,
+    filter_fun = x$filter_fun,
+    res = retain_words,
+    skip = x$skip,
+    id = x$id
+  )
+}
+
+#' @export
+bake.step_tokenfilter <- function(object, new_data, ...) {
+  col_names <- object$columns
+  check_new_data(col_names, object, new_data)
+
+  if (is.null(names(object$res)) && is.null(object$filter_fun)) {
+    # Backwards compatibility with 1.0.3 (#230)
+    names(object$res) <- col_names
+  }
+
+  new_data <- recipes_map_cols(new_data, col_names, function(x, i, col_name) {
+    if (is.null(object$filter_fun)) {
+      tokenlist_filter(x, object$res[[col_name]], TRUE)
+    } else {
+      tokenlist_filter_function(x, object$filter_fun)
+    }
+  })
+  new_data <- factor_to_text(new_data, col_names)
+
+  new_data
+}
+
+#' @export
+print.step_tokenfilter <-
+  function(x, width = max(20, options()$width - 30), ...) {
+    title <- "Text filtering for "
+    print_step(x$columns, x$terms, x$trained, title, width)
+    invisible(x)
+  }
+
+#' @rdname step_tokenfilter
+#' @usage NULL
+#' @export
+tidy.step_tokenfilter <- function(x, ...) {
+  if (is_trained(x)) {
+    res <- tibble(
+      terms = unname(x$columns),
+      value = x$max_tokens
+    )
+  } else {
+    term_names <- sel2char(x$terms)
+    res <- tibble(
+      terms = term_names,
+      value = na_int
+    )
+  }
+  res$id <- x$id
+  res
+}
+
+## Implementation
+tokenfilter_fun <- function(
+  data,
+  max_times,
+  min_times,
+  max_tokens,
+  percentage
+) {
+  tf <- table0(unlist(get_tokens(data)))
+
+  if (percentage) {
+    tf <- tf / sum(tf)
+  }
+
+  ids <- tf <= max_times & tf >= min_times
+
+  if (is.infinite(max_tokens)) {
+    names(sort(tf[ids], decreasing = TRUE))
+  } else {
+    if (max_tokens > sum(ids)) {
+      max_tokens <- sum(ids)
+    }
+    names(sort(tf[ids], decreasing = TRUE)[seq_len(max_tokens)])
+  }
+}
+
+#' @rdname required_pkgs.step
+#' @export
+required_pkgs.step_tokenfilter <- function(x, ...) {
+  c("textrecipes")
+}
+
+#' @rdname tunable_textrecipes
+#' @export
+tunable.step_tokenfilter <- function(x, ...) {
+  tibble::tibble(
+    name = c("max_times", "min_times", "max_tokens"),
+    call_info = list(
+      list(pkg = "dials", fun = "max_times"),
+      list(pkg = "dials", fun = "min_times"),
+      list(pkg = "dials", fun = "max_tokens")
+    ),
+    source = "recipe",
+    component = "step_tokenfilter",
+    component_id = x$id
+  )
+}

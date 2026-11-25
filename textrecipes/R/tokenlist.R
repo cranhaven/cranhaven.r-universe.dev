@@ -1,0 +1,387 @@
+#' Create Token Object
+#'
+#' A [tokenlist] object is a thin wrapper around a list of character vectors,
+#' with a few attributes.
+#'
+#' @param tokens A list of character vectors.
+#' @param lemma A list of character vectors, must be the same size and shape as
+#'   `tokens`.
+#' @param pos A list of character vectors, must be the same size and shape as
+#'   `tokens`.
+#'
+#' @return a [tokenlist] object.
+#'
+#' @examplesIf rlang::is_installed("modeldata")
+#' abc <- list(letters, LETTERS)
+#' tokenlist(abc)
+#'
+#' unclass(tokenlist(abc))
+#'
+#' tibble(text = tokenlist(abc))
+#'
+#' library(tokenizers)
+#' library(modeldata)
+#' data(tate_text)
+#' tokens <- tokenize_words(as.character(tate_text$medium))
+#'
+#' tokenlist(tokens)
+#' @export
+tokenlist <- function(tokens = list(), lemma = NULL, pos = NULL) {
+  tokens <- vec_cast(tokens, list())
+  if (!is.null(lemma)) {
+    lemma <- vec_cast(lemma, list())
+  }
+  if (!is.null(pos)) {
+    pos <- vec_cast(pos, list())
+  }
+  unique_tokens <- unique(unlist(tokens))
+
+  new_tokenlist(
+    tokens = tokens,
+    lemma = lemma,
+    pos = pos,
+    unique_tokens = unique_tokens %||% character()
+  )
+}
+
+new_tokenlist <- function(
+  tokens = list(),
+  lemma = NULL,
+  pos = NULL,
+  unique_tokens = character()
+) {
+  vec_assert(tokens, list())
+  if (!(is.null(lemma) | is.list(lemma))) {
+    cli::cli_abort("{.arg lemma} must be NULL or a list.")
+  }
+  if (!(is.null(pos) | is.list(pos))) {
+    cli::cli_abort("{.arg pos} must be NULL or a list.")
+  }
+  vec_assert(unique_tokens, character())
+
+  # Not purrr::compact() since it would also drop zero-length fields
+  fields <- list(tokens = tokens, lemma = lemma, pos = pos)
+  fields <- fields[!vapply(fields, is.null, logical(1))]
+
+  vctrs::new_rcrd(
+    fields = fields,
+    unique_tokens = unique_tokens,
+    class = "textrecipes_tokenlist"
+  )
+}
+
+is_tokenlist <- function(x) {
+  inherits(x, "textrecipes_tokenlist")
+}
+
+check_tokenlist <- function(x, call = rlang::caller_env()) {
+  if (!is_tokenlist(x)) {
+    cli::cli_abort("Input must be a {.cls tokenlist}.", call = call)
+  }
+  invisible(x)
+}
+
+maybe_get_lemma <- function(x) {
+  if ("lemma" %in% vctrs::fields(x)) {
+    vctrs::field(x, "lemma")
+  } else {
+    NULL
+  }
+}
+
+maybe_get_pos <- function(x) {
+  if ("pos" %in% vctrs::fields(x)) {
+    vctrs::field(x, "pos")
+  } else {
+    NULL
+  }
+}
+
+get_tokens <- function(x) {
+  vctrs::field(x, "tokens")
+}
+
+get_unique_tokens <- function(x) {
+  attr(x, "unique_tokens")
+}
+
+#' @export
+vec_restore.textrecipes_tokenlist <- function(x, to, ..., i = NULL) {
+  tokens <- get_tokens(x)
+  unique_tokens <- unique(unlist(tokens))
+
+  new_tokenlist(
+    tokens,
+    maybe_get_lemma(x),
+    maybe_get_pos(x),
+    unique_tokens %||% character()
+  )
+}
+
+# Printing --------------------------------------------------------------------
+#' @export
+format.textrecipes_tokenlist <- function(x, ...) {
+  out <- formatC(lengths(vctrs::field(x, "tokens")))
+  paste0("[", out, " tokens]")
+}
+
+#' @export
+vec_ptype_abbr.textrecipes_tokenlist <- function(x, ...) {
+  "tknlist"
+}
+
+#' @export
+obj_print_footer.textrecipes_tokenlist <- function(x, ...) {
+  cat(
+    "# Unique Tokens: ",
+    format(length(attr(x, "unique_tokens"))),
+    "\n",
+    sep = ""
+  )
+}
+
+# Special functions -----------------------------------------------------------
+
+# Takes a vector of character vectors and keeps (for keep = TRUE) the words
+# or removes (for keep = FALSE) the words
+tokenlist_filter <- function(x, dict, keep = FALSE) {
+  check_tokenlist(x)
+
+  if (!keep) {
+    dict <- setdiff(attr(x, "unique_tokens"), dict)
+  }
+
+  tokens <- get_tokens(x)
+  seq_x <- seq_along(tokens)
+  i <- rep(seq_x, lengths(tokens))
+  j <- match(unlist(tokens), dict)
+
+  keep_id <- !is.na(j)
+  split_id <- factor(i[keep_id], seq_x)
+
+  out <- split(dict[j[keep_id]], split_id)
+  names(out) <- NULL
+
+  lemma <- maybe_get_lemma(x)
+  if (!is.null(lemma)) {
+    lemma <- split(unlist(lemma)[keep_id], split_id)
+    names(lemma) <- NULL
+  } else {
+    lemma <- NULL
+  }
+
+  pos <- maybe_get_pos(x)
+  if (!is.null(pos)) {
+    pos <- split(unlist(pos)[keep_id], split_id)
+    names(pos) <- NULL
+  } else {
+    pos <- NULL
+  }
+
+  new_tokenlist(out, lemma = lemma, pos = pos, unique_tokens = dict)
+}
+
+tokenlist_filter_function <- function(x, fn) {
+  check_tokenlist(x)
+
+  tokens <- get_tokens(x)
+
+  keeps <- lapply(tokens, fn)
+
+  out <- purrr::map2(tokens, keeps, \(.x, .y) .x[.y])
+
+  lemma <- maybe_get_lemma(x)
+  if (!is.null(lemma)) {
+    lemma <- purrr::map2(lemma, keeps, \(.x, .y) .x[.y])
+    names(lemma) <- NULL
+  } else {
+    lemma <- NULL
+  }
+
+  pos <- maybe_get_pos(x)
+  if (!is.null(pos)) {
+    pos <- purrr::map2(pos, keeps, \(.x, .y) .x[.y])
+    names(pos) <- NULL
+  } else {
+    pos <- NULL
+  }
+
+  tokenlist(out, lemma = lemma, pos = pos)
+}
+
+tokenlist_apply <- function(x, fun, arguments = NULL) {
+  check_tokenlist(x)
+
+  tokens <- get_tokens(x)
+  apply_expr <- expr(lapply(tokens, fun))
+
+  if (length(arguments) > 0) {
+    apply_expr <- rlang::call_modify(apply_expr, !!!arguments)
+  }
+
+  tokenlist(eval(apply_expr), lemma = maybe_get_lemma(x), pos = maybe_get_pos(x))
+}
+
+# Takes a [tokenlist] and calculate the token count matrix
+tokenlist_to_dtm <- function(x, dict) {
+  check_tokenlist(x)
+
+  tokens <- get_tokens(x)
+  i <- rep(seq_along(tokens), lengths(tokens))
+  j <- match(unlist(tokens), dict)
+
+  out <- Matrix::sparseMatrix(
+    i = i[!is.na(j)],
+    j = j[!is.na(j)],
+    dims = c(length(tokens), length(dict)),
+    x = 1
+  )
+
+  out@Dimnames[[2]] <- dict
+  out
+}
+
+tokenlist_lemma <- function(x) {
+  check_tokenlist(x)
+
+  if (is.null(maybe_get_lemma(x))) {
+    cli::cli_abort("The {.code lemma} attribute is not available.")
+  }
+
+  tokenlist(maybe_get_lemma(x), pos = maybe_get_pos(x))
+}
+
+tokenlist_pos_filter <- function(x, pos_tags, remove = FALSE) {
+  check_tokenlist(x)
+
+  if (is.null(maybe_get_pos(x))) {
+    cli::cli_abort("{.arg pos} attribute not available.")
+  }
+
+  tokens <- get_tokens(x)
+  seq_x <- seq_along(tokens)
+  i <- rep(seq_x, lengths(tokens))
+  j <- match(unlist(maybe_get_pos(x)), pos_tags)
+
+  keep_id <- if (remove) is.na(j) else !is.na(j)
+  split_id <- factor(i[keep_id], seq_x)
+
+  # as.character() since unlist() of zero rows returns NULL
+  out <- split(as.character(unlist(tokens))[keep_id], split_id)
+  names(out) <- NULL
+
+  pos <- split(as.character(unlist(maybe_get_pos(x)))[keep_id], split_id)
+  names(pos) <- NULL
+
+  lemma <- maybe_get_lemma(x)
+  if (!is.null(lemma)) {
+    lemma <- split(as.character(unlist(lemma))[keep_id], split_id)
+    names(lemma) <- NULL
+  } else {
+    lemma <- NULL
+  }
+
+  tokenlist(out, lemma = lemma, pos = pos)
+}
+
+tokenlist_ngram <- function(x, n, n_min, delim) {
+  check_tokenlist(x)
+
+  tokenlist(ngram(get_tokens(x), n, n_min, delim))
+}
+
+tokenlist_embedding <- function(
+  x,
+  emb_mat,
+  emb_tokens,
+  aggregation,
+  aggregation_default
+) {
+  tokens <- get_tokens(x)
+  n_doc <- length(tokens)
+  emb_names <- colnames(emb_mat)
+  n_dim <- length(emb_names)
+
+  # Map each token occurrence to its document and its row in `emb_mat`.
+  doc_id <- rep.int(seq_len(n_doc), lengths(tokens))
+  token_index <- match(unlist(tokens, use.names = FALSE), emb_tokens)
+
+  keep <- !is.na(token_index)
+  doc_id <- doc_id[keep]
+  token_index <- token_index[keep]
+
+  res <- matrix(
+    aggregation_default,
+    nrow = n_doc,
+    ncol = n_dim,
+    dimnames = list(NULL, emb_names)
+  )
+
+  if (length(token_index) > 0L) {
+    if (aggregation %in% c("sum", "mean")) {
+      res <- aggregate_embedding_linear(
+        emb_mat,
+        doc_id,
+        token_index,
+        n_doc,
+        aggregation,
+        aggregation_default
+      )
+      dimnames(res) <- list(NULL, emb_names)
+    } else {
+      agg <- aggregate_embedding_extremum(
+        emb_mat[token_index, , drop = FALSE],
+        doc_id,
+        aggregation
+      )
+      res[as.integer(rownames(agg)), ] <- agg
+    }
+  }
+
+  tibble::as_tibble(res)
+}
+
+# Sum/mean aggregation as a single sparse-by-dense matrix product: a (n_doc x
+# n_vocab) document-token incidence matrix (sparse because each document holds
+# only a few of the vocabulary's tokens; the embedding matrix itself stays
+# dense) times the dense embedding matrix yields per-document sums directly, in
+# document order, without slicing or a grouped reduction.
+aggregate_embedding_linear <- function(
+  emb_mat,
+  doc_id,
+  token_index,
+  n_doc,
+  aggregation,
+  aggregation_default
+) {
+  incidence <- Matrix::sparseMatrix(
+    i = doc_id,
+    j = token_index,
+    x = 1,
+    dims = c(n_doc, nrow(emb_mat))
+  )
+  out <- as.matrix(incidence %*% emb_mat)
+  counts <- tabulate(doc_id, nbins = n_doc)
+  if (aggregation == "mean") {
+    out <- out / counts
+  }
+  # Documents with no matched tokens get the default rather than a zero sum.
+  out[counts == 0L, ] <- aggregation_default
+  out
+}
+
+# Min/max aggregation of the rows of `vals` (a numeric matrix) by `group`,
+# returning a matrix with one row per present group and the group label as the
+# row name. Loops over the (relatively few) embedding columns, aggregating each
+# with a single vectorised `tapply`.
+aggregate_embedding_extremum <- function(vals, group, aggregation) {
+  fun <- switch(aggregation, min = min, max = max)
+  group <- factor(group)
+  out <- vapply(
+    seq_len(ncol(vals)),
+    function(col) tapply(vals[, col], group, fun),
+    numeric(nlevels(group))
+  )
+  rownames(out) <- levels(group)
+  out
+}

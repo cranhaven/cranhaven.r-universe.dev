@@ -1,0 +1,332 @@
+#' Feature Hashing of Tokens
+#'
+#' `step_texthash()` creates a *specification* of a recipe step that will
+#' convert a [`token`][tokenlist()] variable into multiple numeric variables
+#' using the hashing trick.
+#'
+#' @template args-recipe
+#' @template args-dots
+#' @template args-role_predictors
+#' @template args-trained
+#' @template args-columns
+#' @param signed A logical, indicating whether to use a signed hash-function to
+#'   reduce collisions when hashing. Defaults to `TRUE`.
+#' @param num_terms An integer, the number of variables to output. Defaults to
+#'   `1024`.
+#' @template args-prefix
+#' @template args-sparse
+#' @template args-keep_original_cols
+#' @template args-skip
+#' @template args-id
+#'
+#' @template returns
+#'
+#' @details
+#'
+#' Feature hashing, or the hashing trick, is a transformation of a text variable
+#' into a new set of numerical variables. This is done by applying a hashing
+#' function over the tokens and using the hash values as feature indices. This
+#' allows for a low memory representation of the text. This implementation is
+#' done using the MurmurHash3 method via [text2vec::hash_vectorizer()].
+#'
+#' The argument `num_terms` controls the number of indices that the hashing
+#' function will map to. This is the tuning parameter for this transformation.
+#' Since the hashing function can map two different tokens to the same index,
+#' will a higher value of `num_terms` result in a lower chance of collision.
+#'
+#' The new columns will have names that begin with `prefix`, then the name of
+#' the variable, then the index of the hash, all separated by `_`. The indices
+#' are padded with zeros to the same width. For example, with the default
+#' `prefix = "texthash"` and a variable named `text`, `num_terms = 12` gives
+#' `texthash_text_01` to `texthash_text_12`, and `num_terms = 101` gives
+#' `texthash_text_001` to `texthash_text_101`.
+#'
+#' @details # Tidying
+#'
+#' When you [`tidy()`][recipes::tidy.recipe()] this step, a tibble is returned with
+#'  columns `terms`, value and `id`:
+#'
+#' \describe{
+#'   \item{terms}{character, the selectors or variables selected}
+#'   \item{value}{logical, is it signed?}
+#'   \item{length}{integer, number of terms}
+#'   \item{id}{character, id of this step}
+#' }
+#'
+#' ```{r, echo = FALSE, results="asis"}
+#' step <- "step_texthash"
+#' result <- knitr::knit_child("man/rmd/tunable-args.Rmd")
+#' cat(result)
+#' ```
+#'
+#' @template sparse-creation
+#'
+#' @template case-weights-not-supported
+#'
+#' @references Kilian Weinberger; Anirban Dasgupta; John Langford; Alex Smola;
+#'   Josh Attenberg (2009).
+#'
+#' @seealso [step_tokenize()] to turn characters into [`tokens`][tokenlist()]
+#'   [step_text_normalization()] to perform text normalization.
+#' @family Steps for Numeric Variables From Tokens
+#'
+#' @examplesIf all(c("modeldata", "text2vec") %in% rownames(installed.packages()))
+#' library(recipes)
+#' library(modeldata)
+#' data(tate_text)
+#'
+#' tate_rec <- recipe(~., data = tate_text) |>
+#'   step_tokenize(medium) |>
+#'   step_tokenfilter(medium, max_tokens = 10) |>
+#'   step_texthash(medium)
+#'
+#' tate_obj <- tate_rec |>
+#'   prep()
+#'
+#' bake(tate_obj, tate_text)
+#'
+#' tidy(tate_rec, number = 3)
+#' tidy(tate_obj, number = 3)
+#' @export
+step_texthash <-
+  function(
+    recipe,
+    ...,
+    role = "predictor",
+    trained = FALSE,
+    columns = NULL,
+    signed = TRUE,
+    num_terms = 1024L,
+    prefix = "texthash",
+    sparse = "auto",
+    keep_original_cols = FALSE,
+    skip = FALSE,
+    id = rand_id("texthash")
+  ) {
+    recipes::recipes_pkg_check(required_pkgs.step_texthash())
+
+    add_step(
+      recipe,
+      step_texthash_new(
+        terms = enquos(...),
+        role = role,
+        trained = trained,
+        columns = columns,
+        signed = signed,
+        num_terms = num_terms,
+        prefix = prefix,
+        sparse = sparse,
+        keep_original_cols = keep_original_cols,
+        skip = skip,
+        id = id
+      )
+    )
+  }
+
+hash_funs <- c(
+  "md5",
+  "sha1",
+  "crc32",
+  "sha256",
+  "sha512",
+  "xxhash32",
+  "xxhash64",
+  "murmur32"
+)
+
+step_texthash_new <-
+  function(
+    terms,
+    role,
+    trained,
+    columns,
+    signed,
+    num_terms,
+    prefix,
+    sparse,
+    keep_original_cols,
+    skip,
+    id
+  ) {
+    step(
+      subclass = "texthash",
+      terms = terms,
+      role = role,
+      trained = trained,
+      columns = columns,
+      signed = signed,
+      num_terms = num_terms,
+      prefix = prefix,
+      sparse = sparse,
+      keep_original_cols = keep_original_cols,
+      skip = skip,
+      id = id
+    )
+  }
+
+#' @export
+prep.step_texthash <- function(x, training, info = NULL, ...) {
+  col_names <- recipes_eval_select(x$terms, training, info)
+
+  check_bool(x$signed, arg = "signed")
+  check_number_whole(x$num_terms, min = 1, arg = "num_terms")
+  check_string(x$prefix, arg = "prefix")
+  check_sparse_arg(x$sparse)
+
+  check_type(training[, col_names], types = "tokenlist")
+
+  step_texthash_new(
+    terms = x$terms,
+    role = x$role,
+    trained = TRUE,
+    columns = col_names,
+    signed = x$signed,
+    num_terms = x$num_terms,
+    prefix = x$prefix,
+    sparse = x$sparse,
+    keep_original_cols = get_keep_original_cols(x),
+    skip = x$skip,
+    id = x$id
+  )
+}
+
+#' @export
+bake.step_texthash <- function(object, new_data, ...) {
+  col_names <- object$columns
+  check_new_data(col_names, object, new_data)
+
+  for (col_name in col_names) {
+    tf_text <- hashing_function(
+      get_tokens(new_data[[col_name]]),
+      paste0(
+        object$prefix,
+        "_",
+        col_name,
+        "_",
+        names0(object$num_terms, "")
+      ),
+      object$signed,
+      object$num_terms,
+      object$sparse
+    )
+
+    if (sparse_is_yes(object$sparse)) {
+      tf_text <- purrr::map_dfc(tf_text, sparsevctrs::as_sparse_integer)
+    } else {
+      tf_text <- purrr::map_dfc(tf_text, as.integer)
+    }
+
+    tf_text <- recipes::check_name(tf_text, new_data, object, names(tf_text))
+
+    new_data <- vec_cbind(new_data, tf_text)
+  }
+
+  new_data <- remove_original_cols(new_data, object, col_names)
+
+  new_data
+}
+
+#' @export
+print.step_texthash <-
+  function(x, width = max(20, options()$width - 30), ...) {
+    title <- "Feature hashing with "
+    print_step(x$columns, x$terms, x$trained, title, width)
+    invisible(x)
+  }
+
+#' @rdname step_texthash
+#' @usage NULL
+#' @export
+tidy.step_texthash <- function(x, ...) {
+  if (is_trained(x)) {
+    res <- tibble(
+      terms = unname(x$columns),
+      value = x$signed,
+      length = x$num_terms
+    )
+  } else {
+    term_names <- sel2char(x$terms)
+    res <- tibble(
+      terms = term_names,
+      value = na_lgl,
+      length = na_int
+    )
+  }
+  res$id <- x$id
+  res
+}
+
+# Implementation
+hashing_function <- function(data, labels, signed, n, sparse) {
+  counts <- list_to_hash(data, n, signed, sparse)
+
+  colnames(counts) <- labels
+  as_tibble(counts)
+}
+
+# text2vec::create_dtm() errors on zero documents, so build the dtm from a
+# placeholder document and drop its row to get a 0-row matrix.
+create_dtm_safe <- function(tokens, vectorizer, ...) {
+  if (length(tokens) == 0) {
+    it <- text2vec::itoken(list(""), progress = FALSE)
+    dtm <- suppressWarnings(text2vec::create_dtm(it, vectorizer))
+    return(dtm[0, , drop = FALSE])
+  }
+  it <- text2vec::itoken(tokens, progress = FALSE, ...)
+  text2vec::create_dtm(it, vectorizer)
+}
+
+# Takes a [tokenlist] and calculate the hashed token count matrix
+list_to_hash <- function(x, n, signed, sparse) {
+  vectorizer <- text2vec::hash_vectorizer(hash_size = n, signed_hash = signed)
+  res <- create_dtm_safe(x, vectorizer)
+
+  if (sparse_is_yes(sparse)) {
+    colnames(res) <- seq_len(ncol(res))
+    res <- Matrix::drop0(res)
+    res <- sparsevctrs::coerce_to_sparse_tibble(res)
+  } else {
+    res <- as.matrix(res)
+  }
+  res
+}
+
+#' S3 methods for tracking which additional packages are needed for steps.
+#'
+#' Recipe-adjacent packages always list themselves as a required package so that
+#' the steps can function properly within parallel processing schemes.
+#' @param x A recipe step
+#' @return A character vector
+#' @rdname required_pkgs.step
+#' @keywords internal
+#' @export
+required_pkgs.step_texthash <- function(x, ...) {
+  c("text2vec", "textrecipes")
+}
+
+#' @rdname tunable_textrecipes
+#' @export
+tunable.step_texthash <- function(x, ...) {
+  tibble::tibble(
+    name = c("signed", "num_terms"),
+    call_info = list(
+      list(pkg = "dials", fun = "signed_hash"),
+      list(pkg = "dials", fun = "num_hash", range = c(8, 12))
+    ),
+    source = "recipe",
+    component = "step_texthash",
+    component_id = x$id
+  )
+}
+
+#' @export
+.recipes_estimate_sparsity.step_texthash <- function(x, data, ...) {
+  n_levels <- lapply(data, function(tmp) x$num_terms)
+
+  lapply(n_levels, function(n_lvl) {
+    c(
+      n_cols = n_lvl,
+      sparsity = 1 - 1 / n_lvl
+    )
+  })
+}

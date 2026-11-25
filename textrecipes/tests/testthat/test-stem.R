@@ -1,0 +1,209 @@
+test_data <- tibble(
+  text = c(
+    "I would not eat them here or there.",
+    "I would not eat them anywhere.",
+    "I would not eat green eggs and ham.",
+    "I do not like them, Sam-I-am."
+  )
+)
+
+rec <- recipe(~., data = test_data)
+
+test_that("stemming is done correctly", {
+  rec <- rec |>
+    step_tokenize(text) |>
+    step_stem(text)
+
+  obj <- rec |>
+    prep()
+
+  expect_equal(
+    tokenizers::tokenize_words(test_data$text[1])[[1]] |>
+      SnowballC::wordStem(),
+    bake(obj, new_data = NULL) |>
+      slice(1) |>
+      pull(text) |>
+      vctrs::field("tokens") |>
+      unlist()
+  )
+
+  expect_equal(dim(tidy(rec, 2)), c(1, 3))
+  expect_equal(dim(tidy(obj, 2)), c(1, 3))
+})
+
+test_that("custom stemmer works", {
+  custom_stem_fun <- function(x) substr(x, 1, 2)
+
+  rec <- rec |>
+    step_tokenize(text) |>
+    step_stem(text, custom_stemmer = custom_stem_fun)
+
+  obj <- rec |>
+    prep()
+
+  expect_equal(
+    tokenizers::tokenize_words(test_data$text[1])[[1]] |>
+      custom_stem_fun(),
+    bake(obj, new_data = NULL) |>
+      slice(1) |>
+      pull(text) |>
+      vctrs::field("tokens") |>
+      unlist()
+  )
+
+  expect_equal(dim(tidy(rec, 2)), c(1, 3))
+  expect_equal(dim(tidy(obj, 2)), c(1, 3))
+})
+
+test_that("arguments are passed by options", {
+  data <- tibble(y = 0, text = "коты")
+
+  expect_equal(
+    recipe(y ~ ., data = data) |>
+      step_tokenize(text) |>
+      step_stem(text, options = list(language = "russian")) |>
+      prep(data) |>
+      bake(new_data = NULL) |>
+      pull(text) |>
+      vctrs::field("tokens"),
+    list("кот")
+  )
+})
+
+test_that("stemming preserves lemma and pos attributes (#327)", {
+  tkn_list <- tokenlist(
+    list(c("running", "dogs"), c("jumped")),
+    lemma = list(c("run", "dog"), c("jump")),
+    pos = list(c("VERB", "NOUN"), c("VERB"))
+  )
+
+  data <- tibble(text = tkn_list)
+
+  rec <- recipe(~text, data = data) |>
+    step_stem(text) |>
+    prep(data)
+
+  baked <- bake(rec, new_data = NULL)
+
+  expect_equal(
+    vctrs::field(baked$text, "lemma"),
+    vctrs::field(tkn_list, "lemma")
+  )
+
+  expect_equal(
+    vctrs::field(baked$text, "pos"),
+    vctrs::field(tkn_list, "pos")
+  )
+})
+
+test_that("bad args", {
+  expect_snapshot(
+    error = TRUE,
+    recipe(~., data = mtcars) |>
+      step_stem(custom_stemmer = "yes") |>
+      prep()
+  )
+})
+
+# Infrastructure ---------------------------------------------------------------
+
+test_that("bake method errors when needed non-standard role columns are missing", {
+  tokenized_test_data <- recipe(~text, data = test_data) |>
+    step_tokenize(text) |>
+    prep() |>
+    bake(new_data = NULL)
+
+  rec <- recipe(tokenized_test_data) |>
+    update_role(text, new_role = "predictor") |>
+    step_stem(text) |>
+    update_role(text, new_role = "potato") |>
+    update_role_requirements(role = "potato", bake = FALSE)
+
+  trained <- prep(rec, training = tokenized_test_data, verbose = FALSE)
+
+  expect_snapshot(
+    error = TRUE,
+    bake(trained, new_data = tokenized_test_data[, -1])
+  )
+})
+
+test_that("empty printing", {
+  rec <- recipe(mpg ~ ., mtcars)
+  rec <- step_stem(rec)
+
+  expect_snapshot(rec)
+
+  rec <- prep(rec, mtcars)
+
+  expect_snapshot(rec)
+})
+
+test_that("empty selection prep/bake is a no-op", {
+  rec1 <- recipe(mpg ~ ., mtcars)
+  rec2 <- step_stem(rec1)
+
+  rec1 <- prep(rec1, mtcars)
+  rec2 <- prep(rec2, mtcars)
+
+  baked1 <- bake(rec1, mtcars)
+  baked2 <- bake(rec2, mtcars)
+
+  expect_identical(baked1, baked1)
+})
+
+test_that("empty selection tidy method works", {
+  rec <- recipe(mpg ~ ., mtcars)
+  rec <- step_stem(rec)
+
+  expect <- tibble(
+    terms = character(),
+    is_custom_stemmer = logical(),
+    id = character()
+  )
+
+  expect_identical(tidy(rec, number = 1), expect)
+
+  rec <- prep(rec, mtcars)
+
+  expect_identical(tidy(rec, number = 1), expect)
+})
+
+test_that("printing", {
+  rec <- rec |>
+    step_tokenize(text) |>
+    step_stem(text)
+
+  expect_snapshot(print(rec))
+  expect_snapshot(prep(rec))
+})
+
+test_that("options are checked (#291)", {
+  rec <- recipe(~text, data = tibble(text = "a b")) |>
+    step_tokenize(text)
+
+  expect_snapshot(
+    error = TRUE,
+    prep(step_stem(rec, text, options = list("russian")))
+  )
+  expect_error(
+    prep(step_stem(rec, text, options = list(FUN = identity))),
+    "not allowed"
+  )
+})
+
+test_that("0 and 1 rows data work in bake method", {
+  data <- tibble(
+    text = c(
+      "I would not eat them here or there.",
+      "I would not eat them anywhere.",
+      "I do not like them, Sam-I-am."
+    )
+  )
+  rec <- recipe(~text, data = data) |>
+    step_tokenize(text) |>
+    step_stem(text) |>
+    prep()
+
+  expect_identical(nrow(bake(rec, dplyr::slice(data, 1))), 1L)
+  expect_identical(nrow(bake(rec, dplyr::slice(data, 0))), 0L)
+})

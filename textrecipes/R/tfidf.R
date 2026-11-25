@@ -1,0 +1,404 @@
+#' Term Frequency-Inverse Document Frequency of Tokens
+#'
+#' `step_tfidf()` creates a *specification* of a recipe step that will convert a
+#' [`token`][tokenlist()] variable into multiple variables containing the term
+#' frequency-inverse document frequency of tokens.
+#'
+#' @template args-recipe
+#' @template args-dots
+#' @template args-role_predictors
+#' @template args-trained
+#' @template args-columns
+#' @param vocabulary A character vector of the tokens to create variables for.
+#'   If `NULL`, the default, all tokens found in the training data are used.
+#' @param res A named list of numeric vectors holding the IDF weight of each
+#'   token, one element per selected variable. This is `NULL` until the step is
+#'   trained by [recipes::prep.recipe()] and should not be set by hand.
+#' @param smooth_idf A logical. Should the IDF weights be smoothed by adding one
+#'   to the ratio of the number of documents to the number of documents
+#'   containing the token? This prevents tokens that appear in every document
+#'   from getting a weight of zero. Defaults to `TRUE`.
+#' @param norm A single string determining the type of normalization applied to
+#'   the term frequencies of each document. Must be one of:
+#'   * `"l1"`: scale by the sum of the term frequencies in the document.
+#'   * `"l2"`: scale by the square root of the sum of the squared term
+#'     frequencies in the document.
+#'   * `"none"`: don't normalize.
+#'
+#'   Defaults to `"l1"`.
+#' @param sublinear_tf A logical. Should sublinear term-frequency scaling be
+#'   applied, replacing the term frequency with `1 + log(TF)`? Defaults to
+#'   `FALSE`.
+#' @template args-prefix
+#' @template args-sparse
+#' @template args-keep_original_cols
+#' @template args-skip
+#' @template args-id
+#'
+#' @template returns
+#'
+#' @details
+#'
+#' It is strongly advised to use [step_tokenfilter] before using [step_tfidf] to
+#' limit the number of variables created; otherwise you may run into memory
+#' issues. A good strategy is to start with a low token count and increase
+#' depending on how much RAM you want to use.
+#'
+#' Term frequency-inverse document frequency is the product of two statistics:
+#' the term frequency (TF) and the inverse document frequency (IDF).
+#'
+#' Term frequency measures how many times each token appears in each
+#' observation.
+#'
+#' Inverse document frequency is a measure of how informative a word is, e.g.,
+#' how common or rare the word is across all the observations. If a word appears
+#' in all the observations it might not give that much insight, but if it only
+#' appears in some it might help differentiate between observations.
+#'
+#' The IDF is defined as follows when `smooth_idf = TRUE`: idf = log(1 + (#
+#' documents in the corpus) / (# documents where the term appears)). When
+#' `smooth_idf = FALSE` the `1 +` is dropped.
+#'
+#' # Tidying
+#'
+#' When you [`tidy()`][recipes::tidy.recipe()] this step, a tibble is returned with
+#' columns `terms`, `token`, `weight`, and `id`:
+#'
+#' \describe{
+#'   \item{terms}{character, the selectors or variables selected}
+#'   \item{token}{character, name of token}
+#'   \item{weight}{numeric, the calculated IDF weight}
+#'   \item{id}{character, id of this step}
+#' }
+#'
+#' The new columns will have names that begin with `prefix`, then the name of
+#' the variable, then the token, all separated by `_`. For example, with the
+#' default `prefix = "tfidf"`, a variable named `text`, and the token `"word"`,
+#' the new column will be named `tfidf_text_word`.
+#'
+#' @template sparse-creation
+#'
+#' @template case-weights-not-supported
+#'
+#' @seealso [step_tokenize()] to turn characters into [`tokens`][tokenlist()]
+#' @family Steps for Numeric Variables From Tokens
+#'
+#' @examplesIf rlang::is_installed("modeldata")
+#' \donttest{
+#' library(recipes)
+#' library(modeldata)
+#' data(tate_text)
+#'
+#' tate_rec <- recipe(~., data = tate_text) |>
+#'   step_tokenize(medium) |>
+#'   step_tfidf(medium)
+#'
+#' tate_obj <- tate_rec |>
+#'   prep()
+#'
+#' bake(tate_obj, tate_text)
+#'
+#' tidy(tate_rec, number = 2)
+#' tidy(tate_obj, number = 2)
+#' }
+#'
+#' @export
+step_tfidf <-
+  function(
+    recipe,
+    ...,
+    role = "predictor",
+    trained = FALSE,
+    columns = NULL,
+    vocabulary = NULL,
+    res = NULL,
+    smooth_idf = TRUE,
+    norm = "l1",
+    sublinear_tf = FALSE,
+    prefix = "tfidf",
+    sparse = "auto",
+    keep_original_cols = FALSE,
+    skip = FALSE,
+    id = rand_id("tfidf")
+  ) {
+    add_step(
+      recipe,
+      step_tfidf_new(
+        terms = enquos(...),
+        role = role,
+        trained = trained,
+        vocabulary = vocabulary,
+        res = res,
+        smooth_idf = smooth_idf,
+        norm = norm,
+        sublinear_tf = sublinear_tf,
+        columns = columns,
+        prefix = prefix,
+        sparse = sparse,
+        keep_original_cols = keep_original_cols,
+        skip = skip,
+        id = id
+      )
+    )
+  }
+
+step_tfidf_new <-
+  function(
+    terms,
+    role,
+    trained,
+    columns,
+    vocabulary,
+    res,
+    smooth_idf,
+    norm,
+    sublinear_tf,
+    prefix,
+    sparse,
+    keep_original_cols,
+    skip,
+    id
+  ) {
+    step(
+      subclass = "tfidf",
+      terms = terms,
+      role = role,
+      trained = trained,
+      columns = columns,
+      vocabulary = vocabulary,
+      res = res,
+      smooth_idf = smooth_idf,
+      norm = norm,
+      sublinear_tf = sublinear_tf,
+      prefix = prefix,
+      sparse = sparse,
+      keep_original_cols = keep_original_cols,
+      skip = skip,
+      id = id
+    )
+  }
+
+#' @export
+prep.step_tfidf <- function(x, training, info = NULL, ...) {
+  col_names <- recipes_eval_select(x$terms, training, info)
+
+  check_character(x$vocabulary, allow_null = TRUE, arg = "vocabulary")
+  check_bool(x$smooth_idf, arg = "smooth_idf")
+  rlang::arg_match0(x$norm, c("l1", "l2", "none"), arg_nm = "norm")
+  check_bool(x$sublinear_tf, arg = "sublinear_tf")
+  check_string(x$prefix, arg = "prefix")
+  check_sparse_arg(x$sparse)
+
+  check_type(training[, col_names], types = "tokenlist")
+
+  idf_weights <- list()
+
+  for (col_name in col_names) {
+    tokens <- training[[col_name]]
+    vocabulary <- x$vocabulary %||% sort(get_unique_tokens(tokens))
+    column_dtm <- tokenlist_to_dtm(tokens, vocabulary)
+    idf_weights[[col_name]] <- calc_idf(column_dtm, x$smooth_idf)
+  }
+
+  step_tfidf_new(
+    terms = x$terms,
+    role = x$role,
+    trained = TRUE,
+    columns = col_names,
+    vocabulary = x$vocabulary,
+    res = idf_weights,
+    smooth_idf = x$smooth_idf,
+    norm = x$norm,
+    sublinear_tf = x$sublinear_tf,
+    prefix = x$prefix,
+    sparse = x$sparse,
+    keep_original_cols = get_keep_original_cols(x),
+    skip = x$skip,
+    id = x$id
+  )
+}
+
+#' @export
+bake.step_tfidf <- function(object, new_data, ...) {
+  col_names <- object$columns
+  check_new_data(col_names, object, new_data)
+
+  if (is.null(names(object$res))) {
+    # Backwards compatibility with 1.0.3 (#230)
+    names(object$res) <- col_names
+  }
+
+  for (col_name in col_names) {
+    tfidf_text <- tfidf_function(
+      new_data[[col_name]],
+      object$res[[col_name]],
+      paste0(object$prefix, "_", col_name),
+      object$smooth_idf,
+      object$norm,
+      object$sublinear_tf,
+      object$sparse
+    )
+
+    tfidf_text <- recipes::check_name(
+      tfidf_text,
+      new_data,
+      object,
+      names(tfidf_text)
+    )
+
+    new_data <- vec_cbind(new_data, tfidf_text)
+  }
+
+  new_data <- remove_original_cols(new_data, object, col_names)
+
+  new_data
+}
+
+#' @export
+print.step_tfidf <-
+  function(x, width = max(20, options()$width - 30), ...) {
+    title <- "Term frequency-inverse document frequency with "
+    print_step(x$columns, x$terms, x$trained, title, width)
+    invisible(x)
+  }
+
+#' @rdname step_tfidf
+#' @usage NULL
+#' @export
+tidy.step_tfidf <- function(x, ...) {
+  if (is_trained(x)) {
+    if (length(x$columns) == 0) {
+      res <- tibble(
+        terms = character(),
+        token = character(),
+        weight = double()
+      )
+    } else {
+      res <- purrr::map2_dfr(
+        x$columns,
+        x$res,
+        \(.x, .y)
+          tibble(
+            terms = .x,
+            token = names(.y),
+            weight = unname(.y)
+          )
+      )
+    }
+  } else {
+    term_names <- sel2char(x$terms)
+    res <- tibble(
+      terms = term_names,
+      token = NA_character_,
+      weight = na_dbl
+    )
+  }
+  res$id <- x$id
+  res
+}
+
+# Implementation
+tfidf_function <- function(
+  data,
+  weights,
+  labels,
+  smooth_idf,
+  norm,
+  sublinear_tf,
+  sparse
+) {
+  # Backwards compatibility with 1592690d36581fc5f4952da3e9b02351b31f1a2e
+  if (is.numeric(weights)) {
+    dict <- names(weights)
+  } else {
+    dict <- weights
+  }
+  counts <- tokenlist_to_dtm(data, dict)
+
+  tfidf <- dtm_to_tfidf(counts, weights, smooth_idf, norm, sublinear_tf, sparse)
+
+  colnames(tfidf) <- paste0(labels, "_", dict)
+  as_tibble(tfidf)
+}
+
+dtm_to_tfidf <- function(
+  dtm,
+  idf_weights,
+  smooth_idf,
+  norm,
+  sublinear_tf,
+  sparse
+) {
+  if (sublinear_tf) {
+    dtm@x <- 1 + log(dtm@x)
+  }
+
+  dtm <- normalize(dtm, norm)
+
+  if (is.character(idf_weights)) {
+    cli::cli_warn(
+      c(
+        "Please retrain this recipe with version 0.5.1 or higher.",
+        "i" = "A data leakage bug has been fixed for {.fn step_tfidf}."
+      )
+    )
+    idf_weights <- log(smooth_idf + nrow(dtm) / Matrix::colSums(dtm > 0))
+    out <- dtm %*% Matrix::Diagonal(x = idf_weights)
+  } else {
+    out <- dtm %*% Matrix::Diagonal(x = idf_weights)
+  }
+
+  if (sparse_is_yes(sparse)) {
+    colnames(out) <- seq_len(ncol(out))
+    out <- sparsevctrs::coerce_to_sparse_tibble(out)
+  } else {
+    out <- as.matrix(out)
+  }
+  out
+}
+
+normalize <- function(dtm, norm = c("l1", "l2", "none")) {
+  if (norm == "none") {
+    return(dtm)
+  }
+
+  norm_vec <- switch(
+    norm,
+    l1 = 1 / Matrix::rowSums(dtm),
+    l2 = 1 / sqrt(Matrix::rowSums(dtm^2))
+  )
+
+  # case when sum row elements == 0
+  norm_vec[is.infinite(norm_vec)] <- 0
+
+  Matrix::Diagonal(x = norm_vec) %*% dtm
+}
+
+calc_idf <- function(dtm, smooth) {
+  log(smooth + nrow(dtm) / Matrix::colSums(dtm > 0))
+}
+
+#' @rdname required_pkgs.step
+#' @export
+required_pkgs.step_tfidf <- function(x, ...) {
+  c("textrecipes")
+}
+
+
+#' @export
+.recipes_estimate_sparsity.step_tfidf <- function(x, data, ...) {
+  get_levels <- function(col) {
+    n_chars <- nchar(col[seq(1, min(10, length(col)))])
+
+    floor(mean(n_chars))
+  }
+
+  n_levels <- lapply(data, get_levels)
+
+  lapply(n_levels, function(n_lvl) {
+    c(
+      n_cols = n_lvl,
+      sparsity = 1 - 1 / n_lvl
+    )
+  })
+}

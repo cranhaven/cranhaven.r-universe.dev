@@ -1,0 +1,406 @@
+text1 <- c(
+  "I would not eat them here or there.",
+  "I would not eat them anywhere.",
+  "I would not eat green eggs and ham.",
+  "I do not like them, Sam-I-am."
+)
+
+text2 <- c(
+  "You would not eat them here or there.",
+  "You would not eat them anywhere.",
+  "You would not eat green eggs and ham.",
+  "You do not like them, Sam-I-am."
+)
+
+test_data <- tibble(text1, text2)
+
+text1_out <- list(
+  c(
+    "\U2581I",
+    "\U2581would",
+    "\U2581not",
+    "\U2581\U0065\U0061\U0074",
+    "\U2581them",
+    "\U2581here",
+    "\U2581or",
+    "\U2581there",
+    "."
+  ),
+  c(
+    "\U2581I",
+    "\U2581would",
+    "\U2581not",
+    "\U2581\U0065\U0061\U0074",
+    "\U2581them",
+    "\U2581\U0061\U006E\U0079\U0077\U0068\U0065\U0072\U0065",
+    "."
+  ),
+  c(
+    "\U2581I",
+    "\U2581would",
+    "\U2581not",
+    "\U2581\U0065\U0061\U0074",
+    "\U2581green",
+    "\U2581\U0065\U0067\U0067\U0073",
+    "\U2581\U0061\U006E\U0064",
+    "\U2581ham",
+    "."
+  ),
+  c(
+    "\U2581I",
+    "\U2581\U0064\U006F",
+    "\U2581not",
+    "\U2581like",
+    "\U2581them",
+    ",",
+    "\U2581Sam",
+    "-",
+    "I",
+    "-",
+    "am",
+    "."
+  )
+)
+
+text2_out <- list(
+  c(
+    "\U2581You",
+    "\U2581would",
+    "\U2581not",
+    "\U2581\U0065\U0061\U0074",
+    "\U2581them",
+    "\U2581here",
+    "\U2581or",
+    "\U2581there",
+    "."
+  ),
+  c(
+    "\U2581You",
+    "\U2581would",
+    "\U2581not",
+    "\U2581\U0065\U0061\U0074",
+    "\U2581them",
+    "\U2581\U0061\U006E\U0079\U0077\U0068\U0065\U0072\U0065",
+    "."
+  ),
+  c(
+    "\U2581You",
+    "\U2581would",
+    "\U2581not",
+    "\U2581\U0065\U0061\U0074",
+    "\U2581green",
+    "\U2581\U0065\U0067\U0067\U0073",
+    "\U2581\U0061\U006E\U0064",
+    "\U2581ham",
+    "."
+  ),
+  c(
+    "\U2581You",
+    "\U2581\U0064\U006F",
+    "\U2581not",
+    "\U2581like",
+    "\U2581them",
+    ",",
+    "\U2581Sam",
+    "-",
+    "I",
+    "-",
+    "am",
+    "."
+  )
+)
+
+test_that("step_tokenize_sentencepiece works", {
+  skip_if_not_installed("sentencepiece")
+
+  res <- recipe(~text1, data = test_data) |>
+    step_tokenize_sentencepiece(text1, vocabulary_size = 80) |>
+    prep() |>
+    bake(new_data = NULL)
+
+  expect_equal(
+    vctrs::field(res$text1, "tokens"),
+    text1_out
+  )
+})
+
+test_that("step_tokenize_sentencepiece works with tokenizers.sentencepiece and multiple colunms", {
+  skip_if_not_installed("sentencepiece")
+
+  res <- recipe(~., data = test_data) |>
+    step_tokenize_sentencepiece(all_predictors(), vocabulary_size = 80) |>
+    prep() |>
+    bake(new_data = NULL)
+
+  expect_equal(
+    vctrs::field(res$text1, "tokens"),
+    text1_out
+  )
+
+  expect_equal(
+    vctrs::field(res$text2, "tokens"),
+    text2_out
+  )
+})
+
+test_that("arguments are passed to tokenizers.sentencepiece", {
+  skip_if_not_installed("sentencepiece")
+
+  res <- recipe(~text1, data = test_data) |>
+    step_tokenize_sentencepiece(text1, vocabulary_size = 60) |>
+    prep() |>
+    bake(new_data = NULL)
+
+  expect_equal(
+    length(textrecipes:::get_unique_tokens(res$text1)),
+    60
+  )
+
+  res <- recipe(~text1, data = test_data) |>
+    step_tokenize_sentencepiece(text1, vocabulary_size = 80) |>
+    prep() |>
+    bake(new_data = NULL)
+
+  expect_equal(
+    length(textrecipes:::get_unique_tokens(res$text1)),
+    80
+  )
+})
+
+test_that("bake doesn't error when training-only options are set (#319)", {
+  skip_if_not_installed("sentencepiece")
+
+  rec <- recipe(~text1, data = test_data) |>
+    step_tokenize_sentencepiece(
+      text1,
+      vocabulary_size = 60,
+      options = list(threads = 1)
+    ) |>
+    prep()
+
+  expect_no_error(
+    bake(rec, new_data = test_data)
+  )
+})
+
+test_that("Errors if vocabulary size is set to low.", {
+  skip_if_not_installed("sentencepiece")
+
+  expect_snapshot(
+    error = TRUE,
+    recipe(~text1, data = test_data) |>
+      step_tokenize_sentencepiece(text1, vocabulary_size = 10) |>
+      prep()
+  )
+})
+
+test_that("bad args", {
+  skip_if_not_installed("sentencepiece")
+
+  expect_snapshot(
+    error = TRUE,
+    recipe(~., data = mtcars) |>
+      step_tokenize_sentencepiece(vocabulary_size = -4) |>
+      prep()
+  )
+})
+
+# Infrastructure ---------------------------------------------------------------
+
+test_that("bake method errors when needed non-standard role columns are missing", {
+  skip_if_not_installed("sentencepiece")
+
+  rec <- recipe(~text1, data = test_data) |>
+    step_tokenize_sentencepiece(text1, vocabulary_size = 100) |>
+    update_role(text1, new_role = "potato") |>
+    update_role_requirements(role = "potato", bake = FALSE)
+
+  trained <- prep(rec, training = test_data, verbose = FALSE)
+
+  expect_snapshot(
+    error = TRUE,
+    bake(trained, new_data = test_data[, -1])
+  )
+})
+
+test_that("empty printing", {
+  rec <- recipe(mpg ~ ., mtcars)
+  rec <- step_tokenize_sentencepiece(rec)
+
+  expect_snapshot(rec)
+
+  rec <- prep(rec, mtcars)
+
+  expect_snapshot(rec)
+})
+
+test_that("empty selection prep/bake is a no-op", {
+  rec1 <- recipe(mpg ~ ., mtcars)
+  rec2 <- step_tokenize_sentencepiece(rec1)
+
+  rec1 <- prep(rec1, mtcars)
+  rec2 <- prep(rec2, mtcars)
+
+  baked1 <- bake(rec1, mtcars)
+  baked2 <- bake(rec2, mtcars)
+
+  expect_identical(baked1, baked1)
+})
+
+test_that("empty selection tidy method works", {
+  rec <- recipe(mpg ~ ., mtcars)
+  rec <- step_tokenize_sentencepiece(rec)
+
+  expect <- tibble(terms = character(), id = character())
+
+  expect_identical(tidy(rec, number = 1), expect)
+
+  rec <- prep(rec, mtcars)
+
+  expect_identical(tidy(rec, number = 1), expect)
+})
+
+test_that("printing", {
+  skip_if_not_installed("sentencepiece")
+
+  rec <- recipe(~., data = test_data) |>
+    step_tokenize_sentencepiece(text1, vocabulary_size = 100)
+
+  expect_snapshot(print(rec))
+  expect_snapshot(prep(rec))
+})
+
+test_that("options are checked (#291)", {
+  skip_if_not_installed("sentencepiece")
+
+  rec <- recipe(~., data = test_data)
+
+  expect_snapshot(
+    error = TRUE,
+    prep(step_tokenize_sentencepiece(rec, text1, options = list(1)))
+  )
+  expect_error(
+    prep(
+      step_tokenize_sentencepiece(rec, text1, options = list(model_dir = "a"))
+    ),
+    "not allowed"
+  )
+})
+
+test_that("0 and 1 rows data work in bake method", {
+  skip_if_not_installed("sentencepiece")
+  data <- tibble(
+    text = c(
+      "I would not eat them here or there.",
+      "I would not eat them anywhere.",
+      "I do not like them, Sam-I-am."
+    )
+  )
+  rec <- recipe(~text, data = data) |>
+    step_tokenize_sentencepiece(text, vocabulary_size = 80) |>
+    prep()
+
+  expect_identical(nrow(bake(rec, dplyr::slice(data, 1))), 1L)
+  expect_identical(nrow(bake(rec, dplyr::slice(data, 0))), 0L)
+})
+
+test_that("pretrained model can be used with `model` (#278)", {
+  skip_if_not_installed("sentencepiece")
+
+  model_dir <- withr::local_tempdir()
+  file <- file.path(model_dir, "text.txt")
+  writeLines(test_data$text1, file)
+  trained <- sentencepiece::sentencepiece(
+    file,
+    vocab_size = 80,
+    model_dir = model_dir
+  )
+
+  rec <- recipe(~., data = test_data) |>
+    step_tokenize_sentencepiece(all_predictors(), model = trained$model_path) |>
+    prep()
+
+  res <- bake(rec, new_data = NULL)
+
+  loaded <- sentencepiece::sentencepiece_load_model(trained$model_path)
+  expect_identical(
+    get_tokens(res$text1),
+    sentencepiece::sentencepiece_encode(loaded, test_data$text1)
+  )
+  expect_identical(
+    get_unique_tokens(res$text1),
+    get_unique_tokens(res$text2)
+  )
+
+  # model is embedded, file is no longer needed
+  unlink(model_dir, recursive = TRUE)
+  expect_identical(bake(rec, new_data = test_data), res)
+})
+
+test_that("`model` is checked (#278)", {
+  skip_if_not_installed("sentencepiece")
+
+  rec <- recipe(~., data = test_data)
+
+  expect_snapshot(
+    error = TRUE,
+    prep(step_tokenize_sentencepiece(rec, text1, model = 1))
+  )
+  expect_snapshot(
+    error = TRUE,
+    prep(step_tokenize_sentencepiece(
+      rec,
+      text1,
+      model = "does-not-exist.model"
+    ))
+  )
+
+  expect_error(
+    prep(step_tokenize_sentencepiece(rec, text1, model = tempdir())),
+    "does not exist"
+  )
+
+  bad_file <- withr::local_tempfile(fileext = ".model")
+  writeLines("not a model", bad_file)
+  expect_error(
+    prep(step_tokenize_sentencepiece(rec, text1, model = bad_file)),
+    "not a valid"
+  )
+})
+
+test_that("pretrained `model` works with factor columns and missing columns", {
+  skip_if_not_installed("sentencepiece")
+
+  model_dir <- withr::local_tempdir()
+  file <- file.path(model_dir, "text.txt")
+  writeLines(test_data$text1, file)
+  trained <- sentencepiece::sentencepiece(
+    file,
+    vocab_size = 80,
+    model_dir = model_dir
+  )
+
+  data <- test_data
+  data$text1 <- factor(data$text1)
+
+  rec <- recipe(~text1, data = data) |>
+    step_tokenize_sentencepiece(text1, model = trained$model_path) |>
+    prep()
+
+  expect_s3_class(bake(rec, new_data = NULL)$text1, "textrecipes_tokenlist")
+  expect_snapshot(error = TRUE, bake(rec, new_data = data[, 0]))
+})
+
+test_that("model argument is backwards compatible", {
+  skip_if_not_installed("sentencepiece")
+
+  rec <- recipe(~text1, data = test_data) |>
+    step_tokenize_sentencepiece(text1, vocabulary_size = 80) |>
+    prep()
+
+  exp <- bake(rec, test_data)
+
+  rec$steps[[1]]$model <- NULL
+
+  expect_identical(bake(rec, test_data), exp)
+})

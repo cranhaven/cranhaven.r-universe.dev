@@ -1,0 +1,95 @@
+# bad args
+
+    Code
+      prep(step_stem(recipe(~., data = mtcars), custom_stemmer = "yes"))
+    Condition
+      Error in `step_stem()`:
+      ! `custom_stemmer` must be a function or `NULL`, not the string "yes".
+
+# bake method errors when needed non-standard role columns are missing
+
+    Code
+      bake(trained, new_data = tokenized_test_data[, -1])
+    Condition
+      Error in `step_stem()`:
+      ! The following required column is missing from `new_data`: text.
+
+# empty printing
+
+    Code
+      rec
+    Message
+      
+      -- Recipe ----------------------------------------------------------------------
+      
+      -- Inputs 
+      Number of variables by role
+      outcome:    1
+      predictor: 10
+      
+      -- Operations 
+      * Stemming for: <none>
+
+---
+
+    Code
+      rec
+    Message
+      
+      -- Recipe ----------------------------------------------------------------------
+      
+      -- Inputs 
+      Number of variables by role
+      outcome:    1
+      predictor: 10
+      
+      -- Training information 
+      Training data contained 32 data points and no incomplete rows.
+      
+      -- Operations 
+      * Stemming for: <none> | Trained
+
+# printing
+
+    Code
+      print(rec)
+    Message
+      
+      -- Recipe ----------------------------------------------------------------------
+      
+      -- Inputs 
+      Number of variables by role
+      predictor: 1
+      
+      -- Operations 
+      * Tokenization for: text
+      * Stemming for: text
+
+---
+
+    Code
+      prep(rec)
+    Message
+      
+      -- Recipe ----------------------------------------------------------------------
+      
+      -- Inputs 
+      Number of variables by role
+      predictor: 1
+      
+      -- Training information 
+      Training data contained 4 data points and no incomplete rows.
+      
+      -- Operations 
+      * Tokenization for: text | Trained
+      * Stemming for: text | Trained
+
+# options are checked (#291)
+
+    Code
+      prep(step_stem(rec, text, options = list("russian")))
+    Condition
+      Error in `step_stem()`:
+      Caused by error in `prep()`:
+      ! The list passed to `options` must be named.
+
